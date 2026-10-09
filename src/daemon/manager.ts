@@ -3,12 +3,12 @@ import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import type { NodeKind, NodeStatus, NodeView } from '../shared/protocol.js';
+import type { ModEvent, NodeKind, NodeStatus, NodeView } from '../shared/protocol.js';
 import { claudeLaunch, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { NodeRegistry } from './nodes.js';
 import { PtySession } from './pty.js';
 import { logError, safeEqual } from './util.js';
-import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, type HookEvent } from './status.js';
+import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, turnAborted, turnErrored, type HookEvent } from './status.js';
 
 const INTERRUPT_MS = 1500;
 const SWEEP_MS = 60_000;
@@ -266,6 +266,20 @@ export class NodeManager extends EventEmitter {
       this.registry.update(nodeId, { transcriptPath: next.transcriptPath });
     }
     this.setStatus(nodeId, next);
+  }
+
+  /** Apply an event from the node's mod. turn.start carries nothing we need. */
+  applyModEvent(nodeId: string, ev: ModEvent): void {
+    const prev = this.statuses.get(nodeId);
+    if (!prev) return;
+    const now = Date.now();
+    if (ev.event === 'turn.complete') {
+      if (ev.payload.isAborted) this.setStatus(nodeId, turnAborted(prev, now));
+      else if (ev.payload.reason === 'error') this.setStatus(nodeId, turnErrored(prev, now));
+    } else if (ev.event === 'session.measure') {
+      const { context, cost } = ev.payload;
+      this.setStatus(nodeId, { ...prev, contextPct: context?.percent ?? prev.contextPct, costUsd: cost?.usd ?? prev.costUsd });
+    }
   }
 
   /** Flush the registry and kill every PTY. */

@@ -116,3 +116,15 @@ export function interruptKeyPressed(prev: NodeStatus, data: string): boolean {
 export function interruptTimeout(prev: NodeStatus, now: number): NodeStatus {
   return prev.state === 'working' ? done(prev, now, { interrupted: true, doneSource: 'interrupt' }) : prev;
 }
+
+const active = (s: NodeStatus) => s.state === 'working' || s.state === 'waiting' || s.state === 'blocked';
+
+/** Mod's turn.complete with isAborted: the user cancelled, and no Stop hook follows. */
+export function turnAborted(prev: NodeStatus, now: number): NodeStatus {
+  return active(prev) ? done(prev, now, { interrupted: true, doneSource: 'interrupt' }) : prev;
+}
+
+/** Mod's turn.complete with reason 'error'. */
+export function turnErrored(prev: NodeStatus, now: number): NodeStatus {
+  return active(prev) ? done(prev, now, { errored: true, doneSource: 'stop' }) : prev;
+}

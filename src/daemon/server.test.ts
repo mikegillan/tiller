@@ -96,4 +96,21 @@ describe('POST /hook', () => {
     expect(states.at(-1)).toBe('done');
     expect(manager.view(node.id)?.unread).toBe(true);
   });
+
+  it('serves the mod API: auth, inbox, mod-event measure and children', async () => {
+    const parent = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
+    const kid = manager.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: parent.id });
+    const call = (path: string, id: string, token: string, init: RequestInit = {}) =>
+      fetch(`http://127.0.0.1:${server.port}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': id, 'Content-Type': 'application/json' } });
+    const tp = manager.tokenFor(parent.id), tk = manager.tokenFor(kid.id);
+    expect((await call('/inbox', parent.id, 'bad')).status).toBe(401);
+    expect((await call('/children', kid.id, tp)).status).toBe(401); // another node's token
+    expect(await (await call('/inbox', kid.id, tk)).json()).toEqual([]);
+    const measure = { event: 'session.measure', payload: { context: { tokens: 1, window: 2, percent: 50 }, cost: { usd: 0.25 } } };
+    expect((await call('/mod-event', kid.id, tk, { method: 'POST', body: JSON.stringify(measure) })).status).toBe(204);
+    expect((await call('/mod-event', kid.id, tk, { method: 'POST', body: '{"event":"nope"}' })).status).toBe(400);
+    expect(manager.view(kid.id)?.status).toMatchObject({ contextPct: 50, costUsd: 0.25 });
+    expect(await (await call('/children', parent.id, tp)).json()).toMatchObject([{ id: kid.id, title: 'kid', depth: 1, contextPct: 50 }]);
+    expect(await (await call('/children', kid.id, tk)).json()).toEqual([]);
+  });
 });

@@ -2,7 +2,10 @@ import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NodeStatus, NodeView } from '../shared/protocol.js';
 import { classify, composerTextOf } from './pty.js';
-import { deliver, messageStatus, startNotices, type Mgr } from './messaging.js';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ack, deliver, inbox, messageStatus, startNotices, type Mgr } from './messaging.js';
 
 const PROMPT = ['some output', '────────────────── n-b', '❯ ', '──────────────────'];
 
@@ -190,6 +193,73 @@ describe('queue', () => {
     m.set('b', { exited: true });
     await vi.advanceTimersByTimeAsync(0);
     expect(messageStatus(m.mgr, 'a', r.messageId!)?.outcome).toBe('gone');
+  });
+});
+
+describe('mod inbox', () => {
+  beforeEach(() => { inbox(m.mgr, 'b'); }); // b's mod polls
+
+  it('queues for a mod-live target without pasting; the inbox lists it; ack resolves it as delivered', async () => {
+    m.set('b', { state: 'working' });
+    const r = await deliver(m.mgr, 'a', 'b', 'hello');
+    expect(r).toMatchObject({ outcome: 'queued', retryable: false, messageId: expect.stringMatching(/^m-/) });
+    const [msg] = inbox(m.mgr, 'b');
+    expect(msg).toMatchObject({ id: r.messageId, from: 'T-a (a)' });
+    expect(msg.text).toMatch(/^--- O8 MESSAGE (\S+) ---\nfrom: T-a \(a\)\nreply-to: a\nhello\n--- END O8 MESSAGE \1 ---$/);
+    expect(m.sessions.get('b')!.pasted).toHaveLength(0);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)?.outcome).toBe('queued');
+    expect(ack(m.mgr, 'p', r.messageId!)).toBe(false); // not p's message
+    expect(ack(m.mgr, 'b', r.messageId!)).toBe(true);
+    expect(inbox(m.mgr, 'b')).toEqual([]);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'delivered' });
+  });
+
+  it('expires unacked messages after 5 minutes and removes them from the inbox', async () => {
+    const r = await deliver(m.mgr, 'a', 'b', 'hi');
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(inbox(m.mgr, 'b')).toEqual([]);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'expired', retryable: true });
+  });
+
+  it('caps the inbox at 16', async () => {
+    for (let i = 0; i < 16; i++) expect((await deliver(m.mgr, 'orchestr8', 'b', `m${i}`)).outcome).toBe('queued');
+    expect(await deliver(m.mgr, 'orchestr8', 'b', 'overflow')).toMatchObject({ outcome: 'queueFull', retryable: true });
+  });
+
+  it('station notices ride the inbox too', async () => {
+    startNotices(m.mgr);
+    inbox(m.mgr, 'p');
+    m.set('a', { state: 'done', errored: true, doneSource: 'stop' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(inbox(m.mgr, 'p')[0].text).toContain('stopped: turn-errored');
+    expect(m.sessions.get('p')!.pasted).toHaveLength(0);
+  });
+
+  it('falls back to paste once the mod has not polled for 5 s', async () => {
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((await deliver(m.mgr, 'a', 'b', 'still live')).outcome).toBe('queued'); // exactly 5 s: still live
+    await vi.advanceTimersByTimeAsync(1);
+    const r = await deliver(m.mgr, 'p', 'b', 'stale mod');
+    expect(r.outcome).toBe('delivered');
+    expect(m.sessions.get('b')!.pasted).toHaveLength(1);
+  });
+
+  it('survives a restart; entries past their TTL are dropped', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'o8inbox-'));
+    try {
+      const withHome = (): Mgr => Object.assign(Object.create(m), { home }) as Mgr; // fresh state per Mgr object
+      const m1 = withHome();
+      inbox(m1, 'b');
+      const keep = await deliver(m1, 'a', 'b', 'keep');
+      await vi.advanceTimersByTimeAsync(60);
+      expect(JSON.parse(readFileSync(join(home, 'inbox.json'), 'utf8')).items).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+      const m2 = withHome();
+      expect(inbox(m2, 'b').map((x) => x.id)).toEqual([keep.messageId]);
+      await vi.advanceTimersByTimeAsync(60_000 + 1);
+      expect(inbox(m2, 'b')).toEqual([]);
+      expect(inbox(withHome(), 'b')).toEqual([]); // expired entry is not reloaded
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });
 

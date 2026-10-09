@@ -1,14 +1,16 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { extname, resolve, sep } from 'node:path';
+import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
 import { mountMcp } from './mcp.js';
+import { modApi } from './modapi.js';
 import type { HookEvent } from './status.js';
 import { safeEqual } from './util.js';
 
@@ -55,9 +57,12 @@ interface Client { ws: WebSocket; authed: boolean; attached: Set<string> }
 
 export async function startServer(manager: NodeManager, opts: { port?: number; uiToken?: string } = {}): Promise<DaemonServer> {
   const uiToken = opts.uiToken ?? randomBytes(24).toString('base64url');
+  // The CLI authenticates over /ws with the admin token mcp.ts writes after listen; empty until then, which never matches.
+  const adminToken = () => { try { return readFileSync(join(manager.home, 'admin-token'), 'utf8').trim(); } catch { return ''; } };
   const clients = new Set<Client>();
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
-  const { handler: mcp, publishAdminToken } = mountMcp(manager, (text) => daemon.confirm(text));
+  const { handler: mcp, publishAdminToken, authenticate } = mountMcp(manager, (text) => daemon.confirm(text));
+  const mod = modApi(manager, authenticate);
 
   const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
   const broadcast = (m: ServerMessage) => { for (const c of clients) if (c.authed) sendTo(c, m); };
@@ -119,7 +124,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
         return;
       }
       if (!c.authed) {
-        if (msg.t === 'auth' && safeEqual(msg.token, uiToken)) {
+        if (msg.t === 'auth' && (safeEqual(msg.token, uiToken) || (adminToken() !== '' && safeEqual(msg.token, adminToken())))) {
           c.authed = true;
           clearTimeout(authTimer);
           sendTo(c, { t: 'snapshot', nodes: manager.list() });
@@ -143,6 +148,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
   async function route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://x');
     if (req.method === 'POST' && url.pathname === '/hook') return hook(req, res);
+    if (await mod(req, res, url.pathname)) return;
     if (url.pathname === '/mcp' || url.pathname.startsWith('/api/')) return mcp(req, res);
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/assets/'))) {
       return serveUi(url.pathname === '/' ? 'index.html' : url.pathname.slice(1), res);

@@ -127,12 +127,12 @@ export const tools = {
     }),
 
   send: tool(
-    'Send a message to another agent node (self excluded; scope is your parent, siblings, and descendants). It is pasted into the target\'s prompt inside a framed envelope that shows the target who sent it and where to reply. If the target is busy, at a dialog, or has unsent text, the message is queued (up to 16, for 5 minutes) and delivered when it is idle; the reply then has outcome "queued" and a messageId you can pass to message_status. Other outcomes: delivered, stalled (pasted but not confirmed, do not resend blindly), expired, queueFull, gone, refused. Only one send per target per 10 seconds is accepted. Terminal nodes cannot receive messages; use write.',
+    'Send a message to another agent node (self excluded; scope is your parent, siblings, and descendants). The message reaches the target as a prompt inside a framed envelope that shows the target who sent it and where to reply. Delivery is normally queued and confirmed asynchronously: the reply has outcome "queued" and a messageId, and the target\'s plugin submits the message when the target is idle (up to 16 queued, for 5 minutes). Call message_status with the messageId to see when it becomes delivered. If the target has no plugin running, the message is instead pasted into its prompt when it is idle, and the reply may be delivered, stalled or queued. Other outcomes: delivered, stalled (pasted but not confirmed, do not resend blindly), expired, queueFull, gone, refused. Only one send per target per 10 seconds is accepted. Terminal nodes cannot receive messages; use write.',
     { nodeId: z.string().min(1), text: z.string().min(1) },
     async (c, a) => ({ data: await deliver(c.manager, c.caller, a.nodeId, a.text) })),
 
   message_status: tool(
-    'Look up the current outcome of a message you sent that was queued: it returns the same result shape as send, with outcome queued until the message is delivered, stalled, expired or gone. Takes the messageId from the send reply.',
+    'Look up the current outcome of a message you sent, which is how you confirm a queued message was delivered: it returns the same result shape as send, with outcome queued until the message is delivered, stalled, expired or gone. Takes the messageId from the send reply.',
     { messageId: z.string().min(1) },
     async (c, a) => {
       const r = messageStatus(c.manager, c.caller, a.messageId);
@@ -213,6 +213,8 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
   handler: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void>;
   /** Write the admin token file. Call once the server is listening, so a daemon that fails to bind leaves the running daemon's token alone. */
   publishAdminToken: () => void;
+  /** Caller id for a request's Bearer + X-O8-Node (`human` for the admin token), or undefined. */
+  authenticate: (req: http.IncomingMessage) => string | undefined;
 } {
   const adminToken = randomBytes(32).toString('base64url');
   const adminFile = join(manager.home, 'admin-token');
@@ -274,5 +276,5 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
     await mcp.connect(transport);
     await transport.handleRequest(req, res);
   };
-  return { handler, publishAdminToken };
+  return { handler, publishAdminToken, authenticate };
 }

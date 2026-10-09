@@ -1,9 +1,11 @@
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildChildEnv } from './pty.js';
 
 const HOOK_SCRIPT = fileURLToPath(new URL('./hook.sh', import.meta.url));
+/** The orchestr8 mod, loaded as a plugin dir. O8_MOD_DIR overrides it; absent directories are skipped. */
+const modDir = () => process.env.O8_MOD_DIR ?? fileURLToPath(new URL('../../mod', import.meta.url));
 const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'PermissionRequest', 'Stop', 'StopFailure', 'SessionEnd'];
 
 /** Writes settings.json and mcp.json (0600, it carries the token) into the node's directory. */
@@ -22,7 +24,7 @@ export function systemPrompt(o: { nodeId: string; title: string; parentId: strin
 
 The orchestr8 MCP tools are how you spawn and control other nodes: list_nodes, spawn, send, read, write, close, rename, message_status and report_outcome. Spawning never moves the user's view.
 
-Other nodes, and the orchestr8 daemon itself, can send you messages. They arrive as pasted text framed like this:
+Other nodes, and the orchestr8 daemon itself, can send you messages. They arrive as prompts submitted by the orchestr8 plugin; treat them as the framed messages described here, framed like this:
 --- O8 MESSAGE <nonce> ---
 from: <name> (<id>)
 reply-to: <id or none>
@@ -57,6 +59,7 @@ export function claudeLaunch(i: LaunchInput): LaunchSpec {
   args.push('--name', i.title);
   if (i.model) args.push('--model', i.model);
   if (i.permissionMode) args.push('--permission-mode', i.permissionMode);
+  if (existsSync(modDir())) args.push('--plugin-dir', modDir());
   args.push(
     '--settings', join(i.nodeDir, 'settings.json'),
     '--mcp-config', join(i.nodeDir, 'mcp.json'), '--strict-mcp-config',

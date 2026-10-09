@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { NodeStatus } from '../shared/protocol.js';
-import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, type HookEvent } from './status.js';
+import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, turnAborted, turnErrored, type HookEvent } from './status.js';
 
 const T0 = 1_000_000;
 const st = (p: Partial<NodeStatus> = {}): NodeStatus => ({ state: 'unknown', changedAt: T0, ...p });
@@ -164,5 +164,20 @@ describe('doneSource', () => {
     expect(interruptTimeout(w, NOW).doneSource).toBe('interrupt');
     expect(ptyExited(w, NOW).doneSource).toBe('exit');
     expect(reduce(reduce(w, ev('Stop'), NOW), ev('UserPromptSubmit'), NOW + 1).doneSource).toBeUndefined();
+  });
+});
+
+describe('mod turn.complete', () => {
+  it('an aborted turn ends as done + interrupted, sourced as interrupt', () => {
+    const next = turnAborted(st({ state: 'working', activity: 'Bash: sleep' }), NOW);
+    expect(next).toMatchObject({ state: 'done', interrupted: true, doneSource: 'interrupt', activity: undefined, changedAt: NOW });
+    const idle = st({ state: 'done', doneSource: 'stop' });
+    expect(turnAborted(idle, NOW)).toBe(idle);
+  });
+
+  it('an errored turn ends as done + errored', () => {
+    expect(turnErrored(st({ state: 'working' }), NOW)).toMatchObject({ state: 'done', errored: true, doneSource: 'stop', changedAt: NOW });
+    const idle = st({ state: 'done', doneSource: 'stop' });
+    expect(turnErrored(idle, NOW)).toBe(idle);
   });
 });
