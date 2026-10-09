@@ -355,3 +355,37 @@ change the build:
   SessionStart adds `source`, `model`; UserPromptSubmit `prompt`, `prompt_id`; tool events
   `tool_name`, `tool_input`, `tool_use_id`; Stop `last_assistant_message`; Notification
   `notification_type`, `message`; SessionEnd `reason`. Raw samples: `.orchestr8-dev/events.json`.
+
+## 14. Mods-first front-end (decided 2026-10-09 after the mod spike)
+
+Claude Code mods (plugins with an in-process hooks module, loaded per node with
+`--plugin-dir`, docs at code.claude.com/docs/en/plugins/mods) passed every check in
+`spike/mod-spike.ts`: `$.http.fetch` reaches the daemon on loopback, `$.prompt.submit`
+starts a turn only when the session is idle and never interleaves, `turn.complete` reports
+`isAborted` (the interrupt signal settings hooks cannot see), `session.measure` reports
+context percent and cost, a band renders above the prompt, and a pane renders live rows
+beside the transcript at 120+ columns or inline above the prompt when narrower.
+
+Consequences:
+
+- **Delivery is mod-first.** The daemon keeps a per-node inbox; the node's mod polls it
+  every second, submits each message as a user prompt, and acks when the turn starts. Claude
+  Code does the idle gating, so the screen check is no longer on the main path. PTY paste
+  stays only as a fallback for a node whose mod has not polled in the last 5 s.
+- **The orchestrator's own session is the primary UI.** A pane (`/o8`) lists children with
+  state, activity, age, unread and last message; a band shows identity and pending counts;
+  toasts and a macOS notification fire when a child needs you or finishes; slash commands
+  wrap spawn, send, read and list.
+- **`o8 attach <id>`** proxies a node's PTY into the current terminal (detach with
+  Ctrl-\ then d) for the cases a pane cannot cover: typing into a child, answering its
+  permission prompt, plain shells.
+- **The browser UI (`ui/`) stays as an optional second front-end** and gets no further
+  investment unless mods disappoint. The daemon and CLI must keep working with mods off,
+  because Anthropic can disable mods remotely and `--bare` / `--safe-mode` drop them.
+- The band sits about eight rows above the bottom, so the fallback screen check must read
+  the prompt rows, not "last N rows" with a small N. A docked pane re-wraps the transcript
+  to about 70 columns, which only matters for transcript scraping, which we do not do.
+
+Still unverified: `--plugin-dir` under `--resume`; behaviour when the user has other mods
+installed (they load in every node too); hot-reload losing module state (pending counts and
+in-flight ids live in `$.state` for that reason).
