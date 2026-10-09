@@ -5,7 +5,7 @@ import { ack, HUMAN, inbox, markModLive } from './messaging.js';
 import type { NodeManager } from './manager.js';
 
 const MAX_BODY = 1_000_000;
-const modEvent = z.object({ event: z.enum(['turn.start', 'turn.complete', 'session.measure']), payload: z.record(z.string(), z.unknown()).default({}) });
+const modEvent = z.object({ event: z.enum(['turn.start', 'turn.complete', 'session.measure', 'notified']), payload: z.record(z.string(), z.unknown()).default({}) });
 
 /** Descendants of the caller, depth-first, depth counted from the caller (children of the caller are depth 1). */
 function childViews(manager: NodeManager, caller: string): ChildView[] {
@@ -59,7 +59,8 @@ export function modApi(manager: NodeManager, authenticate: (req: http.IncomingMe
         const ev = modEvent.parse(body) as ModEvent;
         if (caller !== HUMAN) {
           markModLive(manager, caller);
-          manager.applyModEvent(caller, ev);
+          if (ev.event === 'notified') { if (process.env.O8_DEBUG) console.log(`mod ${caller.slice(0, 6)} notified: ${JSON.stringify(ev.payload)}`); }
+          else manager.applyModEvent(caller, ev);
         }
       }
       res.writeHead(204).end();

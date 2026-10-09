@@ -4,7 +4,7 @@ import { atom, read, update } from 'claude-code'
 const kids = atom({ plugin: 'orchestr8', key: 'children' }, [])
 const pend = atom({ plugin: 'orchestr8', key: 'pending' }, 0)
 const PANE = { id: 'o8-children', title: 'Children' }
-let id, endpoint, token, parent, isMac, busy
+let id, endpoint, token, parent, isMac, busy, tn, bundle
 let prev = null
 const inflight = new Set()
 const lastToast = new Map()
@@ -23,7 +23,7 @@ async function call($, method, path, body) {
 }
 
 async function tool($, name, args) {
-  try { return (await call($, 'POST', `/api/${name}`, args)).text ?? '(no output)' } catch (err) { return `error: ${err.message}` }
+  try { const r = await call($, 'POST', `/api/${name}`, args); return r.text ?? (r.data === undefined ? '(no output)' : JSON.stringify(r.data)) } catch (err) { return `error: ${err.message}` }
 }
 
 // At most one toast / notification per key per 5 s.
@@ -32,9 +32,13 @@ async function notify($, key, text, os) {
   if (now - (lastToast.get(key) ?? 0) < 5000) return
   lastToast.set(key, now)
   $.ui.toast(text)
+  forward($, 'notified', { text, os: !!(os && isMac) })
   if (os && isMac) {
-    const body = text.replace(/[\\"]/g, '\\$&')
-    $.process.run(['osascript', '-e', `display notification "${body}" with title "orchestr8"`]).catch(() => {})
+    // terminal-notifier lets a click focus the terminal; osascript's notification cannot.
+    const cmd = tn
+      ? ['terminal-notifier', '-title', 'orchestr8', '-message', text, ...(bundle ? ['-activate', bundle] : [])]
+      : ['osascript', '-e', `display notification "${text.replace(/[\\"]/g, '\\$&')}" with title "orchestr8"`]
+    $.process.run(cmd).catch(() => {})
   }
 }
 
@@ -89,6 +93,8 @@ export const register = on => {
     token = (await $.fs.read(await $.env.get('O8_TOKEN_FILE'))).trim()
     parent = await $.env.get('O8_PARENT_ID')
     try { isMac = (await $.process.run(['uname'])).stdout.trim() === 'Darwin' } catch { isMac = false }
+    try { tn = isMac && !!(await $.process.run(['which', 'terminal-notifier'])).stdout.trim() } catch { tn = false }
+    bundle = { ghostty: 'com.mitchellh.ghostty', 'iTerm.app': 'com.googlecode.iterm2', Apple_Terminal: 'com.apple.Terminal', vscode: 'com.microsoft.VSCode' }[await $.env.get('TERM_PROGRAM')]
     for (const [name, description] of [
       ['o8', 'Open the orchestr8 children pane'], ['o8-list', 'List orchestr8 nodes'],
       ['o8-spawn', 'Spawn a child: <title> :: <prompt>'], ['o8-send', 'Send a message: <nodeId> <text>'],

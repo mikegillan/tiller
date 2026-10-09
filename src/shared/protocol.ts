@@ -92,7 +92,9 @@ export interface InboxMessage { id: string; from: string; text: string; enqueued
 export type ModEvent =
   | { event: 'turn.start'; payload: { text: string; turnId: string } }
   | { event: 'turn.complete'; payload: { answer?: string; durationMs: number; isAborted: boolean; turnId: string; reason: 'answer' | 'aborted' | 'refusal' | 'error'; usage?: Record<string, unknown> } }
-  | { event: 'session.measure'; payload: { context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: Array<{ kind: string; percentUsed: number; resetsAt?: string }> } };
+  | { event: 'session.measure'; payload: { context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: Array<{ kind: string; percentUsed: number; resetsAt?: string }> } }
+  /** The mod showed a toast (and, when `os`, ran the macOS notification). Only logged under O8_DEBUG. */
+  | { event: 'notified'; payload: { text: string; os: boolean } };
 /** GET /children → ChildView[] (the calling node's descendants, for the pane). */
 export interface ChildView {
   id: string; title: string; depth: number; state: AgentState;

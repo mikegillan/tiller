@@ -77,6 +77,7 @@ function nodeEnv(i: LaunchInput): Record<string, string> {
   return buildChildEnv({
     PATH: i.path,
     O8_NODE_ID: i.nodeId,
+    ...(i.parentId ? { O8_PARENT_ID: i.parentId } : {}),
     O8_ENDPOINT: i.endpoint,
     O8_TOKEN_FILE: join(i.nodeDir, 'token'),
   });
