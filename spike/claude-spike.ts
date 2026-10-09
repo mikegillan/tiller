@@ -19,7 +19,7 @@ const token = randomBytes(24).toString('base64url');
 const tokenFile = path.join(dev, 'token');
 fs.writeFileSync(tokenFile, token, { mode: 0o600 });
 const sessionId = randomUUID();
-const hookScript = path.join(root, 'spike', 'hook.sh');
+const hookScript = path.join(root, 'src', 'daemon', 'hook.sh');
 
 type HookEvent = { hook_event_name: string; session_id?: string; transcript_path?: string; [k: string]: unknown };
 const events: HookEvent[] = [];

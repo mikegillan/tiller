@@ -1,0 +1,50 @@
+import type { ServerMessage } from '../src/shared/protocol';
+import { selectNode, toast } from './store';
+
+type Notify = Extract<ServerMessage, { t: 'notify' }>;
+
+let ctx: AudioContext | undefined;
+const lastChime = new Map<string, number>();
+
+function tone(freq: number, at: number, dur: number) {
+  const c = (ctx ??= new AudioContext());
+  const o = c.createOscillator();
+  const g = c.createGain();
+  o.frequency.value = freq;
+  g.gain.setValueAtTime(0.15, c.currentTime + at);
+  g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + at + dur);
+  o.connect(g).connect(c.destination);
+  o.start(c.currentTime + at);
+  o.stop(c.currentTime + at + dur);
+}
+
+function chime(m: Notify) {
+  if (m.kind === 'exited') return;
+  const now = Date.now();
+  if (now - (lastChime.get(m.id) ?? 0) < 5000) return;
+  lastChime.set(m.id, now);
+  try {
+    void ctx?.resume();
+    if (m.kind === 'done') { tone(880, 0, 0.15); tone(1175, 0.15, 0.25); }
+    else { tone(330, 0, 0.2); tone(262, 0.25, 0.3); }
+  } catch { /* audio unavailable */ }
+}
+
+export function handleNotify(m: Notify) {
+  toast(m.body ? `${m.title}: ${m.body}` : m.title, m.id);
+  if (document.hidden || !document.hasFocus()) {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const n = new Notification(m.title, { body: m.body ?? m.kind });
+      n.onclick = () => { window.focus(); selectNode(m.id); n.close(); };
+    }
+  }
+  chime(m);
+}
+
+/** Browsers only allow the permission prompt and audio start from a user gesture. */
+export function armOnFirstClick() {
+  addEventListener('click', () => {
+    if ('Notification' in window && Notification.permission === 'default') void Notification.requestPermission();
+    ctx ??= new AudioContext();
+  }, { once: true });
+}

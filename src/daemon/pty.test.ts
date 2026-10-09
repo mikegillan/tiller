@@ -20,7 +20,7 @@ function collect(s: PtySession) {
 
 describe('PtySession', () => {
   it('delivers data, buffers it, and reports exit', async () => {
-    const s = PtySession.spawn({ ...base, file: '/bin/sh', args: ['-c', 'printf "a\\nb\\n"; cat'], env: env() });
+    const s = PtySession.spawn({ ...base, file: '/bin/sh', args: ['-c', 'printf "a\\nb\\n"; cat'], env: env(), rows: 10 });
     const box = collect(s);
     await until(() => box.out.includes('b'));
     await s.flush();
@@ -55,7 +55,7 @@ describe('PtySession', () => {
   });
 
   it('classifies a live screen through the headless buffer', async () => {
-    const s = PtySession.spawn({ ...base, file: '/bin/sh', args: ['-c', 'printf "──────\\n❯ draft"; cat'], env: env() });
+    const s = PtySession.spawn({ ...base, file: '/bin/sh', args: ['-c', 'printf "──────\\n❯ draft"; cat'], env: env(), rows: 10 });
     await until(() => { void s.flush(); return s.classifyScreen() === 'prompt'; });
     expect(s.composerText()).toBe('draft');
     s.kill();

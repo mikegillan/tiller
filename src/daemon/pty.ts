@@ -110,19 +110,19 @@ export class PtySession {
     });
   }
 
-  /** Whole buffer (scrollback + screen up to the cursor) as plain text. @xterm/addon-serialize is not installed. */
+  /** Whole buffer (scrollback + screen) as plain text, trailing blank rows dropped. @xterm/addon-serialize is not installed. */
   scrollback(): string {
-    return this.lines(Infinity).join('\n');
+    return this.lines(Infinity).join('\n').trimEnd();
   }
 
-  /** Last n lines up to the cursor row, right-trimmed. */
+  /** Last n rows of the viewport (not rows up to the cursor), right-trimmed. */
   screenTail(n: number): string[] {
     return this.lines(n);
   }
 
   private lines(n: number): string[] {
     const buf = this.term.buffer.active;
-    const end = buf.baseY + buf.cursorY;
+    const end = buf.baseY + this.term.rows - 1;
     const start = Math.max(0, end - n + 1);
     const out: string[] = [];
     for (let y = start; y <= end; y++) out.push(buf.getLine(y)?.translateToString(true) ?? '');
