@@ -11,6 +11,8 @@ export interface NodeStatus {
   errored?: boolean;
   /** Set on 'done' when the turn was interrupted (Esc / Ctrl-C). */
   interrupted?: boolean;
+  /** How 'done' was reached. Only 'stop' (Stop / StopFailure) counts as verified idle for message delivery. */
+  doneSource?: 'stop' | 'idle_prompt' | 'sweep' | 'interrupt' | 'exit';
   /** Set when 'done' was reached only by the 20-minute stale sweep. */
   stale?: boolean;
   /** True once the PTY process has exited. */
@@ -72,4 +74,4 @@ export type ClientMessage =
 
 // Outcome of delivering a message into an agent node (PLAN.md §6).
 export type SendOutcome = 'delivered' | 'queued' | 'stalled' | 'expired' | 'queueFull' | 'gone' | 'refused';
-export interface SendResult { outcome: SendOutcome; retryable: boolean; detail?: string }
+export interface SendResult { outcome: SendOutcome; retryable: boolean; detail?: string; messageId?: string }

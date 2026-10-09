@@ -40,7 +40,7 @@ export function reduce(prev: NodeStatus, event: HookEvent, now: number): NodeSta
   switch (event.hook_event_name) {
     case 'UserPromptSubmit':
       return next(prev, {
-        state: 'working', errored: undefined, interrupted: undefined, stale: undefined,
+        state: 'working', errored: undefined, interrupted: undefined, stale: undefined, doneSource: undefined,
         lastAssistantMessage: undefined, activity: undefined,
       }, now);
 
@@ -66,19 +66,20 @@ export function reduce(prev: NodeStatus, event: HookEvent, now: number): NodeSta
         case 'agent_needs_input':
           return next(prev, { state: 'waiting' }, now);
         case 'idle_prompt':
-          return prev.state === 'working' ? done(prev, now) : prev;
+          return prev.state === 'working' ? done(prev, now, { doneSource: 'idle_prompt' }) : prev;
         default:
           return prev; // closed allowlist: unknown types never move state
       }
 
     case 'Stop':
       return done(prev, now, {
+        doneSource: 'stop',
         interrupted: event.is_interrupt ? true : undefined,
         lastAssistantMessage: str(event.last_assistant_message),
       });
 
     case 'StopFailure':
-      return done(prev, now, { errored: true, lastAssistantMessage: str(event.last_assistant_message) ?? prev.lastAssistantMessage });
+      return done(prev, now, { doneSource: 'stop', errored: true, lastAssistantMessage: str(event.last_assistant_message) ?? prev.lastAssistantMessage });
 
     case 'SessionStart':
       return next(prev, {
@@ -97,13 +98,13 @@ export function reduce(prev: NodeStatus, event: HookEvent, now: number): NodeSta
 
 /** Working with no state change for 20 minutes is presumed finished. */
 export function sweep(prev: NodeStatus, now: number): NodeStatus {
-  return prev.state === 'working' && now - prev.changedAt > STALE_MS ? done(prev, now, { stale: true }) : prev;
+  return prev.state === 'working' && now - prev.changedAt > STALE_MS ? done(prev, now, { stale: true, doneSource: 'sweep' }) : prev;
 }
 
 export function ptyExited(prev: NodeStatus, now: number): NodeStatus {
   if (prev.exited && prev.state !== 'working' && prev.state !== 'waiting' && prev.state !== 'blocked') return prev;
   const active = prev.state === 'working' || prev.state === 'waiting' || prev.state === 'blocked';
-  return next(prev, active ? { exited: true, state: 'done', activity: undefined } : { exited: true }, now);
+  return next(prev, active ? { exited: true, state: 'done', doneSource: 'exit', activity: undefined } : { exited: true }, now);
 }
 
 /** True when `data` typed into the node is a lone Esc or Ctrl-C and the node is working. */
@@ -113,5 +114,5 @@ export function interruptKeyPressed(prev: NodeStatus, data: string): boolean {
 
 /** Call 1.5 s after interruptKeyPressed if no hook event arrived since (caller's timer). */
 export function interruptTimeout(prev: NodeStatus, now: number): NodeStatus {
-  return prev.state === 'working' ? done(prev, now, { interrupted: true }) : prev;
+  return prev.state === 'working' ? done(prev, now, { interrupted: true, doneSource: 'interrupt' }) : prev;
 }

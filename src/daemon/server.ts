@@ -8,6 +8,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
+import { mountMcp } from './mcp.js';
 import type { HookEvent } from './status.js';
 
 const UI_DIR = fileURLToPath(new URL('../../ui/dist', import.meta.url));
@@ -60,6 +61,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
   const uiToken = opts.uiToken ?? randomBytes(24).toString('base64url');
   const clients = new Set<Client>();
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
+  const mcp = mountMcp(manager, (text) => daemon.confirm(text));
 
   const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
   const broadcast = (m: ServerMessage) => { for (const c of clients) if (c.authed) sendTo(c, m); };
@@ -143,9 +145,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
   async function route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://x');
     if (req.method === 'POST' && url.pathname === '/hook') return hook(req, res);
-    // TODO(messaging agent): mount the MCP endpoint here, e.g.
-    //   if (url.pathname === '/mcp') return handleMcp(manager, req, res);
-    // It authenticates with the same Authorization / X-O8-Node headers as /hook (manager.verifyToken).
+    if (url.pathname === '/mcp' || url.pathname.startsWith('/api/')) return mcp(req, res);
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/assets/'))) {
       return serveUi(url.pathname === '/' ? 'index.html' : url.pathname.slice(1), res);
     }
@@ -189,7 +189,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
   const port = (server.address() as AddressInfo).port;
   manager.endpoint = `http://127.0.0.1:${port}`;
 
-  return {
+  const daemon: DaemonServer = {
     port,
     uiToken,
     url: `${manager.endpoint}/?k=${uiToken}`,
@@ -210,4 +210,5 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
       await new Promise<void>((ok) => server.close(() => ok()));
     },
   };
+  return daemon;
 }

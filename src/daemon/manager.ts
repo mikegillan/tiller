@@ -64,6 +64,7 @@ export interface NotifyEvent { id: string; kind: 'done' | 'needsYou' | 'errored'
  * Owns the registry, the live PTYs and the per-node status. Events (node:events):
  *   'node'    (view: NodeView)            created or changed
  *   'removed' (id: string)
+ *   'hook'    (id: string, event: HookEvent)  every accepted hook, before status is updated
  *   'data'    (id: string, data: string)  raw PTY output
  *   'notify'  (n: NotifyEvent)
  */
@@ -245,6 +246,7 @@ export class NodeManager extends EventEmitter {
     if (!rec || !prev) return;
     const now = Date.now();
     this.lastHookAt.set(nodeId, now);
+    this.emit('hook', nodeId, event);
     const next = reduce(prev, event, now);
     if (event.hook_event_name === 'SessionStart' && next.sessionId && next.sessionId !== rec.sessionId) {
       this.registry.update(nodeId, { sessionId: next.sessionId });
@@ -293,14 +295,17 @@ export class NodeManager extends EventEmitter {
     if (rec.kind === 'claude') void this.watchTrust(id, s, rec.cwd);
   }
 
-  /** Watch a fresh Claude screen for the folder-trust dialog; answer it only if policy allows. */
+  /**
+   * Watch a fresh Claude screen for the folder-trust dialog; answer it only if policy allows. The dialog's
+   * heading scrolls out of the viewport, so match on the option text and footer instead.
+   */
   private async watchTrust(id: string, s: PtySession, cwd: string): Promise<void> {
     const auto = trustPolicy(cwd, readClaudeJson()) === 'auto';
     for (const end = Date.now() + TRUST_WATCH_MS; Date.now() < end; await sleep(250)) {
       if (s.exited || this.sessions.get(id) !== s || this.lastHookAt.has(id)) return;
       await s.flush();
       const screen = s.screenTail(30).join('\n');
-      if (!screen.includes('Quick safety check') || !screen.includes('Enter to confirm')) continue;
+      if (!screen.includes('Yes, I trust this folder') || !screen.includes('Enter to confirm')) continue;
       if (auto) {
         await s.write('\x1b[B');
         await sleep(300);

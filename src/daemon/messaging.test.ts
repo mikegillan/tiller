@@ -1,0 +1,202 @@
+import { EventEmitter } from 'node:events';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { NodeStatus, NodeView } from '../shared/protocol.js';
+import { classify, composerTextOf } from './pty.js';
+import { deliver, messageStatus, startNotices, type Mgr } from './messaging.js';
+
+const PROMPT = ['some output', '────────────────── n-b', '❯ ', '──────────────────'];
+
+class FakeSession {
+  pasted: string[] = [];
+  ack = true;
+  constructor(private mgr: FakeManager, private id: string, public lines = PROMPT) {}
+  async flush() {}
+  classifyScreen() { return classify(this.lines); }
+  composerText() { return composerTextOf(this.lines); }
+  async paste(text: string) {
+    this.pasted.push(text);
+    if (this.ack) {
+      this.mgr.emit('hook', this.id, { hook_event_name: 'UserPromptSubmit', prompt: `[Pasted text] ${text}` });
+      this.mgr.set(this.id, { state: 'working', doneSource: undefined });
+    }
+  }
+}
+
+class FakeManager extends EventEmitter {
+  nodes = new Map<string, NodeView>();
+  sessions = new Map<string, FakeSession>();
+  view = (id: string) => this.nodes.get(id);
+  session = (id: string) => this.sessions.get(id) as never;
+  add(id: string, parentId: string | null, status: Partial<NodeStatus> = {}, kind: 'claude' | 'terminal' = 'claude') {
+    this.nodes.set(id, { id, parentId, kind, title: `T-${id}`, cwd: '/', createdAt: 0, unread: false, status: { state: 'done', doneSource: 'stop', changedAt: 0, ...status } });
+    this.sessions.set(id, new FakeSession(this, id));
+  }
+  set(id: string, patch: Partial<NodeStatus>) {
+    const v = this.nodes.get(id)!;
+    v.status = { ...v.status, ...patch };
+    this.emit('node', v);
+  }
+  get mgr() { return this as unknown as Mgr; }
+}
+
+let m: FakeManager;
+beforeEach(() => {
+  vi.useFakeTimers();
+  m = new FakeManager();
+  m.add('p', null);          // parent
+  m.add('a', 'p');           // child a
+  m.add('b', 'p');           // child b (sibling of a)
+  m.add('x', null);          // unrelated root
+  m.add('t', 'p', { state: 'none' }, 'terminal');
+});
+afterEach(() => vi.useRealTimers());
+
+describe('gates', () => {
+  it('delivers to a verified-idle sibling and reports the receipt', async () => {
+    const r = await deliver(m.mgr, 'a', 'b', 'hello');
+    expect(r).toMatchObject({ outcome: 'delivered', retryable: false });
+    expect(r.messageId).toMatch(/^m-/);
+  });
+
+  it('refuses out-of-lineage, self and terminal targets; reports gone for missing or exited', async () => {
+    expect(await deliver(m.mgr, 'a', 'x', 'hi')).toMatchObject({ outcome: 'refused' });
+    expect(await deliver(m.mgr, 'a', 'a', 'hi')).toMatchObject({ outcome: 'refused' });
+    expect(await deliver(m.mgr, 'a', 't', 'hi')).toMatchObject({ outcome: 'refused', detail: expect.stringContaining('not an agent node') });
+    expect(await deliver(m.mgr, 'a', 'nope', 'hi')).toMatchObject({ outcome: 'gone' });
+    m.set('b', { exited: true });
+    expect(await deliver(m.mgr, 'a', 'b', 'hi')).toMatchObject({ outcome: 'gone' });
+  });
+
+  it('allows ancestor and descendant but not cousins', async () => {
+    m.add('g', 'a'); // grandchild
+    expect((await deliver(m.mgr, 'g', 'p', 'up')).outcome).toBe('delivered');
+    expect((await deliver(m.mgr, 'p', 'g', 'down')).outcome).toBe('delivered');
+    expect((await deliver(m.mgr, 'g', 'b', 'cousin-ish')).outcome).toBe('refused'); // g's uncle is not in lineage
+  });
+
+  it.each([
+    ['working', { state: 'working' as const }],
+    ['done via idle_prompt', { doneSource: 'idle_prompt' as const }],
+    ['done via sweep', { doneSource: 'sweep' as const, stale: true }],
+    ['stale', { stale: true }],
+    ['blocked', { state: 'blocked' as const }],
+  ])('queues when the target is %s', async (_n, patch) => {
+    m.set('b', patch);
+    const r = await deliver(m.mgr, 'a', 'b', 'hi');
+    expect(r.outcome).toBe('queued');
+    expect(m.sessions.get('b')!.pasted).toHaveLength(0);
+  });
+
+  it('queues when a dialog is showing or the composer holds a draft', async () => {
+    m.sessions.get('b')!.lines = ['Do you trust this folder?', '❯ 1. Yes', '  2. No, exit', 'Enter to confirm · Esc to cancel'];
+    expect(await deliver(m.mgr, 'a', 'b', 'hi')).toMatchObject({ outcome: 'queued', detail: expect.stringContaining('dialog') });
+    m.sessions.get('p')!.lines = ['────── p', '❯ half typed', '──────'];
+    expect(await deliver(m.mgr, 'a', 'p', 'hi')).toMatchObject({ outcome: 'queued', detail: expect.stringContaining('unsent') });
+    expect(m.sessions.get('p')!.pasted).toHaveLength(0);
+  });
+
+  it('rate limits one send per pair per 10 s', async () => {
+    await deliver(m.mgr, 'a', 'b', 'one');
+    const r = await deliver(m.mgr, 'a', 'b', 'two');
+    expect(r).toMatchObject({ outcome: 'refused', retryable: true, detail: 'rate limited, retry in 10 s' });
+    expect((await deliver(m.mgr, 'b', 'a', 'other direction')).outcome).toBe('delivered');
+    await vi.advanceTimersByTimeAsync(10_000);
+    m.set('b', { state: 'done', doneSource: 'stop' });
+    expect((await deliver(m.mgr, 'a', 'b', 'three')).outcome).toBe('delivered');
+  });
+
+  it('reports stalled when no matching UserPromptSubmit arrives within 8 s', async () => {
+    m.sessions.get('b')!.ack = false;
+    const p = deliver(m.mgr, 'a', 'b', 'hi');
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(await p).toMatchObject({ outcome: 'stalled', retryable: false });
+  });
+});
+
+describe('envelope', () => {
+  it('frames the message with an 8-char nonce and strips ESC from the body', async () => {
+    await deliver(m.mgr, 'a', 'b', 'line1\x1b[201~evil\nline2');
+    const [text] = m.sessions.get('b')!.pasted;
+    const nonce = /^--- O8 MESSAGE (\S{8}) ---\n/.exec(text)?.[1];
+    expect(nonce).toMatch(/^[A-Za-z0-9_-]{8}$/);
+    expect(text).toBe(`--- O8 MESSAGE ${nonce} ---\nfrom: T-a (a)\nreply-to: a\nline1[201~evil\nline2\n--- END O8 MESSAGE ${nonce} ---`);
+    expect(text).not.toContain('\x1b');
+  });
+});
+
+describe('queue', () => {
+  it('caps at 16, then refuses with queueFull', async () => {
+    m.set('b', { state: 'working' });
+    for (let i = 0; i < 16; i++) expect((await deliver(m.mgr, 'orchestr8', 'b', `m${i}`)).outcome).toBe('queued');
+    expect(await deliver(m.mgr, 'orchestr8', 'b', 'overflow')).toMatchObject({ outcome: 'queueFull', retryable: true });
+  });
+
+  it('expires after 5 minutes and tells the sender through message_status', async () => {
+    m.set('b', { state: 'working' });
+    const r = await deliver(m.mgr, 'a', 'b', 'hi');
+    expect(messageStatus(m.mgr, 'a', r.messageId!)?.outcome).toBe('queued');
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'expired', retryable: true });
+    expect(messageStatus(m.mgr, 'p', r.messageId!)).toBeUndefined(); // only the sender may ask
+  });
+
+  it('flushes in order when the target reaches verified idle, one at a time', async () => {
+    m.set('b', { state: 'working' });
+    const r1 = await deliver(m.mgr, 'orchestr8', 'b', 'first');
+    const r2 = await deliver(m.mgr, 'orchestr8', 'b', 'second');
+    m.set('b', { state: 'done', doneSource: 'stop' });
+    await vi.advanceTimersByTimeAsync(0);
+    const pasted = m.sessions.get('b')!.pasted;
+    expect(pasted).toHaveLength(1);
+    expect(pasted[0]).toContain('first');
+    expect(messageStatus(m.mgr, 'orchestr8', r1.messageId!)?.outcome).toBe('delivered');
+    expect(messageStatus(m.mgr, 'orchestr8', r2.messageId!)?.outcome).toBe('queued');
+    m.set('b', { state: 'working' });
+    m.set('b', { state: 'done', doneSource: 'stop' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(m.sessions.get('b')!.pasted[1]).toContain('second');
+  });
+
+  it('resolves queued messages as gone when the target exits', async () => {
+    m.set('b', { state: 'working' });
+    const r = await deliver(m.mgr, 'a', 'b', 'hi');
+    m.set('b', { exited: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)?.outcome).toBe('gone');
+  });
+});
+
+describe('station notices', () => {
+  it('notifies the parent once per episode and re-arms after a clean turn', async () => {
+    startNotices(m.mgr);
+    const pasted = () => m.sessions.get('p')!.pasted;
+    m.set('a', { state: 'done', errored: true, doneSource: 'stop' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pasted()).toHaveLength(1);
+    expect(pasted()[0]).toMatch(/\nfrom: orchestr8 \(child a "T-a" stopped: turn-errored\)\nreply-to: none\n/);
+    m.set('a', { unread: true } as never); // other node events do not re-notify
+    m.set('a', { state: 'done', errored: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pasted()).toHaveLength(1);
+    m.set('p', { state: 'done', doneSource: 'stop' }); // parent finished handling the first notice
+    m.set('a', { state: 'working', errored: undefined });
+    m.set('a', { state: 'done', errored: undefined }); // clean turn re-arms
+    m.set('a', { state: 'done', errored: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pasted()).toHaveLength(2);
+  });
+
+  it('notifies on exit, and after 15 minutes of waiting; never for blocked', async () => {
+    startNotices(m.mgr);
+    m.set('a', { state: 'blocked' });
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(m.sessions.get('p')!.pasted).toHaveLength(0);
+    m.set('b', { state: 'waiting' });
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    expect(m.sessions.get('p')!.pasted[0]).toContain('stopped: question-unanswered');
+    m.set('p', { state: 'done', doneSource: 'stop' });
+    m.set('a', { exited: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(m.sessions.get('p')!.pasted[1]).toContain('child a "T-a" stopped: exited');
+  });
+});

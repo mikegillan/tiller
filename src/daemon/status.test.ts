@@ -53,7 +53,7 @@ describe('reduce', () => {
 
   it('idle_prompt finishes a working node without flags', () => {
     const r = reduce(st({ state: 'working', activity: 'Bash' }), ev('Notification', { notification_type: 'idle_prompt' }), NOW);
-    expect(r).toEqual({ state: 'done', changedAt: NOW });
+    expect(r).toEqual({ state: 'done', doneSource: 'idle_prompt', changedAt: NOW });
   });
 
   it('idle_prompt never sets waiting and changes nothing outside working', () => {
@@ -71,7 +71,7 @@ describe('reduce', () => {
 
   it('Stop finishes, with interrupt flag and message', () => {
     const w = st({ state: 'working', activity: 'Bash' });
-    expect(reduce(w, ev('Stop', { last_assistant_message: 'ok' }), NOW)).toEqual({ state: 'done', lastAssistantMessage: 'ok', changedAt: NOW });
+    expect(reduce(w, ev('Stop', { last_assistant_message: 'ok' }), NOW)).toEqual({ state: 'done', doneSource: 'stop', lastAssistantMessage: 'ok', changedAt: NOW });
     expect(reduce(w, ev('Stop', { is_interrupt: true, last_assistant_message: 'ok' }), NOW).interrupted).toBe(true);
     expect(reduce(w, ev('Stop', { is_interrupt: false }), NOW).interrupted).toBeFalsy();
   });
@@ -79,7 +79,7 @@ describe('reduce', () => {
   it('StopFailure finishes with errored', () => {
     const w = st({ state: 'working' });
     expect(reduce(w, ev('StopFailure', { last_assistant_message: 'API error' }), NOW))
-      .toEqual({ state: 'done', errored: true, lastAssistantMessage: 'API error', changedAt: NOW });
+      .toEqual({ state: 'done', doneSource: 'stop', errored: true, lastAssistantMessage: 'API error', changedAt: NOW });
     expect(reduce(w, ev('StopFailure'), NOW)).toMatchObject({ state: 'done', errored: true });
   });
 
@@ -117,7 +117,7 @@ describe('done holdoff', () => {
 describe('sweep', () => {
   it('marks working nodes stale after 20 minutes', () => {
     const w = st({ state: 'working', activity: 'Bash' });
-    expect(sweep(w, T0 + 20 * 60_000 + 1)).toEqual({ state: 'done', stale: true, changedAt: T0 + 20 * 60_000 + 1 });
+    expect(sweep(w, T0 + 20 * 60_000 + 1)).toEqual({ state: 'done', stale: true, doneSource: 'sweep', changedAt: T0 + 20 * 60_000 + 1 });
   });
   it('leaves recent working and non-working nodes alone', () => {
     const w = st({ state: 'working' });
@@ -130,7 +130,7 @@ describe('sweep', () => {
 describe('ptyExited', () => {
   it('sets exited and finishes active states, keeping flags', () => {
     for (const state of ['working', 'waiting', 'blocked'] as const) {
-      expect(ptyExited(st({ state, errored: true }), NOW)).toEqual({ state: 'done', errored: true, exited: true, changedAt: NOW });
+      expect(ptyExited(st({ state, errored: true }), NOW)).toEqual({ state: 'done', doneSource: 'exit', errored: true, exited: true, changedAt: NOW });
     }
   });
   it('only sets exited for done and unknown', () => {
@@ -148,8 +148,21 @@ describe('interrupts', () => {
     expect(interruptKeyPressed(st({ state: 'done' }), '\x03')).toBe(false);
   });
   it('interruptTimeout flips working to done+interrupted, else no-op', () => {
-    expect(interruptTimeout(st({ state: 'working', activity: 'Bash' }), NOW)).toEqual({ state: 'done', interrupted: true, changedAt: NOW });
+    expect(interruptTimeout(st({ state: 'working', activity: 'Bash' }), NOW)).toEqual({ state: 'done', interrupted: true, doneSource: 'interrupt', changedAt: NOW });
     const d = st({ state: 'done' });
     expect(interruptTimeout(d, NOW)).toBe(d);
+  });
+});
+
+describe('doneSource', () => {
+  it('records how done was reached and clears it on a new turn', () => {
+    const w = st({ state: 'working', changedAt: T0 });
+    expect(reduce(w, ev('Stop'), NOW).doneSource).toBe('stop');
+    expect(reduce(w, ev('StopFailure'), NOW).doneSource).toBe('stop');
+    expect(reduce(w, ev('Notification', { notification_type: 'idle_prompt' }), NOW).doneSource).toBe('idle_prompt');
+    expect(sweep(w, T0 + 21 * 60_000).doneSource).toBe('sweep');
+    expect(interruptTimeout(w, NOW).doneSource).toBe('interrupt');
+    expect(ptyExited(w, NOW).doneSource).toBe('exit');
+    expect(reduce(reduce(w, ev('Stop'), NOW), ev('UserPromptSubmit'), NOW + 1).doneSource).toBeUndefined();
   });
 });
