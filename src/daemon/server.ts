@@ -63,8 +63,9 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
   const adminToken = () => { try { return readFileSync(join(manager.home, 'admin-token'), 'utf8').trim(); } catch { return ''; } };
   const clients = new Set<Client>();
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
-  const { handler: mcp, publishAdminToken, authenticate } = mountMcp(manager, (text) => daemon.confirm(text));
-  const mod = modApi(manager, authenticate, (from, id) => broadcast({ t: 'focus', from, id }));
+  const focus = (from: string, id: string) => broadcast({ t: 'focus', from, id });
+  const { handler: mcp, publishAdminToken, authenticate } = mountMcp(manager, (text) => daemon.confirm(text), focus);
+  const mod = modApi(manager, authenticate, focus);
 
   const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
   const broadcast = (m: ServerMessage) => { for (const c of clients) if (c.authed) sendTo(c, m); };

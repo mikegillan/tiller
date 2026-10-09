@@ -118,7 +118,7 @@ export function applyServer(m: ServerMessage) {
         return { order, opened: base.opened, ...choose(base, nodes, next) };
       });
     case 'focus':
-      return update((s) => (s.selected === m.from && s.nodes[m.id] ? choose(s, s.nodes, m.id) : {}));
+      return update((s) => ((m.from === 'human' || s.selected === m.from) && s.nodes[m.id] ? choose(s, s.nodes, m.id) : {}));
     case 'confirm':
       return update((s) => ({ confirms: [...s.confirms, { confirmId: m.confirmId, text: m.text }] }));
     case 'confirmDone':

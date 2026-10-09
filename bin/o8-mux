@@ -1,0 +1,5 @@
+#!/bin/sh
+# The terminal multiplexer: same as `o8 mux`.
+self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
+case "$self" in /*) ;; *) self="$(dirname "$0")/$self";; esac
+exec "$(dirname "$self")/o8" mux "$@"

@@ -2,17 +2,19 @@
 // outside it acts as `human` with the admin token in <home>/admin-token.
 import { mux } from '../client/mux.js';
 import { attach } from './attach.js';
-import { readFileSync, realpathSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { daemonPort as portFor, findDaemon, pickOrchestrator, startDaemon } from './up.js';
 
-const usage = () => `o8: control orchestr8. With no arguments, start the daemon if needed and attach to this directory's orchestrator.
+const usage = () => `o8: control orchestr8. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
 
-  o8 [up] [--new] [--title T] [--prompt P]            start daemon if needed; attach to (or create) this directory's orchestrator
+  o8 [up|app] [--new] [--title T] [--prompt P]        start daemon if needed; open the app on (or create) this directory's orchestrator
+  o8 mux [--new] [--title T] [--prompt P]             the same, in the terminal multiplexer (also: o8-mux)
   o8 status | stop                                    show or stop the daemon (o8d runs it in the foreground)
-  o8 new <title> [--cwd P] [--model M] [--prompt T]   start a Claude node and attach to it
+  o8 new <title> [--cwd P] [--model M] [--prompt T]   start a Claude node and attach to it in the terminal
   o8 ps | list                                        show nodes
   o8 attach <id> [--plain]                            open the sidebar client on a node (Ctrl-\\ ? for keys; --plain is the old single-pane view)
   o8 resume <id>                                      relaunch an exited Claude node
@@ -99,7 +101,9 @@ switch (cmd) {
     await call('close', { nodeIds: pos });
     break;
   case undefined:
-  case 'up': {
+  case 'up':
+  case 'app':
+  case 'mux': {
     const port = daemonPort();
     if (!(await findDaemon(port))) await startDaemon(home, port).catch((e: Error) => fail(e.message));
     const cwd = realpathSync(process.cwd());
@@ -114,8 +118,22 @@ switch (cmd) {
       if (r.error) console.log(`cannot resume (${r.error}); starting a new orchestrator`);
       else id = dead.id;
     }
-    const target: string = id ?? (await call('spawn', { kind: 'claude', title: f.title ?? basename(cwd), cwd, prompt: f.prompt }, false)).data.nodeId;
-    process.exit(await mux(target, { port, token: readHome('admin-token') }));
+    if (!id) {
+      const title = f.title ?? basename(cwd);
+      id = (await call('spawn', { kind: 'claude', title, cwd, prompt: f.prompt }, false)).data.nodeId as string;
+      console.log(`started ${title} (${id})`);
+    }
+    const target = id;
+    if (cmd === 'mux') process.exit(await mux(target, { port, token: readHome('admin-token') }));
+    const app = join(dirname(dirname(import.meta.dirname)), 'src-tauri/target/release/bundle/macos/orchestr8.app');
+    if (existsSync(app)) {
+      // Cold start: the app reads --node. Already running: `open` only activates it, so tell the page to switch.
+      spawnSync('open', ['--env', `O8_HOME=${home}`, '--env', `O8_PORT=${port}`, '-a', app, '--args', '--node', target]); // same daemon as this CLI
+      await call('select', { nodeId: target }, false);
+    } else {
+      console.log('app not built: run npm run app:build');
+      spawnSync('open', [`http://127.0.0.1:${port}/?k=${readHome('admin-token')}&node=${target}`]);
+    }
     break;
   }
   case 'status': {

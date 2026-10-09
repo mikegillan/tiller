@@ -19,11 +19,13 @@ This puts `o8` (client) and `o8d` (daemon) on your PATH.
 
     cd ~/some/repo && o8
 
-That one command starts the daemon if it is not running (detached, logging to `~/.orchestr8/daemon.log`) and attaches to the orchestrator for the current directory, creating it on first use. Run `o8` again in the same directory to reattach to the same orchestrator; `o8 --new` always starts a fresh one, and `--title T` and `--prompt P` set its title and first prompt. `o8 status` shows the daemon and node count, and `o8 stop` shuts the daemon down and closes all nodes.
+That one command starts the daemon if it is not running (detached, logging to `~/.orchestr8/daemon.log`), finds or creates (or resumes, if it exited) the orchestrator for the current directory, and opens the native app on it. If the app is already running it switches to that session. If the app has not been built it says so and opens the browser UI instead (see App below). `o8 --new` always starts a fresh orchestrator, and `--title T` and `--prompt P` set its title and first prompt. `o8 status` shows the daemon and node count, and `o8 stop` shuts the daemon down and closes all nodes.
+
+For the terminal version, run `o8-mux` (or `o8 mux`) in the directory instead; it does the same setup and attaches the multiplexer described below. `o8 attach <id>` opens the multiplexer on a specific node.
 
 `o8d` is the same daemon in the foreground, for when you want its log in a terminal.
 
-`o8` is a small terminal multiplexer. A rounded sidebar on the left shows the whole tree (connectors, a colored state glyph per node, an unread dot, age, the current activity, and `model · effort · ctx %` with token counts and cost when known); the rest of the terminal is the selected node's live screen, and what you type goes to it. Click a node in the sidebar to swap its screen in; the mouse wheel and clicks in the main area are forwarded to the node when it has asked for mouse reports. The sidebar footer shows the daemon status (red and reconnecting if the connection drops). The sidebar hides below 90 columns.
+`o8-mux` is a small terminal multiplexer. A rounded sidebar on the left shows the whole tree (connectors, a colored state glyph per node, an unread dot, age, the current activity, and `model · effort · ctx %` with token counts and cost when known); the rest of the terminal is the selected node's live screen, and what you type goes to it. Click a node in the sidebar to swap its screen in; the mouse wheel and clicks in the main area are forwarded to the node when it has asked for mouse reports. The sidebar footer shows the daemon status (red and reconnecting if the connection drops). The sidebar hides below 90 columns.
 
 Controls apply to the selected node and are both clickable in the sidebar and available as keys after the prefix Ctrl-\: `n` new child (asks for a title; same folder, claude), `e` rename, `x` kill (asks y/n), `r` resume (exited nodes), `o` new orchestrator in this directory, `s` hide or show the sidebar, `?` help overlay. Navigation: `d` detach (leaves everything running), `j`/`k` next/previous node, `!` next node needing you, `b` back, `1`-`9` jump to the nth node, `l` then a number and Enter, Ctrl-\ twice sends a literal Ctrl-\. The terminal bell rings once (at most every 5 s per node) when a node you are not looking at needs you.
 
@@ -44,7 +46,7 @@ then open the URL `o8d` prints.
 A small Tauri v2 shell that hosts the browser UI in a native window and shows the number of blocked or waiting nodes as the Dock badge. Requirements: Rust via Homebrew rustup, with `export PATH=/opt/homebrew/opt/rustup/bin:$PATH` in the shell that builds it, and a built UI (`npm run ui:build`).
 
     npm run app:build    # unsigned src-tauri/target/release/bundle/macos/orchestr8.app
-    bin/o8-app           # opens that app, or runs `npm run app:dev` if it is not built
+    bin/o8-app           # just opens that app (`o8` also picks the session); or runs `npm run app:dev` if it is not built
 
 On launch the app finds the daemon the way `o8` does (`O8_PORT`, then `~/.orchestr8/port`, then 7788). If none answers it starts `bin/o8d` detached, using the repo path that `o8` records in `~/.orchestr8/repo` the last time it started a daemon, then opens the UI with the admin token. The daemon keeps running when the app quits.
 

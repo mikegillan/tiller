@@ -18,7 +18,7 @@ const IDEMPOTENCY_MS = 24 * 3600_000;
 const MAX_BODY = 1_000_000;
 const TRANSCRIPT_CAP = 200_000;
 
-interface Ctx { manager: NodeManager; confirm: (text: string) => Promise<boolean>; caller: string }
+interface Ctx { manager: NodeManager; confirm: (text: string) => Promise<boolean>; focus: (from: string, id: string) => void; caller: string }
 interface Out { text?: string; data?: unknown }
 
 const outcomes = new Map<string, { outcome: 'succeeded' | 'failed'; note?: string; at: number }>();
@@ -213,6 +213,17 @@ export const tools = {
       return { text: `removed ${removed.length} exited node(s)`, data: { ok: true, removed } };
     }),
 
+  select: tool(
+    'Make the web UI and app show a node (they switch to it). Only the human may call this.',
+    { nodeId: z.string().min(1) },
+    async (c, a) => {
+      if (c.caller !== HUMAN) throw new Error('select is only for the human');
+      requireNode(c.manager, a.nodeId);
+      if (process.env.O8_DEBUG) console.log(`select ${a.nodeId}`);
+      c.focus(HUMAN, a.nodeId);
+      return { data: { ok: true } };
+    }),
+
   shutdown: tool(
     'Stop the daemon: flush the registry, kill every node process and exit. Only the human may call this.',
     {},
@@ -248,7 +259,7 @@ export const tools = {
  * Handler for `/mcp` (MCP over stateless streamable HTTP) and `POST /api/<tool>` (the same tools as plain JSON, for the CLI).
  * Both authenticate with `Authorization: Bearer` + `X-O8-Node`. Node id `human` takes the admin token written to `<home>/admin-token`.
  */
-export function mountMcp(manager: NodeManager, confirm: (text: string) => Promise<boolean>): {
+export function mountMcp(manager: NodeManager, confirm: (text: string) => Promise<boolean>, focus: (from: string, id: string) => void): {
   handler: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void>;
   /** Write the admin token file. Call once the server is listening, so a daemon that fails to bind leaves the running daemon's token alone. */
   publishAdminToken: () => void;
@@ -294,7 +305,7 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
   const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const caller = authenticate(req);
     if (!caller) return void res.writeHead(401).end();
-    const ctx: Ctx = { manager, confirm, caller };
+    const ctx: Ctx = { manager, confirm, focus, caller };
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     if (path.startsWith('/api/')) return api(req, res, path.slice(5), ctx);
 

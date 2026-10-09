@@ -13,11 +13,12 @@ import { mountMcp } from './mcp.js';
 let home = '', manager: NodeManager, server: http.Server, base = '', admin = '';
 const confirms: string[] = [];
 let answer = true;
+const focused: string[][] = [];
 
 beforeAll(async () => {
   home = mkdtempSync(join(tmpdir(), 'o8-mcp-'));
   manager = new NodeManager({ home, shell: '/bin/sh' });
-  const { handler, publishAdminToken } = mountMcp(manager, async (t) => { confirms.push(t); return answer; });
+  const { handler, publishAdminToken } = mountMcp(manager, async (t) => { confirms.push(t); return answer; }, (from, id) => focused.push([from, id]));
   expect(() => readFileSync(join(home, 'admin-token'))).toThrow(); // not written until the server is listening
   server = http.createServer((req, res) => void handler(req, res));
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -113,12 +114,21 @@ describe('mcp api', () => {
     expect(confirms[0]).toContain('y'.repeat(1500));
   });
 
+  it('select is human only and announces a focus for an existing node', async () => {
+    const id = (await spawnT('sel')).body.data.nodeId as string;
+    expect((await api('select', { nodeId: id }, id, manager.tokenFor(id))).status).toBe(400);
+    expect((await api('select', { nodeId: 'nope' })).status).toBe(400);
+    expect(focused).toEqual([]);
+    expect((await api('select', { nodeId: id })).status).toBe(200);
+    expect(focused).toEqual([['human', id]]);
+  });
+
   it('serves the tools over MCP with schemas', async () => {
     const id = (await spawnT('mcp-caller')).body.data.nodeId as string;
     const client = new Client({ name: 't', version: '0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${manager.tokenFor(id)}`, 'X-O8-Node': id } } }));
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'list_nodes', 'message_status', 'prune', 'read', 'rename', 'report_outcome', 'resume', 'send', 'shutdown', 'spawn', 'write']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'list_nodes', 'message_status', 'prune', 'read', 'rename', 'report_outcome', 'resume', 'select', 'send', 'shutdown', 'spawn', 'write']);
     expect(tools.find((t) => t.name === 'spawn')!.inputSchema.required).toEqual(['kind', 'title', 'cwd']);
     const r = (await client.callTool({ name: 'report_outcome', arguments: { outcome: 'succeeded' } })) as { content: Array<{ text: string }> };
     expect(r.content[0].text).toBe('{"ok":true}');
