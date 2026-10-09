@@ -63,6 +63,7 @@ export type ServerMessage =
   | { t: 'confirm'; confirmId: string; text: string } // ask the human to approve an agent action
   | { t: 'confirmDone'; confirmId: string }  // that confirm was answered or timed out; close the modal
   | { t: 'error'; message: string; id?: string }
+  | { t: 'focus'; from: string; id: string }   // a node's mod asked to view node `id`; an attach client showing `from` switches
   ;
 
 // UI -> Daemon.
@@ -97,9 +98,13 @@ export type ModEvent =
   | { event: 'session.measure'; payload: { context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: Array<{ kind: string; percentUsed: number; resetsAt?: string }> } }
   /** The mod showed a toast (and, when `os`, ran the macOS notification). Only logged under O8_DEBUG. */
   | { event: 'notified'; payload: { text: string; os: boolean } };
-/** GET /children → ChildView[] (the calling node's descendants, for the pane). */
+/** POST /focus { id } → 204; the daemon broadcasts `focus` to ws clients (PLAN §14). */
+/** GET /children → ChildView[]: the calling node itself first (self: true), then its descendants depth-first. */
 export interface ChildView {
   id: string; title: string; depth: number; state: AgentState;
+  /** True on the first row of GET /children: the calling node itself (depth 0). */
+  self?: boolean;
+  parentId?: string | null;
   errored?: boolean; interrupted?: boolean; exited?: boolean;
   activity?: string; ageSec: number; lastMessage?: string; unread: boolean; contextPct?: number;
 }

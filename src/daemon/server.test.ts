@@ -110,7 +110,28 @@ describe('POST /hook', () => {
     expect((await call('/mod-event', kid.id, tk, { method: 'POST', body: JSON.stringify(measure) })).status).toBe(204);
     expect((await call('/mod-event', kid.id, tk, { method: 'POST', body: '{"event":"nope"}' })).status).toBe(400);
     expect(manager.view(kid.id)?.status).toMatchObject({ contextPct: 50, costUsd: 0.25 });
-    expect(await (await call('/children', parent.id, tp)).json()).toMatchObject([{ id: kid.id, title: 'kid', depth: 1, contextPct: 50 }]);
-    expect(await (await call('/children', kid.id, tk)).json()).toEqual([]);
+    expect(await (await call('/children', parent.id, tp)).json()).toMatchObject([
+      { id: parent.id, title: 'boss', depth: 0, self: true, parentId: null },
+      { id: kid.id, title: 'kid', depth: 1, contextPct: 50 },
+    ]);
+    expect(await (await call('/children', kid.id, tk)).json()).toMatchObject([{ id: kid.id, depth: 0, self: true, parentId: parent.id }]);
+  });
+
+  it('POST /focus: auth, lineage scope, broadcast', async () => {
+    const parent = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
+    const kid = manager.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: parent.id });
+    const other = manager.spawn({ kind: 'terminal', title: 'other', cwd: tmpdir() });
+    const focus = (caller: string, token: string, id: string) =>
+      fetch(`http://127.0.0.1:${server.port}/focus`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': caller }, body: JSON.stringify({ id }) });
+    const tp = manager.tokenFor(parent.id), tk = manager.tokenFor(kid.id);
+    await connect();
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    expect((await focus(parent.id, 'bad', kid.id)).status).toBe(401);
+    expect((await focus(parent.id, tp, other.id)).status).toBe(403);
+    expect((await focus(kid.id, tk, other.id)).status).toBe(403);
+    expect((await focus(parent.id, tp, kid.id)).status).toBe(204);
+    expect((await focus(kid.id, tk, parent.id)).status).toBe(204); // a child may focus its parent
+    await until(() => seen.filter((m) => m.t === 'focus').length === 2 || undefined);
+    expect(seen.filter((m) => m.t === 'focus')).toEqual([{ t: 'focus', from: parent.id, id: kid.id }, { t: 'focus', from: kid.id, id: parent.id }]);
   });
 });

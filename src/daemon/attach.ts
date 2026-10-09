@@ -144,7 +144,8 @@ export function attach(startId: string, { port, token }: { port: number; token: 
         if (m.id !== cur) return;
         const next = order()[0];
         if (next) { cs = initial; show(next.id); } else finish('[node removed]', 0);
-      } else if (m.t === 'error' && m.id === cur) finish(m.message, 1);
+      } else if (m.t === 'focus') { if (m.from === cur && nodes.has(m.id)) switchTo(m.id); }
+      else if (m.t === 'error' && m.id === cur) finish(m.message, 1);
     });
   });
 }

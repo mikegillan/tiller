@@ -49,12 +49,16 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/ack') { const e = { ...JSON.parse(body), t: now }; acks.push(e); ackedIds.add(e.id); inbox = inbox.filter(m => m.id !== e.id); log(`ack ${e.id}`); res.writeHead(204).end(); return; }
   if (url.pathname === '/inbox') { res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(inbox)); return; }
   if (url.pathname === '/api/list_nodes') { res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ text: 'FAKE-LIST n-a  api-refactor  working' })); return; }
+  if (url.pathname === '/focus') { log(`FOCUS ${body}`); res.writeHead(204).end(); return; }
   if (url.pathname === '/children') {
     const s = Math.floor((Date.now() - t0) / 1000), st = (n: number) => (['working', 'done', 'blocked'] as const)[Math.floor(s / n) % 3];
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify([
-      { id: 'n-a', title: 'api-refactor', depth: 0, state: 'working', activity: 'editing src/api.ts', ageSec: s, lastMessage: 'refactoring the router', unread: false },
-      { id: 'n-b', title: 'ui-tests', depth: 1, state: 'blocked', activity: 'needs approval', ageSec: s + 40, lastMessage: 'waiting for permission', unread: true },
-      { id: 'n-c', title: 'docs', depth: 0, state: 'done', activity: 'finished', ageSec: s + 90, lastMessage: 'README updated', unread: false }]));
+      { id: nodeId, title: 'orchestrator', depth: 0, self: true, parentId: null, state: 'working', ageSec: s, unread: false },
+      { id: 'n-a4cb2', title: 'api-refactor', depth: 1, state: 'working', activity: 'editing src/api.ts', ageSec: s, lastMessage: 'refactoring the router', unread: false },
+      { id: 'n-b0017', title: 'ui-tests', depth: 2, state: 'blocked', activity: 'Bash: npm run test:e2e -- --headed', ageSec: s + 40, lastMessage: 'waiting for permission', unread: true },
+      { id: 'n-c91e0', title: 'docs', depth: 1, state: 'done', activity: 'finished', ageSec: s + 90, lastMessage: 'README updated', unread: false },
+      { id: 'n-d1111', title: 'lint', depth: 1, state: 'working', errored: true, ageSec: s + 200, unread: false },
+      { id: 'n-e2222', title: 'old-shell', depth: 1, state: 'done', exited: true, ageSec: 4000, unread: false }]));
     return;
   }
   res.writeHead(404).end();
