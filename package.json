@@ -5,7 +5,8 @@
   "type": "module",
   "bin": {
     "o8": "./bin/o8",
-    "o8d": "./bin/o8d"
+    "o8d": "./bin/o8d",
+    "o8-app": "./bin/o8-app"
   },
   "engines": {
     "node": ">=24"
