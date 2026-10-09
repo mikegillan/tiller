@@ -61,7 +61,8 @@ export interface NodeView extends NodeRecord {
 
 // Daemon -> UI (WebSocket, JSON). One message per line.
 export type ServerMessage =
-  | { t: 'snapshot'; nodes: NodeView[] }
+  | { t: 'snapshot'; nodes: NodeView[]; appConnected: boolean }
+  | { t: 'clients'; app: boolean }           // the native app connected or disconnected; terminal clients then stop ringing the bell
   | { t: 'node'; node: NodeView }            // created or updated (full record)
   | { t: 'removed'; id: string }
   | { t: 'data'; id: string; data: string }  // raw PTY output
@@ -74,7 +75,8 @@ export type ServerMessage =
 
 // UI -> Daemon.
 export type ClientMessage =
-  | { t: 'auth'; token: string }                // must be the first message; token comes from the ?k= query param of the served UI URL
+  | { t: 'auth'; token: string; client?: 'app' | 'browser' | 'mux' } // must be the first message; token comes from the ?k= query param of the served UI URL
+  | { t: 'visibility'; focused: boolean }       // whether this client's window is in front; the daemon skips OS notifications for a node a focused client has selected
   | { t: 'attach'; id: string; cols: number; rows: number } // start receiving data; replies with a data message holding the serialized screen
   | { t: 'detach'; id: string }
   | { t: 'input'; id: string; data: string }
@@ -102,9 +104,7 @@ export interface InboxMessage { id: string; from: string; text: string; enqueued
 export type ModEvent =
   | { event: 'turn.start'; payload: { text: string; turnId: string } }
   | { event: 'turn.complete'; payload: { answer?: string; durationMs: number; isAborted: boolean; turnId: string; reason: 'answer' | 'aborted' | 'refusal' | 'error'; usage?: Record<string, unknown> } }
-  | { event: 'session.measure'; payload: { context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: Array<{ kind: string; percentUsed: number; resetsAt?: string }> } }
-  /** The mod showed a toast (and, when `os`, ran the macOS notification). Only logged under O8_DEBUG. */
-  | { event: 'notified'; payload: { text: string; os: boolean } };
+  | { event: 'session.measure'; payload: { context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: Array<{ kind: string; percentUsed: number; resetsAt?: string }> } };
 /** POST /focus { id } → 204; the daemon broadcasts `focus` to ws clients (PLAN §14). */
 /** GET /children → ChildView[]: the calling node itself first (self: true), then its descendants depth-first. */
 export interface ChildView {

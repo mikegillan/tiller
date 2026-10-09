@@ -16,3 +16,6 @@ export function syncUrl(nodeId: string | null) {
   const q = nodeId ? `?node=${encodeURIComponent(nodeId)}` : '';
   history.replaceState(null, '', location.pathname + q);
 }
+
+/** The Tauri shell adds `app=1` to the URL; `__TAURI_INTERNALS__` is the fallback signal. */
+export const IN_APP = params.has('app') || (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window);

@@ -20,7 +20,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
   const nodes = new Map<string, NodeView>();
   const bells = new Map<string, number>();
   let ws: WebSocket, cur = startId, prev: string | null = null, cs = initial;
-  let hidden = false, scroll = 0, connected = false, started = false, finished = false, overlay = false, awaiting = false;
+  let appUp = false, hidden = false, scroll = 0, connected = false, started = false, finished = false, overlay = false, awaiting = false;
   let prompt: { label: string; text: string; confirm: boolean; done: (v: string) => void } | undefined;
   let notice: string | undefined, noticeTimer: NodeJS.Timeout | undefined;
   let scr: NodeScreen, side: SideLayout | undefined, prevSide: string[] = [];
@@ -191,7 +191,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
 
   function connect() {
     ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-    ws.on('open', () => send({ t: 'auth', token }));
+    ws.on('open', () => { send({ t: 'auth', token, client: 'mux' }); send({ t: 'visibility', focused: true }); }); // attached means in front
     ws.on('error', (e) => { if (!started) finish(`cannot reach daemon: ${e.message}`, 1); });
     ws.on('close', () => { if (finished) return; connected = false; drawSide(); setTimeout(connect, 1000); });
     ws.on('message', (raw) => onMessage(JSON.parse(raw.toString()) as ServerMessage));
@@ -201,6 +201,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
       nodes.clear();
       for (const n of m.nodes) nodes.set(n.id, n);
       connected = true;
+      appUp = m.appConnected;
       if (!started) {
         if (!nodes.has(cur)) return finish(`no such node: ${cur}`, 1);
         started = true;
@@ -219,7 +220,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
       if (!was && awaiting) { awaiting = false; switchTo(m.node.id); }
       else if (m.node.id === cur && !!was?.status.exited !== !!m.node.status.exited) show(cur); // resumed, or its process ended
       else throttleSide();
-      if (m.node.id !== cur && needsYou(m.node) && !(was && needsYou(was)) && now - (bells.get(m.node.id) ?? 0) >= 5000) {
+      if (!appUp && m.node.id !== cur && needsYou(m.node) && !(was && needsYou(was)) && now - (bells.get(m.node.id) ?? 0) >= 5000) {
         bells.set(m.node.id, now);
         stdout.write('\x07');
       }
@@ -229,7 +230,8 @@ export function mux(startId: string, { port, token }: { port: number; token: str
       if (m.id !== cur) return throttleSide();
       const next = list()[0];
       if (next) { cs = initial; show(next.id); } else finish('[node removed]', 0);
-    } else if (m.t === 'focus') { if (m.from === cur && nodes.has(m.id)) switchTo(m.id); }
+    } else if (m.t === 'clients') appUp = m.app;
+    else if (m.t === 'focus') { if (m.from === cur && nodes.has(m.id)) switchTo(m.id); }
     else if (m.t === 'error') { if (m.id === cur && !nodes.has(cur)) finish(m.message, 1); else setNotice(m.message.slice(0, 60)); }
   }
 

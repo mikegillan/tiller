@@ -7,7 +7,7 @@ The design is in [PLAN.md](PLAN.md).
 ## Requirements
 
 - Node 24 and the `claude` CLI (Claude Code) on your PATH.
-- Optional: `terminal-notifier` (`brew install terminal-notifier`), so clicking a macOS notification focuses your terminal.
+- Optional: `terminal-notifier` (`brew install terminal-notifier`), so clicking a macOS notification selects the node.
 
 ## Install
 
@@ -33,7 +33,7 @@ Inside a node you will see a one-line band above the prompt and the slash comman
 
 Other commands: `o8 ps` lists nodes, `o8 attach <id>` opens the sidebar client on a node (`--plain` is the previous single-pane client, kept for one release in case the renderer misbehaves), `o8 resume <id>` relaunches an exited node, `o8 kill <id...>` closes nodes. `o8 help` lists the rest.
 
-Messages between nodes are queued in the daemon and submitted as prompts by the receiving node's mod when it is idle, then confirmed. If a node's mod is not running, the daemon pastes the message into its terminal instead. When a child needs you or finishes, the orchestrator shows a toast and a macOS notification.
+Messages between nodes are queued in the daemon and submitted as prompts by the receiving node's mod when it is idle, then confirmed. If a node's mod is not running, the daemon pastes the message into its terminal instead. When a child needs you or finishes, the orchestrator shows an in-session toast.
 
 ## Browser UI (optional)
 
@@ -50,11 +50,11 @@ A small Tauri v2 shell that hosts the browser UI in a native window and shows th
 
 On launch the app finds the daemon the way `o8` does (`O8_PORT`, then `~/.orchestr8/port`, then 7788). If none answers it starts `bin/o8d` detached, using the repo path that `o8` records in `~/.orchestr8/repo` the last time it started a daemon, then opens the UI with the admin token. The daemon keeps running when the app quits.
 
-Notifications: the app does not add native notifications. Whether the web Notification API works inside the app's WKWebView has not been checked (this was built without a display to test on); the `o8` terminal client still sends macOS notifications.
+Notifications: the daemon is the only sender of macOS notifications, so the app, the browser and the terminal never double up. When a node needs approval, asks a question, finishes, fails a turn or exits, the daemon posts one notification titled with the node (subtitle: its session, when different) whose body says what it needs, for example `Needs approval: Bash touch /tmp/x`. It stays quiet when a focused window (app, browser tab or `o8` multiplexer) has that node selected, and sends at most one per node and kind every 5 seconds. With `terminal-notifier` installed (`brew install terminal-notifier`), notifications replace the node's previous one, play a sound for needs-you and errors, and clicking one runs `o8 select <id>`, which shows the node in the app (opening it if built). Without it the daemon falls back to `osascript` notifications, which cannot be clicked. The browser UI keeps its toasts, tab-title badge and a chime; the multiplexer rings its terminal bell only when the app is not connected.
 
 ## State
 
-Everything lives in `~/.orchestr8` (override with `O8_HOME`): the node registry, per-node settings and tokens, and the admin token used by `o8`. `O8_PORT` changes the port (default 7788). `O8_TERMINAL_BUNDLE` overrides the notification target app, which otherwise comes from `TERM_PROGRAM`.
+Everything lives in `~/.orchestr8` (override with `O8_HOME`): the node registry, per-node settings and tokens, and the admin token used by `o8`. `O8_PORT` changes the port (default 7788). `O8_TERMINAL_BUNDLE` overrides the app a notification click activates when the native app is not connected (otherwise derived from `TERM_PROGRAM`); `O8_TERMINAL_NOTIFIER` overrides the `terminal-notifier` path.
 
 ## Known limits
 

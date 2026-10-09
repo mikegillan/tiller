@@ -4,13 +4,13 @@ import type { Child } from '../types'
 import { parse, request, type Ctx } from './api'
 import { Band } from './band'
 import { COMMANDS, parseSend, parseSpawn } from './commands'
-import { changes, osCommand } from './notify'
+import { changes } from './notify'
 
 // orchestr8 per-node mod. Inert unless O8_NODE_ID is set. Contract: src/shared/protocol.ts "Mod-facing HTTP API".
 const kids = atom({ plugin: 'orchestr8', key: 'children' } as const, [] as Child[])
 const pend = atom({ plugin: 'orchestr8', key: 'pending' } as const, 0)
 let ctx: Ctx | undefined
-let parent: string | undefined, isMac = false, busy = false, tn = false, bundle: string | undefined
+let parent: string | undefined, busy = false
 let prev: Child[] | null = null
 const inflight = new Set<string>()
 const lastToast = new Map<string, number>()
@@ -32,14 +32,12 @@ function forward($: any, event: string, payload: unknown) {
   if (ctx) call($, 'POST', '/mod-event', { event, payload }).catch(() => {})
 }
 
-// At most one toast / notification per key per 5 s.
-async function notify($: any, key: string, text: string, os: boolean) {
+// At most one toast per key per 5 s. OS notifications are the daemon's job, not the mod's.
+async function notify($: any, key: string, text: string) {
   const now = await $.clock.now()
   if (now - (lastToast.get(key) ?? 0) < 5000) return
   lastToast.set(key, now)
   $.ui.toast(text)
-  forward($, 'notified', { text, os: os && isMac })
-  if (os && isMac) $.process.run(osCommand(text, tn, bundle)).catch(() => {})
 }
 
 async function poll($: any) {
@@ -48,13 +46,13 @@ async function poll($: any) {
   try {
     const list: Child[] = await call($, 'GET', '/tree')
     await update($, kids, () => list)
-    if (prev) for (const c of changes(prev, list)) await notify($, c.key, c.text, c.os)
+    if (prev) for (const c of changes(prev, list)) await notify($, c.key, c.text)
     prev = list
     const msgs = (await call($, 'GET', '/inbox')).filter((m: any) => !inflight.has(m.id))
     await update($, pend, () => inflight.size + msgs.length)
     for (const m of msgs) {
       inflight.add(m.id)
-      await notify($, `msg:${m.from}`, `message from ${m.from}`, false)
+      await notify($, `msg:${m.from}`, `message from ${m.from}`)
       // submit resolves once the prompt is accepted (session idle); ack after that.
       $.prompt.submit({ text: m.text, asUser: true }).then(async () => {
         await call($, 'POST', '/ack', { id: m.id })
@@ -72,9 +70,6 @@ export const register: Register = on => {
     const token = (await $.fs.read((await $.env.get('O8_TOKEN_FILE'))!)).trim()
     ctx = { id, endpoint: (await $.env.get('O8_ENDPOINT'))!, token }
     parent = (await $.env.get('O8_PARENT_ID')) || undefined
-    try { isMac = (await $.process.run(['uname'])).stdout.trim() === 'Darwin' } catch { isMac = false }
-    try { tn = isMac && !!(await $.process.run(['which', 'terminal-notifier'])).stdout.trim() } catch { tn = false }
-    bundle = (await $.env.get('O8_TERMINAL_BUNDLE')) || undefined
     for (const [name, description] of COMMANDS) await $.command.register({ name, description })
     $.clock.every(1000, () => poll($))
     return next(e)

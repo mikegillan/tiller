@@ -27,7 +27,8 @@ const MIME: Record<string, string> = {
 const id = z.string().min(1);
 const size = z.number().int().min(1).max(1000);
 const clientMessage = z.discriminatedUnion('t', [
-  z.object({ t: z.literal('auth'), token: z.string() }),
+  z.object({ t: z.literal('auth'), token: z.string(), client: z.enum(['app', 'browser', 'mux']).optional() }),
+  z.object({ t: z.literal('visibility'), focused: z.boolean() }),
   z.object({ t: z.literal('attach'), id, cols: size, rows: size }),
   z.object({ t: z.literal('detach'), id }),
   z.object({ t: z.literal('input'), id, data: z.string() }),
@@ -52,10 +53,14 @@ export interface DaemonServer {
   url: string;
   /** Ask the human to approve something. Resolves false if no UI is connected, on timeout, or on refusal. */
   confirm(text: string): Promise<boolean>;
+  /** How many connected clients are looking at node `id`: it is selected there and their window is in front. */
+  watchers(id: string): number;
+  /** Whether the native app is connected. */
+  appConnected(): boolean;
   close(): Promise<void>;
 }
 
-interface Client { ws: WebSocket; authed: boolean; attached: Set<string> }
+interface Client { ws: WebSocket; authed: boolean; attached: Set<string>; kind?: 'app' | 'browser' | 'mux'; focused: boolean; selected?: string }
 
 export async function startServer(manager: NodeManager, opts: { port?: number; uiToken?: string } = {}): Promise<DaemonServer> {
   const uiToken = opts.uiToken ?? randomBytes(24).toString('base64url');
@@ -69,6 +74,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
 
   const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
   const broadcast = (m: ServerMessage) => { for (const c of clients) if (c.authed) sendTo(c, m); };
+  const appConnected = () => [...clients].some((c) => c.authed && c.kind === 'app');
 
   manager.on('node', (node) => broadcast({ t: 'node', node }));
   manager.on('removed', (rid: string) => {
@@ -94,7 +100,8 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
       case 'detach': c.attached.delete(m.id); return;
       case 'input': manager.input(m.id, m.data); return;
       case 'resize': manager.resize(m.id, m.cols, m.rows); return;
-      case 'select': manager.select(m.id, c); return;
+      case 'visibility': c.focused = m.focused; return;
+      case 'select': c.selected = m.id; manager.select(m.id, c); return;
       case 'spawn': manager.spawn({ kind: m.kind, title: m.title, cwd: m.cwd, prompt: m.prompt, model: m.model, parentId: m.parentId }); return;
       case 'close': manager.close(m.id); return;
       case 'resume': {
@@ -110,13 +117,14 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
 
   const wss = new WebSocketServer({ noServer: true });
   wss.on('connection', (ws) => {
-    const c: Client = { ws, authed: false, attached: new Set() };
+    const c: Client = { ws, authed: false, attached: new Set(), focused: false };
     clients.add(c);
     const authTimer = setTimeout(() => { if (!c.authed) ws.close(4401, 'auth timeout'); }, AUTH_TIMEOUT_MS);
     ws.on('close', () => {
       clearTimeout(authTimer);
       clients.delete(c);
       manager.deselect(c);
+      if (c.authed && c.kind === 'app' && !appConnected()) broadcast({ t: 'clients', app: false });
     });
     ws.on('message', (raw) => {
       let msg: ClientMessage;
@@ -130,8 +138,10 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
       if (!c.authed) {
         if (msg.t === 'auth' && (safeEqual(msg.token, uiToken) || (adminToken() !== '' && safeEqual(msg.token, adminToken())))) {
           c.authed = true;
+          c.kind = msg.client;
           clearTimeout(authTimer);
-          sendTo(c, { t: 'snapshot', nodes: manager.list() });
+          sendTo(c, { t: 'snapshot', nodes: manager.list(), appConnected: appConnected() });
+          if (c.kind === 'app') broadcast({ t: 'clients', app: true });
         } else {
           ws.close(4401, 'auth required');
         }
@@ -220,6 +230,8 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
         broadcast({ t: 'confirm', confirmId, text });
       });
     },
+    watchers: (id) => [...clients].filter((c) => c.authed && c.focused && c.selected === id).length,
+    appConnected,
     async close() {
       for (const c of clients) c.ws.terminate();
       wss.close();

@@ -17,6 +17,7 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 new <title> [--cwd P] [--model M] [--prompt T]   start a Claude node and attach to it in the terminal
   o8 ps | list                                        show nodes
   o8 attach <id> [--plain]                            open the sidebar client on a node (Ctrl-\\ ? for keys; --plain is the old single-pane view)
+  o8 select <id>                                      show a node in the app (opens the app if it is built)
   o8 resume <id>                                      relaunch an exited Claude node
   o8 prune                                            remove every exited node that has no live descendant
   o8 kill <id...> | close <id...>                     close and delete nodes
@@ -50,6 +51,11 @@ async function call(tool: string, args: Record<string, unknown>, print = true, s
   return body;
 }
 
+const APP = join(dirname(dirname(import.meta.dirname)), 'src-tauri/target/release/bundle/macos/orchestr8.app');
+// Cold start: the app reads --node. Already running: `open` only activates it, so callers also post `select`.
+const openApp = (port: number, node: string) =>
+  spawnSync('open', ['--env', `O8_HOME=${home}`, '--env', `O8_PORT=${port}`, '-a', APP, '--args', '--node', node]); // same daemon as this CLI
+
 const argv = process.argv.slice(2);
 const [cmd, ...rest] = argv[0]?.startsWith('-') ? ['up', ...argv] : argv; // `o8 --new` means `o8 up --new`
 const { values: f, positionals: pos } = parseArgs({
@@ -75,6 +81,11 @@ switch (cmd) {
     process.exit(await mux(data.nodeId, { port: daemonPort(), token: readHome('admin-token') }));
     break;
   }
+  case 'select':
+    if (!pos[0]) fail(usage());
+    await call('select', { nodeId: pos[0] }, false);
+    if (existsSync(APP)) openApp(daemonPort(), pos[0]!);
+    break;
   case 'resume':
     if (!pos[0]) fail(usage());
     await call('resume', { nodeId: pos[0] });
@@ -125,10 +136,8 @@ switch (cmd) {
     }
     const target = id;
     if (cmd === 'mux') process.exit(await mux(target, { port, token: readHome('admin-token') }));
-    const app = join(dirname(dirname(import.meta.dirname)), 'src-tauri/target/release/bundle/macos/orchestr8.app');
-    if (existsSync(app)) {
-      // Cold start: the app reads --node. Already running: `open` only activates it, so tell the page to switch.
-      spawnSync('open', ['--env', `O8_HOME=${home}`, '--env', `O8_PORT=${port}`, '-a', app, '--args', '--node', target]); // same daemon as this CLI
+    if (existsSync(APP)) {
+      openApp(port, target);
       await call('select', { nodeId: target }, false);
     } else {
       console.log('app not built: run npm run app:build');

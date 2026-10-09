@@ -41,7 +41,7 @@ const TERMINAL_BUNDLES: Record<string, string> = {
   ghostty: 'com.mitchellh.ghostty', 'iTerm.app': 'com.googlecode.iterm2', Apple_Terminal: 'com.apple.Terminal',
   vscode: 'com.microsoft.VSCode', WezTerm: 'com.github.wez.wezterm',
 };
-/** macOS bundle id for a TERM_PROGRAM value, so the mod's notifications can focus the right app. */
+/** macOS bundle id for a TERM_PROGRAM value, so the daemon's notifications can focus the right app. */
 export const terminalBundleFor = (termProgram: string | undefined): string | undefined => TERMINAL_BUNDLES[termProgram ?? ''];
 
 export interface LaunchInput {
@@ -58,8 +58,6 @@ export interface LaunchInput {
   prompt?: string;
   model?: string;
   permissionMode?: string;
-  /** Exported to the child as O8_TERMINAL_BUNDLE. */
-  terminalBundle?: string;
 }
 
 export interface LaunchSpec { file: string; args: string[]; env: Record<string, string> }
@@ -95,6 +93,5 @@ function nodeEnv(i: LaunchInput): Record<string, string> {
     ...(i.parentId ? { O8_PARENT_ID: i.parentId } : {}),
     O8_ENDPOINT: i.endpoint,
     O8_TOKEN_FILE: join(i.nodeDir, 'token'),
-    ...(i.terminalBundle ? { O8_TERMINAL_BUNDLE: i.terminalBundle } : {}),
   });
 }

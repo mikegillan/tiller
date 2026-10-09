@@ -27,11 +27,11 @@ afterEach(async () => {
   rmSync(home, { recursive: true, force: true });
 });
 
-async function connect(token = server.uiToken): Promise<void> {
+async function connect(token = server.uiToken, client?: 'app' | 'browser' | 'mux'): Promise<void> {
   ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
   ws.on('message', (raw) => seen.push(JSON.parse(raw.toString())));
   await new Promise((ok, fail) => { ws!.once('open', ok); ws!.once('error', fail); });
-  send({ t: 'auth', token });
+  send({ t: 'auth', token, client });
 }
 const send = (m: ClientMessage) => ws!.send(JSON.stringify(m));
 
@@ -150,5 +150,25 @@ describe('POST /hook', () => {
     expect((await focus(kid.id, tk, parent.id)).status).toBe(204); // a child may focus its parent
     await until(() => seen.filter((m) => m.t === 'focus').length === 3 || undefined);
     expect(seen.filter((m) => m.t === 'focus')).toEqual([{ t: 'focus', from: kid.id, id: cousin.id }, { t: 'focus', from: parent.id, id: kid.id }, { t: 'focus', from: kid.id, id: parent.id }]);
+  });
+});
+
+describe('client tracking', () => {
+  it('counts a watcher only while it has the node selected and its window focused; reports the app', async () => {
+    await connect(server.uiToken, 'app');
+    const snap = await until(() => seen.find((m) => m.t === 'snapshot'));
+    expect(snap).toMatchObject({ appConnected: true });
+    const id = manager.spawn({ kind: 'terminal', title: 'sh', cwd: tmpdir() }).id;
+    const watching = (n: number) => until(() => (server.watchers(id) === n ? true : undefined));
+    send({ t: 'select', id });
+    send({ t: 'visibility', focused: false });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(server.watchers(id)).toBe(0);
+    send({ t: 'visibility', focused: true });
+    await watching(1);
+    send({ t: 'visibility', focused: false });
+    await watching(0);
+    ws!.terminate();
+    await until(() => (server.appConnected() ? undefined : true));
   });
 });

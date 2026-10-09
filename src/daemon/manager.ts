@@ -60,8 +60,6 @@ export interface ManagerOptions {
   shell?: string;
   /** PATH handed to children (from loginShellPath()). Defaults to this process's PATH. */
   path?: string;
-  /** macOS bundle id of the terminal the daemon runs in; passed to children as O8_TERMINAL_BUNDLE. */
-  terminalBundle?: string;
 }
 
 export interface NotifyEvent { id: string; kind: 'done' | 'needsYou' | 'errored' | 'exited'; title: string; body?: string }
@@ -81,7 +79,6 @@ export class NodeManager extends EventEmitter {
   endpoint = '';
   private shell: string;
   private path: string;
-  private terminalBundle?: string;
   private secret: Buffer;
   private sessions = new Map<string, PtySession>();
   private statuses = new Map<string, NodeStatus>();
@@ -96,7 +93,6 @@ export class NodeManager extends EventEmitter {
     this.home = opts.home ?? process.env.O8_HOME ?? join(homedir(), '.orchestr8');
     this.shell = opts.shell ?? process.env.SHELL ?? '/bin/sh';
     this.path = opts.path ?? process.env.PATH ?? '';
-    this.terminalBundle = opts.terminalBundle;
     mkdirSync(join(this.home, 'nodes'), { recursive: true, mode: 0o700 });
     chmodSync(this.home, 0o700); // mkdir's mode does not apply to a directory that already existed
     this.secret = this.loadSecret();
@@ -332,7 +328,7 @@ export class NodeManager extends EventEmitter {
     const input: LaunchInput = {
       nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path,
       title: rec.title, parentId: rec.parentId, sessionId: this.statuses.get(id)?.sessionId ?? rec.sessionId ?? '',
-      resume, prompt, model: rec.model, permissionMode: rec.permissionMode, terminalBundle: this.terminalBundle,
+      resume, prompt, model: rec.model, permissionMode: rec.permissionMode,
     };
     const spec: LaunchSpec = rec.kind === 'claude' ? claudeLaunch(input) : terminalLaunch(input, this.shell);
     const s = PtySession.spawn({ ...spec, cwd: rec.cwd, ...DEFAULT_SIZE });

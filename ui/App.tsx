@@ -10,9 +10,8 @@ import { TerminalPane } from './TerminalPane';
 import { TitleBar } from './TitleBar';
 import { ConfirmModal, Toasts } from './Toasts';
 import { getState, openDialog, selectNode, useStore } from './store';
+import { IN_APP } from './url';
 
-// The Tauri shell adds `app=1` to the URL; `__TAURI_INTERNALS__` is the fallback signal.
-export const IN_APP = new URLSearchParams(location.search).has('app') || '__TAURI_INTERNALS__' in window;
 if (IN_APP) document.documentElement.dataset.app = '1';
 
 export function App() {

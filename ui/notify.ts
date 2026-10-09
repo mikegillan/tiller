@@ -1,5 +1,6 @@
 import type { ServerMessage } from '../src/shared/protocol';
-import { selectNode, toast, type Tone } from './store';
+import { toast, type Tone } from './store';
+import { IN_APP } from './url';
 
 type Notify = Extract<ServerMessage, { t: 'notify' }>;
 
@@ -8,7 +9,7 @@ const TONE: Record<Notify['kind'], Tone> = { done: 'ok', needsYou: 'warn', error
 let ctx: AudioContext | undefined;
 const lastNotified = new Map<string, number>();
 
-/** At most one OS notification or chime per node every 5 s. */
+/** At most one chime per node every 5 s. */
 function throttled(id: string): boolean {
   const now = Date.now();
   if (now - (lastNotified.get(id) ?? 0) < 5000) return true;
@@ -39,20 +40,11 @@ function chime(m: Notify) {
 
 export function handleNotify(m: Notify) {
   toast(m.body ? `${m.title}: ${m.body}` : m.title, m.id, TONE[m.kind]);
-  if (throttled(m.id)) return;
-  if (document.hidden || !document.hasFocus()) {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      const n = new Notification(m.title, { body: m.body ?? m.kind });
-      n.onclick = () => { window.focus(); selectNode(m.id); n.close(); };
-    }
-  }
-  chime(m);
+  // OS notifications come from the daemon. The app is silent here (terminal-notifier plays the sound); a browser tab chimes.
+  if (!IN_APP && !throttled(m.id)) chime(m);
 }
 
-/** Browsers only allow the permission prompt and audio start from a user gesture. */
+/** Browsers only allow audio to start from a user gesture. */
 export function armOnFirstClick() {
-  addEventListener('click', () => {
-    if ('Notification' in window && Notification.permission === 'default') void Notification.requestPermission();
-    ctx ??= new AudioContext();
-  }, { once: true });
+  addEventListener('click', () => { ctx ??= new AudioContext(); }, { once: true });
 }
