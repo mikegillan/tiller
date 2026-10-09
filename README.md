@@ -23,7 +23,7 @@ That one command starts the daemon if it is not running (detached, logging to `~
 
 `o8d` is the same daemon in the foreground, for when you want its log in a terminal.
 
-Inside that session you will see a one-line band above the prompt, an `orchestr8` pane opened with `/o8` (the orchestrator on top, then one outlined card per descendant, its border colored by state; click a card, or press its digit once the pane has focus, to make `o8 attach` switch to that node), and the slash commands `/o8-list`, `/o8-spawn <title> :: <prompt>`, `/o8-send <id> <text>` and `/o8-read <id>`. The orchestrator also has MCP tools to do the same.
+Inside that session you will see a one-line band above the prompt, an `orchestr8` tree pane (auto-opened at 144+ columns, or with `/o8`: the whole tree from the orchestrator down in every node, one outlined card per agent with its border colored by state and your own card marked `(you)`; click any other card, or press its digit once the pane has focus, to make `o8 attach` switch to that node), and the slash commands `/o8-list`, `/o8-spawn <title> :: <prompt>`, `/o8-send <id> <text>` and `/o8-read <id>`. The orchestrator also has MCP tools to do the same.
 
 Other commands: `o8 ps` lists nodes, `o8 attach <id>` shows a node's terminal (type into it, answer its permission prompts; Ctrl-\ then d detaches, n/p next/previous node, ! next node needing you, b back, l list, 1-9 jump, ? help; it also follows a click in the node's own pane), `o8 resume <id>` relaunches an exited node, `o8 kill <id...>` closes nodes. `o8 help` lists the rest.
 

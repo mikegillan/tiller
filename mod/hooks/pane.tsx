@@ -21,20 +21,19 @@ const detail = (c: Child) => (c.exited ? '' : c.state === 'done' ? c.lastMessage
 
 export function Pane({ Box, Text, Button }: Els, list: Child[], focus: (c: Child) => void) {
   if (!list.length) return <Text dimColor>No nodes.</Text>
-  const kids = list.filter(c => !c.self)
   let n = 0
   return (
     <Box flexDirection="column">
       <Box columnGap={1}>
         <Text bold>orchestr8</Text>
-        <Text dimColor wrap="truncate-end">{list.length} nodes · {kids.filter(needsYou).length} need you</Text>
+        <Text dimColor wrap="truncate-end">· {list[0]!.title} · {list.length} nodes · {list.filter(c => !c.self && needsYou(c)).length} need you</Text>
       </Box>
       {list.map(c => {
         const l = look(c)
         const sub = c.self ? '' : detail(c)
         const hotkey = !c.self && ++n <= 9 ? String(n) : undefined
         const title = c.self ? (
-          <Text bold wrap="truncate-end">
+          <Text bold color="whiteBright" wrap="truncate-end">
             <Text color={l.color}>{l.glyph}</Text> {c.title} (you)
           </Text>
         ) : (
@@ -43,7 +42,7 @@ export function Pane({ Box, Text, Button }: Els, list: Child[], focus: (c: Child
           </Button>
         )
         return (
-          <Box key={c.id} flexDirection="column" borderStyle="round" borderColor={l.color} borderDimColor={l.dim} marginLeft={2 * c.depth} paddingX={1}>
+          <Box key={c.id} flexDirection="column" borderStyle="round" borderColor={c.self ? 'whiteBright' : l.color} borderDimColor={!c.self && l.dim} marginLeft={2 * c.depth} paddingX={1}>
             <Box justifyContent="space-between">
               <Box columnGap={1}>
                 {title}

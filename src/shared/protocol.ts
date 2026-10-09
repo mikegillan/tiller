@@ -102,7 +102,7 @@ export type ModEvent =
 /** GET /children → ChildView[]: the calling node itself first (self: true), then its descendants depth-first. */
 export interface ChildView {
   id: string; title: string; depth: number; state: AgentState;
-  /** True on the first row of GET /children: the calling node itself (depth 0). */
+  /** True on the calling node's own row (first row of /children; anywhere in /tree). */
   self?: boolean;
   parentId?: string | null;
   errored?: boolean; interrupted?: boolean; exited?: boolean;

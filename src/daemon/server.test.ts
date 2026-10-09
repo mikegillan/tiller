@@ -117,6 +117,17 @@ describe('POST /hook', () => {
     expect(await (await call('/children', kid.id, tk)).json()).toMatchObject([{ id: kid.id, depth: 0, self: true, parentId: parent.id }]);
   });
 
+  it('GET /tree: the whole tree from the root, the caller marked self', async () => {
+    const root = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
+    const a = manager.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir(), parentId: root.id });
+    const a1 = manager.spawn({ kind: 'terminal', title: 'a1', cwd: tmpdir(), parentId: a.id });
+    const b = manager.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir(), parentId: root.id });
+    manager.spawn({ kind: 'terminal', title: 'elsewhere', cwd: tmpdir() });
+    const res = await fetch(`http://127.0.0.1:${server.port}/tree`, { headers: { Authorization: `Bearer ${manager.tokenFor(a.id)}`, 'X-O8-Node': a.id } });
+    const rows = await res.json() as Array<{ id: string; depth: number; self?: boolean }>;
+    expect(rows.map((r) => [r.id, r.depth, !!r.self])).toEqual([[root.id, 0, false], [a.id, 1, true], [a1.id, 2, false], [b.id, 1, false]]);
+  });
+
   it('POST /focus: auth, lineage scope, broadcast', async () => {
     const parent = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
     const kid = manager.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: parent.id });
@@ -129,9 +140,11 @@ describe('POST /hook', () => {
     expect((await focus(parent.id, 'bad', kid.id)).status).toBe(401);
     expect((await focus(parent.id, tp, other.id)).status).toBe(403);
     expect((await focus(kid.id, tk, other.id)).status).toBe(403);
+    const cousin = manager.spawn({ kind: 'terminal', title: 'cousin', cwd: tmpdir(), parentId: manager.spawn({ kind: 'terminal', title: 'aunt', cwd: tmpdir(), parentId: parent.id }).id });
+    expect((await focus(kid.id, tk, cousin.id)).status).toBe(204); // anywhere in the same tree
     expect((await focus(parent.id, tp, kid.id)).status).toBe(204);
     expect((await focus(kid.id, tk, parent.id)).status).toBe(204); // a child may focus its parent
-    await until(() => seen.filter((m) => m.t === 'focus').length === 2 || undefined);
-    expect(seen.filter((m) => m.t === 'focus')).toEqual([{ t: 'focus', from: parent.id, id: kid.id }, { t: 'focus', from: kid.id, id: parent.id }]);
+    await until(() => seen.filter((m) => m.t === 'focus').length === 3 || undefined);
+    expect(seen.filter((m) => m.t === 'focus')).toEqual([{ t: 'focus', from: kid.id, id: cousin.id }, { t: 'focus', from: parent.id, id: kid.id }, { t: 'focus', from: kid.id, id: parent.id }]);
   });
 });

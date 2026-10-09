@@ -6,6 +6,6 @@ export type Child = {
 
 declare module 'claude-code' {
   interface PluginState {
-    orchestr8: { children: Child[]; pending: number }
+    orchestr8: { children: Child[]; pending: number; placed: boolean }
   }
 }
