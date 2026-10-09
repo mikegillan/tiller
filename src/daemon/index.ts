@@ -31,7 +31,7 @@ manager.on('notify', createNotifier({
 }));
 writeFileSync(join(manager.home, 'port'), `${server.port}\n`); // lets `o8` find the daemon without O8_PORT
 writeFileSync(join(manager.home, 'repo'), fileURLToPath(new URL('../..', import.meta.url))); // lets the Tauri app find bin/o8d
-if (process.env.O8_DEBUG) manager.on('hook', (id, ev) => console.log(`hook ${id.slice(0, 6)} ${JSON.stringify(ev).slice(0, 400)}`));
+if (process.env.O8_DEBUG) manager.on('hook', (id, ev) => console.log(`${new Date().toISOString().slice(11, 23)} hook ${id.slice(0, 6)} ${JSON.stringify({ e: ev.hook_event_name, err: ev.error, tool: ev.tool_name, type: ev.notification_type, prompt: (ev.prompt_id as string | undefined)?.slice(0, 6), msg: ev.message, mode: ev.permission_mode })}`));
 console.log(`orchestr8 daemon listening. Open ${server.url}\nhome: ${manager.home}`);
 
 process.on('unhandledRejection', logError);

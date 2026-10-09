@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { NodeStatus } from '../shared/protocol.js';
-import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, turnAborted, turnErrored, type HookEvent } from './status.js';
+import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, turnComplete, type HookEvent } from './status.js';
 
 const T0 = 1_000_000;
 const st = (p: Partial<NodeStatus> = {}): NodeStatus => ({ state: 'unknown', changedAt: T0, ...p });
@@ -202,16 +202,51 @@ describe('doneSource', () => {
 });
 
 describe('mod turn.complete', () => {
-  it('an aborted turn ends as done + interrupted, sourced as interrupt', () => {
-    const next = turnAborted(st({ state: 'working', activity: 'Bash: sleep' }), NOW);
-    expect(next).toMatchObject({ state: 'done', interrupted: true, doneSource: 'interrupt', activity: undefined, changedAt: NOW });
-    const idle = st({ state: 'done', doneSource: 'stop' });
-    expect(turnAborted(idle, NOW)).toBe(idle);
+  const blocked = st({ state: 'blocked', activity: 'needs approval: Write o8-deny-probe.txt', promptId: 'p1' });
+  it('an answer ends working, waiting and blocked as done, clearing the stale approval activity', () => {
+    for (const state of ['working', 'waiting', 'blocked'] as const) {
+      const next = turnComplete({ ...blocked, state }, NOW, { reason: 'answer', isAborted: false });
+      expect(next).toMatchObject({ state: 'done', activity: undefined, doneSource: 'stop', changedAt: NOW });
+      expect(next.errored).toBeUndefined();
+    }
   });
-
+  it('a refusal ends the turn as plain done', () => {
+    expect(turnComplete(blocked, NOW, { reason: 'refusal' })).toMatchObject({ state: 'done', activity: undefined, doneSource: 'stop' });
+  });
+  it('an aborted turn ends as done + interrupted, sourced as interrupt', () => {
+    expect(turnComplete(blocked, NOW, { isAborted: true, reason: 'answer' })).toMatchObject({ state: 'done', interrupted: true, doneSource: 'interrupt', activity: undefined, changedAt: NOW });
+  });
   it('an errored turn ends as done + errored', () => {
-    expect(turnErrored(st({ state: 'working' }), NOW)).toMatchObject({ state: 'done', errored: true, doneSource: 'stop', changedAt: NOW });
-    const idle = st({ state: 'done', doneSource: 'stop' });
-    expect(turnErrored(idle, NOW)).toBe(idle);
+    expect(turnComplete(st({ state: 'working' }), NOW, { reason: 'error' })).toMatchObject({ state: 'done', errored: true, doneSource: 'stop', changedAt: NOW });
+  });
+  it('does nothing when the node is not mid-turn', () => {
+    for (const state of ['done', 'unknown'] as const) {
+      const idle = st({ state, doneSource: 'stop' });
+      expect(turnComplete(idle, NOW, { reason: 'answer' })).toBe(idle);
+    }
+  });
+});
+
+describe('late permission events after the turn ended', () => {
+  const ended = st({ state: 'done', changedAt: T0, promptId: 'p1', doneSource: 'stop' });
+  it('Stop and turn.complete clear the activity', () => {
+    expect(reduce(st({ state: 'blocked', activity: 'needs approval: Write x' }), ev('Stop'), NOW).activity).toBeUndefined();
+  });
+  it('a PermissionRequest or permission_prompt with the ended turn\'s prompt_id never re-blocks, even after the holdoff', () => {
+    const later = T0 + 60_000;
+    expect(reduce(ended, ev('PermissionRequest', { prompt_id: 'p1', tool_name: 'Write' }), later)).toBe(ended);
+    expect(reduce(ended, ev('Notification', { notification_type: 'permission_prompt', prompt_id: 'p1' }), later)).toBe(ended);
+    expect(reduce(ended, ev('Notification', { notification_type: 'elicitation_dialog', prompt_id: 'p1' }), later)).toBe(ended);
+  });
+  it('without a prompt_id on both events it falls back to the 3 s holdoff', () => {
+    const bare = st({ state: 'done', changedAt: T0 });
+    expect(reduce(bare, ev('PermissionRequest', { tool_name: 'Write' }), T0 + 1000)).toBe(bare);
+    expect(reduce(bare, ev('PermissionRequest', { tool_name: 'Write' }), T0 + 3000).state).toBe('blocked');
+  });
+  it('a different prompt_id (a new turn) can still block', () => {
+    expect(reduce(ended, ev('PermissionRequest', { prompt_id: 'p2', tool_name: 'Write' }), T0 + 60_000).state).toBe('blocked');
+  });
+  it('UserPromptSubmit records the prompt_id', () => {
+    expect(reduce(ended, ev('UserPromptSubmit', { prompt_id: 'p2' }), NOW).promptId).toBe('p2');
   });
 });

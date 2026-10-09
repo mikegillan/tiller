@@ -57,6 +57,13 @@ function done(prev: NodeStatus, now: number, patch: Partial<NodeStatus> = {}): N
   return next(prev, { state: 'done', activity: undefined, ...patch }, now);
 }
 
+/** A blocked/waiting event that arrives after its own turn already ended: same prompt_id, else within the holdoff. */
+function lateAfterDone(prev: NodeStatus, event: HookEvent, now: number): boolean {
+  if (prev.state !== 'done') return false;
+  const id = str(event.prompt_id);
+  return id && prev.promptId ? id === prev.promptId : now - prev.changedAt < DONE_HOLDOFF_MS;
+}
+
 export function reduce(prev: NodeStatus, event: HookEvent, now: number): NodeStatus {
   const out = step(prev, event, now);
   // Recorded even inside the done holdoff, without touching state or changedAt.
@@ -70,7 +77,7 @@ function step(prev: NodeStatus, event: HookEvent, now: number): NodeStatus {
   switch (event.hook_event_name) {
     case 'UserPromptSubmit':
       return next(prev, {
-        state: 'working', errored: undefined, interrupted: undefined, stale: undefined, doneSource: undefined,
+        state: 'working', promptId: str(event.prompt_id), errored: undefined, interrupted: undefined, stale: undefined, doneSource: undefined,
         lastAssistantMessage: undefined, activity: undefined,
       }, now);
 
@@ -86,15 +93,15 @@ function step(prev: NodeStatus, event: HookEvent, now: number): NodeStatus {
     }
 
     case 'PermissionRequest':
-      return next(prev, { state: 'blocked', activity: approvalActivity(prev, event) }, now);
+      return lateAfterDone(prev, event, now) ? prev : next(prev, { state: 'blocked', activity: approvalActivity(prev, event) }, now);
 
     case 'Notification':
       switch (event.notification_type) {
         case 'permission_prompt':
-          return next(prev, { state: 'blocked', activity: approvalActivity(prev, event) }, now);
+          return lateAfterDone(prev, event, now) ? prev : next(prev, { state: 'blocked', activity: approvalActivity(prev, event) }, now);
         case 'elicitation_dialog':
         case 'agent_needs_input':
-          return next(prev, { state: 'waiting' }, now);
+          return lateAfterDone(prev, event, now) ? prev : next(prev, { state: 'waiting' }, now);
         case 'idle_prompt':
           return prev.state === 'working' ? done(prev, now, { doneSource: 'idle_prompt' }) : prev;
         default:
@@ -149,12 +156,12 @@ export function interruptTimeout(prev: NodeStatus, now: number): NodeStatus {
 
 const active = (s: NodeStatus) => s.state === 'working' || s.state === 'waiting' || s.state === 'blocked';
 
-/** Mod's turn.complete with isAborted: the user cancelled, and no Stop hook follows. */
-export function turnAborted(prev: NodeStatus, now: number): NodeStatus {
-  return active(prev) ? done(prev, now, { interrupted: true, doneSource: 'interrupt' }) : prev;
-}
-
-/** Mod's turn.complete with reason 'error'. */
-export function turnErrored(prev: NodeStatus, now: number): NodeStatus {
-  return active(prev) ? done(prev, now, { errored: true, doneSource: 'stop' }) : prev;
+/**
+ * The mod's turn.complete is authoritative: the turn is over even when no Stop hook follows (a denied permission
+ * prompt ends the turn with no Stop, PostToolUse or PostToolUseFailure). Moves working/waiting/blocked to done.
+ */
+export function turnComplete(prev: NodeStatus, now: number, o: { isAborted?: boolean; reason?: string }): NodeStatus {
+  if (!active(prev)) return prev;
+  if (o.isAborted) return done(prev, now, { interrupted: true, doneSource: 'interrupt' });
+  return done(prev, now, o.reason === 'error' ? { errored: true, doneSource: 'stop' } : { doneSource: 'stop' });
 }

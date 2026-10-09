@@ -9,7 +9,7 @@ import { pruneIds } from '../shared/prune.js';
 import { NodeRegistry } from './nodes.js';
 import { PtySession } from './pty.js';
 import { logError, safeEqual } from './util.js';
-import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, turnAborted, turnErrored, type HookEvent } from './status.js';
+import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, turnComplete, type HookEvent } from './status.js';
 
 const INTERRUPT_MS = 1500;
 const SWEEP_MS = 60_000;
@@ -284,11 +284,11 @@ export class NodeManager extends EventEmitter {
     const prev = this.statuses.get(nodeId);
     if (!prev) return;
     const now = Date.now();
+    if (process.env.O8_DEBUG) console.log(`${new Date(now).toISOString().slice(11, 23)} mod ${nodeId.slice(0, 6)} ${ev.event} ${JSON.stringify(ev.payload).slice(0, 300)}`);
     if (ev.event === 'turn.complete') {
       const model = ev.payload.usage?.model;
       if (typeof model === 'string' && model !== prev.model) this.setStatus(nodeId, { ...prev, model });
-      if (ev.payload.isAborted) this.setStatus(nodeId, turnAborted(this.statuses.get(nodeId)!, now));
-      else if (ev.payload.reason === 'error') this.setStatus(nodeId, turnErrored(this.statuses.get(nodeId)!, now));
+      this.setStatus(nodeId, turnComplete(this.statuses.get(nodeId)!, now, ev.payload));
     } else if (ev.event === 'session.measure') {
       const { context, cost } = ev.payload;
       this.setStatus(nodeId, { ...prev, contextPct: context?.percent ?? prev.contextPct, contextTokens: context?.tokens ?? prev.contextTokens, contextWindow: context?.window ?? prev.contextWindow, costUsd: cost?.usd ?? prev.costUsd });
