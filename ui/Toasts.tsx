@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { send } from './conn';
+import { Modal } from './Modal';
 import { dismissToast, dropConfirm, selectNode, useStore, type Toast } from './store';
 
 function ToastItem({ t }: { t: Toast }) {
@@ -8,7 +9,7 @@ function ToastItem({ t }: { t: Toast }) {
     return () => clearTimeout(timer);
   }, [t.id]);
   return (
-    <div className="toast" onClick={() => { if (t.nodeId) selectNode(t.nodeId); dismissToast(t.id); }}>{t.text}</div>
+    <div className={`toast ${t.tone}`} role="status" onClick={() => { if (t.nodeId) selectNode(t.nodeId); dismissToast(t.id); }}>{t.text}</div>
   );
 }
 
@@ -17,16 +18,19 @@ export function Toasts() {
   return <div className="toasts">{toasts.map((t) => <ToastItem key={t.id} t={t} />)}</div>;
 }
 
+/** An agent asks the human to approve an action. Must be answered; the daemon closes it on timeout. */
 export function ConfirmModal() {
-  const c = useStore((s) => s.confirms[0]);
+  const queue = useStore((s) => s.confirms);
+  const c = queue[0];
   if (!c) return null;
   const answer = (ok: boolean) => { send({ t: 'confirm', confirmId: c.confirmId, ok }); dropConfirm(c.confirmId); };
   return (
-    <div className="overlay">
-      <div className="modal">
-        <p>{c.text}</p>
-        <div className="btns"><button onClick={() => answer(true)}>Approve</button><button className="danger" onClick={() => answer(false)}>Deny</button></div>
+    <Modal title={queue.length > 1 ? `Agent request (1 of ${queue.length})` : 'Agent request'}>
+      <pre className="ask">{c.text}</pre>
+      <div className="btns">
+        <button className="btn danger" onClick={() => answer(false)}>Deny</button>
+        <button className="btn primary" onClick={() => answer(true)}>Approve</button>
       </div>
-    </div>
+    </Modal>
   );
 }

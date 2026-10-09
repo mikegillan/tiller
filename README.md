@@ -39,6 +39,17 @@ Messages between nodes are queued in the daemon and submitted as prompts by the 
 
 then open the URL `o8d` prints.
 
+## App (macOS)
+
+A small Tauri v2 shell that hosts the browser UI in a native window and shows the number of blocked or waiting nodes as the Dock badge. Requirements: Rust via Homebrew rustup, with `export PATH=/opt/homebrew/opt/rustup/bin:$PATH` in the shell that builds it, and a built UI (`npm run ui:build`).
+
+    npm run app:build    # unsigned src-tauri/target/release/bundle/macos/orchestr8.app
+    bin/o8-app           # opens that app, or runs `npm run app:dev` if it is not built
+
+On launch the app finds the daemon the way `o8` does (`O8_PORT`, then `~/.orchestr8/port`, then 7788). If none answers it starts `bin/o8d` detached, using the repo path that `o8` records in `~/.orchestr8/repo` the last time it started a daemon, then opens the UI with the admin token. The daemon keeps running when the app quits.
+
+Notifications: the app does not add native notifications. Whether the web Notification API works inside the app's WKWebView has not been checked (this was built without a display to test on); the `o8` terminal client still sends macOS notifications.
+
 ## State
 
 Everything lives in `~/.orchestr8` (override with `O8_HOME`): the node registry, per-node settings and tokens, and the admin token used by `o8`. `O8_PORT` changes the port (default 7788). `O8_TERMINAL_BUNDLE` overrides the notification target app, which otherwise comes from `TERM_PROGRAM`.

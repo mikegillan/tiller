@@ -1,0 +1,61 @@
+.btn { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); white-space: nowrap; }
+.btn:hover:not(:disabled) { background: var(--hover); border-color: var(--dim); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn.icon { padding: 0 6px; border-color: transparent; background: transparent; color: var(--dim); }
+.btn.icon:hover { color: var(--fg); }
+.btn.icon.on { color: var(--accent); }
+.btn.danger { color: var(--bad); }
+.btn.icon.danger:hover { color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.btn.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
+.btn.danger.solid { background: var(--bad); border-color: var(--bad); color: #fff; }
+.row .btn.icon { height: 24px; }
+.actions.labelled { display: flex; position: static; background: none; padding: 0; gap: 4px; }
+.actions.labelled .btn.icon { border-color: var(--line); color: var(--fg); padding: 0 8px; }
+.actions.labelled .btn.icon.danger { color: var(--bad); }
+
+.badge { display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 0 8px; height: 20px; border-radius: 10px; font-size: 12px; font-weight: 600; background: var(--surface-2); }
+.badge.working { color: var(--working); }
+.badge.needs { color: var(--needs); background: color-mix(in srgb, var(--needs) 16%, transparent); }
+.badge.done { color: var(--done); }
+.badge.errored { color: var(--bad); }
+.badge.exited, .badge.unknown { color: var(--dim); }
+
+.ctx { display: inline-flex; align-items: center; gap: 6px; }
+.ctx .bar { width: 48px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.ctx .bar i { display: block; height: 100%; border-radius: 2px; background: var(--done); }
+.ctx.warn .bar i { background: var(--needs); }
+.ctx.bad .bar i { background: var(--bad); }
+.ctx.warn .pct { color: var(--needs); }
+.ctx.bad .pct { color: var(--bad); }
+.ctx .pct { font-variant-numeric: tabular-nums; }
+
+.overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgb(0 0 0 / 0.5); }
+.overlay.top { place-items: start center; padding-top: 12vh; }
+.modal { width: min(440px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.modal h2 { margin: 0 0 16px; font-size: 16px; }
+.modal p { margin: 0 0 16px; color: var(--dim); }
+.btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.btns .btn { height: 32px; padding: 0 16px; }
+.ask { margin: 0; padding: 8px 16px; max-height: 40vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.form { display: grid; gap: 16px; }
+.form label { display: grid; gap: 4px; font-size: 12px; color: var(--dim); }
+.form input, .form textarea { padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); resize: vertical; }
+.form input:focus, .form textarea:focus { outline: none; border-color: var(--accent); }
+.seg { display: grid; grid-template-columns: 1fr 1fr; padding: 2px; border-radius: 8px; background: var(--surface-2); }
+.seg button { height: 24px; border: 0; border-radius: 6px; background: none; color: var(--dim); }
+.seg button.on { background: var(--bg); color: var(--fg); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); }
+.form .btns { margin-top: 0; }
+
+.palette { width: min(560px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.palette input { width: 100%; padding: 16px; border: 0; border-bottom: 1px solid var(--line); background: transparent; font-size: 15px; outline: none; }
+.hits { max-height: 50vh; overflow: auto; padding: 4px; }
+.hit { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 8px; }
+.hit.active { background: var(--sel); }
+
+.toasts { position: fixed; right: 16px; bottom: 40px; z-index: 60; display: grid; gap: 8px; width: 320px; }
+.toast { padding: 8px 16px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); cursor: pointer; overflow-wrap: anywhere; }
+.toast.ok { border-left-color: var(--done); }
+.toast.warn { border-left-color: var(--needs); }
+.toast.bad { border-left-color: var(--bad); }

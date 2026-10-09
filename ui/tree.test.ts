@@ -1,39 +1,51 @@
 import { describe, expect, it } from 'vitest';
 import type { NodeView } from '../src/shared/protocol';
-import { fmtAge, flattenTree, insertSorted } from './tree';
+import { mk } from './fixtures';
+import { flattenSession, insertSorted, statusKind } from './tree';
 
-const mk = (id: string, parentId: string | null, changedAt: number): NodeView => ({
-  id, parentId, kind: 'claude', title: id, cwd: '/', createdAt: 0, unread: false,
-  status: { state: 'working', changedAt },
-});
+const byId = (ns: NodeView[]) => Object.fromEntries(ns.map((n) => [n.id, n]));
 
 describe('tree', () => {
   it('insertSorted places a new node among its siblings by changedAt descending, ignoring other groups', () => {
     const a = mk('a', null, 300), b = mk('b', null, 100), x = mk('x', 'a', 999);
     const nodes = { a, b, x };
-    const n = mk('n', null, 200);
-    expect(insertSorted(['a', 'x', 'b'], nodes, n)).toEqual(['a', 'x', 'n', 'b']);
+    expect(insertSorted(['a', 'x', 'b'], nodes, mk('n', null, 200))).toEqual(['a', 'x', 'n', 'b']);
     expect(insertSorted(['a', 'x', 'b'], nodes, mk('o', null, 50))).toEqual(['a', 'x', 'b', 'o']);
     expect(insertSorted(['a', 'x', 'b'], nodes, mk('t', null, 300))).toEqual(['a', 'x', 't', 'b']);
   });
 
-  it('flattenTree lists roots first with children indented under their parent, in given order', () => {
-    const nodes = Object.fromEntries([mk('a', null, 3), mk('c1', 'a', 2), mk('b', null, 1), mk('c2', 'a', 1), mk('g', 'c1', 1), mk('orphan', 'gone', 0)].map((n) => [n.id, n]));
-    const order = ['a', 'c1', 'b', 'c2', 'g', 'orphan'];
-    expect(flattenTree(nodes, order, []).map((r) => [r.node.id, r.depth])).toEqual([
-      ['a', 0], ['c1', 1], ['g', 2], ['c2', 1], ['b', 0], ['orphan', 0],
+  it('flattenSession lists one session depth-first and ignores other roots', () => {
+    const nodes = byId([mk('a', null, 3), mk('c1', 'a', 2), mk('b', null, 1), mk('c2', 'a', 1), mk('g', 'c1', 1)]);
+    const order = ['a', 'c1', 'b', 'c2', 'g'];
+    expect(flattenSession(nodes, order, 'a', []).map((r) => [r.node.id, r.depth])).toEqual([['a', 0], ['c1', 1], ['g', 2], ['c2', 1]]);
+    expect(flattenSession(nodes, order, 'b', []).map((r) => r.node.id)).toEqual(['b']);
+  });
+
+  it('flattenSession marks connectors: elbow on the last sibling, vertical guides under ancestors that have later siblings', () => {
+    const nodes = byId([mk('a', null, 0), mk('c1', 'a', 0), mk('g1', 'c1', 0), mk('g2', 'c1', 0), mk('c2', 'a', 0), mk('h', 'c2', 0)]);
+    const rows = flattenSession(nodes, ['a', 'c1', 'g1', 'g2', 'c2', 'h'], 'a', []);
+    expect(rows.map((r) => [r.node.id, r.last, r.guides])).toEqual([
+      ['a', true, []],
+      ['c1', false, []],
+      ['g1', false, [true]],   // c1 has a later sibling (c2): line continues beside its children
+      ['g2', true, [true]],
+      ['c2', true, []],
+      ['h', true, [false]],    // c2 is last: no line beside its child
     ]);
   });
 
-  it('flattenTree hides children of collapsed parents but exposes them as descendants', () => {
-    const nodes = Object.fromEntries([mk('a', null, 3), mk('c1', 'a', 2), mk('g', 'c1', 1)].map((n) => [n.id, n]));
-    const rows = flattenTree(nodes, ['a', 'c1', 'g'], ['a']);
-    expect(rows.map((r) => r.node.id)).toEqual(['a']);
-    expect(rows[0].collapsed).toBe(true);
-    expect(rows[0].descendants.map((d) => d.id)).toEqual(['c1', 'g']);
+  it('flattenSession hides children of collapsed parents but exposes them as descendants', () => {
+    const nodes = byId([mk('a', null, 3), mk('c1', 'a', 2), mk('g', 'c1', 1)]);
+    const rows = flattenSession(nodes, ['a', 'c1', 'g'], 'a', ['c1']);
+    expect(rows.map((r) => r.node.id)).toEqual(['a', 'c1']);
+    expect(rows[1].collapsed).toBe(true);
+    expect(rows[1].descendants.map((d) => d.id)).toEqual(['g']);
   });
 
-  it('fmtAge', () => {
-    expect([0, 59_000, 180_000, 3_600_000, 90_000_000].map(fmtAge)).toEqual(['now', 'now', '3m', '1h', '1d']);
+  it('statusKind maps state and flags', () => {
+    expect(statusKind(mk('a', null, 0, { state: 'blocked' }))).toBe('needs');
+    expect(statusKind(mk('a', null, 0, { state: 'done', errored: true }))).toBe('errored');
+    expect(statusKind(mk('a', null, 0, { state: 'working', exited: true }))).toBe('exited');
+    expect(statusKind(mk('a', null, 0, { state: 'none' }))).toBe('unknown');
   });
 });

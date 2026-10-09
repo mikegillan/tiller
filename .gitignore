@@ -1,3 +1,4 @@
 node_modules/
 .orchestr8-dev/
 ui/dist/
+src-tauri/target/

@@ -1,6 +1,6 @@
 // Client-side helpers for `o8` / `o8 up`: find or start the daemon, pick the orchestrator for a directory.
 import { spawn } from 'node:child_process';
-import { mkdirSync, openSync, readFileSync } from 'node:fs';
+import { mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,6 +28,7 @@ export async function startDaemon(home: string, port: number, waitMs = 15_000): 
   const log = join(home, 'daemon.log');
   const fd = openSync(log, 'a');
   const bin = fileURLToPath(new URL('../../bin/o8d', import.meta.url));
+  writeFileSync(join(home, 'repo'), fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '') + '\n'); // lets the app shell find bin/o8d
   const child = spawn(bin, [], { detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, O8_HOME: home, O8_PORT: String(port) } });
   child.unref();
   for (const end = Date.now() + waitMs; Date.now() < end; await sleep(200)) {

@@ -2,17 +2,7 @@ import type { ClientMessage, ServerMessage } from '../src/shared/protocol';
 import { applyServer, setConnected } from './store';
 import { getTerm } from './terminals';
 import { armOnFirstClick, handleNotify } from './notify';
-
-/** Read `?k=` once, keep it in localStorage, and remove it from the address bar. */
-const urlKey = new URLSearchParams(location.search).get('k');
-if (urlKey) {
-  try { localStorage.setItem('o8.k', urlKey); } catch { /* storage unavailable; the in-memory copy still works */ }
-  history.replaceState(null, '', location.pathname);
-}
-
-function token(): string {
-  try { return urlKey ?? localStorage.getItem('o8.k') ?? ''; } catch { return urlKey ?? ''; }
-}
+import { token } from './url';
 
 let ws: WebSocket | undefined;
 let attempt = 0;
@@ -42,7 +32,7 @@ function open() {
   };
   sock.onclose = () => {
     if (ws !== sock) return;
-    setConnected(false);
+    setConnected(false, attempt + 1);
     setTimeout(open, Math.min(10000, 500 * 2 ** attempt++));
   };
 }

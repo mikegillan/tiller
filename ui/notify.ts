@@ -1,7 +1,9 @@
 import type { ServerMessage } from '../src/shared/protocol';
-import { selectNode, toast } from './store';
+import { selectNode, toast, type Tone } from './store';
 
 type Notify = Extract<ServerMessage, { t: 'notify' }>;
+
+const TONE: Record<Notify['kind'], Tone> = { done: 'ok', needsYou: 'warn', errored: 'bad', exited: 'info' };
 
 let ctx: AudioContext | undefined;
 const lastNotified = new Map<string, number>();
@@ -36,7 +38,7 @@ function chime(m: Notify) {
 }
 
 export function handleNotify(m: Notify) {
-  toast(m.body ? `${m.title}: ${m.body}` : m.title, m.id);
+  toast(m.body ? `${m.title}: ${m.body}` : m.title, m.id, TONE[m.kind]);
   if (throttled(m.id)) return;
   if (document.hidden || !document.hasFocus()) {
     if ('Notification' in window && Notification.permission === 'granted') {

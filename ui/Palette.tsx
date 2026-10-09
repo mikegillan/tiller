@@ -1,27 +1,41 @@
-import { useState } from 'react';
-import { selectNode } from './store';
-import type { Row } from './tree';
+import { useMemo, useState } from 'react';
+import { StateDot } from './Bits';
+import { cwdBase } from './format';
+import { ancestry } from './sessions';
+import { openDialog, selectNode, useStore } from './store';
+import { statusKind } from './tree';
 
-export function Palette({ rows, onClose }: { rows: Row[]; onClose: () => void }) {
+export function Palette() {
+  const nodes = useStore((s) => s.nodes);
+  const order = useStore((s) => s.order);
   const [q, setQ] = useState('');
   const [i, setI] = useState(0);
-  // Search all nodes, including those under collapsed parents: rows only lists visible ones, so add descendants.
-  const nodes = rows.flatMap((r) => [r.node, ...(r.collapsed ? r.descendants : [])]);
-  const hits = nodes.filter((n) => n.title.toLowerCase().includes(q.toLowerCase()));
-  const pick = (id: string) => { selectNode(id); onClose(); };
+  const all = useMemo(() => order.map((id) => nodes[id]).filter(Boolean).map((n) => {
+    const root = ancestry(nodes, n.id)[0] ?? n;
+    return { n, where: root === n ? cwdBase(n.cwd) : `${root.title} · ${cwdBase(n.cwd)}` };
+  }), [nodes, order]);
+  const needle = q.toLowerCase();
+  const hits = all.filter((h) => `${h.n.title} ${h.where}`.toLowerCase().includes(needle));
+  const close = () => openDialog(null);
+  const pick = (id: string) => { selectNode(id); close(); };
   const onKey = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') onClose();
+    if (e.key === 'Escape') close();
     else if (e.key === 'ArrowDown') { e.preventDefault(); setI(Math.min(i + 1, hits.length - 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setI(Math.max(i - 1, 0)); }
-    else if (e.key === 'Enter' && hits[i]) pick(hits[i].id);
+    else if (e.key === 'Enter' && hits[i]) pick(hits[i].n.id);
   };
   return (
-    <div className="overlay" onClick={onClose}>
-      <div className="palette" onClick={(e) => e.stopPropagation()}>
-        <input autoFocus placeholder="Jump to node..." value={q} onChange={(e) => { setQ(e.target.value); setI(0); }} onKeyDown={onKey} />
-        {hits.map((n, j) => (
-          <div key={n.id} className={`hit${j === i ? ' active' : ''}`} onClick={() => pick(n.id)}>{n.title}</div>
-        ))}
+    <div className="overlay top" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+      <div className="palette" role="dialog" aria-label="Jump to node">
+        <input autoFocus placeholder="Jump to a node…" value={q} onChange={(e) => { setQ(e.target.value); setI(0); }} onKeyDown={onKey} />
+        <div className="hits">
+          {hits.map((h, j) => (
+            <div key={h.n.id} className={`hit${j === i ? ' active' : ''}`} onMouseMove={() => setI(j)} onClick={() => pick(h.n.id)}>
+              <StateDot kind={statusKind(h.n)} /><span className="st">{h.n.title}</span><span className="sc">{h.where}</span>
+            </div>
+          ))}
+          {!hits.length && <p className="hint">No matches.</p>}
+        </div>
       </div>
     </div>
   );

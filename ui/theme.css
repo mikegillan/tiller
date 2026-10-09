@@ -1,0 +1,67 @@
+:root {
+  color-scheme: dark light;
+  --bg: #0e1116;
+  --surface: #141920;
+  --surface-2: #1b212a;
+  --hover: #1f2631;
+  --sel: #22304a;
+  --fg: #d8dee6;
+  --dim: #8b96a5;
+  --line: #2a323d;
+  --accent: #5b9cf5;
+  --accent-fg: #0b1220;
+  --working: #4cc9e0;
+  --needs: #f0b429;
+  --done: #3fb950;
+  --bad: #f85149;
+  --idle: #6e7a8a;
+  --shadow: 0 8px 32px rgb(0 0 0 / 0.5);
+  --ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+  --l1: 16px; /* vertical centre of a row's first line: where connectors meet it */
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #ffffff;
+    --surface: #f5f7fa;
+    --surface-2: #eaeef3;
+    --hover: #e8edf3;
+    --sel: #d6e6fd;
+    --fg: #1f2933;
+    --dim: #5f6b7a;
+    --line: #d3dae3;
+    --accent: #0b64d8;
+    --accent-fg: #ffffff;
+    --working: #0a7e8c;
+    --needs: #b36b00;
+    --done: #1a7f37;
+    --bad: #cf222e;
+    --idle: #8c959f;
+    --shadow: 0 8px 32px rgb(31 41 51 / 0.2);
+  }
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font: 13px/1.4 var(--ui); -webkit-font-smoothing: antialiased; }
+button, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.mono { font-family: var(--mono); }
+.spacer { flex: 1; }
+.warn { color: var(--needs); }
+kbd { font: 11px var(--mono); padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; color: var(--dim); }
+
+/* State dot: colour carries the state, motion is limited to the two that want attention. */
+.dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--idle); }
+.dot.working { background: var(--working); animation: pulse 1.8s ease-in-out infinite; }
+.dot.needs { background: var(--needs); box-shadow: 0 0 0 3px color-mix(in srgb, var(--needs) 25%, transparent), 0 0 10px var(--needs); }
+.dot.done { background: var(--done); }
+.dot.errored { background: var(--bad); }
+.dot.exited { background: transparent; box-shadow: inset 0 0 0 1.5px var(--idle); }
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--working) 55%, transparent); }
+  50% { box-shadow: 0 0 0 4px transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .dot.working { animation: none; } }

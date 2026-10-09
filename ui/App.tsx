@@ -1,21 +1,28 @@
-import { useEffect, useMemo, useState } from 'react';
-import { selectNode, useStore } from './store';
-import { flattenTree } from './tree';
-import { Sidebar } from './Sidebar';
-import { Header } from './Header';
-import { TerminalPane } from './TerminalPane';
-import { Toasts, ConfirmModal } from './Toasts';
+import { useEffect } from 'react';
+import { Dialogs } from './Dialogs';
+import { ExitedCard } from './ExitedCard';
+import { useDocumentSync } from './hooks';
+import { LastMessagePanel } from './LastMessagePanel';
 import { Palette } from './Palette';
+import { Sidebar, useRows } from './Sidebar';
+import { StatusBar } from './StatusBar';
+import { TerminalPane } from './TerminalPane';
+import { TitleBar } from './TitleBar';
+import { ConfirmModal, Toasts } from './Toasts';
+import { getState, openDialog, selectNode, useStore } from './store';
 
 export function App() {
-  const [palette, setPalette] = useState(false);
-  const { nodes, order, collapsed, selected, connected } = useStore((s) => s);
-  const rows = useMemo(() => flattenTree(nodes, order, collapsed), [nodes, order, collapsed]);
+  const rows = useRows();
+  const node = useStore((s) => (s.selected ? s.nodes[s.selected] : undefined));
+  const panel = useStore((s) => s.panel);
+  const palette = useStore((s) => s.dialog?.kind === 'palette');
+  useDocumentSync();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.altKey || e.shiftKey) return; // Ctrl must reach the terminal
-      if (e.key === 'k') { e.preventDefault(); setPalette((p) => !p); }
+      if (e.key === 'k') { e.preventDefault(); openDialog(getState().dialog?.kind === 'palette' ? null : { kind: 'palette' }); }
+      else if (e.key === '0') { e.preventDefault(); document.querySelector<HTMLElement>('.tree')?.focus(); }
       else if (/^[1-9]$/.test(e.key)) {
         const row = rows[Number(e.key) - 1];
         if (row) { e.preventDefault(); selectNode(row.node.id); }
@@ -27,15 +34,28 @@ export function App() {
 
   return (
     <div className="app">
-      <Sidebar rows={rows} />
+      <Sidebar />
       <main className="main">
-        {!connected && <div className="offline">Disconnected, reconnecting...</div>}
-        {selected && nodes[selected] ? <Header node={nodes[selected]} /> : <div className="empty">Select or create a node</div>}
-        <TerminalPane />
+        {node ? <TitleBar node={node} /> : null}
+        <div className="work">
+          <div className="stage">
+            <TerminalPane />
+            {node?.status.exited && <ExitedCard node={node} />}
+            {!node && (
+              <div className="empty">
+                <p>No sessions yet.</p>
+                <button className="btn primary" onClick={() => openDialog({ kind: 'spawn', parentId: null, cwd: '' })}>New session</button>
+              </div>
+            )}
+          </div>
+          {panel && <LastMessagePanel />}
+        </div>
       </main>
+      <StatusBar />
       <Toasts />
       <ConfirmModal />
-      {palette && <Palette rows={rows} onClose={() => setPalette(false)} />}
+      <Dialogs />
+      {palette && <Palette />}
     </div>
   );
 }
