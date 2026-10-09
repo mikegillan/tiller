@@ -17,13 +17,11 @@ This puts `o8` (client) and `o8d` (daemon) on your PATH.
 
 ## Run
 
-In one terminal, start the daemon:
+    cd ~/some/repo && o8
 
-    o8d
+That one command starts the daemon if it is not running (detached, logging to `~/.orchestr8/daemon.log`) and attaches to the orchestrator for the current directory, creating it on first use. Run `o8` again in the same directory to reattach to the same orchestrator; `o8 --new` always starts a fresh one, and `--title T` and `--prompt P` set its title and first prompt. `o8 status` shows the daemon and node count, and `o8 stop` shuts the daemon down and closes all nodes.
 
-In another, start an orchestrator session in a repo and attach to it:
-
-    o8 new orchestrator --cwd ~/some/repo
+`o8d` is the same daemon in the foreground, for when you want its log in a terminal.
 
 Inside that session you will see a one-line band above the prompt, an `orchestr8` pane opened with `/o8` (the orchestrator on top, then one outlined card per descendant, its border colored by state; click a card, or press its digit once the pane has focus, to make `o8 attach` switch to that node), and the slash commands `/o8-list`, `/o8-spawn <title> :: <prompt>`, `/o8-send <id> <text>` and `/o8-read <id>`. The orchestrator also has MCP tools to do the same.
 

@@ -1,0 +1,63 @@
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import http from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { NodeManager } from './manager.js';
+import { findDaemon, pickOrchestrator, type OrchestratorCandidate } from './up.js';
+
+const node = (o: Partial<OrchestratorCandidate>): OrchestratorCandidate => ({ id: 'x', title: 't', kind: 'claude', parentId: null, cwd: '/repo', createdAt: 1, ...o });
+
+describe('pickOrchestrator', () => {
+  it('ignores exited nodes, children, other dirs and terminals', () => {
+    const nodes = [node({ id: 'dead', exited: true }), node({ id: 'kid', parentId: 'p' }), node({ id: 'else', cwd: '/other' }), node({ id: 'sh', kind: 'terminal' })];
+    expect(pickOrchestrator(nodes, '/repo')).toBeUndefined();
+  });
+  it('prefers the most recently created match', () => {
+    const nodes = [node({ id: 'old', createdAt: 1 }), node({ id: 'new', createdAt: 5 }), node({ id: 'mid', createdAt: 3 })];
+    expect(pickOrchestrator(nodes, '/repo')?.id).toBe('new');
+  });
+});
+
+describe('findDaemon', () => {
+  let srv: http.Server | undefined;
+  afterEach(() => new Promise<void>((ok) => (srv ? srv.close(() => ok()) : ok())));
+  const serve = async (handler: http.RequestListener) => {
+    srv = http.createServer(handler);
+    await new Promise<void>((ok) => srv!.listen(0, '127.0.0.1', ok));
+    return (srv.address() as { port: number }).port;
+  };
+
+  it('returns the health body when /health answers', async () => {
+    const port = await serve((_, res) => res.end(JSON.stringify({ ok: true, pid: 42, home: '/h', version: '1' })));
+    expect(await findDaemon(port)).toMatchObject({ pid: 42, home: '/h' });
+  });
+  it('gives up on a hung server within the timeout', async () => {
+    const port = await serve(() => {});
+    const t = Date.now();
+    expect(await findDaemon(port, 100)).toBeUndefined();
+    expect(Date.now() - t).toBeLessThan(1000);
+  });
+  it('returns undefined when nothing listens', async () => {
+    const port = await serve((_, res) => res.end('{}'));
+    await new Promise<void>((ok) => srv!.close(() => ok()));
+    srv = undefined;
+    expect(await findDaemon(port)).toBeUndefined();
+  });
+});
+
+describe('spawn-or-reuse with a real manager', () => {
+  let home = '';
+  let m: NodeManager;
+  afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
+
+  it('reuses the orchestrator for the realpath of cwd, spawns none for a new dir', () => {
+    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    m = new NodeManager({ home, shell: '/bin/sh' });
+    const dir = realpathSync(tmpdir()); // /var -> /private/var on macOS
+    const v = m.spawn({ kind: 'terminal', title: 'orch', cwd: dir, parentId: null });
+    const asClaude = [{ ...v, kind: 'claude' as const, exited: false }]; // terminal stands in for claude: no real claude in tests
+    expect(pickOrchestrator(asClaude, dir)?.id).toBe(v.id);
+    expect(pickOrchestrator(asClaude, join(dir, 'other'))).toBeUndefined();
+  });
+});

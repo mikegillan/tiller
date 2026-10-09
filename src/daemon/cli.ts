@@ -1,13 +1,16 @@
 // Thin client for the daemon's POST /api/<tool>. Inside a node it uses O8_NODE_ID / O8_TOKEN_FILE / O8_ENDPOINT;
 // outside it acts as `human` with the admin token in <home>/admin-token.
 import { attach } from './attach.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { daemonPort as portFor, findDaemon, pickOrchestrator, startDaemon } from './up.js';
 
-const usage = () => `o8: control the orchestr8 daemon (start it with o8d)
+const usage = () => `o8: control orchestr8. With no arguments, start the daemon if needed and attach to this directory's orchestrator.
 
+  o8 [up] [--new] [--title T] [--prompt P]            start daemon if needed; attach to (or create) this directory's orchestrator
+  o8 status | stop                                    show or stop the daemon (o8d runs it in the foreground)
   o8 new <title> [--cwd P] [--model M] [--prompt T]   start a Claude node and attach to it
   o8 ps | list                                        show nodes
   o8 attach <id>                                      view a node's terminal (Ctrl-\\ then d detach, n/p next/prev, ! needs you, b back, l list, 1-9 jump)
@@ -22,7 +25,7 @@ const fail = (msg: string): never => { console.error(msg); process.exit(1); };
 
 const home = process.env.O8_HOME ?? join(homedir(), '.orchestr8');
 const readHome = (name: string) => readFileSync(join(home, name), 'utf8').trim();
-const daemonPort = () => Number(process.env.O8_PORT ?? (() => { try { return readHome('port'); } catch { return 7788; } })());
+const daemonPort = () => portFor(home);
 
 async function call(tool: string, args: Record<string, unknown>, print = true): Promise<{ data?: any }> {
   const env = process.env;
@@ -43,12 +46,13 @@ async function call(tool: string, args: Record<string, unknown>, print = true): 
   return body;
 }
 
-const [cmd, ...rest] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const [cmd, ...rest] = argv[0]?.startsWith('-') ? ['up', ...argv] : argv; // `o8 --new` means `o8 up --new`
 const { values: f, positionals: pos } = parseArgs({
   args: rest, allowPositionals: true,
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' },
-    'permission-mode': { type: 'string' }, 'request-id': { type: 'string' }, lines: { type: 'string' },
+    'permission-mode': { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, lines: { type: 'string' },
   },
 });
 
@@ -88,6 +92,29 @@ switch (cmd) {
     await call('close', { nodeIds: pos });
     break;
   case undefined:
+  case 'up': {
+    const port = daemonPort();
+    if (!(await findDaemon(port))) await startDaemon(home, port).catch((e: Error) => fail(e.message));
+    const cwd = realpathSync(process.cwd());
+    const existing = f.new ? undefined : pickOrchestrator(((await call('list_nodes', {}, false)).data ?? []) as any[], cwd);
+    let id: string;
+    if (existing) { console.log(`reattaching to ${existing.title} (${existing.id})`); id = existing.id; }
+    else id = (await call('spawn', { kind: 'claude', title: f.title ?? basename(cwd), cwd, prompt: f.prompt }, false)).data.nodeId;
+    process.exit(await attach(id, { port, token: readHome('admin-token') }));
+    break;
+  }
+  case 'status': {
+    const h = await findDaemon(daemonPort());
+    if (!h) { console.log('no daemon'); break; }
+    const n = ((await call('list_nodes', {}, false)).data ?? []).length;
+    console.log(`daemon pid ${h.pid}, home ${h.home}, port ${daemonPort()}, ${n} node${n === 1 ? '' : 's'}`);
+    break;
+  }
+  case 'stop':
+    if (!(await findDaemon(daemonPort()))) { console.log('no daemon'); break; }
+    await call('shutdown', {}, false);
+    console.log('daemon stopped');
+    break;
   case 'help': console.log(usage()); break;
   default: fail(usage());
 }

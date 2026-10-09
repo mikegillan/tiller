@@ -33,7 +33,7 @@ function flags(v: NodeView): string[] {
 
 function summarize(v: NodeView, now: number) {
   return {
-    id: v.id, parentId: v.parentId, title: v.title, kind: v.kind, cwd: v.cwd, state: v.status.state, flags: flags(v),
+    id: v.id, parentId: v.parentId, title: v.title, kind: v.kind, cwd: v.cwd, state: v.status.state, flags: flags(v), exited: !!v.status.exited, createdAt: v.createdAt,
     age: age(now - v.createdAt), activity: v.status.activity, lastAssistantMessage: v.status.lastAssistantMessage?.slice(0, 200),
     outcome: outcomes.get(v.id),
   };
@@ -195,6 +195,16 @@ export const tools = {
       const r = c.manager.resume(a.nodeId);
       if (!r.ok) throw new Error(r.error);
       return { data: { ok: true } };
+    }),
+
+  shutdown: tool(
+    'Stop the daemon: flush the registry, kill every node process and exit. Only the human may call this.',
+    {},
+    async (c) => {
+      if (c.caller !== HUMAN) throw new Error('shutdown is only for the human');
+      c.manager.shutdown();
+      setTimeout(() => process.exit(0), 100); // after the reply is flushed
+      return { text: 'daemon stopping', data: { ok: true, pid: process.pid } };
     }),
 
   rename: tool(

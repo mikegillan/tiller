@@ -17,6 +17,7 @@ import { safeEqual } from './util.js';
 const UI_DIR = fileURLToPath(new URL('../../ui/dist', import.meta.url));
 const MAX_HOOK_BYTES = 8_000_000; // a PreToolUse payload for a large Write carries the whole file
 const AUTH_TIMEOUT_MS = 5000;
+const VERSION = (JSON.parse(readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')) as { version: string }).version;
 const CONFIRM_TIMEOUT_MS = 5 * 60_000;
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
@@ -147,6 +148,9 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
 
   async function route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://x');
+    if (req.method === 'GET' && url.pathname === '/health') {
+      return void res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, pid: process.pid, home: manager.home, version: VERSION }));
+    }
     if (req.method === 'POST' && url.pathname === '/hook') return hook(req, res);
     if (await mod(req, res, url.pathname)) return;
     if (url.pathname === '/mcp' || url.pathname.startsWith('/api/')) return mcp(req, res);
