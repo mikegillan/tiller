@@ -393,3 +393,22 @@ Verified (`spike/restart-check.ts`): the mod is loaded under `--resume`; the res
 Still unverified: behaviour when the user has other mods
 installed (they load in every node too); hot-reload losing module state (pending counts and
 in-flight ids live in `$.state` for that reason).
+
+## 15. Front-end direction (2026-10-09, evening)
+
+After real use, the per-session Claude pane was too quirky (focus rules, width thresholds,
+replay cruft on switch), so two things happened in order:
+
+1. `o8` became a terminal multiplexer (`src/client/`): a persistent sidebar with the tree and
+   node controls, and the selected node's screen rendered cell by cell from a headless xterm
+   fed by the daemon's serialized snapshot plus the live stream. It works and stays as the
+   terminal-native way in (SSH, inside other terminals), but gets no further polish.
+2. The primary front-end is the web UI (`ui/`) wrapped in a Tauri shell (`src-tauri/`).
+   The shell hosts only web content: it finds or starts the daemon, loads the UI from the
+   daemon with the admin token, keeps a dock badge with the needs-you count. All native work
+   (PTYs, hooks, MCP, messaging) stays in the daemon, so the shell has no native modules.
+
+A "session" is a root node and its subtree; the UI shows one session at a time with a
+switcher. `o8` registers a session for the current directory (resuming an exited one), and
+`o8 prune` sweeps exited nodes. Mods keep delivery, status events, the band and slash
+commands; the mod pane is gone.
