@@ -3,6 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "o8": "./bin/o8",
+    "o8d": "./bin/o8d"
+  },
   "engines": {
     "node": ">=24"
   },

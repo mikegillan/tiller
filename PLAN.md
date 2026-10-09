@@ -317,6 +317,8 @@ Phase 5: kanban, chat view, Codex (MCP works; status needs `~/.codex/hooks.json`
 trust hash in config.toml, which nodeterm ports Codex's hash for and calls brittle. Start
 with Codex's `notify` setting for turn-complete only).
 
+Phase status: phases 0-3 are built and verified; phase 4 (`after` / `after_success`) and phase 5 (kanban, chat view, Codex) are not started.
+
 ## 11. Dependencies
 
 Daemon: `node-pty`, `ws`, `@xterm/headless`, `@modelcontextprotocol/sdk` (+ `zod`).
@@ -386,6 +388,8 @@ Consequences:
   the prompt rows, not "last N rows" with a small N. A docked pane re-wraps the transcript
   to about 70 columns, which only matters for transcript scraping, which we do not do.
 
-Still unverified: `--plugin-dir` under `--resume`; behaviour when the user has other mods
+Verified (`spike/restart-check.ts`): the mod is loaded under `--resume`; the resumed `claude` is launched with both flags and a queued message is delivered afterwards.
+
+Still unverified: behaviour when the user has other mods
 installed (they load in every node too); hot-reload losing module state (pending counts and
 in-flight ids live in `$.state` for that reason).

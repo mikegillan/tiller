@@ -8,4 +8,4 @@ The daemon loads it by launching `claude --plugin-dir <repo>/mod ...` with the O
 Commands: `/o8` (open pane), `/o8-list`, `/o8-spawn <title> :: <prompt>`, `/o8-send <nodeId> <text>`, `/o8-read <nodeId>`.
 The last four call the daemon's `POST /api/<tool>` with the node's token and print the text result.
 Check with `claude plugin validate mod/`; exercise with `npx tsx spike/mod-prod-spike.ts`.
-OS notifications use `osascript`, whose clicks open Finder; `brew install terminal-notifier` makes a click focus your terminal (chosen from `TERM_PROGRAM`).
+OS notifications use `osascript`, whose clicks open Finder; `brew install terminal-notifier` makes a click focus your terminal (the daemon derives the app from its own `TERM_PROGRAM`, or `O8_TERMINAL_BUNDLE`, and passes it to nodes as `O8_TERMINAL_BUNDLE`).

@@ -94,7 +94,7 @@ export const register = on => {
     parent = await $.env.get('O8_PARENT_ID')
     try { isMac = (await $.process.run(['uname'])).stdout.trim() === 'Darwin' } catch { isMac = false }
     try { tn = isMac && !!(await $.process.run(['which', 'terminal-notifier'])).stdout.trim() } catch { tn = false }
-    bundle = { ghostty: 'com.mitchellh.ghostty', 'iTerm.app': 'com.googlecode.iterm2', Apple_Terminal: 'com.apple.Terminal', vscode: 'com.microsoft.VSCode' }[await $.env.get('TERM_PROGRAM')]
+    bundle = await $.env.get('O8_TERMINAL_BUNDLE')
     for (const [name, description] of [
       ['o8', 'Open the orchestr8 children pane'], ['o8-list', 'List orchestr8 nodes'],
       ['o8-spawn', 'Spawn a child: <title> :: <prompt>'], ['o8-send', 'Send a message: <nodeId> <text>'],

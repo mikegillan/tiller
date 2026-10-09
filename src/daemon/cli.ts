@@ -3,16 +3,20 @@
 import { attach } from './attach.js';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
-const USAGE = `usage:
-  o8 list | ps
-  o8 attach <id>        (detach with Ctrl-\ then d)
-  o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--permission-mode M] [--request-id ID]
+const usage = () => `o8: control the orchestr8 daemon (start it with o8d)
+
+  o8 new <title> [--cwd P] [--model M] [--prompt T]   start a Claude node and attach to it
+  o8 ps | list                                        show nodes
+  o8 attach <id>                                      view a node's terminal (detach with Ctrl-\\ then d)
+  o8 resume <id>                                      relaunch an exited Claude node
+  o8 kill <id...> | close <id...>                     close and delete nodes
   o8 send <id> "text"
   o8 read <id> [summary|transcript|terminal] [--lines N]
-  o8 close <id...>`;
+  o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--permission-mode M] [--request-id ID]
+  o8 help`;
 
 const fail = (msg: string): never => { console.error(msg); process.exit(1); };
 
@@ -54,23 +58,36 @@ switch (cmd) {
     for (const n of (await call('list_nodes', {}, false)).data ?? []) console.log([n.id, n.state, n.title, n.parentId ?? '-', n.age].join('\t'));
     break;
   case 'attach':
-    if (!pos[0]) fail(USAGE);
+    if (!pos[0]) fail(usage());
     process.exit(await attach(pos[0], { port: daemonPort(), token: readHome('admin-token') }));
+    break;
+  case 'new': {
+    if (!pos[0]) fail(usage());
+    const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model }, false);
+    process.exit(await attach(data.nodeId, { port: daemonPort(), token: readHome('admin-token') }));
+    break;
+  }
+  case 'resume':
+    if (!pos[0]) fail(usage());
+    await call('resume', { nodeId: pos[0] });
     break;
   case 'spawn':
     await call('spawn', { kind: f.kind, title: f.title, cwd: f.cwd ?? process.cwd(), prompt: f.prompt, model: f.model, permissionMode: f['permission-mode'], requestId: f['request-id'] });
     break;
   case 'send':
-    if (pos.length < 2) fail(USAGE);
+    if (pos.length < 2) fail(usage());
     await call('send', { nodeId: pos[0], text: pos.slice(1).join(' ') });
     break;
   case 'read':
-    if (!pos[0]) fail(USAGE);
+    if (!pos[0]) fail(usage());
     await call('read', { nodeId: pos[0], what: pos[1] ?? 'summary', lines: f.lines ? Number(f.lines) : undefined });
     break;
   case 'close':
-    if (!pos.length) fail(USAGE);
+  case 'kill':
+    if (!pos.length) fail(usage());
     await call('close', { nodeIds: pos });
     break;
-  default: fail(USAGE);
+  case undefined:
+  case 'help': console.log(usage()); break;
+  default: fail(usage());
 }

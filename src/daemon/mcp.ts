@@ -184,6 +184,16 @@ export const tools = {
       return { data: { ok: true, closed: a.nodeIds } };
     }),
 
+  resume: tool(
+    'Relaunch an exited Claude node with its previous conversation. Only the human may call this.',
+    { nodeId: z.string().min(1) },
+    async (c, a) => {
+      if (c.caller !== HUMAN) throw new Error('resume is only for the human');
+      const r = c.manager.resume(a.nodeId);
+      if (!r.ok) throw new Error(r.error);
+      return { data: { ok: true } };
+    }),
+
   rename: tool(
     'Change the title of yourself or one of your descendants.',
     { nodeId: z.string().min(1), title: z.string().min(1) },
