@@ -1,5 +1,6 @@
 // Thin client for the daemon's POST /api/<tool>. Inside a node it uses O8_NODE_ID / O8_TOKEN_FILE / O8_ENDPOINT;
 // outside it acts as `human` with the admin token in <home>/admin-token.
+import { mux } from '../client/mux.js';
 import { attach } from './attach.js';
 import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -13,7 +14,7 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 status | stop                                    show or stop the daemon (o8d runs it in the foreground)
   o8 new <title> [--cwd P] [--model M] [--prompt T]   start a Claude node and attach to it
   o8 ps | list                                        show nodes
-  o8 attach <id>                                      view a node's terminal (Ctrl-\\ then d detach, n/p next/prev, ! needs you, b back, l list, 1-9 jump)
+  o8 attach <id> [--plain]                            open the sidebar client on a node (Ctrl-\\ ? for keys; --plain is the old single-pane view)
   o8 resume <id>                                      relaunch an exited Claude node
   o8 kill <id...> | close <id...>                     close and delete nodes
   o8 send <id> "text"
@@ -52,7 +53,7 @@ const { values: f, positionals: pos } = parseArgs({
   args: rest, allowPositionals: true,
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' },
-    'permission-mode': { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, lines: { type: 'string' },
+    'permission-mode': { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, plain: { type: 'boolean' }, lines: { type: 'string' },
   },
 });
 
@@ -63,12 +64,12 @@ switch (cmd) {
     break;
   case 'attach':
     if (!pos[0]) fail(usage());
-    process.exit(await attach(pos[0], { port: daemonPort(), token: readHome('admin-token') }));
+    process.exit(await (f.plain ? attach : mux)(pos[0], { port: daemonPort(), token: readHome('admin-token') }));
     break;
   case 'new': {
     if (!pos[0]) fail(usage());
     const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model }, false);
-    process.exit(await attach(data.nodeId, { port: daemonPort(), token: readHome('admin-token') }));
+    process.exit(await mux(data.nodeId, { port: daemonPort(), token: readHome('admin-token') }));
     break;
   }
   case 'resume':
@@ -100,7 +101,7 @@ switch (cmd) {
     let id: string;
     if (existing) { console.log(`reattaching to ${existing.title} (${existing.id})`); id = existing.id; }
     else id = (await call('spawn', { kind: 'claude', title: f.title ?? basename(cwd), cwd, prompt: f.prompt }, false)).data.nodeId;
-    process.exit(await attach(id, { port, token: readHome('admin-token') }));
+    process.exit(await mux(id, { port, token: readHome('admin-token') }));
     break;
   }
   case 'status': {

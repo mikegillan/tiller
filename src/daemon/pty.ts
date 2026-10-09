@@ -2,7 +2,9 @@ import { execFile } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import * as nodePty from 'node-pty';
 import xterm from '@xterm/headless';
+import serialize from '@xterm/addon-serialize';
 const { Terminal } = xterm;
+const { SerializeAddon } = serialize;
 
 export interface SpawnOpts {
   file: string;
@@ -38,6 +40,7 @@ export function composerTextOf(lines: string[]): string {
 export class PtySession {
   private pty: nodePty.IPty;
   private term: InstanceType<typeof Terminal>;
+  private ser = new SerializeAddon();
   private lock: Promise<void> = Promise.resolve();
   private dataCbs: Array<(d: string) => void> = [];
   private exitCbs: Array<(code: number) => void> = [];
@@ -47,6 +50,7 @@ export class PtySession {
   private constructor(pty: nodePty.IPty, cols: number, rows: number) {
     this.pty = pty;
     this.term = new Terminal({ cols, rows, scrollback: 5000, allowProposedApi: true });
+    this.term.loadAddon(this.ser);
     pty.onData((d) => {
       this.term.write(d);
       for (const cb of this.dataCbs) cb(d);
@@ -114,6 +118,11 @@ export class PtySession {
   /** Whole buffer (scrollback + screen) as plain text, trailing blank rows dropped. @xterm/addon-serialize is not installed. */
   scrollback(): string {
     return this.lines(Infinity).join('\n').trimEnd();
+  }
+
+  /** The visible screen as escape sequences with attributes, for a client to repaint from. */
+  snapshot(): string {
+    return this.ser.serialize({ scrollback: 0 });
   }
 
   /** Last n rows of the viewport (not rows up to the cursor), right-trimmed. */

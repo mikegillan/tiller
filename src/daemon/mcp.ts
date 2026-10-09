@@ -1,3 +1,4 @@
+import { shortEffort, shortModel } from '../shared/format.js';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -36,7 +37,13 @@ function summarize(v: NodeView, now: number) {
     id: v.id, parentId: v.parentId, title: v.title, kind: v.kind, cwd: v.cwd, state: v.status.state, flags: flags(v), exited: !!v.status.exited, createdAt: v.createdAt,
     age: age(now - v.createdAt), activity: v.status.activity, lastAssistantMessage: v.status.lastAssistantMessage?.slice(0, 200),
     outcome: outcomes.get(v.id),
+    model: v.status.model, effort: v.status.effort, contextPct: v.status.contextPct, contextTokens: v.status.contextTokens, contextWindow: v.status.contextWindow, costUsd: v.status.costUsd,
   };
+}
+
+function modelInfo(n: ReturnType<typeof summarize>): string {
+  const me = [n.model && shortModel(n.model), n.effort && shortEffort(n.effort)].filter(Boolean).join(' ');
+  return [me, n.contextPct !== undefined && `ctx ${Math.round(n.contextPct)}%`].filter(Boolean).map((p) => ` · ${p}`).join('');
 }
 
 function tree(nodes: ReturnType<typeof summarize>[]): string {
@@ -45,7 +52,7 @@ function tree(nodes: ReturnType<typeof summarize>[]): string {
   const walk = (parent: string | null, depth: number) => {
     for (const n of nodes.filter((x) => (known.has(x.parentId ?? '') ? x.parentId : null) === parent)) {
       const extra = [...n.flags, n.activity].filter(Boolean).join(', ');
-      lines.push(`${'  '.repeat(depth)}- ${n.id} "${n.title}" [${n.kind}] ${n.state}${extra ? ` (${extra})` : ''} ${n.age}`);
+      lines.push(`${'  '.repeat(depth)}- ${n.id} "${n.title}" [${n.kind}] ${n.state}${extra ? ` (${extra})` : ''} ${n.age}${modelInfo(n)}`);
       walk(n.id, depth + 1);
     }
   };

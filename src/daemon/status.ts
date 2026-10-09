@@ -59,8 +59,11 @@ function done(prev: NodeStatus, now: number, patch: Partial<NodeStatus> = {}): N
 
 export function reduce(prev: NodeStatus, event: HookEvent, now: number): NodeStatus {
   const out = step(prev, event, now);
-  const mode = str(event.permission_mode);
-  return mode && mode !== out.permissionMode ? { ...out, permissionMode: mode } : out; // recorded even inside the done holdoff
+  // Recorded even inside the done holdoff, without touching state or changedAt.
+  const permissionMode = str(event.permission_mode) ?? out.permissionMode;
+  const model = event.hook_event_name === 'SessionStart' ? str(event.model) ?? out.model : out.model;
+  const effort = str((event.effort as { level?: unknown } | undefined)?.level) ?? out.effort;
+  return permissionMode === out.permissionMode && model === out.model && effort === out.effort ? out : { ...out, permissionMode, model, effort };
 }
 
 function step(prev: NodeStatus, event: HookEvent, now: number): NodeStatus {

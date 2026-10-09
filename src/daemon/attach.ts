@@ -1,39 +1,7 @@
-// `o8 attach <id>`: a tmux-like client. Prefix Ctrl-\ then one key: d detach, n/p next/prev node, ! next node needing you,
-// b back, l picker, 1-9 jump, ? help, Ctrl-\ twice sends a literal Ctrl-\.
+// `o8 attach --plain <id>`: the old single-pane client (clear and replay on switch). The default client is src/client/mux.ts.
 import { WebSocket } from 'ws';
 import type { ClientMessage, NodeView, ServerMessage } from '../shared/protocol.js';
-
-const CHORD = '\x1c';
-export const HELP = 'Ctrl-\\ then: d detach, n/p next/prev, ! needs you, b back, l list, 1-9 jump, Ctrl-\\ literal';
-
-export type Target = 'next' | 'prev' | 'needs' | 'back' | 'cur' | number;
-export type Action =
-  | { type: 'passthrough'; data: string } | { type: 'switch'; target: Target } | { type: 'echo'; data: string }
-  | { type: 'picker' } | { type: 'help' } | { type: 'detach' };
-export interface ChordState { held: boolean; pick: string | null }
-export const initial: ChordState = { held: false, pick: null };
-
-const keys: Record<string, Action> = {
-  d: { type: 'detach' }, n: { type: 'switch', target: 'next' }, p: { type: 'switch', target: 'prev' },
-  '!': { type: 'switch', target: 'needs' }, b: { type: 'switch', target: 'back' }, l: { type: 'picker' }, '?': { type: 'help' },
-};
-
-/** One input character through the chord machine. Switch indexes are zero-based. */
-export function step(s: ChordState, b: string): { state: ChordState; actions: Action[] } {
-  if (s.pick !== null) {
-    if (/^\d$/.test(b)) return { state: { ...s, pick: s.pick + b }, actions: [{ type: 'echo', data: b }] };
-    if (b === '\r' || b === '\n') {
-      const n = parseInt(s.pick, 10);
-      return { state: initial, actions: [{ type: 'switch', target: n >= 1 ? n - 1 : 'cur' }] };
-    }
-    return { state: b === '\x1b' ? initial : s, actions: b === '\x1b' ? [{ type: 'switch', target: 'cur' }] : [] };
-  }
-  if (!s.held) return b === CHORD ? { state: { ...s, held: true }, actions: [] } : { state: s, actions: [{ type: 'passthrough', data: b }] };
-  const next = { ...s, held: false };
-  if (b === 'l') return { state: { ...next, pick: '' }, actions: [{ type: 'picker' }] };
-  if (/^[1-9]$/.test(b)) return { state: next, actions: [{ type: 'switch', target: Number(b) - 1 }] };
-  return { state: next, actions: [keys[b] ?? { type: 'passthrough', data: b === CHORD ? CHORD : CHORD + b }] };
-}
+import { HELP, initial, step, type Action, type Target } from '../client/chords.js';
 
 const needsYou = (n: NodeView) => !n.status.exited && (n.status.state === 'blocked' || n.status.state === 'waiting');
 
@@ -100,6 +68,7 @@ export function attach(startId: string, { port, token }: { port: number; token: 
       else if (a.type === 'switch') pick(a.target);
       else if (a.type === 'echo') stdout.write(a.data);
       else if (a.type === 'help') notice(HELP);
+      else if (a.type === 'act') notice('not available in --plain mode');
       else {
         stdout.write('\x1b[2J\x1b[H[orchestr8] pick a node, Enter to switch, Esc to cancel\r\n');
         order().forEach((n, i) => stdout.write(`${n.id === cur ? '*' : ' '}${i + 1}. ${n.id.slice(0, 8)} ${n.status.state.padEnd(8)} ${n.title} ${(n.status.activity ?? '').slice(0, 50)}${needsYou(n) ? ' !' : ''}\r\n`));

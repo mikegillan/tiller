@@ -139,7 +139,7 @@ export class NodeManager extends EventEmitter {
   view(id: string): NodeView | undefined {
     const rec = this.registry.get(id);
     const status = this.statuses.get(id);
-    return rec && status ? { ...rec, status, unread: this.unread.has(id) } : undefined;
+    return rec && status ? { ...rec, status: status.model || !rec.model ? status : { ...status, model: rec.model }, unread: this.unread.has(id) } : undefined;
   }
 
   list(): NodeView[] {
@@ -246,13 +246,13 @@ export class NodeManager extends EventEmitter {
     this.sessions.get(id)?.resize(cols, rows);
   }
 
-  /** Resize to the viewer and return everything buffered so far, as plain text with \n line ends. */
+  /** Resize to the viewer and return the visible screen serialized with attributes. */
   async attach(id: string, cols: number, rows: number): Promise<string> {
     const s = this.sessions.get(id);
     if (!s) return '';
     s.resize(cols, rows);
     await s.flush();
-    return s.scrollback();
+    return s.snapshot();
   }
 
   applyHook(nodeId: string, event: HookEvent): void {
@@ -281,11 +281,13 @@ export class NodeManager extends EventEmitter {
     if (!prev) return;
     const now = Date.now();
     if (ev.event === 'turn.complete') {
-      if (ev.payload.isAborted) this.setStatus(nodeId, turnAborted(prev, now));
-      else if (ev.payload.reason === 'error') this.setStatus(nodeId, turnErrored(prev, now));
+      const model = ev.payload.usage?.model;
+      if (typeof model === 'string' && model !== prev.model) this.setStatus(nodeId, { ...prev, model });
+      if (ev.payload.isAborted) this.setStatus(nodeId, turnAborted(this.statuses.get(nodeId)!, now));
+      else if (ev.payload.reason === 'error') this.setStatus(nodeId, turnErrored(this.statuses.get(nodeId)!, now));
     } else if (ev.event === 'session.measure') {
       const { context, cost } = ev.payload;
-      this.setStatus(nodeId, { ...prev, contextPct: context?.percent ?? prev.contextPct, costUsd: cost?.usd ?? prev.costUsd });
+      this.setStatus(nodeId, { ...prev, contextPct: context?.percent ?? prev.contextPct, contextTokens: context?.tokens ?? prev.contextTokens, contextWindow: context?.window ?? prev.contextWindow, costUsd: cost?.usd ?? prev.costUsd });
     }
   }
 

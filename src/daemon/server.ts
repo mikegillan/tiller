@@ -85,7 +85,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
         // Snapshot first, then subscribe, so live output is not also part of the snapshot. attach() resolves
         // and we add the client in the same tick, so no chunk can fall between the two.
         const text = await manager.attach(m.id, m.cols, m.rows);
-        if (text) sendTo(c, { t: 'data', id: m.id, data: text.replaceAll('\n', '\r\n') });
+        if (text) sendTo(c, { t: 'data', id: m.id, data: text });
         c.attached.add(m.id);
         return;
       }

@@ -5,13 +5,10 @@ import { parse, request, type Ctx } from './api'
 import { Band } from './band'
 import { COMMANDS, parseSend, parseSpawn } from './commands'
 import { changes, osCommand } from './notify'
-import { Pane } from './pane'
 
 // orchestr8 per-node mod. Inert unless O8_NODE_ID is set. Contract: src/shared/protocol.ts "Mod-facing HTTP API".
 const kids = atom({ plugin: 'orchestr8', key: 'children' } as const, [] as Child[])
 const pend = atom({ plugin: 'orchestr8', key: 'pending' } as const, 0)
-const placed = atom({ plugin: 'orchestr8', key: 'placed' } as const, false)
-const PANE = { id: 'o8-children', title: 'orchestr8' }
 let ctx: Ctx | undefined
 let parent: string | undefined, isMac = false, busy = false, tn = false, bundle: string | undefined
 let prev: Child[] | null = null
@@ -25,11 +22,6 @@ async function call($: any, method: string, path: string, body?: unknown) {
 
 async function tool($: any, name: string, args: unknown): Promise<string> {
   try { const r = await call($, 'POST', `/api/${name}`, args); return r.text ?? (r.data === undefined ? '(no output)' : JSON.stringify(r.data)) } catch (err) { return `error: ${err}` }
-}
-
-// Open (or re-open) the tree pane; it only places at 144+ columns and otherwise waits, so `placed` drives the band's hint.
-function openPane($: any, focus = false) {
-  return $.ui.open(focus ? { ...PANE, focus } : PANE).then((r: any) => update($, placed, () => !!r.isPlaced), () => {})
 }
 
 async function focus($: any, id: string, label: string) {
@@ -84,22 +76,14 @@ export const register: Register = on => {
     try { tn = isMac && !!(await $.process.run(['which', 'terminal-notifier'])).stdout.trim() } catch { tn = false }
     bundle = (await $.env.get('O8_TERMINAL_BUNDLE')) || undefined
     for (const [name, description] of COMMANDS) await $.command.register({ name, description })
-    openPane($)
     $.clock.every(1000, () => poll($))
     return next(e)
   })
-
-  on('classic.SessionStart', { source: ['clear', 'resume'] }, ($, e, next) => { if (ctx) openPane($); return next(e) })
 
   on('turn.start', ($, e, next) => { forward($, 'turn.start', e); return next(e) })
   on('turn.complete', ($, e, next) => { forward($, 'turn.complete', e); return next(e) })
   on('session.measure', ($, e, next) => { forward($, 'session.measure', e); return next(e) })
 
-  on('command.run', { command: 'o8' }, async $ => {
-    const r = await $.ui.open({ ...PANE, focus: true })
-    await update($, placed, () => !!r.isPlaced)
-    return { text: r.isPlaced ? 'orchestr8 pane opened.' : 'Terminal too narrow for the pane; widen it and run /o8 again.' }
-  })
   on('command.run', { command: 'o8-list' }, async $ => ({ text: await tool($, 'list_nodes', {}) }))
   on('command.run', { command: 'o8-spawn' }, async ($, e) => {
     const a = parseSpawn(e.args)
@@ -118,10 +102,6 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (!ctx) return next(e)
     const id = ctx.id
-    return Band($.ui.resolve(e), id, await read($, kids), await read($, pend), parent, await read($, placed), (to, label) => focus($, to, label))
+    return Band($.ui.resolve(e), id, await read($, kids), await read($, pend), parent, (to, label) => focus($, to, label))
   })
-
-  on('ui.render', { component: 'Pane', requestId: 'o8-children' }, async ($, e) =>
-    Pane($.ui.resolve(e), await read($, kids), c => focus($, c.id, c.title)),
-  )
 }

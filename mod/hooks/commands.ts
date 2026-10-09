@@ -1,5 +1,5 @@
 export const COMMANDS: [string, string][] = [
-  ['o8', 'Open the orchestr8 pane'], ['o8-list', 'List orchestr8 nodes'],
+  ['o8-list', 'List orchestr8 nodes'],
   ['o8-spawn', 'Spawn a child: <title> :: <prompt>'], ['o8-send', 'Send a message: <nodeId> <text>'],
   ['o8-read', 'Read a node summary: <nodeId>'],
 ]

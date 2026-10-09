@@ -28,6 +28,12 @@ export interface NodeStatus {
   activity?: string;
   /** From the mod's session.measure, when available. */
   contextPct?: number;
+  contextTokens?: number;
+  contextWindow?: number;
+  /** Model id (e.g. claude-opus-5-5): SessionStart or the mod's turn.complete; view() falls back to the spawn --model. */
+  model?: string;
+  /** Latest effort level seen in a hook payload (low, medium, high, xhigh, max). */
+  effort?: string;
   costUsd?: number;
   /** Wall-clock ms of the last event that changed state. */
   changedAt: number;
@@ -69,7 +75,7 @@ export type ServerMessage =
 // UI -> Daemon.
 export type ClientMessage =
   | { t: 'auth'; token: string }                // must be the first message; token comes from the ?k= query param of the served UI URL
-  | { t: 'attach'; id: string; cols: number; rows: number } // start receiving data; replies with buffered scrollback
+  | { t: 'attach'; id: string; cols: number; rows: number } // start receiving data; replies with a data message holding the serialized screen
   | { t: 'detach'; id: string }
   | { t: 'input'; id: string; data: string }
   | { t: 'resize'; id: string; cols: number; rows: number }

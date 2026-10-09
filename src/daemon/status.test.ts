@@ -124,6 +124,16 @@ describe('reduce', () => {
   });
 });
 
+describe('model and effort', () => {
+  it('stamps model from SessionStart and effort from any event, even inside the done holdoff', () => {
+    const d = st({ state: 'done', changedAt: NOW - 100 });
+    expect(reduce(d, ev('PostToolUse', { effort: { level: 'high' } }), NOW)).toEqual({ ...d, effort: 'high' });
+    const s = reduce(st({ state: 'working' }), ev('SessionStart', { model: 'claude-opus-5-5' }), NOW);
+    expect(s).toMatchObject({ model: 'claude-opus-5-5', state: 'unknown', changedAt: NOW });
+    expect(reduce(s, ev('Stop', {}), NOW).model).toBe('claude-opus-5-5');
+  });
+});
+
 describe('done holdoff', () => {
   const done = st({ state: 'done', changedAt: T0 });
   it('ignores PostToolUse and PreToolUse within 3 s of done, by reference', () => {

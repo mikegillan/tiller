@@ -110,6 +110,10 @@ describe('POST /hook', () => {
     expect((await call('/mod-event', kid.id, tk, { method: 'POST', body: JSON.stringify(measure) })).status).toBe(204);
     expect((await call('/mod-event', kid.id, tk, { method: 'POST', body: '{"event":"nope"}' })).status).toBe(400);
     expect(manager.view(kid.id)?.status).toMatchObject({ contextPct: 50, costUsd: 0.25 });
+    expect(manager.view(kid.id)?.status).toMatchObject({ contextTokens: 1, contextWindow: 2 });
+    const done = { event: 'turn.complete', payload: { durationMs: 1, isAborted: false, turnId: 't', reason: 'answer', usage: { model: 'claude-sonnet-5-5' } } };
+    expect((await call('/mod-event', kid.id, tk, { method: 'POST', body: JSON.stringify(done) })).status).toBe(204);
+    expect(manager.view(kid.id)?.status).toMatchObject({ model: 'claude-sonnet-5-5', contextPct: 50 });
     expect(await (await call('/children', parent.id, tp)).json()).toMatchObject([
       { id: parent.id, title: 'boss', depth: 0, self: true, parentId: null },
       { id: kid.id, title: 'kid', depth: 1, contextPct: 50 },
