@@ -325,3 +325,29 @@ Still present after the uninstall: nodeterm hook entries in `~/.claude/settings.
 (guarded, so harmless, but 11 references), `~/.nodeterm/`, `~/Library/Application
 Support/node-terminal/`, and the two skills in `~/.claude/skills/` that Claude sessions still
 see. Worth removing before this tool installs its own.
+
+## 13. Phase 0 results (2026-10-09)
+
+All four assumptions passed (`spike/claude-spike.ts`, Claude Code 2.1.295). Findings that
+change the build:
+
+- Folder trust is per exact cwd in `~/.claude.json` (`projects[cwd].hasTrustDialogAccepted`)
+  and the dialog's default answer is "No, exit". Policy: on spawn the daemon reads that file
+  (never writes it); if the cwd or any ancestor is trusted it answers the dialog itself (wait
+  for the "Enter to confirm" footer, send Down then Enter); otherwise the node shows
+  needs-you and the human answers in the terminal.
+- A pasted message arrives in the `prompt` field wrapped in a pasted-content tag, and Claude
+  treated it as untrusted text and asked for confirmation before obeying. The generated
+  system prompt must state that framed O8 messages are legitimate instructions from other
+  nodes or the daemon. Match deliveries by nonce substring, never by whole-string equality.
+- `idle_prompt` arrives about 60 s after Stop, confirming it must never mean "waiting".
+- `/clear` fires SessionEnd (reason clear) then SessionStart (source clear) with a new
+  session id and transcript path.
+- Normal Stop carries no `is_interrupt`; interrupt detection stays on the key-press timer.
+- Read the screen from the viewport bottom rows, not up to the cursor. Idle composer is an
+  empty prompt line under a rule that ends with the node's name; while working, a spinner
+  line and the composer are both visible, so the screen never proves idle on its own.
+- Hook payload fields seen: all events carry `session_id`, `transcript_path`, `cwd`;
+  SessionStart adds `source`, `model`; UserPromptSubmit `prompt`, `prompt_id`; tool events
+  `tool_name`, `tool_input`, `tool_use_id`; Stop `last_assistant_message`; Notification
+  `notification_type`, `message`; SessionEnd `reason`. Raw samples: `.orchestr8-dev/events.json`.
