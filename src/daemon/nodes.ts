@@ -1,0 +1,81 @@
+import { randomBytes } from 'node:crypto';
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import type { NodeRecord } from '../shared/protocol.js';
+
+export class NodeRegistry {
+  private nodes = new Map<string, NodeRecord>();
+  private timer: NodeJS.Timeout | undefined;
+
+  constructor(private file: string) {}
+
+  load(): void {
+    let raw: string;
+    try {
+      raw = readFileSync(this.file, 'utf8');
+    } catch {
+      return; // no file yet
+    }
+    try {
+      const data = JSON.parse(raw);
+      if (data?.version !== 1 || !Array.isArray(data.nodes)) throw new Error('bad shape');
+      this.nodes = new Map((data.nodes as NodeRecord[]).map((n) => [n.id, n]));
+    } catch {
+      try { renameSync(this.file, `${this.file}.corrupt-${Date.now()}`); } catch { /* best effort */ }
+      this.nodes = new Map();
+    }
+  }
+
+  create(partial: Omit<NodeRecord, 'id' | 'createdAt'> & Partial<Pick<NodeRecord, 'id' | 'createdAt'>>): NodeRecord {
+    let id = partial.id;
+    while (!id || this.nodes.has(id)) id = `n-${randomBytes(4).toString('hex')}`;
+    const node: NodeRecord = { ...partial, id, createdAt: partial.createdAt ?? Date.now() };
+    this.nodes.set(id, node);
+    this.save();
+    return node;
+  }
+
+  get(id: string): NodeRecord | undefined { return this.nodes.get(id); }
+  list(): NodeRecord[] { return [...this.nodes.values()]; }
+  children(id: string): NodeRecord[] { return this.list().filter((n) => n.parentId === id); }
+
+  /** Ancestors, nearest parent first. */
+  lineage(id: string): NodeRecord[] {
+    const out: NodeRecord[] = [];
+    const seen = new Set([id]);
+    for (let p = this.nodes.get(id)?.parentId; p && !seen.has(p); p = this.nodes.get(p)?.parentId) {
+      const n = this.nodes.get(p);
+      if (!n) break;
+      seen.add(p);
+      out.push(n);
+    }
+    return out;
+  }
+
+  update(id: string, patch: Partial<Omit<NodeRecord, 'id'>>): NodeRecord | undefined {
+    const n = this.nodes.get(id);
+    if (!n) return undefined;
+    Object.assign(n, patch);
+    this.save();
+    return n;
+  }
+
+  remove(id: string): boolean {
+    const had = this.nodes.delete(id);
+    if (had) this.save();
+    return had;
+  }
+
+  /** Write any pending change immediately (for shutdown and tests). */
+  flush(): void {
+    if (!this.timer) return;
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    const tmp = `${this.file}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ version: 1, nodes: this.list() }, null, 2));
+    renameSync(tmp, this.file);
+  }
+
+  private save(): void {
+    this.timer ??= setTimeout(() => this.flush(), 50);
+  }
+}
