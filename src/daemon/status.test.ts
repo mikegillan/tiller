@@ -35,6 +35,30 @@ describe('reduce', () => {
     expect(reduce(w, ev('PostToolUse', { tool_name: 'AskUserQuestion' }), NOW + 5000).state).toBe('working');
   });
 
+  it('records permission_mode from any event, even inside the done holdoff', () => {
+    const d = st({ state: 'done', changedAt: NOW - 100 });
+    expect(reduce(d, ev('PostToolUse', { permission_mode: 'auto' }), NOW)).toEqual({ ...d, permissionMode: 'auto' });
+    expect(reduce(st({ state: 'working' }), ev('Stop', { permission_mode: 'plan' }), NOW)).toMatchObject({ state: 'done', permissionMode: 'plan' });
+  });
+
+  it('a permission request shows what the node waits on, and approval clears it', () => {
+    const w = st({ state: 'working' });
+    const b = reduce(w, ev('PermissionRequest', { tool_name: 'Bash', tool_input: { command: 'grep -r foo .' } }), NOW);
+    expect(b).toMatchObject({ state: 'blocked', activity: 'needs approval: Bash grep -r foo .' });
+    expect(reduce(w, ev('PermissionRequest', { tool_name: 'Edit', tool_input: { file_path: '/a/b.ts' } }), NOW).activity).toBe('needs approval: Edit b.ts');
+    expect(reduce(w, ev('PermissionRequest', { tool_name: 'Grep', tool_input: {} }), NOW).activity).toBe('needs approval: Grep');
+    // A later Notification without tool info keeps it; alone it falls back to the message.
+    expect(reduce(b, ev('Notification', { notification_type: 'permission_prompt', message: 'Claude needs permission' }), NOW).activity).toBe(b.activity);
+    expect(reduce(w, ev('Notification', { notification_type: 'permission_prompt', message: 'Claude needs permission' }), NOW).activity).toBe('Claude needs permission');
+    expect(reduce(b, ev('PostToolUse', { tool_name: 'Bash' }), NOW + 1).activity).toBeUndefined();
+  });
+
+  it('AskUserQuestion shows the question', () => {
+    const q = 'q'.repeat(100);
+    expect(reduce(st({ state: 'working' }), ev('PreToolUse', { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: q }] } }), NOW))
+      .toMatchObject({ state: 'waiting', activity: 'question: ' + 'q'.repeat(60) });
+  });
+
   it('PostToolUse sets working', () => {
     expect(reduce(st({ state: 'blocked' }), ev('PostToolUse', { tool_name: 'Bash' }), NOW).state).toBe('working');
   });

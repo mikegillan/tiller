@@ -84,6 +84,19 @@ describe('mcp api', () => {
     expect((await api('spawn', { ...args, permissionMode: 'yolo' })).status).toBe(400);
   });
 
+  it('spawn inherits the caller\'s observed permission mode; bypassPermissions is never inherited', async () => {
+    const p = (await spawnT('pm')).body.data.nodeId as string;
+    const tok = manager.tokenFor(p);
+    const mode = async (extra = {}) => manager.registry.get((await spawnT('k', p, tok, extra)).body.data.nodeId)?.permissionMode;
+    expect(await mode()).toBeUndefined();
+    manager.applyHook(p, { hook_event_name: 'UserPromptSubmit', permission_mode: 'auto' });
+    expect(await mode()).toBe('auto');
+    expect(await mode({ permissionMode: 'default' })).toBe('default');
+    manager.applyHook(p, { hook_event_name: 'UserPromptSubmit', permission_mode: 'bypassPermissions' });
+    expect(await mode()).toBeUndefined();
+    expect(manager.registry.get(p)?.permissionMode).toBe('bypassPermissions'); // recorded for resume
+  });
+
   it('list_nodes shows a node only its lineage; write is capped at 2000 characters', async () => {
     const p = (await spawnT('lp')).body.data.nodeId as string;
     const c = (await spawnT('lc', p, manager.tokenFor(p))).body.data.nodeId as string;

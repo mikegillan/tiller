@@ -18,17 +18,38 @@ function next(prev: NodeStatus, patch: Partial<NodeStatus>, now: number): NodeSt
   return { ...prev, ...patch, changedAt: now };
 }
 
+const toolInput = (event: HookEvent) => (event.tool_input ?? {}) as Record<string, unknown>;
+
+function toolDetail(event: HookEvent): string | undefined {
+  const tool = str(event.tool_name);
+  const input = toolInput(event);
+  if (tool === 'Bash') return str(input.command)?.slice(0, 60);
+  if (tool === 'Edit' || tool === 'Write' || tool === 'Read') {
+    const p = str(input.file_path);
+    return p && basename(p);
+  }
+  return undefined;
+}
+
 function toolActivity(event: HookEvent): string | undefined {
   const tool = str(event.tool_name);
-  if (!tool) return undefined;
-  const input = (event.tool_input ?? {}) as Record<string, unknown>;
-  let detail: string | undefined;
-  if (tool === 'Bash') detail = str(input.command)?.slice(0, 60);
-  else if (tool === 'Edit' || tool === 'Write' || tool === 'Read') {
-    const p = str(input.file_path);
-    detail = p && basename(p);
-  }
-  return detail ? `${tool}: ${detail}` : tool;
+  const detail = toolDetail(event);
+  return tool && (detail ? `${tool}: ${detail}` : tool);
+}
+
+/** What a blocked node waits on. A Notification may carry only a message; keep an activity a PermissionRequest already set. */
+function approvalActivity(prev: NodeStatus, event: HookEvent): string | undefined {
+  const tool = str(event.tool_name);
+  if (tool) return `needs approval: ${tool}${toolDetail(event) ? ` ${toolDetail(event)}` : ''}`;
+  if (prev.activity?.startsWith('needs approval')) return prev.activity;
+  return str(event.message)?.slice(0, 80);
+}
+
+/** The AskUserQuestion prompt, from either `question` or the first of `questions`. */
+function questionActivity(event: HookEvent): string | undefined {
+  const input = toolInput(event);
+  const q = str(input.question) ?? str((input.questions as { question?: unknown }[] | undefined)?.[0]?.question);
+  return q && `question: ${q.slice(0, 60)}`;
 }
 
 /** Turn ends: leave working/waiting/blocked for done, dropping the activity line. */
@@ -37,6 +58,12 @@ function done(prev: NodeStatus, now: number, patch: Partial<NodeStatus> = {}): N
 }
 
 export function reduce(prev: NodeStatus, event: HookEvent, now: number): NodeStatus {
+  const out = step(prev, event, now);
+  const mode = str(event.permission_mode);
+  return mode && mode !== out.permissionMode ? { ...out, permissionMode: mode } : out; // recorded even inside the done holdoff
+}
+
+function step(prev: NodeStatus, event: HookEvent, now: number): NodeStatus {
   switch (event.hook_event_name) {
     case 'UserPromptSubmit':
       return next(prev, {
@@ -49,19 +76,19 @@ export function reduce(prev: NodeStatus, event: HookEvent, now: number): NodeSta
       // Hooks run in parallel, so a late tool event can land just after Stop.
       if (prev.state === 'done' && now - prev.changedAt < DONE_HOLDOFF_MS) return prev;
       if (event.hook_event_name === 'PreToolUse') {
-        if (event.tool_name === 'AskUserQuestion') return next(prev, { state: 'waiting', activity: undefined }, now);
+        if (event.tool_name === 'AskUserQuestion') return next(prev, { state: 'waiting', activity: questionActivity(event) }, now);
         return next(prev, { state: 'working', activity: toolActivity(event) }, now);
       }
-      return next(prev, { state: 'working' }, now);
+      return next(prev, { state: 'working', activity: prev.state === 'working' ? prev.activity : undefined }, now);
     }
 
     case 'PermissionRequest':
-      return next(prev, { state: 'blocked' }, now);
+      return next(prev, { state: 'blocked', activity: approvalActivity(prev, event) }, now);
 
     case 'Notification':
       switch (event.notification_type) {
         case 'permission_prompt':
-          return next(prev, { state: 'blocked' }, now);
+          return next(prev, { state: 'blocked', activity: approvalActivity(prev, event) }, now);
         case 'elicitation_dialog':
         case 'agent_needs_input':
           return next(prev, { state: 'waiting' }, now);

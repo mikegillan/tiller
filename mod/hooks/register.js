@@ -82,6 +82,7 @@ function forward($, event, payload) {
 }
 
 const fit = (s, n) => (n <= 1 ? '' : s.length > n ? s.slice(0, n - 1) + '…' : s)
+const shortId = c => c.id.slice(-4)
 const age = s => (s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`)
 const mark = c => (c.errored ? '×' : c.exited ? '-' : needsYou(c) ? '!' : c.state === 'working' ? '*' : c.state === 'done' ? '✓' : '?')
 
@@ -134,9 +135,11 @@ export const register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (!id) return next(e)
     const { Box, Text } = $.ui.resolve(e)
-    const need = (await read($, kids)).filter(needsYou).length
+    const need = (await read($, kids)).filter(needsYou)
+    const first = need[0]
+    const needs = first ? `${need.length} needs you: ${first.title} [${shortId(first)}]` : '0 children need you'
     const par = parent ? ` · parent: ${parent}` : ''
-    return h(Box, null, h(Text, { dimColor: true, wrap: 'truncate' }, `orchestr8 · node ${id}${par} · ${await read($, pend)} pending · ${need} children need you`))
+    return h(Box, null, h(Text, { dimColor: true, wrap: 'truncate' }, `orchestr8 · node ${id}${par} · ${await read($, pend)} pending · ${needs}`))
   })
 
   on('ui.render', { component: 'Pane', requestId: 'o8-children' }, async ($, e) => {
@@ -145,8 +148,9 @@ export const register = on => {
     const cols = e.viewport?.columns ?? 80
     if (!list.length) return h(Text, { dimColor: true }, 'No children.')
     return h(Box, { flexDirection: 'column' }, ...list.map(c => {
-      const head = `${'  '.repeat(c.depth ?? 0)}${mark(c)} ${c.title} ${c.state} ${c.activity ?? ''} ${age(c.ageSec)}${c.unread ? ' •' : ''}`
-      return h(Text, { key: c.id, wrap: 'truncate' }, fit(`${head}  ${c.lastMessage ?? ''}`, cols))
+      const head = `${'  '.repeat(c.depth ?? 0)}[${shortId(c)}] ${mark(c)} ${c.title} ${c.state} ${c.activity ?? ''} ${age(c.ageSec)}${c.unread ? ' •' : ''}`
+      // A node waiting on you shows its activity in full; the last message only fills spare room on other rows.
+      return h(Text, { key: c.id, wrap: 'truncate', bold: needsYou(c) }, fit(needsYou(c) ? head : `${head}  ${c.lastMessage ?? ''}`, cols))
     }))
   })
 }

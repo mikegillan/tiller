@@ -22,7 +22,9 @@ export interface NodeStatus {
   transcriptPath?: string;
   /** Last assistant message text, from Stop / Notification payloads. */
   lastAssistantMessage?: string;
-  /** Short activity string while working, e.g. "Bash: npm test". */
+  /** Latest permission_mode seen in a hook payload (default, acceptEdits, plan, auto, bypassPermissions). */
+  permissionMode?: string;
+  /** Short activity string while working, e.g. "Bash: npm test"; "needs approval: ..." when blocked. */
   activity?: string;
   /** From the mod's session.measure, when available. */
   contextPct?: number;

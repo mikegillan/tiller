@@ -104,7 +104,7 @@ export const tools = {
     }),
 
   spawn: tool(
-    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error.',
+    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error.',
     {
       kind: z.enum(['claude', 'terminal']), title: z.string().min(1), cwd: z.string().min(1), prompt: z.string().optional(),
       model: z.string().optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), requestId: z.string().optional(),
@@ -120,7 +120,10 @@ export const tools = {
         if (prior.args !== args) throw new Error(`requestId ${requestId} was already used with different arguments`);
         return { data: { ...(prior.result as object), replayed: true } };
       }
-      const view = c.manager.spawn({ ...req, parentId: c.caller === HUMAN ? null : c.caller });
+      const caller = c.caller === HUMAN ? undefined : c.manager.view(c.caller);
+      const inherited = caller?.status.permissionMode ?? caller?.permissionMode;
+      const permissionMode = req.permissionMode ?? (inherited === 'bypassPermissions' ? undefined : inherited); // bypass stays human-only
+      const view = c.manager.spawn({ ...req, permissionMode, parentId: c.caller === HUMAN ? null : c.caller });
       const result = { nodeId: view.id };
       if (requestId) spawned.set(key, { args, result, at: now });
       return { data: result };

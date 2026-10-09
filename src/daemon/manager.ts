@@ -269,6 +269,9 @@ export class NodeManager extends EventEmitter {
     if (event.hook_event_name === 'SessionStart' && next.transcriptPath && next.transcriptPath !== rec.transcriptPath) {
       this.registry.update(nodeId, { transcriptPath: next.transcriptPath });
     }
+    if (next.permissionMode && next.permissionMode !== rec.permissionMode) {
+      this.registry.update(nodeId, { permissionMode: next.permissionMode });
+    }
     this.setStatus(nodeId, next);
   }
 
