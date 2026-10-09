@@ -35,13 +35,13 @@ function rootOf(manager: NodeManager, id: string): NodeView | undefined {
  * Routes the per-node mod uses (PLAN §14). Returns a handler that answers `true` once it has handled the request,
  * `false` for paths that are not mod routes. Authenticates like /hook via `authenticate`.
  */
-export function modApi(manager: NodeManager, authenticate: (req: http.IncomingMessage) => string | undefined, onFocus: (from: string, id: string) => void) {
+export function modApi(manager: NodeManager, authenticate: (req: http.IncomingMessage) => string | undefined, onFocus: (from: string, id: string) => void, clients: () => string[]) {
   return async (req: http.IncomingMessage, res: http.ServerResponse, path: string): Promise<boolean> => {
     const post = req.method === 'POST' && (path === '/ack' || path === '/mod-event' || path === '/focus');
     if (!post && !(req.method === 'GET' && (path === '/inbox' || path === '/children' || path === '/tree'))) return false;
     const caller = authenticate(req);
     if (!caller) { res.writeHead(401).end(); return true; }
-    const json = (body: unknown) => res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
+    const json = (body: unknown) => res.writeHead(200, { 'Content-Type': 'application/json', 'X-O8-Clients': clients().join(',') }).end(JSON.stringify(body));
 
     if (!post) {
       if (path === '/inbox') json(caller === HUMAN ? [] : inbox(manager, caller));

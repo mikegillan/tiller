@@ -9,6 +9,9 @@ import { changes } from './notify'
 // orchestr8 per-node mod. Inert unless O8_NODE_ID is set. Contract: src/shared/protocol.ts "Mod-facing HTTP API".
 const kids = atom({ plugin: 'orchestr8', key: 'children' } as const, [] as Child[])
 const pend = atom({ plugin: 'orchestr8', key: 'pending' } as const, 0)
+// True while any orchestr8 client (app, browser, mux) is attached: its sidebar makes everything the mod draws redundant.
+const quietAtom = atom({ plugin: 'orchestr8', key: 'quiet' } as const, false)
+let quiet = false
 let ctx: Ctx | undefined
 let parent: string | undefined, busy = false
 let prev: Child[] | null = null
@@ -35,7 +38,7 @@ function forward($: any, event: string, payload: unknown) {
 // At most one toast per key per 5 s. OS notifications are the daemon's job, not the mod's.
 async function notify($: any, key: string, text: string) {
   const now = await $.clock.now()
-  if (now - (lastToast.get(key) ?? 0) < 5000) return
+  if (quiet || now - (lastToast.get(key) ?? 0) < 5000) return
   lastToast.set(key, now)
   $.ui.toast(text)
 }
@@ -44,7 +47,15 @@ async function poll($: any) {
   if (busy) return
   busy = true
   try {
-    const list: Child[] = await call($, 'GET', '/tree')
+    const [url, init] = request(ctx!, 'GET', '/tree')
+    const res = await $.http.fetch(url, init)
+    const list: Child[] = parse('/tree', res)
+    const q = !!res.headers['x-o8-clients']
+    if (q !== quiet) {
+      quiet = q
+      if (!q) prev = null // what changed while quiet is not news: the next diff is a baseline
+      await update($, quietAtom, () => q)
+    }
     await update($, kids, () => list)
     if (prev) for (const c of changes(prev, list)) await notify($, c.key, c.text)
     prev = list
@@ -58,9 +69,9 @@ async function poll($: any) {
         await call($, 'POST', '/ack', { id: m.id })
         inflight.delete(m.id)
         await update($, pend, (n: number) => Math.max(0, n - 1))
-      }).catch((err: unknown) => { inflight.delete(m.id); $.ui.log(`orchestr8: deliver ${m.id} failed: ${err}`) })
+      }).catch((err: unknown) => { inflight.delete(m.id); { if (!quiet) $.ui.log(`orchestr8: deliver ${m.id} failed: ${err}`) } })
     }
-  } catch (err) { $.ui.log(`orchestr8: poll error ${err}`) } finally { busy = false }
+  } catch (err) { if (!quiet) $.ui.log(`orchestr8: poll error ${err}`) } finally { busy = false }
 }
 
 export const register: Register = on => {
@@ -95,7 +106,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (!ctx) return next(e)
+    if (!ctx || (await read($, quietAtom))) return next(e)
     const id = ctx.id
     return Band($.ui.resolve(e), id, await read($, kids), await read($, pend), parent, (to, label) => focus($, to, label))
   })

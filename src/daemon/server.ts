@@ -70,7 +70,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
   const focus = (from: string, id: string) => broadcast({ t: 'focus', from, id });
   const { handler: mcp, publishAdminToken, authenticate } = mountMcp(manager, (text) => daemon.confirm(text), focus);
-  const mod = modApi(manager, authenticate, focus);
+  const mod = modApi(manager, authenticate, focus, () => [...new Set([...clients].filter((c) => c.authed && c.kind).map((c) => c.kind!))]);
 
   const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
   const broadcast = (m: ServerMessage) => { for (const c of clients) if (c.authed) sendTo(c, m); };

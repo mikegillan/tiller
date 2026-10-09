@@ -132,6 +132,16 @@ describe('POST /hook', () => {
     expect(rows.map((r) => [r.id, r.depth, !!r.self])).toEqual([[root.id, 0, false], [a.id, 1, true], [a1.id, 2, false], [b.id, 1, false]]);
   });
 
+  it('X-O8-Clients lists the connected client kinds on /tree and /inbox', async () => {
+    const n = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
+    const header = async (path: string) => (await fetch(`http://127.0.0.1:${server.port}${path}`, { headers: { Authorization: `Bearer ${manager.tokenFor(n.id)}`, 'X-O8-Node': n.id } })).headers.get('x-o8-clients');
+    expect(await header('/tree')).toBe('');
+    await connect(server.uiToken, 'app');
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    expect(await header('/tree')).toBe('app');
+    expect(await header('/inbox')).toBe('app');
+  });
+
   it('POST /focus: auth, lineage scope, broadcast', async () => {
     const parent = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
     const kid = manager.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: parent.id });
