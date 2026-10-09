@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import type { NodeView } from '../shared/protocol.js';
-import { layoutSidebar, meta, tree } from './sidebar.js';
+import { layoutSidebar, meta, revealScroll, tree } from './sidebar.js';
 
 const node = (id: string, title: string, parentId: string | null, status: Partial<NodeView['status']> = {}, extra: Partial<NodeView> = {}): NodeView =>
   ({ id, title, parentId, kind: 'claude', cwd: '/r', createdAt: 0, unread: false, status: { state: 'working', changedAt: 0, ...status }, ...extra });
@@ -33,7 +33,7 @@ test('layout: framed rows, selection, activity, meta line, action bar and footer
   expect(L.lines[4]).toContain('48;5;236');
   expect(L.lines[1]).not.toContain('48;5;236');
   expect(L.nodeAt.slice(1, 6)).toEqual(['a', 'a', 'a', 'b', 'b']);
-  expect(L.acts.map((a) => a.act)).toEqual(['new', 'rename', 'kill', 'orch', 'sidebar', 'help']);
+  expect(L.acts.map((a) => a.act)).toEqual(['new', 'rename', 'kill', 'clear', 'orch', 'sidebar', 'help']);
 });
 
 test('meta line drops detail as the width shrinks and colors ctx by usage', () => {
@@ -43,4 +43,16 @@ test('meta line drops detail as the width shrinks and colors ctx by usage', () =
   expect(meta(n, 15).map((s) => s[1]).join('')).toBe('opus 5.5 · ctx 42%');
   expect(meta(n, 45).find((s) => s[1].startsWith('ctx'))![0]).toBe('32');
   expect(meta({ ...n, status: { ...n.status, contextPct: 90 } }, 40).find((s) => s[1].startsWith('ctx'))![0]).toBe('31');
+});
+
+test('exited rows read "exited" with a dim ○ and title; revealScroll brings a far-down selection into view', () => {
+  const L = layoutSidebar({ nodes, cur: 'a', scroll: 0, now: 5000, port: 7788, connected: true }, 30, 24);
+  const row = L.lines.findIndex((l) => plain(l).includes('sub'));
+  expect(plain(L.lines[row]!)).toMatch(/○ sub\s+exited/);
+  expect(L.lines[row]).toContain('\x1b[0;2m○');
+  const many = new Map(Array.from({ length: 30 }, (_, i) => node(`n${i}`, `node${i}`, null, { exited: i < 29, activity: i % 2 ? 'x' : undefined })).map((n) => [n.id, n]));
+  const m = { nodes: many, cur: 'n29', scroll: 0, now: 0, port: 1, connected: true };
+  const s = revealScroll(m, 30, 24, 29);
+  expect(layoutSidebar({ ...m, scroll: s }, 30, 24).nodeAt).toContain('n29');
+  expect(revealScroll({ ...m, cur: 'n0' }, 30, 24, 0)).toBe(0);
 });

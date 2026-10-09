@@ -29,6 +29,16 @@ export function renderRow(line: IBufferLine | undefined, cols: number, cell: IBu
   return cur ? out + '\x1b[0m' : out;
 }
 
+/** Terminal output that clears a `cols`x`rows` screen and centers a dim "has exited" notice on it. */
+export function placeholder(title: string, cols: number, rows: number): string {
+  const lines = [`${title} has exited`, 'Ctrl-\\ r  resume', 'Ctrl-\\ x  remove'];
+  const top = Math.max(1, Math.floor((rows - lines.length) / 2) + 1);
+  return '\x1b[?25l\x1b[2J' + lines.map((l, i) => {
+    const t = l.slice(0, cols);
+    return `\x1b[${top + i};${Math.max(1, Math.floor((cols - t.length) / 2) + 1)}H\x1b[2m${t}\x1b[0m`;
+  }).join('');
+}
+
 export class NodeScreen {
   readonly term: InstanceType<typeof Terminal>;
   private prev: string[] = [];

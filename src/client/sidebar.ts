@@ -70,9 +70,16 @@ export function meta(n: NodeView, w: number): Seg[] {
 
 export const ACTIONS: Array<{ key: string; label: string; act: string }> = [
   { key: 'n', label: 'new child', act: 'new' }, { key: 'e', label: 'rename', act: 'rename' }, { key: 'x', label: 'kill', act: 'kill' },
-  { key: 'r', label: 'resume', act: 'resume' }, { key: 'o', label: 'new orchestrator here', act: 'orch' },
+  { key: 'r', label: 'resume', act: 'resume' }, { key: 'c', label: 'clear exited', act: 'clear' }, { key: 'o', label: 'new orchestrator here', act: 'orch' },
   { key: 's', label: 'hide', act: 'sidebar' }, { key: '?', label: 'help', act: 'help' },
 ];
+
+/** The first visible item index such that item `i` is fully on screen, starting from `scroll` and moving only as far as needed. */
+export function revealScroll(m: SideModel, W: number, H: number, i: number): number {
+  let s = Math.min(m.scroll, i);
+  while (s < i && !layoutSidebar({ ...m, scroll: s }, W, H).nodeAt.includes(tree(m.nodes)[i]!.n.id)) s++;
+  return s;
+}
 
 export interface SideModel {
   nodes: Map<string, NodeView>; cur: string; scroll: number; now: number;
@@ -120,7 +127,7 @@ export function layoutSidebar(m: SideModel, W: number, H: number): SideLayout {
   let shown = 0;
   for (const { n, head, cont } of items3.slice(m.scroll)) {
     const sel = n.id === m.cur, bg = sel ? BG : '';
-    const rows: Seg[][] = [lr([['2', head], glyph(n), ['', ' '], [sel || needsYou(n) ? '1' : '', n.title], ...(n.unread ? [['36', ' •'] as Seg] : [])], age(m.now - n.status.changedAt), w)];
+    const rows: Seg[][] = [lr([['2', head], glyph(n), ['', ' '], [n.status.exited ? '2' : sel || needsYou(n) ? '1' : '', n.title], ...(n.unread ? [['36', ' •'] as Seg] : [])], n.status.exited ? 'exited' : age(m.now - n.status.changedAt), w)];
     const act = n.status.activity;
     if (act) rows.push([['2', cont], [n.status.state === 'blocked' ? '33' : '2', act]]);
     const mt = meta(n, w - cont.length);

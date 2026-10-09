@@ -16,6 +16,7 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 ps | list                                        show nodes
   o8 attach <id> [--plain]                            open the sidebar client on a node (Ctrl-\\ ? for keys; --plain is the old single-pane view)
   o8 resume <id>                                      relaunch an exited Claude node
+  o8 prune                                            remove every exited node that has no live descendant
   o8 kill <id...> | close <id...>                     close and delete nodes
   o8 send <id> "text"
   o8 read <id> [summary|transcript|terminal] [--lines N]
@@ -28,7 +29,7 @@ const home = process.env.O8_HOME ?? join(homedir(), '.orchestr8');
 const readHome = (name: string) => readFileSync(join(home, name), 'utf8').trim();
 const daemonPort = () => portFor(home);
 
-async function call(tool: string, args: Record<string, unknown>, print = true): Promise<{ data?: any }> {
+async function call(tool: string, args: Record<string, unknown>, print = true, soft = false): Promise<{ data?: any; error?: string }> {
   const env = process.env;
   const node = env.O8_NODE_ID && env.O8_TOKEN_FILE;
   let token: string;
@@ -42,7 +43,7 @@ async function call(tool: string, args: Record<string, unknown>, print = true): 
   }).catch((e: Error) => fail(`cannot reach daemon at ${endpoint}: ${e.message}`));
   if (res.status === 401) return fail('unauthorized: bad token, or the node no longer exists');
   const body = (await res.json().catch(() => ({}))) as { text?: string; data?: any; error?: string };
-  if (!res.ok) return fail(body.error ?? `HTTP ${res.status}`);
+  if (!res.ok) return soft ? { error: body.error ?? `HTTP ${res.status}` } : fail(body.error ?? `HTTP ${res.status}`);
   if (print) console.log(body.text ?? JSON.stringify(body.data, null, 2));
   return body;
 }
@@ -76,6 +77,11 @@ switch (cmd) {
     if (!pos[0]) fail(usage());
     await call('resume', { nodeId: pos[0] });
     break;
+  case 'prune': {
+    const { data } = await call('prune', {}, false);
+    console.log(`removed ${data.removed.length} exited node${data.removed.length === 1 ? '' : 's'}`);
+    break;
+  }
   case 'spawn':
     await call('spawn', { kind: f.kind, title: f.title, cwd: f.cwd ?? process.cwd(), prompt: f.prompt, model: f.model, permissionMode: f['permission-mode'], requestId: f['request-id'] });
     break;
@@ -97,11 +103,19 @@ switch (cmd) {
     const port = daemonPort();
     if (!(await findDaemon(port))) await startDaemon(home, port).catch((e: Error) => fail(e.message));
     const cwd = realpathSync(process.cwd());
-    const existing = f.new ? undefined : pickOrchestrator(((await call('list_nodes', {}, false)).data ?? []) as any[], cwd);
-    let id: string;
+    const all = f.new ? [] : (((await call('list_nodes', {}, false)).data ?? []) as any[]);
+    const existing = pickOrchestrator(all, cwd);
+    const dead = existing ? undefined : pickOrchestrator(all, cwd, true);
+    let id: string | undefined;
     if (existing) { console.log(`reattaching to ${existing.title} (${existing.id})`); id = existing.id; }
-    else id = (await call('spawn', { kind: 'claude', title: f.title ?? basename(cwd), cwd, prompt: f.prompt }, false)).data.nodeId;
-    process.exit(await mux(id, { port, token: readHome('admin-token') }));
+    else if (dead) {
+      console.log(`resuming ${dead.title} (${dead.id})`);
+      const r = await call('resume', { nodeId: dead.id }, false, true);
+      if (r.error) console.log(`cannot resume (${r.error}); starting a new orchestrator`);
+      else id = dead.id;
+    }
+    const target: string = id ?? (await call('spawn', { kind: 'claude', title: f.title ?? basename(cwd), cwd, prompt: f.prompt }, false)).data.nodeId;
+    process.exit(await mux(target, { port, token: readHome('admin-token') }));
     break;
   }
   case 'status': {

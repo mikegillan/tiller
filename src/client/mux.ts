@@ -6,8 +6,9 @@ import { WebSocket } from 'ws';
 import type { ClientMessage, NodeView, ServerMessage } from '../shared/protocol.js';
 import { initial, step, type Action, type Target } from './chords.js';
 import { encode, isLeftPress, isWheel, parseInput, type Mouse } from './mouse.js';
-import { NodeScreen } from './screen.js';
-import { layoutSidebar, needsYou, tree, type SideLayout } from './sidebar.js';
+import { NodeScreen, placeholder } from './screen.js';
+import { pruneIds } from '../shared/prune.js';
+import { layoutSidebar, needsYou, revealScroll, tree, type SideLayout } from './sidebar.js';
 
 const ON = '\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[2J';
 const OFF = '\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l';
@@ -42,8 +43,8 @@ export function mux(startId: string, { port, token }: { port: number; token: str
     const { W, rows } = dims();
     if (!W) return side = undefined;
     const i = list().findIndex((n) => n.id === cur), model = () => ({ nodes, cur, scroll, now: Date.now(), port, connected, prompt: prompt && prompt.label + prompt.text, notice });
+    if (i >= 0) scroll = revealScroll(model(), W, rows, i);
     side = layoutSidebar(model(), W, rows);
-    if (i >= 0 && (i < scroll || i >= scroll + side.shown) && side.shown) { scroll = i < scroll ? i : Math.max(0, i - side.shown + 1); side = layoutSidebar(model(), W, rows); }
     if (force) prevSide = [];
     out(side.lines.map((l, y) => (l === prevSide[y] ? '' : `\x1b[${y + 1};1H${l}`)).join(''));
     prevSide = side.lines;
@@ -63,15 +64,19 @@ export function mux(startId: string, { port, token }: { port: number; token: str
     stdout.write('\x1b[2J');
     scr.resize(mc, rows);
     scr.dirty = true;
+    paintExited();
     send({ t: 'resize', id: cur, cols: mc, rows });
     drawSide(true);
     scheduleFrame();
   }
+  /** An exited node has no process and no screen to attach to; fill its region with the notice instead. */
+  const paintExited = () => { const n = nodes.get(cur); if (n?.status.exited) scr.write(placeholder(n.title, scr.cols, scr.rows)); };
   const show = (id: string) => {
     const { mc, rows } = dims();
     cur = id;
     scr?.dispose();
     scr = new NodeScreen(mc, rows);
+    paintExited();
     send({ t: 'select', id });
     send({ t: 'attach', id, cols: mc, rows });
     drawSide();
@@ -116,7 +121,11 @@ export function mux(startId: string, { port, token }: { port: number; token: str
     else if (!n) return;
     else if (key === 'new') ask('new child: ', '', false, (title) => { awaiting = true; send({ t: 'spawn', kind: 'claude', title, cwd: n.cwd, parentId: n.id }); });
     else if (key === 'rename') ask('rename: ', n.title, false, (title) => send({ t: 'rename', id: n.id, title }));
-    else if (key === 'kill') ask(`kill ${n.title}? y/n`, '', true, () => send({ t: 'close', id: n.id }));
+    else if (key === 'kill') { if (n.status.exited) send({ t: 'close', id: n.id }); else ask(`kill ${n.title}? y/n`, '', true, () => send({ t: 'close', id: n.id })); }
+    else if (key === 'clear') {
+      const c = pruneIds([...nodes.values()]).length;
+      if (c) ask(`clear ${c} exited? y/n`, '', true, () => send({ t: 'prune' })); else setNotice('no exited nodes to clear');
+    }
     else if (key === 'resume') { if (n.status.exited) send({ t: 'resume', id: n.id }); else setNotice('not exited'); }
   }
   const run = (a: Action) => {
@@ -208,6 +217,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
       nodes.set(m.node.id, m.node);
       const now = Date.now();
       if (!was && awaiting) { awaiting = false; switchTo(m.node.id); }
+      else if (m.node.id === cur && !!was?.status.exited !== !!m.node.status.exited) show(cur); // resumed, or its process ended
       else throttleSide();
       if (m.node.id !== cur && needsYou(m.node) && !(was && needsYou(was)) && now - (bells.get(m.node.id) ?? 0) >= 5000) {
         bells.set(m.node.id, now);
@@ -220,7 +230,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
       const next = list()[0];
       if (next) { cs = initial; show(next.id); } else finish('[node removed]', 0);
     } else if (m.t === 'focus') { if (m.from === cur && nodes.has(m.id)) switchTo(m.id); }
-    else if (m.t === 'error') { if (m.id === cur) finish(m.message, 1); else setNotice(m.message.slice(0, 60)); }
+    else if (m.t === 'error') { if (m.id === cur && !nodes.has(cur)) finish(m.message, 1); else setNotice(m.message.slice(0, 60)); }
   }
 
   const tick = setInterval(() => started && drawSide(), 5000); // ages

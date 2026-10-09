@@ -40,9 +40,9 @@ export async function startDaemon(home: string, port: number, waitMs = 15_000): 
 
 export interface OrchestratorCandidate { id: string; title: string; kind: string; parentId: string | null; cwd: string; exited?: boolean; createdAt: number }
 
-/** The live top-level Claude node for `cwd` (already a realpath), newest first. */
-export function pickOrchestrator<T extends OrchestratorCandidate>(nodes: T[], cwd: string): T | undefined {
+/** The newest top-level Claude node for `cwd` (already a realpath): live ones when `exited` is false, exited ones (resumable) when true. */
+export function pickOrchestrator<T extends OrchestratorCandidate>(nodes: T[], cwd: string, exited = false): T | undefined {
   return nodes
-    .filter((n) => n.kind === 'claude' && n.parentId === null && n.cwd === cwd && !n.exited)
+    .filter((n) => n.kind === 'claude' && n.parentId === null && n.cwd === cwd && !!n.exited === exited)
     .sort((a, b) => b.createdAt - a.createdAt)[0];
 }

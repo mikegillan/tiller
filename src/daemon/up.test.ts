@@ -19,6 +19,14 @@ describe('pickOrchestrator', () => {
   });
 });
 
+describe('pickOrchestrator, exited', () => {
+  it('returns the newest exited root only when asked', () => {
+    const nodes = [node({ id: 'live' }), node({ id: 'd1', exited: true, createdAt: 2 }), node({ id: 'd2', exited: true, createdAt: 9 }), node({ id: 'kid', exited: true, parentId: 'p', createdAt: 99 })];
+    expect(pickOrchestrator(nodes, '/repo', true)?.id).toBe('d2');
+    expect(pickOrchestrator(nodes, '/repo')?.id).toBe('live');
+  });
+});
+
 describe('findDaemon', () => {
   let srv: http.Server | undefined;
   afterEach(() => new Promise<void>((ok) => (srv ? srv.close(() => ok()) : ok())));

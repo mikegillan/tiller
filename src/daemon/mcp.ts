@@ -204,6 +204,15 @@ export const tools = {
       return { data: { ok: true } };
     }),
 
+  prune: tool(
+    'Remove every exited node that has no live descendant (files and records). Only the human may call this.',
+    {},
+    async (c) => {
+      if (c.caller !== HUMAN) throw new Error('prune is only for the human');
+      const removed = c.manager.prune();
+      return { text: `removed ${removed.length} exited node(s)`, data: { ok: true, removed } };
+    }),
+
   shutdown: tool(
     'Stop the daemon: flush the registry, kill every node process and exit. Only the human may call this.',
     {},

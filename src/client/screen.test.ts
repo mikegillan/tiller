@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { NodeScreen } from './screen.js';
+import { NodeScreen, placeholder } from './screen.js';
 import { encode, isLeftPress, isWheel, parseInput } from './mouse.js';
 
 const feed = async (s: NodeScreen, data: string) => { s.write(data); await s.settle(); };
@@ -40,4 +40,13 @@ test('SGR mouse reports are split from keys, classified and re-encoded with the 
   expect([isLeftPress(m1.mouse), isWheel(w.mouse), isLeftPress(r.mouse)]).toEqual([true, true, false]);
   expect(encode(m1.mouse, 31)).toBe('\x1b[<0;4;7M');
   expect(encode(r.mouse, 31)).toBe('\x1b[<0;4;7m');
+});
+
+test('placeholder centers a dim exited notice with resume/remove hints', async () => {
+  const s = new NodeScreen(40, 9);
+  await feed(s, placeholder('builder', 40, 9));
+  const f = s.frame(1).replace(/\x1b\[[0-9;]*m/g, '');
+  expect(f).toContain('\x1b[4;1H' + ' '.repeat(11) + 'builder has exited');
+  expect(f).toContain('Ctrl-\\ r  resume');
+  expect(f).toContain('Ctrl-\\ x  remove');
 });

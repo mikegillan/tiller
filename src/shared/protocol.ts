@@ -83,6 +83,7 @@ export type ClientMessage =
   | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; parentId?: string | null }
   | { t: 'close'; id: string }
   | { t: 'resume'; id: string }
+  | { t: 'prune' }                             // remove every exited node that has no live descendant
   | { t: 'rename'; id: string; title: string }
   | { t: 'confirm'; confirmId: string; ok: boolean }
   ;

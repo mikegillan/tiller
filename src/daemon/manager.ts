@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { ModEvent, NodeKind, NodeStatus, NodeView } from '../shared/protocol.js';
 import { claudeLaunch, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
+import { pruneIds } from '../shared/prune.js';
 import { NodeRegistry } from './nodes.js';
 import { PtySession } from './pty.js';
 import { logError, safeEqual } from './util.js';
@@ -206,6 +207,13 @@ export class NodeManager extends EventEmitter {
     if (!this.registry.get(id)) return;
     this.discard(id);
     this.emit('removed', id);
+  }
+
+  /** Close every exited node with no live descendant; returns the removed ids. */
+  prune(): string[] {
+    const ids = pruneIds(this.list());
+    for (const id of ids) this.close(id);
+    return ids;
   }
 
   rename(id: string, title: string): void {

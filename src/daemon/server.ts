@@ -39,6 +39,7 @@ const clientMessage = z.discriminatedUnion('t', [
   }),
   z.object({ t: z.literal('close'), id }),
   z.object({ t: z.literal('resume'), id }),
+  z.object({ t: z.literal('prune') }),
   z.object({ t: z.literal('rename'), id, title: z.string() }),
   z.object({ t: z.literal('confirm'), confirmId: z.string(), ok: z.boolean() }),
 ]) satisfies z.ZodType<ClientMessage>;
@@ -100,6 +101,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
         if (!r.ok) sendTo(c, { t: 'error', message: r.error, id: m.id });
         return;
       }
+      case 'prune': manager.prune(); return;
       case 'rename': manager.rename(m.id, m.title); return;
       case 'confirm': pendingConfirms.get(m.confirmId)?.(m.ok); return;
     }
