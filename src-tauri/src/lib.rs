@@ -57,7 +57,7 @@ pub fn run() {
                 let token = read("admin-token").unwrap_or_default();
                 // `o8` launches the app with `--node <id>` so it opens on that node.
                 let node = env::args().skip_while(|a| a != "--node").nth(1).map(|n| format!("&node={n}")).unwrap_or_default();
-                let _ = win.navigate(Url::parse(&format!("http://127.0.0.1:{port}/?k={token}{node}")).unwrap());
+                let _ = win.navigate(Url::parse(&format!("http://127.0.0.1:{port}/?k={token}&app=1{node}")).unwrap());
                 loop {
                     let count = needs_you(port, &token).filter(|&n| n > 0);
                     let _ = win.set_badge_count(count);

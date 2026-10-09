@@ -11,6 +11,10 @@ import { TitleBar } from './TitleBar';
 import { ConfirmModal, Toasts } from './Toasts';
 import { getState, openDialog, selectNode, useStore } from './store';
 
+// The Tauri shell adds `app=1` to the URL; `__TAURI_INTERNALS__` is the fallback signal.
+export const IN_APP = new URLSearchParams(location.search).has('app') || '__TAURI_INTERNALS__' in window;
+if (IN_APP) document.documentElement.dataset.app = '1';
+
 export function App() {
   const rows = useRows();
   const node = useStore((s) => (s.selected ? s.nodes[s.selected] : undefined));
@@ -34,6 +38,7 @@ export function App() {
 
   return (
     <div className="app">
+      {IN_APP && <div className="dragstrip" data-tauri-drag-region />}
       <Sidebar />
       <main className="main">
         {node ? <TitleBar node={node} /> : null}

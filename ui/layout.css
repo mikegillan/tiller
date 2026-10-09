@@ -1,4 +1,7 @@
 .app { display: grid; grid-template-columns: 320px 1fr; grid-template-rows: 1fr 24px; height: 100%; }
+/* Tauri overlay title bar: reserve a draggable strip under the traffic lights (78px clear on the left). */
+.dragstrip { grid-column: 1 / -1; height: 38px; padding-left: 78px; box-sizing: border-box; background: var(--surface); border-bottom: 1px solid var(--line); -webkit-app-region: drag; user-select: none; -webkit-user-select: none; }
+[data-app] .app { grid-template-rows: 38px 1fr 24px; }
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 .titlebar { flex: none; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--surface); display: grid; gap: 4px; }
