@@ -4,7 +4,15 @@ import { selectNode, toast } from './store';
 type Notify = Extract<ServerMessage, { t: 'notify' }>;
 
 let ctx: AudioContext | undefined;
-const lastChime = new Map<string, number>();
+const lastNotified = new Map<string, number>();
+
+/** At most one OS notification or chime per node every 5 s. */
+function throttled(id: string): boolean {
+  const now = Date.now();
+  if (now - (lastNotified.get(id) ?? 0) < 5000) return true;
+  lastNotified.set(id, now);
+  return false;
+}
 
 function tone(freq: number, at: number, dur: number) {
   const c = (ctx ??= new AudioContext());
@@ -20,9 +28,6 @@ function tone(freq: number, at: number, dur: number) {
 
 function chime(m: Notify) {
   if (m.kind === 'exited') return;
-  const now = Date.now();
-  if (now - (lastChime.get(m.id) ?? 0) < 5000) return;
-  lastChime.set(m.id, now);
   try {
     void ctx?.resume();
     if (m.kind === 'done') { tone(880, 0, 0.15); tone(1175, 0.15, 0.25); }
@@ -32,6 +37,7 @@ function chime(m: Notify) {
 
 export function handleNotify(m: Notify) {
   toast(m.body ? `${m.title}: ${m.body}` : m.title, m.id);
+  if (throttled(m.id)) return;
   if (document.hidden || !document.hasFocus()) {
     if ('Notification' in window && Notification.permission === 'granted') {
       const n = new Notification(m.title, { body: m.body ?? m.kind });

@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -10,9 +10,10 @@ import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
 import { mountMcp } from './mcp.js';
 import type { HookEvent } from './status.js';
+import { safeEqual } from './util.js';
 
 const UI_DIR = fileURLToPath(new URL('../../ui/dist', import.meta.url));
-const MAX_HOOK_BYTES = 1_000_000;
+const MAX_HOOK_BYTES = 8_000_000; // a PreToolUse payload for a large Write carries the whole file
 const AUTH_TIMEOUT_MS = 5000;
 const CONFIRM_TIMEOUT_MS = 5 * 60_000;
 const MIME: Record<string, string> = {
@@ -39,11 +40,6 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('confirm'), confirmId: z.string(), ok: z.boolean() }),
 ]) satisfies z.ZodType<ClientMessage>;
 
-function safeEqual(a: string, b: string): boolean {
-  const x = Buffer.from(a), y = Buffer.from(b);
-  return x.length === y.length && timingSafeEqual(x, y);
-}
-
 export interface DaemonServer {
   port: number;
   /** Token the UI must send as its first WebSocket message. */
@@ -61,7 +57,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
   const uiToken = opts.uiToken ?? randomBytes(24).toString('base64url');
   const clients = new Set<Client>();
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
-  const mcp = mountMcp(manager, (text) => daemon.confirm(text));
+  const { handler: mcp, publishAdminToken } = mountMcp(manager, (text) => daemon.confirm(text));
 
   const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
   const broadcast = (m: ServerMessage) => { for (const c of clients) if (c.authed) sendTo(c, m); };
@@ -80,9 +76,11 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
     switch (m.t) {
       case 'auth': return;
       case 'attach': {
-        c.attached.add(m.id);
+        // Snapshot first, then subscribe, so live output is not also part of the snapshot. attach() resolves
+        // and we add the client in the same tick, so no chunk can fall between the two.
         const text = await manager.attach(m.id, m.cols, m.rows);
         if (text) sendTo(c, { t: 'data', id: m.id, data: text.replaceAll('\n', '\r\n') });
+        c.attached.add(m.id);
         return;
       }
       case 'detach': c.attached.delete(m.id); return;
@@ -188,6 +186,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
   await new Promise<void>((ok, fail) => { server.once('error', fail); server.listen(opts.port ?? 7788, '127.0.0.1', ok); });
   const port = (server.address() as AddressInfo).port;
   manager.endpoint = `http://127.0.0.1:${port}`;
+  publishAdminToken();
 
   const daemon: DaemonServer = {
     port,
@@ -198,7 +197,12 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
       const confirmId = randomUUID();
       return new Promise<boolean>((resolveConfirm) => {
         const timer = setTimeout(() => finish(false), CONFIRM_TIMEOUT_MS);
-        const finish = (ok: boolean) => { clearTimeout(timer); pendingConfirms.delete(confirmId); resolveConfirm(ok); };
+        const finish = (ok: boolean) => {
+          clearTimeout(timer);
+          pendingConfirms.delete(confirmId);
+          broadcast({ t: 'confirmDone', confirmId });
+          resolveConfirm(ok);
+        };
         pendingConfirms.set(confirmId, finish);
         broadcast({ t: 'confirm', confirmId, text });
       });

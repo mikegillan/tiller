@@ -85,21 +85,21 @@ describe('classify', () => {
 
 describe('env helpers', () => {
   it('buildChildEnv drops Claude/TERM vars and sets defaults', () => {
+    const saved = { ...process.env };
     process.env.CLAUDECODE = '1';
     process.env.TERM_PROGRAM = 'x';
     const e = buildChildEnv({ O8_NODE_ID: 'n-1' });
+    process.env = saved;
     expect(e.CLAUDECODE).toBeUndefined();
     expect(e.TERM_PROGRAM).toBeUndefined();
     expect(e.TERM).toBe('xterm-256color');
     expect(e.COLORTERM).toBe('truecolor');
     expect(e.LANG).toBeTruthy();
     expect(e.O8_NODE_ID).toBe('n-1');
-    delete process.env.CLAUDECODE;
-    delete process.env.TERM_PROGRAM;
   });
   it('loginShellPath returns a cached PATH', async () => {
-    const p = await loginShellPath();
+    const p = await loginShellPath('/bin/sh'); // never the user's own login shell
     expect(p).toContain('/');
-    expect(await loginShellPath()).toBe(p);
+    expect(await loginShellPath('/bin/sh')).toBe(p);
   }, 15_000);
 });

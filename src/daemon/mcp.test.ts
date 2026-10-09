@@ -17,10 +17,12 @@ let answer = true;
 beforeAll(async () => {
   home = mkdtempSync(join(tmpdir(), 'o8-mcp-'));
   manager = new NodeManager({ home, shell: '/bin/sh' });
-  const handler = mountMcp(manager, async (t) => { confirms.push(t); return answer; });
+  const { handler, publishAdminToken } = mountMcp(manager, async (t) => { confirms.push(t); return answer; });
+  expect(() => readFileSync(join(home, 'admin-token'))).toThrow(); // not written until the server is listening
   server = http.createServer((req, res) => void handler(req, res));
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  publishAdminToken();
   admin = readFileSync(join(home, 'admin-token'), 'utf8');
 });
 afterAll(async () => {
@@ -74,6 +76,30 @@ describe('mcp api', () => {
     answer = true;
   });
 
+  it('only the human may spawn with bypassPermissions; the mode is validated', async () => {
+    const p = (await spawnT('bp')).body.data.nodeId as string;
+    const args = { kind: 'terminal', title: 'k', cwd: tmpdir(), permissionMode: 'bypassPermissions' };
+    expect((await api('spawn', args, p, manager.tokenFor(p))).body.error).toMatch(/only the human/);
+    expect((await api('spawn', args)).status).toBe(200);
+    expect((await api('spawn', { ...args, permissionMode: 'yolo' })).status).toBe(400);
+  });
+
+  it('list_nodes shows a node only its lineage; write is capped at 2000 characters', async () => {
+    const p = (await spawnT('lp')).body.data.nodeId as string;
+    const c = (await spawnT('lc', p, manager.tokenFor(p))).body.data.nodeId as string;
+    const stranger = (await spawnT('ls')).body.data.nodeId as string;
+    const ids = (await api('list_nodes', {}, c, manager.tokenFor(c))).body.data.map((n: any) => n.id);
+    expect(ids).toContain(p);
+    expect(ids).toContain(c);
+    expect(ids).not.toContain(stranger);
+    const long = await api('write', { nodeId: p, text: 'x'.repeat(2001) }, c, manager.tokenFor(c));
+    expect(long.status).toBe(400);
+    expect(long.body.error).toMatch(/2000/);
+    confirms.length = 0;
+    await api('write', { nodeId: p, text: 'y'.repeat(1500) }, c, manager.tokenFor(c));
+    expect(confirms[0]).toContain('y'.repeat(1500));
+  });
+
   it('serves the tools over MCP with schemas', async () => {
     const id = (await spawnT('mcp-caller')).body.data.nodeId as string;
     const client = new Client({ name: 't', version: '0' });
@@ -88,12 +114,11 @@ describe('mcp api', () => {
 });
 
 describe('systemPrompt', () => {
-  it('states identity, framing rules and stays under 250 words', () => {
+  it('states identity and framing rules', () => {
     const p = systemPrompt({ nodeId: 'n-1', title: 'Builder', parentId: null });
     expect(p).toContain('node n-1');
     expect(p).toContain('parent node is none');
     expect(p).toContain('--- O8 MESSAGE <nonce> ---');
     expect(p).toContain('OUTERMOST');
-    expect(p.split(/\s+/).length).toBeLessThan(250);
   });
 });

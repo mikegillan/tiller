@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { chmodSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import type http from 'node:http';
@@ -9,7 +9,10 @@ import { z } from 'zod';
 import type { NodeView } from '../shared/protocol.js';
 import type { NodeManager } from './manager.js';
 import { deliver, HUMAN, inScope, isDescendant, messageStatus, startNotices } from './messaging.js';
+import { logError, safeEqual } from './util.js';
 
+const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'] as const;
+const MAX_WRITE_CHARS = 2000;
 const IDEMPOTENCY_MS = 24 * 3600_000;
 const MAX_BODY = 1_000_000;
 const TRANSCRIPT_CAP = 200_000;
@@ -18,8 +21,6 @@ interface Ctx { manager: NodeManager; confirm: (text: string) => Promise<boolean
 interface Out { text?: string; data?: unknown }
 
 const outcomes = new Map<string, { outcome: 'succeeded' | 'failed'; note?: string; at: number }>();
-/** What a node reported through report_outcome, if anything. */
-export const getOutcome = (nodeId: string) => outcomes.get(nodeId);
 
 // ---- helpers ----
 
@@ -34,6 +35,7 @@ function summarize(v: NodeView, now: number) {
   return {
     id: v.id, parentId: v.parentId, title: v.title, kind: v.kind, cwd: v.cwd, state: v.status.state, flags: flags(v),
     age: age(now - v.createdAt), activity: v.status.activity, lastAssistantMessage: v.status.lastAssistantMessage?.slice(0, 200),
+    outcome: outcomes.get(v.id),
   };
 }
 
@@ -94,10 +96,10 @@ const spawned = new Map<string, { args: string; result: unknown; at: number }>()
 
 export const tools = {
   list_nodes: tool(
-    'List every node in the orchestr8 workspace as an indented tree plus JSON. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale), age, current activity, and its last assistant message truncated to 200 characters. Use it to find node ids before calling send, read or close.',
+    'List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale), age, current activity, its last assistant message truncated to 200 characters, and the outcome it reported through report_outcome, if any. Use it to find node ids before calling send, read or close.',
     {},
     async (c) => {
-      const nodes = c.manager.list().map((v) => summarize(v, Date.now()));
+      const nodes = c.manager.list().filter((v) => inScope(c.manager, c.caller, v.id)).map((v) => summarize(v, Date.now()));
       return { text: tree(nodes), data: nodes };
     }),
 
@@ -105,9 +107,10 @@ export const tools = {
     'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error.',
     {
       kind: z.enum(['claude', 'terminal']), title: z.string().min(1), cwd: z.string().min(1), prompt: z.string().optional(),
-      model: z.string().optional(), permissionMode: z.string().optional(), requestId: z.string().optional(),
+      model: z.string().optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), requestId: z.string().optional(),
     },
     async (c, { requestId, ...req }) => {
+      if (req.permissionMode === 'bypassPermissions' && c.caller !== HUMAN) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
       const now = Date.now();
       for (const [k, v] of spawned) if (now - v.at > IDEMPOTENCY_MS) spawned.delete(k);
       const key = `${c.caller}\0${requestId}`;
@@ -156,12 +159,12 @@ export const tools = {
     }),
 
   write: tool(
-    'Type raw keystrokes into another node\'s terminal (yourself, ancestors, siblings or descendants), for example to answer a prompt in a terminal node or press Enter. The human must approve each call in the UI; if they decline or nobody is watching you get {ok:false, reason:"denied"}. For talking to an agent node use send, which is safer.',
-    { nodeId: z.string().min(1), text: z.string().min(1) },
+    'Type raw keystrokes into another node\'s terminal (yourself, ancestors, siblings or descendants), for example to answer a prompt in a terminal node or press Enter. The human must approve each call in the UI; if they decline or nobody is watching you get {ok:false, reason:"denied"}. Text is limited to 2000 characters. For talking to an agent node use send, which is safer.',
+    { nodeId: z.string().min(1), text: z.string().min(1).max(MAX_WRITE_CHARS) },
     async (c, a) => {
       const v = requireScope(c, a.nodeId);
       if (!c.manager.session(a.nodeId)) throw new Error('node has no running process');
-      if (c.caller !== HUMAN && !(await c.confirm(`${who(c)} wants to type into ${v.title} (${v.id}): ${JSON.stringify(a.text.slice(0, 200))}`))) {
+      if (c.caller !== HUMAN && !(await c.confirm(`${who(c)} wants to type into ${v.title} (${v.id}): ${JSON.stringify(a.text)}`))) {
         return { data: { ok: false, reason: 'denied' } };
       }
       c.manager.input(a.nodeId, a.text);
@@ -202,18 +205,26 @@ export const tools = {
 
 // ---- HTTP ----
 
-const safeEqual = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
-
 /**
  * Handler for `/mcp` (MCP over stateless streamable HTTP) and `POST /api/<tool>` (the same tools as plain JSON, for the CLI).
  * Both authenticate with `Authorization: Bearer` + `X-O8-Node`. Node id `human` takes the admin token written to `<home>/admin-token`.
  */
-export function mountMcp(manager: NodeManager, confirm: (text: string) => Promise<boolean>): (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void> {
+export function mountMcp(manager: NodeManager, confirm: (text: string) => Promise<boolean>): {
+  handler: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void>;
+  /** Write the admin token file. Call once the server is listening, so a daemon that fails to bind leaves the running daemon's token alone. */
+  publishAdminToken: () => void;
+} {
   const adminToken = randomBytes(32).toString('base64url');
   const adminFile = join(manager.home, 'admin-token');
-  writeFileSync(adminFile, adminToken, { mode: 0o600 });
-  chmodSync(adminFile, 0o600);
+  const publishAdminToken = () => {
+    writeFileSync(adminFile, adminToken, { mode: 0o600 });
+    chmodSync(adminFile, 0o600);
+  };
   startNotices(manager);
+  manager.on('removed', (id: string) => {
+    outcomes.delete(id);
+    for (const k of spawned.keys()) if (k.startsWith(`${id}\0`)) spawned.delete(k);
+  });
 
   const authenticate = (req: http.IncomingMessage): string | undefined => {
     const id = String(req.headers['x-o8-node'] ?? '');
@@ -239,7 +250,7 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
     }
   }
 
-  return async (req, res) => {
+  const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const caller = authenticate(req);
     if (!caller) return void res.writeHead(401).end();
     const ctx: Ctx = { manager, confirm, caller };
@@ -259,8 +270,9 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
       });
     }
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    res.on('close', () => { void transport.close(); void mcp.close(); });
+    res.on('close', () => { transport.close().catch(logError); mcp.close().catch(logError); });
     await mcp.connect(transport);
     await transport.handleRequest(req, res);
   };
+  return { handler, publishAdminToken };
 }

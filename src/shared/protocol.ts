@@ -39,6 +39,8 @@ export interface NodeRecord {
   createdAt: number;
   /** Persisted so a restarted daemon can offer Resume. */
   sessionId?: string;
+  /** Claude's transcript file, from SessionStart. Persisted so Resume can find it. */
+  transcriptPath?: string;
 }
 
 export interface NodeView extends NodeRecord {
@@ -54,6 +56,7 @@ export type ServerMessage =
   | { t: 'data'; id: string; data: string }  // raw PTY output
   | { t: 'notify'; id: string; kind: 'done' | 'needsYou' | 'errored' | 'exited'; title: string; body?: string }
   | { t: 'confirm'; confirmId: string; text: string } // ask the human to approve an agent action
+  | { t: 'confirmDone'; confirmId: string }  // that confirm was answered or timed out; close the modal
   | { t: 'error'; message: string; id?: string }
   ;
 

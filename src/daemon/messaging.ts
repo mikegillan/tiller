@@ -1,12 +1,15 @@
 import { randomBytes } from 'node:crypto';
 import type { NodeView, SendResult } from '../shared/protocol.js';
 import type { NodeManager } from './manager.js';
+import { logError } from './util.js';
 
 export const RATE_MS = 10_000;
 export const QUEUE_CAP = 16;
 export const QUEUE_TTL_MS = 5 * 60_000;
 export const RECEIPT_MS = 8000;
 export const WAITING_NOTICE_MS = 15 * 60_000;
+export const RETRY_MS = 1000;
+export const STATUS_TTL_MS = 3600_000;
 /** Caller ids that are not nodes. Both have full scope. */
 export const HUMAN = 'human';
 export const DAEMON = 'orchestr8';
@@ -45,8 +48,10 @@ interface State {
   last: Map<string, number>;
   queues: Map<string, Entry[]>;
   locks: Map<string, Promise<unknown>>;
-  /** Queued messages and their eventual outcome. prune: never trimmed, fine for a daemon that restarts; cap if it grows. */
-  status: Map<string, { from: string; result: SendResult }>;
+  /** Outcome of every message sent, for message_status. Pruned after STATUS_TTL_MS and when the sender is removed. */
+  status: Map<string, { from: string; result: SendResult; at: number }>;
+  /** Per-target timer that re-checks a verified-idle target whose screen was not ready yet. */
+  retry: Map<string, NodeJS.Timeout>;
 }
 type Attempt = { result: SendResult } | { wait: string };
 
@@ -55,11 +60,14 @@ const states = new WeakMap<object, State>();
 function stateOf(m: Mgr): State {
   let s = states.get(m);
   if (s) return s;
-  const st: State = { last: new Map(), queues: new Map(), locks: new Map(), status: new Map() };
+  const st: State = { last: new Map(), queues: new Map(), locks: new Map(), status: new Map(), retry: new Map() };
   states.set(m, st);
-  const kick = (id: string) => { if (st.queues.get(id)?.length) void drain(m, st, id); };
+  const kick = (id: string) => { if (st.queues.get(id)?.length) drain(m, st, id).catch(logError); };
   m.on('node', (v: NodeView) => kick(v.id));
-  m.on('removed', kick);
+  m.on('removed', (id: string) => {
+    for (const [k, v] of st.status) if (v.from === id) st.status.delete(k);
+    kick(id);
+  });
   return st;
 }
 
@@ -92,8 +100,8 @@ async function attempt(m: Mgr, e: Entry): Promise<Attempt> {
   if (session.composerText()) return { wait: 'composer has unsent text' };
 
   const nonce = randomBytes(6).toString('base64url');
-  const body = e.text.replaceAll('\x1b', '');
-  const envelope = `--- O8 MESSAGE ${nonce} ---\nfrom: ${e.label}\nreply-to: ${e.replyTo ?? 'none'}\n${body}\n--- END O8 MESSAGE ${nonce} ---`;
+  // paste() strips ESC bytes, so the body cannot close the paste frame.
+  const envelope = `--- O8 MESSAGE ${nonce} ---\nfrom: ${e.label}\nreply-to: ${e.replyTo ?? 'none'}\n${e.text}\n--- END O8 MESSAGE ${nonce} ---`;
   // Subscribe before writing: a fast target can answer before paste() returns.
   let onHook!: (id: string, ev: { hook_event_name?: string; prompt?: unknown }) => void;
   let timer: NodeJS.Timeout | undefined;
@@ -120,33 +128,50 @@ function drain(m: Mgr, s: State, to: string): Promise<void> {
     while (q.length) {
       const e = q[0];
       const a = await attempt(m, e);
-      if ('wait' in a) return;
+      if ('wait' in a) break;
       q.shift();
       clearTimeout(e.timer);
-      s.status.get(e.id)!.result = { ...a.result, messageId: e.id };
+      const st = s.status.get(e.id);
+      if (st) st.result = { ...a.result, messageId: e.id };
     }
+    scheduleRetry(m, s, to);
   });
 }
 
+/**
+ * A target that is verified idle can still fail the screen check for a moment: Stop arrives before the composer
+ * repaints, and no further event follows. While messages wait on such a target, re-run the gate every second.
+ */
+function scheduleRetry(m: Mgr, s: State, to: string): void {
+  clearTimeout(s.retry.get(to));
+  s.retry.delete(to);
+  const v = m.view(to);
+  if (!s.queues.get(to)?.length || !v || !verifiedIdle(v)) return;
+  const t = setTimeout(() => { s.retry.delete(to); drain(m, s, to).catch(logError); }, RETRY_MS);
+  t.unref();
+  s.retry.set(to, t);
+}
+
+/** Queue `e`; the caller records the returned result in `s.status`. */
 function enqueue(m: Mgr, s: State, e: Entry, detail: string): SendResult {
   const q = s.queues.get(e.to) ?? [];
   s.queues.set(e.to, q);
   if (q.length >= QUEUE_CAP) return { outcome: 'queueFull', retryable: true, detail: `${QUEUE_CAP} messages already queued for ${e.to}`, messageId: e.id };
   q.push(e);
-  const result: SendResult = { outcome: 'queued', retryable: false, detail, messageId: e.id };
-  s.status.set(e.id, { from: e.from, result });
-  e.timer = setTimeout(() => void locked(s, e.to, async () => {
+  e.timer = setTimeout(() => locked(s, e.to, async () => {
     const i = q.indexOf(e);
     if (i < 0) return;
     q.splice(i, 1);
-    s.status.get(e.id)!.result = { outcome: 'expired', retryable: true, detail: 'target never became idle within 5 min', messageId: e.id };
-  }), QUEUE_TTL_MS);
+    const st = s.status.get(e.id);
+    if (st) st.result = { outcome: 'expired', retryable: true, detail: 'target never became idle within 5 min', messageId: e.id };
+    scheduleRetry(m, s, e.to);
+  }).catch(logError), QUEUE_TTL_MS);
   e.timer.unref();
-  void drain(m, s, e.to); // the target may have gone idle while we were deciding to queue
-  return result;
+  drain(m, s, e.to).catch(logError); // the target may have gone idle while we were deciding to queue
+  return { outcome: 'queued', retryable: false, detail, messageId: e.id };
 }
 
-/** Final (or current, if still queued) outcome of a message the caller sent. */
+/** Outcome of a message the caller sent: final, or `queued` while it still waits. */
 export function messageStatus(m: Mgr, caller: string, messageId: string): SendResult | undefined {
   const r = stateOf(m).status.get(messageId);
   return r && (r.from === caller || caller === HUMAN) ? r.result : undefined;
@@ -156,14 +181,20 @@ export function messageStatus(m: Mgr, caller: string, messageId: string): SendRe
 export async function deliver(m: Mgr, fromId: string, toId: string, text: string, opts: DeliverOpts = {}): Promise<SendResult> {
   const s = stateOf(m);
   const id = `m-${randomBytes(4).toString('hex')}`;
-  const out = (r: SendResult): SendResult => ({ ...r, messageId: id });
+  const now = Date.now();
+  for (const [k, v] of s.status) if (now - v.at > STATUS_TTL_MS) s.status.delete(k);
+  const out = (r: SendResult): SendResult => {
+    const result = { ...r, messageId: id };
+    s.status.set(id, { from: fromId, result, at: now });
+    return result;
+  };
   const refuse = (detail: string, retryable = false) => out({ outcome: 'refused', retryable, detail });
 
-  const target = m.view(toId);
-  if (!target) return out(gone);
-  if (fromId === toId) return refuse('cannot send to yourself');
+  // Scope first, so an out-of-scope caller cannot tell a missing node from one it may not touch.
   if (!inScope(m, fromId, toId)) return refuse('target is outside your lineage (self, ancestors, siblings, descendants)');
-  if (target.status.exited) return out(gone);
+  const target = m.view(toId);
+  if (!target || target.status.exited) return out(gone);
+  if (fromId === toId) return refuse('cannot send to yourself');
   if (target.kind !== 'claude') return refuse('not an agent node; use write for terminals');
 
   const key = `${fromId}\0${toId}`;
@@ -175,9 +206,9 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
   const label = opts.fromLabel ?? (from ? `${oneLine(from.title)} (${fromId})` : fromId);
   const entry: Entry = { id, from: fromId, to: toId, label: oneLine(label), replyTo: opts.replyTo === undefined ? fromId : opts.replyTo, text };
   const q = s.queues.get(toId);
-  if (q?.length) return enqueue(m, s, entry, `behind ${q.length} queued message(s)`); // keep order
+  if (q?.length) return out(enqueue(m, s, entry, `behind ${q.length} queued message(s)`)); // keep order
   const a = await locked(s, toId, () => attempt(m, entry));
-  return 'wait' in a ? enqueue(m, s, entry, a.wait) : out(a.result);
+  return out('wait' in a ? enqueue(m, s, entry, a.wait) : a.result);
 }
 
 // ---- station notices (PLAN §7) ----
@@ -190,7 +221,7 @@ export function startNotices(m: Mgr): () => void {
     if (!v.parentId || notified.has(v.id)) return;
     notified.add(v.id);
     const body = v.status.lastAssistantMessage?.slice(0, 300) ?? 'No further details.';
-    deliver(m, DAEMON, v.parentId, body, { fromLabel: `orchestr8 (child ${v.id} "${v.title}" stopped: ${reason})`, replyTo: null }).catch(() => {});
+    deliver(m, DAEMON, v.parentId, body, { fromLabel: `orchestr8 (child ${v.id} "${v.title}" stopped: ${reason})`, replyTo: null }).catch(logError);
   };
   const onNode = (v: NodeView) => {
     if (!v.parentId) return;
@@ -208,7 +239,7 @@ export function startNotices(m: Mgr): () => void {
       timers.set(v.id, t);
     }
     if (exited) notice(v, 'exited');
-    else if (state === 'done') { if (errored) notice(v, 'turn-errored'); else notified.delete(v.id); } // a clean turn re-arms
+    else if (state === 'done') { if (errored) notice(v, 'turn-errored'); else if (v.status.doneSource === 'stop') notified.delete(v.id); } // only a clean Stop re-arms
   };
   m.on('node', onNode);
   return () => { m.off('node', onNode); for (const t of timers.values()) clearTimeout(t); };

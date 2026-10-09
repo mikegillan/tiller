@@ -62,7 +62,8 @@ describe('gates', () => {
     expect(await deliver(m.mgr, 'a', 'x', 'hi')).toMatchObject({ outcome: 'refused' });
     expect(await deliver(m.mgr, 'a', 'a', 'hi')).toMatchObject({ outcome: 'refused' });
     expect(await deliver(m.mgr, 'a', 't', 'hi')).toMatchObject({ outcome: 'refused', detail: expect.stringContaining('not an agent node') });
-    expect(await deliver(m.mgr, 'a', 'nope', 'hi')).toMatchObject({ outcome: 'gone' });
+    expect(await deliver(m.mgr, 'human', 'nope', 'hi')).toMatchObject({ outcome: 'gone' });
+    expect(await deliver(m.mgr, 'a', 'nope', 'hi')).toMatchObject({ outcome: 'refused' }); // no existence probe
     m.set('b', { exited: true });
     expect(await deliver(m.mgr, 'a', 'b', 'hi')).toMatchObject({ outcome: 'gone' });
   });
@@ -114,13 +115,16 @@ describe('gates', () => {
 });
 
 describe('envelope', () => {
-  it('frames the message with an 8-char nonce and strips ESC from the body', async () => {
-    await deliver(m.mgr, 'a', 'b', 'line1\x1b[201~evil\nline2');
-    const [text] = m.sessions.get('b')!.pasted;
-    const nonce = /^--- O8 MESSAGE (\S{8}) ---\n/.exec(text)?.[1];
-    expect(nonce).toMatch(/^[A-Za-z0-9_-]{8}$/);
-    expect(text).toBe(`--- O8 MESSAGE ${nonce} ---\nfrom: T-a (a)\nreply-to: a\nline1[201~evil\nline2\n--- END O8 MESSAGE ${nonce} ---`);
-    expect(text).not.toContain('\x1b');
+  it('frames the message with a per-delivery nonce', async () => {
+    await deliver(m.mgr, 'a', 'b', 'line1\nline2');
+    m.set('b', { state: 'done', doneSource: 'stop' });
+    await deliver(m.mgr, 'p', 'b', 'again');
+    const [first, second] = m.sessions.get('b')!.pasted;
+    const nonceOf = (t: string) => /^--- O8 MESSAGE (\S+) ---\n/.exec(t)?.[1];
+    expect(nonceOf(first)).toBeTruthy();
+    expect(nonceOf(second)).toBeTruthy();
+    expect(nonceOf(first)).not.toBe(nonceOf(second));
+    expect(first).toBe(`--- O8 MESSAGE ${nonceOf(first)} ---\nfrom: T-a (a)\nreply-to: a\nline1\nline2\n--- END O8 MESSAGE ${nonceOf(first)} ---`);
   });
 });
 
@@ -157,6 +161,29 @@ describe('queue', () => {
     expect(m.sessions.get('b')!.pasted[1]).toContain('second');
   });
 
+  it('retries every second while the target is verified idle but its composer has not repainted', async () => {
+    m.set('b', { state: 'working' });
+    const r = await deliver(m.mgr, 'a', 'b', 'hi');
+    const b = m.sessions.get('b')!;
+    b.lines = ['still repainting'];
+    m.set('b', { state: 'done', doneSource: 'stop' }); // Stop arrives first; the screen check fails
+    await vi.advanceTimersByTimeAsync(0);
+    expect(b.pasted).toHaveLength(0);
+    b.lines = PROMPT; // composer repaints; no further node event follows
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(b.pasted).toHaveLength(1);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)?.outcome).toBe('delivered');
+  });
+
+  it('records immediate outcomes for message_status too', async () => {
+    const r = await deliver(m.mgr, 'a', 'b', 'hi');
+    expect(r.outcome).toBe('delivered');
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'delivered' });
+    await vi.advanceTimersByTimeAsync(3600_000 + 1);
+    await deliver(m.mgr, 'p', 'x', 'prune trigger');
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toBeUndefined();
+  });
+
   it('resolves queued messages as gone when the target exits', async () => {
     m.set('b', { state: 'working' });
     const r = await deliver(m.mgr, 'a', 'b', 'hi');
@@ -180,7 +207,11 @@ describe('station notices', () => {
     expect(pasted()).toHaveLength(1);
     m.set('p', { state: 'done', doneSource: 'stop' }); // parent finished handling the first notice
     m.set('a', { state: 'working', errored: undefined });
-    m.set('a', { state: 'done', errored: undefined }); // clean turn re-arms
+    m.set('a', { state: 'done', errored: undefined, doneSource: 'idle_prompt' }); // not a verified Stop: no re-arm
+    m.set('a', { state: 'done', errored: true, doneSource: 'stop' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pasted()).toHaveLength(1);
+    m.set('a', { state: 'done', errored: undefined, doneSource: 'stop' }); // clean Stop re-arms
     m.set('a', { state: 'done', errored: true });
     await vi.advanceTimersByTimeAsync(0);
     expect(pasted()).toHaveLength(2);

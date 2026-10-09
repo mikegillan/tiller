@@ -14,7 +14,7 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      if (!e.metaKey || e.altKey || e.shiftKey) return; // Ctrl must reach the terminal
       if (e.key === 'k') { e.preventDefault(); setPalette((p) => !p); }
       else if (/^[1-9]$/.test(e.key)) {
         const row = rows[Number(e.key) - 1];

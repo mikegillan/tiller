@@ -187,6 +187,10 @@ the handler; a refusal means nothing happened.
 - Spawning never changes what the user is looking at (#665, #702). The new node appears in
   the sidebar with an unread marker.
 - Rate limit: one `send` per sender→target pair per 10 s. Enough to stop an LLM retry loop.
+- Limits of the model: every process of the same OS user can read all token files and the admin
+  token under the home directory, so the lineage scope, the confirm dialogs and the
+  `bypassPermissions` refusal guard against mistakes by an agent, not against a hostile local
+  process running as the user.
 
 ## 6. Message delivery
 

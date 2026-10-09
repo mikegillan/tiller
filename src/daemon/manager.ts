@@ -1,12 +1,13 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { NodeKind, NodeStatus, NodeView } from '../shared/protocol.js';
 import { claudeLaunch, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { NodeRegistry } from './nodes.js';
 import { PtySession } from './pty.js';
+import { logError, safeEqual } from './util.js';
 import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, type HookEvent } from './status.js';
 
 const INTERRUPT_MS = 1500;
@@ -34,9 +35,11 @@ function readClaudeJson(): unknown {
   try { return JSON.parse(readFileSync(join(homedir(), '.claude.json'), 'utf8')); } catch { return null; }
 }
 
-/** Where Claude keeps a session's transcript: cwd with / and . replaced by -. */
+/** Fallback for where Claude keeps a session's transcript: the real path of cwd with every non-alphanumeric character replaced by -. */
 function transcriptFor(cwd: string, sessionId: string): string {
-  return join(homedir(), '.claude', 'projects', cwd.replace(/[/.]/g, '-'), `${sessionId}.jsonl`);
+  let real = cwd;
+  try { real = realpathSync(cwd); } catch { /* keep the path as given */ }
+  return join(homedir(), '.claude', 'projects', real.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`);
 }
 
 export interface SpawnRequest {
@@ -82,6 +85,7 @@ export class NodeManager extends EventEmitter {
   private lastHookAt = new Map<string, number>();
   private selected = new Map<unknown, string>(); // UI client -> selected node id
   private sweepTimer: NodeJS.Timeout;
+  private interruptTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(opts: ManagerOptions = {}) {
     super();
@@ -89,12 +93,13 @@ export class NodeManager extends EventEmitter {
     this.shell = opts.shell ?? process.env.SHELL ?? '/bin/sh';
     this.path = opts.path ?? process.env.PATH ?? '';
     mkdirSync(join(this.home, 'nodes'), { recursive: true, mode: 0o700 });
+    chmodSync(this.home, 0o700); // mkdir's mode does not apply to a directory that already existed
     this.secret = this.loadSecret();
     this.registry = new NodeRegistry(join(this.home, 'state.json'));
     this.registry.load();
     // Nodes from a previous run have no process; they can be resumed.
     for (const n of this.registry.list()) {
-      this.statuses.set(n.id, { state: n.kind === 'claude' ? 'unknown' : 'none', exited: true, sessionId: n.sessionId, changedAt: Date.now() });
+      this.statuses.set(n.id, { state: n.kind === 'claude' ? 'unknown' : 'none', exited: true, sessionId: n.sessionId, transcriptPath: n.transcriptPath, changedAt: Date.now() });
     }
     this.sweepTimer = setInterval(() => this.sweepStale(), SWEEP_MS);
     this.sweepTimer.unref();
@@ -122,9 +127,7 @@ export class NodeManager extends EventEmitter {
   }
 
   verifyToken(nodeId: string, token: string): boolean {
-    const want = Buffer.from(this.tokenFor(nodeId));
-    const got = Buffer.from(token);
-    return got.length === want.length && timingSafeEqual(got, want);
+    return safeEqual(token, this.tokenFor(nodeId));
   }
 
   // ---- queries ----
@@ -153,9 +156,7 @@ export class NodeManager extends EventEmitter {
       sessionId: req.kind === 'claude' ? randomUUID() : undefined,
     });
     try {
-      mkdirSync(this.nodeDir(rec.id), { recursive: true, mode: 0o700 });
-      writeFileSync(join(this.nodeDir(rec.id), 'token'), this.tokenFor(rec.id), { mode: 0o600 });
-      writeNodeFiles(this.nodeDir(rec.id), { nodeId: rec.id, endpoint: this.endpoint, token: this.tokenFor(rec.id) });
+      this.writeFiles(rec.id);
       this.statuses.set(rec.id, { state: req.kind === 'claude' ? 'unknown' : 'none', sessionId: rec.sessionId, changedAt: Date.now() });
       this.launch(rec.id, req.prompt, false);
     } catch (err) {
@@ -174,9 +175,14 @@ export class NodeManager extends EventEmitter {
     const status = this.statuses.get(id)!;
     const sessionId = status.sessionId ?? rec.sessionId;
     if (!sessionId) return { ok: false, error: 'No session to resume' };
-    const transcript = status.transcriptPath ?? transcriptFor(rec.cwd, sessionId);
+    const transcript = status.transcriptPath ?? rec.transcriptPath ?? transcriptFor(rec.cwd, sessionId);
     if (!existsSync(transcript)) return { ok: false, error: `No conversation to resume (missing ${transcript})` };
     this.lastHookAt.delete(id);
+    try {
+      this.writeFiles(id); // the port, and so the endpoint in mcp.json, may have changed since the node was created
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
     this.statuses.set(id, { state: 'unknown', sessionId, transcriptPath: transcript, changedAt: Date.now() });
     try {
       this.launch(id, undefined, true);
@@ -190,6 +196,7 @@ export class NodeManager extends EventEmitter {
 
   close(id: string): void {
     const s = this.sessions.get(id);
+    clearTimeout(this.interruptTimers.get(id));
     this.sessions.delete(id); // first, so the exit callback ignores it
     s?.kill();
     if (!this.registry.get(id)) return;
@@ -219,12 +226,16 @@ export class NodeManager extends EventEmitter {
     if (interruptKeyPressed(status, data)) {
       // Esc / Ctrl-C ends a turn without a Stop hook. If no hook shows up, call it interrupted.
       const sentAt = Date.now();
-      setTimeout(() => {
+      clearTimeout(this.interruptTimers.get(id));
+      const timer = setTimeout(() => {
+        this.interruptTimers.delete(id);
         const cur = this.statuses.get(id);
         if (cur && (this.lastHookAt.get(id) ?? 0) < sentAt) this.setStatus(id, interruptTimeout(cur, Date.now()));
-      }, INTERRUPT_MS).unref();
+      }, INTERRUPT_MS);
+      timer.unref();
+      this.interruptTimers.set(id, timer);
     }
-    void s.write(data);
+    s.write(data).catch(logError);
   }
 
   resize(id: string, cols: number, rows: number): void {
@@ -251,12 +262,16 @@ export class NodeManager extends EventEmitter {
     if (event.hook_event_name === 'SessionStart' && next.sessionId && next.sessionId !== rec.sessionId) {
       this.registry.update(nodeId, { sessionId: next.sessionId });
     }
+    if (event.hook_event_name === 'SessionStart' && next.transcriptPath && next.transcriptPath !== rec.transcriptPath) {
+      this.registry.update(nodeId, { transcriptPath: next.transcriptPath });
+    }
     this.setStatus(nodeId, next);
   }
 
   /** Flush the registry and kill every PTY. */
   shutdown(): void {
     clearInterval(this.sweepTimer);
+    for (const t of this.interruptTimers.values()) clearTimeout(t);
     for (const s of this.sessions.values()) s.kill();
     this.registry.flush();
   }
@@ -264,6 +279,14 @@ export class NodeManager extends EventEmitter {
   // ---- internals ----
 
   private nodeDir(id: string): string { return join(this.home, 'nodes', id); }
+
+  /** Token, settings.json and mcp.json for a node; mcp.json embeds the current endpoint. */
+  private writeFiles(id: string): void {
+    const dir = this.nodeDir(id);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, 'token'), this.tokenFor(id), { mode: 0o600 });
+    writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token: this.tokenFor(id) });
+  }
 
   private discard(id: string): void {
     this.registry.remove(id);
@@ -292,7 +315,7 @@ export class NodeManager extends EventEmitter {
       this.setStatus(id, ptyExited(prev, Date.now()), false);
       this.emit('notify', { id, kind: 'exited', title: rec.title } satisfies NotifyEvent);
     });
-    if (rec.kind === 'claude') void this.watchTrust(id, s, rec.cwd);
+    if (rec.kind === 'claude') this.watchTrust(id, s, rec.cwd).catch(logError);
   }
 
   /**

@@ -78,6 +78,8 @@ export function applyServer(m: ServerMessage) {
       });
     case 'confirm':
       return update((s) => ({ confirms: [...s.confirms, { confirmId: m.confirmId, text: m.text }] }));
+    case 'confirmDone':
+      return dropConfirm(m.confirmId);
     case 'error':
       return toast(m.message, m.id);
   }

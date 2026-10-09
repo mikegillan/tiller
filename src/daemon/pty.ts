@@ -55,6 +55,7 @@ export class PtySession {
       this.exited = true;
       this.exitCode = exitCode;
       for (const cb of this.exitCbs) cb(exitCode);
+      this.term.dispose();
     });
   }
 
@@ -101,7 +102,7 @@ export class PtySession {
   }
 
   paste(text: string): Promise<void> {
-    const body = text.replaceAll('\x1b', '');
+    const body = text.replaceAll('\x1b', ''); // an ESC could close the paste frame; the only place bodies are stripped
     return this.locked(async () => {
       if (this.exited) return;
       this.pty.write(`\x1b[200~${body}\x1b[201~`);
@@ -147,10 +148,10 @@ export function buildChildEnv(extra: Record<string, string>): Record<string, str
 let pathCache: Promise<string> | undefined;
 
 /** PATH as seen by the user's login shell; a GUI-launched daemon has a minimal one. */
-export function loginShellPath(): Promise<string> {
+export function loginShellPath(shell = process.env.SHELL || '/bin/sh'): Promise<string> {
   pathCache ??= new Promise((resolve) => {
     const fallback = process.env.PATH ?? '';
-    const child = execFile(process.env.SHELL || '/bin/sh', ['-ilc', 'echo $PATH'], { timeout: 10_000 }, (err, stdout) => {
+    const child = execFile(shell, ['-ilc', 'echo $PATH'], { timeout: 10_000 }, (err, stdout) => {
       // Interactive shells may print noise first; the PATH is the last line.
       const last = stdout.trim().split('\n').pop()?.trim();
       resolve(err || !last ? fallback : last);

@@ -62,7 +62,7 @@ export function claudeLaunch(i: LaunchInput): LaunchSpec {
     '--mcp-config', join(i.nodeDir, 'mcp.json'), '--strict-mcp-config',
     '--append-system-prompt', systemPrompt(i),
   );
-  if (i.prompt && !i.resume) args.push(i.prompt);
+  if (i.prompt && !i.resume) args.push('--', i.prompt); // `--`: a prompt starting with `-` is not an option
   return { file: 'claude', args, env: nodeEnv(i) };
 }
 

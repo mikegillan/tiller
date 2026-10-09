@@ -3,14 +3,15 @@ import { applyServer, setConnected } from './store';
 import { getTerm } from './terminals';
 import { armOnFirstClick, handleNotify } from './notify';
 
+/** Read `?k=` once, keep it in localStorage, and remove it from the address bar. */
+const urlKey = new URLSearchParams(location.search).get('k');
+if (urlKey) {
+  try { localStorage.setItem('o8.k', urlKey); } catch { /* storage unavailable; the in-memory copy still works */ }
+  history.replaceState(null, '', location.pathname);
+}
+
 function token(): string {
-  const k = new URLSearchParams(location.search).get('k');
-  try {
-    if (k) localStorage.setItem('o8.k', k);
-    return k ?? localStorage.getItem('o8.k') ?? '';
-  } catch {
-    return k ?? '';
-  }
+  try { return urlKey ?? localStorage.getItem('o8.k') ?? ''; } catch { return urlKey ?? ''; }
 }
 
 let ws: WebSocket | undefined;
