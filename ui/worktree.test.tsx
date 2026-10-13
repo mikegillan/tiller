@@ -20,7 +20,7 @@ describe('worktree', () => {
     const git = { branch: wt.branch, base: 'main', ahead: 2, behind: 0, dirty: 1 };
     const node = (status: object) => ({ ...mk('a', null, 0, { state: 'done', git, ...status }), worktree: wt });
     const text = (n: ReturnType<typeof node>) => renderToStaticMarkup(<NodeMeta node={n} />).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    expect(text(node({}))).toBe('⎇ o8/n-3f2a9c1d ↑2 1 dirty');
+    expect(text(node({}))).toBe('⎇ o8/n-3f2a9c1d ↑2 ●1');
     expect(text(node({ git: { ...git, ahead: 0, dirty: 0, mergedAt: 1 } }))).toBe('⎇ o8/n-3f2a9c1d merged');
     expect([node({}), node({ state: 'working' }), node({ state: 'working', exited: true }), node({ git: { ...git, mergedAt: 1 } })].map(hasChanges)).toEqual([true, false, true, false]);
     expect([node({}), node({ state: 'working' }), node({ git: { ...git, ahead: 0 } }), node({ git: { ...git, mergedAt: 1 } })].map(canMerge)).toEqual([true, false, false, false]);

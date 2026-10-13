@@ -58,7 +58,7 @@ const glyph = (n: NodeView): Seg =>
 
 
 /**
- * `⎇ n-3f2a ↑1 ±2 · opus 5.5 · high · ctx 42% (84k/200k) $0.42 Σ$3.10` (↑ commits ahead of base, ± uncommitted files, or
+ * `⎇ n-3f2a ↑1●2 · opus 5.5 · high · ctx 42% (84k/200k) $0.42 Σ$3.10` (↑ commits ahead of base, ● uncommitted files, or
  * "merged"; Σ: spend with descendants, `subtree`); as the width shrinks, the branch goes first, then effort, token counts and cost.
  */
 export function meta(n: NodeView, w: number, subtree = n.spentUsd ?? 0): Seg[] {
@@ -67,7 +67,8 @@ export function meta(n: NodeView, w: number, subtree = n.spentUsd ?? 0): Seg[] {
   const model = shortModel(s.model ?? n.model), effort = s.effort ? shortEffort(s.effort) : '';
   const ctxColor = pct === undefined ? '' : { ok: '32', warn: '33', bad: '31' }[ctxLevel(pct)];
   const wt = n.worktree;
-  const branch = wt && [`⎇ ${wt.branch.split('/').pop()!.slice(0, 6)}`, g?.ahead && `↑${g.ahead}`, g?.dirty && `±${g.dirty}`, g?.mergedAt && 'merged'].filter(Boolean).join(' ');
+  const counts = `${g?.ahead ? `↑${g.ahead}` : ''}${g?.dirty ? `●${g.dirty}` : ''}`;
+  const branch = wt && [`⎇ ${wt.branch.split('/').pop()!.slice(0, 6)}`, counts, g?.mergedAt && 'merged'].filter(Boolean).join(' ');
   const build = (full: boolean, withEffort: boolean, withBranch = false): Seg[] => {
     const segs: Seg[] = [];
     const add = (x: Seg) => { if (segs.length) segs.push(['2', ' · ']); segs.push(x); };

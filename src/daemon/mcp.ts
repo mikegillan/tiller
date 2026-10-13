@@ -13,6 +13,7 @@ import { treeOrder } from '../shared/tree.js';
 import { loadConfig } from './config.js';
 import { ADMIN_TOKEN_FILE } from './home.js';
 import { closeRefusal, type NodeManager, type WorktreeReport } from './manager.js';
+import { MergeConflict } from './worktree.js';
 import { deliver, HUMAN, inScope, isDescendant, messageStatus, startNotices } from './messaging.js';
 import { logError, PREVIEW_CHARS, readBody, safeEqual } from './util.js';
 
@@ -40,18 +41,18 @@ function summarize(v: NodeView, now: number, all: NodeView[]) {
     outcome: outcomes.get(v.id),
     model: v.status.model, effort: v.status.effort, contextPct: v.status.contextPct, contextTokens: v.status.contextTokens, contextWindow: v.status.contextWindow, costUsd: v.status.costUsd,
     spentUsd: v.spentUsd, subtreeSpentUsd: subtreeSpend(all, v.id),
-    worktree: v.worktree && { path: v.worktree.path, branch: v.worktree.branch, base: v.worktree.base, missing: !!v.worktree.missing },
-    git: v.status.git,
+    worktree: v.worktree && worktreeSummary(v),
   };
 }
 
-/** "2 ahead, 1 dirty, merged" for the tree line. */
-function gitText(n: ReturnType<typeof summarize>): string {
-  const g = n.git;
-  const parts = g ? [g.ahead && `${g.ahead} ahead`, g.behind && `${g.behind} behind`, g.dirty && `${g.dirty} dirty`, g.mergedAt && 'merged'] : [];
-  if (n.worktree?.missing || g?.missing) parts.push('worktree missing');
-  const text = parts.filter(Boolean).join(', ');
-  return text ? ` (${text})` : '';
+function worktreeSummary(v: NodeView) {
+  const w = v.worktree!, g = v.status.git;
+  return { path: w.path, branch: w.branch, base: w.base, ahead: g?.ahead, behind: g?.behind, dirty: g?.dirty, missing: !!(w.missing || g?.missing), merged: !!g?.mergedAt };
+}
+
+/** `⎇ o8/n-3f2a ↑3 ↓1 dirty merged` for the tree line. */
+function branchText(w: ReturnType<typeof worktreeSummary>): string {
+  return [`⎇ ${w.branch}`, w.ahead && `↑${w.ahead}`, w.behind && `↓${w.behind}`, w.dirty && 'dirty', w.merged && 'merged', w.missing && '(worktree missing)'].filter(Boolean).join(' ');
 }
 
 function modelInfo(n: ReturnType<typeof summarize>): string {
@@ -64,7 +65,7 @@ function modelInfo(n: ReturnType<typeof summarize>): string {
 function tree(nodes: ReturnType<typeof summarize>[]): string {
   return treeOrder(nodes).map(({ node: n, depth }) => {
     const extra = [...n.flags, n.activity].filter(Boolean).join(', ');
-    const branch = n.worktree ? ` ⎇ ${n.worktree.branch}${gitText(n)}` : '';
+    const branch = n.worktree ? ` ${branchText(n.worktree)}` : '';
     return `${'  '.repeat(depth)}- ${n.id} "${n.title}" [${n.kind}] ${n.state}${extra ? ` (${extra})` : ''} ${n.age}${modelInfo(n)}${branch}`;
   }).join('\n') || '(no nodes)';
 }
@@ -124,7 +125,7 @@ const spawned = new Map<string, { args: string; result: unknown; at: number }>()
 
 const tools = {
   list_nodes: tool(
-    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. The text starts with one line of account-level Claude usage (5-hour and 7-day rate-limit windows, percent used and reset time), which every node draws on. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale, stalled: working with no hook event for limits.stallMinutes), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any, spentUsd (its total spend across sessions) and subtreeSpentUsd (with all its descendants), and for a node with its own git worktree, worktree { path, branch, base, missing } and git { branch, base, ahead, behind, dirty, missing, mergedAt }: its commits not yet in base, base's commits not on the branch, uncommitted files, and when merge last merged it. Use it to find node ids before calling send, read or close.`,
+    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. The text starts with one line of account-level Claude usage (5-hour and 7-day rate-limit windows, percent used and reset time), which every node draws on. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale, stalled: working with no hook event for limits.stallMinutes), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any, spentUsd (its total spend across sessions) and subtreeSpentUsd (with all its descendants), and for a node with its own git worktree, worktree { path, branch, base, ahead, behind, dirty, missing, merged }: its commits not yet in base, base's commits not on the branch, the count of uncommitted files, and whether merge has merged it. Use it to find node ids before calling send, read or close.`,
     {},
     async (c) => {
       const all = c.manager.list();
@@ -239,7 +240,7 @@ const tools = {
     }),
 
   merge: tool(
-    'Merge the git branch of one of your descendants that has its own worktree into the branch it was created from (its base), in the project\'s merge style (worktrees.merge in .orchestr8/config.json: "merge", the default, makes a merge commit; "squash" makes one commit; "ff-only" only fast-forwards). Refused, with nothing changed, while the node is working, when its worktree has uncommitted files, when the base is checked out somewhere with uncommitted changes, or when the branch conflicts with the base, in which case the error names the conflicting paths: have the worker rebase onto the base and resolve them, then merge again. The human approves each merge in the UI unless the project config sets worktrees.mergeWithoutConfirm; if they decline you get {ok:false, reason:"denied"}. Close the node afterwards to remove its worktree and branch.',
+    'Merge the git branch of one of your descendants that has its own worktree into the branch it was created from (its base), in the project\'s merge style (worktrees.merge in .orchestr8/config.json: "merge", the default, makes a merge commit; "squash" makes one commit; "ff-only" only fast-forwards). Refused, with nothing changed, while the node is working, when its worktree has uncommitted files, when the base is checked out somewhere with uncommitted changes, A conflict with the base is checked first without touching any file: the reply is then {ok:false, conflicts:[paths]}; send the worker a rebase instruction rather than resolving it yourself, then merge again. The human approves each merge in the UI unless the project config sets worktrees.mergeWithoutConfirm; if they decline you get {ok:false, reason:"denied"}. Close the node afterwards to remove its worktree and branch.',
     { nodeId: z.string().min(1) },
     async (c, a) => {
       const v = requireOwned(c, a.nodeId, false);
@@ -248,7 +249,13 @@ const tools = {
       if (!skip && !(await c.confirm(`${who(c)} wants to merge ${v.title} (${v.id}): branch ${v.worktree.branch} into ${v.worktree.base}`))) {
         return { data: { ok: false, reason: 'denied' } };
       }
-      const r = await c.manager.merge(a.nodeId);
+      let r: Awaited<ReturnType<NodeManager['merge']>>;
+      try {
+        r = await c.manager.merge(a.nodeId);
+      } catch (err) {
+        if (!(err instanceof MergeConflict)) throw err;
+        return { text: `${err.message}. Send the worker a rebase instruction: rebase ${v.worktree.branch} onto ${v.worktree.base}, resolve, commit, then merge again.`, data: { ok: false, conflicts: err.conflicts } };
+      }
       return { text: `merged ${v.worktree.branch} into ${r.base} (${r.style}), now at ${r.sha.slice(0, 7)}`, data: { ok: true, ...r } };
     }),
 

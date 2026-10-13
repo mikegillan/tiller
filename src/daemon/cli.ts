@@ -160,7 +160,8 @@ switch (cmd) {
   case 'merge': {
     if (!pos[0]) fail(usage());
     const { data } = await call('merge', { nodeId: pos[0] });
-    if (data?.ok && f.close) await call('close', { nodeIds: [pos[0]] });
+    if (!data?.ok) process.exit(1); // conflicts: printed above
+    if (f.close) await call('close', { nodeIds: [pos[0]] });
     break;
   }
   case 'worktrees':

@@ -229,7 +229,7 @@ describe('git state and merge', () => {
     writeFileSync(join(repo, 'README'), 'ours\n');
     g(repo, 'commit', '-qam', 'ours');
     const head = g(repo, 'rev-parse', 'HEAD');
-    await expect(m.merge(v.id)).rejects.toThrow(`merge refused, nothing changed: o8/${v.id} conflicts with main in README`);
+    await expect(m.merge(v.id)).rejects.toMatchObject({ message: `merge refused, nothing changed: o8/${v.id} conflicts with main in README`, conflicts: ['README'] });
     expect(g(repo, 'rev-parse', 'HEAD')).toBe(head);
     expect(readFileSync(join(repo, 'README'), 'utf8')).toBe('ours\n');
     expect(g(repo, 'status', '--porcelain') + g(v.cwd, 'status', '--porcelain')).toBe('');
@@ -302,7 +302,8 @@ describe('setup and teardown commands', () => {
     setup();
     config({ setup: ['sleep 0.5', 'echo "$O8_NODE_ID $O8_BASE $O8_REPO $O8_WORKTREE $(pwd)" > ../setup-$O8_NODE_ID'] });
     const v = await spawnW({ prompt: 'hi' });
-    expect(v.status).toMatchObject({ state: 'working', activity: 'setting up worktree: sleep 0.5' });
+    expect(v.status).toMatchObject({ state: 'unknown', activity: 'setting up worktree: sleep 0.5' });
+    await expect(m.merge(v.id)).rejects.toThrow('worktree setup is running');
     expect(m.session(v.id)).toBeUndefined();
     await expect.poll(() => argvOf(v.id), { timeout: 5000 }).toContain('-- hi');
     expect(readFileSync(join(repo, '.claude', 'worktrees', `setup-${v.id}`), 'utf8')).toBe(`${v.id} main ${repo} ${v.cwd} ${v.cwd}\n`);
