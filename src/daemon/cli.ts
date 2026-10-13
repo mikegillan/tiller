@@ -43,7 +43,8 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 merge <id> [--close]                             merge a worktree node's branch into its base (refused on conflict,
                                                       naming the paths); --close then closes the node
   o8 diff <id> [--stat]                               what a worktree node changed since it branched, committed or not
-  o8 send <id> "text"
+  o8 send [--now] <id> "text"                         --now interrupts the target's turn if it is working (a steer)
+  o8 withdraw <messageId>                             take back a queued message that has not been delivered yet
   o8 read <id> [summary|transcript|terminal] [--lines N]
   o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--request-id ID]
   o8 prompts                                          show the role prompt files and any override for this directory
@@ -112,7 +113,7 @@ const { values: f, positionals: pos } = parseArgs({
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
     'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
-    worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' },
+    worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' }, now: { type: 'boolean' },
   },
 });
 
@@ -230,7 +231,11 @@ switch (cmd) {
     break;
   case 'send':
     if (pos.length < 2) fail(usage());
-    await call('send', { nodeId: pos[0], text: pos.slice(1).join(' ') });
+    await call('send', { nodeId: pos[0], text: pos.slice(1).join(' '), mode: f.now ? 'now' : undefined });
+    break;
+  case 'withdraw':
+    if (!pos[0]) fail(usage());
+    await call('withdraw', { messageId: pos[0] });
     break;
   case 'read':
     if (!pos[0]) fail(usage());
