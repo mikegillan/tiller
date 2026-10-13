@@ -15,7 +15,7 @@ export const roots = (nodes: Nodes, order: string[]): NodeView[] =>
   order.map((id) => nodes[id]).filter((n): n is NodeView => !!n && !(n.parentId && nodes[n.parentId]));
 
 /** Most urgent first: this is the colour a session's dot takes. */
-const URGENCY: StatusKind[] = ['needs', 'errored', 'working', 'done', 'unknown', 'exited'];
+const URGENCY: StatusKind[] = ['needs', 'errored', 'working', 'done', 'queued', 'armed', 'unknown', 'exited'];
 
 export interface SessionInfo { root: NodeView; size: number; needs: number; kind: StatusKind }
 

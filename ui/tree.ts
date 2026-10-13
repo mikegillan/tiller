@@ -1,9 +1,11 @@
 import { NEEDS_YOU_STATES, type NodeView } from '../src/shared/protocol';
 
-export type StatusKind = 'working' | 'needs' | 'done' | 'errored' | 'exited' | 'unknown';
+/** armed: waiting on spawn dependencies; queued: waiting on limits.maxWorking. Neither has a process yet. */
+export type StatusKind = 'working' | 'needs' | 'done' | 'errored' | 'exited' | 'unknown' | 'armed' | 'queued';
 
 export function statusKind(n: NodeView): StatusKind {
   const s = n.status;
+  if (s.state === 'armed' || s.state === 'queued') return s.state;
   if (s.exited) return 'exited';
   if (NEEDS_YOU_STATES.includes(s.state)) return 'needs';
   if (s.state === 'working') return 'working';
@@ -14,7 +16,7 @@ export function statusKind(n: NodeView): StatusKind {
 export const needsYou = (n: NodeView) => statusKind(n) === 'needs';
 
 export const KIND_LABEL: Record<StatusKind, string> = {
-  working: 'working', needs: 'needs you', done: 'done', errored: 'errored', exited: 'exited', unknown: 'idle',
+  working: 'working', needs: 'needs you', done: 'done', errored: 'errored', exited: 'exited', unknown: 'idle', armed: 'armed', queued: 'queued',
 };
 
 export type Nodes = Record<string, NodeView>;

@@ -218,13 +218,14 @@ a rate-limited child re-notifies all night. A permission prompt is never a notic
 approval fires nothing until the tool finishes, so "blocked for 20 min" looks the same as
 "approved, long build"; the UI shows NEEDS YOU instead.
 
-## 8. Dependency launches (phase 4, not built)
+## 8. Dependency launches
 
 `spawn(..., after: [ids])` creates the node armed and launches it when every listed node
-has finished a turn that started after it was last handed work. nodeterm's sharpest lesson:
+has finished a turn that started after the armed node was created (or has exited). nodeterm's sharpest lesson:
 idle means the turn ended, not the job. So also `after_success`, released only by
 `report_outcome succeeded`, and blocked by `failed` with the note shown on the waiting node.
-Deadline 24 h, after which the node shows EXPIRED and waits for a manual Run.
+Built in src/daemon/deps.ts and the manager's schedule(), with limits.maxWorking queueing and
+notify_when. Not built: the 24 h deadline, EXPIRED and a manual Run.
 
 ## 9. Front ends
 

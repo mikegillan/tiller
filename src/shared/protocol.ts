@@ -3,8 +3,11 @@
 export const NODE_KINDS = ['claude', 'terminal'] as const;
 export type NodeKind = (typeof NODE_KINDS)[number];
 
-/** Agent status derived from hook events. 'none' is for plain terminals. */
-export type AgentState = 'working' | 'waiting' | 'blocked' | 'done' | 'unknown' | 'none';
+/**
+ * Agent status derived from hook events. 'none' is for plain terminals. 'armed' and 'queued' are nodes with no process
+ * yet: armed waits on its dependencies (spawn after / afterSuccess), queued on limits.maxWorking.
+ */
+export type AgentState = 'working' | 'waiting' | 'blocked' | 'done' | 'unknown' | 'none' | 'armed' | 'queued';
 
 /** States in which an agent is waiting on the human: a permission prompt or a question. */
 export const NEEDS_YOU_STATES: readonly AgentState[] = ['blocked', 'waiting'];
@@ -108,6 +111,23 @@ export interface DiffFile {
 /** Everything a worktree node changed since it branched: its commits and its uncommitted and untracked files, as one diff. */
 export interface Diff { base: string; branch: string; files: DiffFile[]; truncated?: boolean }
 
+/** What an armed or queued node still waits for before it launches; persisted so a restarted daemon re-arms it. */
+export interface Pending {
+  /** Launch once each of these has finished a turn begun after this node was created, or has exited. */
+  after: string[];
+  /** Launch once each of these reported succeeded; a failed report blocks. */
+  afterSuccess: string[];
+  /** Dependencies already met, so a restarted daemon does not wait for them again. */
+  met: string[];
+  /** The first prompt and isolation to launch with. */
+  prompt?: string;
+  isolation?: Isolation;
+  /** Launch past limits.maxWorking (the human's o8 spawn --now). */
+  now?: boolean;
+  /** The failed dependency, "n-x: note", once its parent has been told. */
+  blocked?: string;
+}
+
 export interface NodeRecord {
   id: string;
   parentId: string | null;
@@ -134,6 +154,8 @@ export interface NodeRecord {
   spentUsd?: number;
   /** Spend on one local day (YYYY-MM-DD); a later day starts over. */
   spentToday?: { day: string; usd: number };
+  /** Set while the node is armed or queued; cleared when it launches. */
+  pending?: Pending;
 }
 
 /** What a node reported through report_outcome. Not persisted: a restarted daemon forgets it. */
@@ -193,7 +215,7 @@ export type ClientMessage =
   | { t: 'input'; id: string; data: string }
   | { t: 'resize'; id: string; cols: number; rows: number }
   | { t: 'select'; id: string }                // clears unread
-  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation }
+  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; after?: string[]; afterSuccess?: string[]; now?: boolean }
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
   | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.merge style
   | { t: 'restart'; id: string; prompt?: string } // relaunch with a fresh session: clears context, keeps the node and its children; prompt is its first prompt

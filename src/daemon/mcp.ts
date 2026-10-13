@@ -13,6 +13,7 @@ import { fmtUsd, subtreeSpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { loadConfig, type Config } from './config.js';
 import { ADMIN_TOKEN_FILE } from './home.js';
+import { notifyWhen } from './deps.js';
 import { closeRefusal, type NodeManager, type WorktreeReport } from './manager.js';
 import { MAX_PATCH_BYTES, MergeConflict } from './worktree.js';
 import { DAEMON, deliver, HUMAN, inScope, isDescendant, messageStatus, startNotices } from './messaging.js';
@@ -174,7 +175,7 @@ const spawned = new Map<string, { args: string; result: unknown; at: number }>()
 
 const tools = {
   list_nodes: tool(
-    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. The text starts with one line of account-level Claude usage (5-hour and 7-day rate-limit windows, percent used and reset time), which every node draws on. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale, stalled: working with no hook event for limits.stallMinutes), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any ({ outcome, note, summary, changedFiles, verified, openQuestions, gate }: read these before calling read on a finished worker), gate (its completion gate: running, passed or failed), spentUsd (its total spend across sessions) and subtreeSpentUsd (with all its descendants), and for a node with its own git worktree, worktree { path, branch, base, ahead, behind, dirty, missing, merged }: its commits not yet in base, base's commits not on the branch, the count of uncommitted files, and whether merge has merged it. Use it to find node ids before calling send, read or close.`,
+    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. The text starts with one line of account-level Claude usage (5-hour and 7-day rate-limit windows, percent used and reset time), which every node draws on. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none; armed: waiting on spawn dependencies, queued: waiting on limits.maxWorking, with the reason in activity),flags (errored, interrupted, exited, stale, stalled: working with no hook event for limits.stallMinutes), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any ({ outcome, note, summary, changedFiles, verified, openQuestions, gate }: read these before calling read on a finished worker), gate (its completion gate: running, passed or failed), spentUsd (its total spend across sessions) and subtreeSpentUsd (with all its descendants), and for a node with its own git worktree, worktree { path, branch, base, ahead, behind, dirty, missing, merged }: its commits not yet in base, base's commits not on the branch, the count of uncommitted files, and whether merge has merged it. Use it to find node ids before calling send, read or close.`,
     {},
     async (c) => {
       const all = c.manager.list();
@@ -183,13 +184,15 @@ const tools = {
     }),
 
   spawn: tool(
-    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `model` and `effort` to use the defaults for the role from the project config, if any. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. isolation "worktree" (claude nodes only) gives the child its own git worktree at <main checkout>/.claude/worktrees/<id> on a new branch from the HEAD of the checkout `cwd` is in, which needs a repo with a commit that Claude already trusts, and the reply then carries worktree { path, branch, base }. Omitting isolation uses the project config (default "none"), so a child whose cwd is inside an existing worktree shares that tree. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error.',
+    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `model` and `effort` to use the defaults for the role from the project config, if any. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. isolation "worktree" (claude nodes only) gives the child its own git worktree at <main checkout>/.claude/worktrees/<id> on a new branch from the HEAD of the checkout `cwd` is in, which needs a repo with a commit that Claude already trusts, and the reply then carries worktree { path, branch, base }. Omitting isolation uses the project config (default "none"), so a child whose cwd is inside an existing worktree shares that tree. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error. `after` and `afterSuccess` (node ids in your scope) create the node armed, with no process yet: it launches by itself, exactly as this spawn would, once each `after` node has finished a turn that began after this spawn (or has exited), and each `afterSuccess` node has reported succeeded through report_outcome (gate passed, when one is configured). A failed report blocks it and you get a message; close it to drop it. When the project sets limits.maxWorking and that many claude nodes are working, a new node is queued instead and launched in creation order as others stop. The reply then has state "armed" or "queued" and what it waits on.',
     {
       kind: z.enum(NODE_KINDS), title: z.string().min(1), cwd: z.string().min(1), prompt: z.string().optional(),
       model: z.string().optional(), effort: z.enum(EFFORTS).optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), role: z.enum(ROLES).optional(), isolation: z.enum(ISOLATIONS).optional(), requestId: z.string().optional(),
+      after: z.array(z.string().min(1)).optional(), afterSuccess: z.array(z.string().min(1)).optional(), now: z.boolean().optional(),
     },
     async (c, { requestId, ...req }) => {
       if (req.permissionMode === 'bypassPermissions' && c.caller !== HUMAN) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
+      if (req.now && c.caller !== HUMAN) throw new Error('refused: only the human may bypass limits.maxWorking with now');
       const now = Date.now();
       for (const [k, v] of spawned) if (now - v.at > IDEMPOTENCY_MS) spawned.delete(k);
       const key = `${c.caller}\0${requestId}`;
@@ -205,7 +208,8 @@ const tools = {
       const r = { ...req, permissionMode, parentId: c.caller === HUMAN ? null : c.caller, byHuman: c.caller === HUMAN };
       const view = c.manager.isolationFor(r) === 'worktree' ? await c.manager.spawnWorktree(r) : c.manager.spawn(r);
       const w = view.worktree;
-      const result = w ? { nodeId: view.id, worktree: { path: w.path, branch: w.branch, base: w.base } } : { nodeId: view.id };
+      const held = view.status.state === 'armed' || view.status.state === 'queued' ? { state: view.status.state, waiting: view.status.activity } : {};
+      const result = w ? { nodeId: view.id, worktree: { path: w.path, branch: w.branch, base: w.base } } : { nodeId: view.id, ...held };
       if (requestId) spawned.set(key, { args, result, at: now });
       return { data: result };
     }),
@@ -226,6 +230,15 @@ const tools = {
       const r = messageStatus(c.manager, c.caller, a.messageId);
       if (!r) throw new Error(`no queued message ${a.messageId} from you`);
       return { data: r };
+    }),
+
+  notify_when: tool(
+    'Get one message when a set of nodes finishes, instead of polling list_nodes or having each worker report separately. Returns at once; later you receive a single framed message "N of M finished:" with one line per node giving its outcome (or its state). when "all" waits for every node, "any" for the first. of "turn" counts a node once it finishes the turn in progress now, or for an idle node its next turn (exiting or closing counts too); of "success" counts a node once it calls report_outcome (either verdict) from now on, or within the turn in progress now. Ids must be in your scope. One pending notify_when per id set: calling again with the same ids replaces it. It expires after 12 hours.',
+    { ids: z.array(z.string().min(1)).min(1), when: z.enum(['all', 'any']), of: z.enum(['turn', 'success']) },
+    async (c, a) => {
+      if (c.caller === HUMAN) throw new Error('notify_when is only for agent nodes: the human has no inbox');
+      for (const id of a.ids) requireScope(c, id);
+      return { data: { ok: true, ...notifyWhen(c.manager, c.caller, a) } };
     }),
 
   read: tool(
