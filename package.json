@@ -14,7 +14,6 @@
   },
   "scripts": {
     "daemon": "tsx src/daemon/index.ts",
-    "spike": "tsx spike/claude-spike.ts",
     "o8": "tsx src/daemon/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",

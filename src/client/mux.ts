@@ -3,18 +3,15 @@
 import { writeSync } from 'node:fs';
 import { basename } from 'node:path';
 import { WebSocket } from 'ws';
-import type { ClientMessage, NodeView, ServerMessage } from '../shared/protocol.js';
-import { initial, step, type Action, type Target } from './chords.js';
+import { needsYou, type ClientMessage, type NodeView, type ServerMessage } from '../shared/protocol.js';
+import { helpLines, initial, step, type Action, type Target } from './chords.js';
 import { encode, isLeftPress, isWheel, parseInput, type Mouse } from './mouse.js';
 import { NodeScreen, placeholder } from './screen.js';
 import { pruneIds } from '../shared/prune.js';
-import { layoutSidebar, needsYou, revealScroll, tree, type SideLayout } from './sidebar.js';
+import { layoutSidebar, revealScroll, stripControl, tree, type SideLayout } from './sidebar.js';
 
 const ON = '\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[2J';
 const OFF = '\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l';
-const HELP_LINES = ['orchestr8 keys (Ctrl-\\ then):', ' d detach   b back   j/k next/prev   ! next needing you   1-9 jump to nth node',
-  ' n new child   r resume   x kill   R restart orchestrator   e rename   o new orchestrator here   s sidebar   ? help', ' Ctrl-\\ twice sends a literal Ctrl-\; click a node or an action in the sidebar', ' (any key closes this)'];
-
 export function mux(startId: string, { port, token }: { port: number; token: string }): Promise<number> {
   const { stdin, stdout } = process;
   const nodes = new Map<string, NodeView>();
@@ -93,7 +90,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
     if (t === 'cur') n = nodes.get(cur);
     else if (t === 'back') n = prev ? nodes.get(prev) : undefined;
     else if (typeof t === 'number') n = l[t];
-    else if (t === 'needs') n = [...l.slice(i + 1), ...l.slice(0, i)].find(needsYou);
+    else if (t === 'needs') n = [...l.slice(i + 1), ...l.slice(0, i)].find((x) => needsYou(x.status));
     else n = l[(i + (t === 'next' ? 1 : l.length - 1)) % l.length];
     if (n) switchTo(n.id);
     else setNotice(t === 'needs' ? 'no node needs you' : 'no such node');
@@ -116,7 +113,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
     else if (key === 'help') {
       const { mc } = dims();
       overlay = true;
-      out(HELP_LINES.map((l, y) => `\x1b[${y + 1};${dims().x0}H\x1b[7m${l.slice(0, mc).padEnd(mc)}\x1b[0m`).join(''));
+      out(helpLines(mc).map((l, y) => `\x1b[${y + 1};${dims().x0}H\x1b[7m${l.slice(0, mc).padEnd(mc)}\x1b[0m`).join(''));
     } else if (key === 'orch') { awaiting = true; send({ t: 'spawn', kind: 'claude', title: basename(process.cwd()), cwd: process.cwd(), parentId: null }); }
     else if (!n) return;
     else if (key === 'new') ask('new child: ', '', false, (title) => { awaiting = true; send({ t: 'spawn', kind: 'claude', title, cwd: n.cwd, parentId: n.id }); });
@@ -179,7 +176,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
     finished = true;
     clearInterval(tick);
     restore();
-    if (msg) console.log(msg);
+    if (msg) console.log(stripControl(msg)); // may be daemon error text
     stdin.pause();
     stdin.off('data', onInput);
     stdout.off('resize', onResize);
@@ -222,7 +219,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
       if (!was && awaiting) { awaiting = false; switchTo(m.node.id); }
       else if (m.node.id === cur && !!was?.status.exited !== !!m.node.status.exited) show(cur); // resumed, or its process ended
       else throttleSide();
-      if (!appUp && m.node.id !== cur && needsYou(m.node) && !(was && needsYou(was)) && now - (bells.get(m.node.id) ?? 0) >= 5000) {
+      if (!appUp && m.node.id !== cur && needsYou(m.node.status) && !(was && needsYou(was.status)) && now - (bells.get(m.node.id) ?? 0) >= 5000) {
         bells.set(m.node.id, now);
         stdout.write('\x07');
       }

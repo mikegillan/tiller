@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -27,7 +27,9 @@ afterEach(async () => {
   rmSync(home, { recursive: true, force: true });
 });
 
-async function connect(token = server.uiToken, client?: 'app' | 'browser' | 'mux'): Promise<void> {
+const adminToken = () => readFileSync(join(home, 'admin-token'), 'utf8');
+
+async function connect(token = adminToken(), client?: 'app' | 'browser' | 'mux'): Promise<void> {
   ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
   ws.on('message', (raw) => seen.push(JSON.parse(raw.toString())));
   await new Promise((ok, fail) => { ws!.once('open', ok); ws!.once('error', fail); });
@@ -103,14 +105,14 @@ describe('POST /hook', () => {
     expect(manager.view(node.id)?.unread).toBe(true);
   });
 
-  it('serves the mod API: auth, inbox, mod-event measure and children', async () => {
+  it('serves the mod API: auth, inbox, mod-event measure and tree', async () => {
     const parent = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
     const kid = manager.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: parent.id });
     const call = (path: string, id: string, token: string, init: RequestInit = {}) =>
       fetch(`http://127.0.0.1:${server.port}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': id, 'Content-Type': 'application/json' } });
     const tp = manager.tokenFor(parent.id), tk = manager.tokenFor(kid.id);
     expect((await call('/inbox', parent.id, 'bad')).status).toBe(401);
-    expect((await call('/children', kid.id, tp)).status).toBe(401); // another node's token
+    expect((await call('/tree', kid.id, tp)).status).toBe(401); // another node's token
     expect(await (await call('/inbox', kid.id, tk)).json()).toEqual([]);
     const measure = { event: 'session.measure', payload: { context: { tokens: 1, window: 2, percent: 50 }, cost: { usd: 0.25 } } };
     expect((await call('/mod-event', kid.id, tk, { method: 'POST', body: JSON.stringify(measure) })).status).toBe(204);
@@ -120,11 +122,10 @@ describe('POST /hook', () => {
     const done = { event: 'turn.complete', payload: { durationMs: 1, isAborted: false, turnId: 't', reason: 'answer', usage: { model: 'claude-sonnet-5-5' } } };
     expect((await call('/mod-event', kid.id, tk, { method: 'POST', body: JSON.stringify(done) })).status).toBe(204);
     expect(manager.view(kid.id)?.status).toMatchObject({ model: 'claude-sonnet-5-5', contextPct: 50 });
-    expect(await (await call('/children', parent.id, tp)).json()).toMatchObject([
+    expect(await (await call('/tree', parent.id, tp)).json()).toMatchObject([
       { id: parent.id, title: 'boss', depth: 0, self: true, parentId: null },
       { id: kid.id, title: 'kid', depth: 1, contextPct: 50 },
     ]);
-    expect(await (await call('/children', kid.id, tk)).json()).toMatchObject([{ id: kid.id, depth: 0, self: true, parentId: parent.id }]);
   });
 
   it('GET /tree: the whole tree from the root, the caller marked self', async () => {
@@ -142,7 +143,7 @@ describe('POST /hook', () => {
     const n = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
     const header = async (path: string) => (await fetch(`http://127.0.0.1:${server.port}${path}`, { headers: { Authorization: `Bearer ${manager.tokenFor(n.id)}`, 'X-O8-Node': n.id } })).headers.get('x-o8-clients');
     expect(await header('/tree')).toBe('');
-    await connect(server.uiToken, 'app');
+    await connect(adminToken(), 'app');
     await until(() => seen.find((m) => m.t === 'snapshot'));
     expect(await header('/tree')).toBe('app');
     expect(await header('/inbox')).toBe('app');
@@ -171,7 +172,7 @@ describe('POST /hook', () => {
 
 describe('client tracking', () => {
   it('counts a watcher only while it has the node selected and its window focused; reports the app', async () => {
-    await connect(server.uiToken, 'app');
+    await connect(adminToken(), 'app');
     const snap = await until(() => seen.find((m) => m.t === 'snapshot'));
     expect(snap).toMatchObject({ appConnected: true });
     const id = manager.spawn({ kind: 'terminal', title: 'sh', cwd: tmpdir() }).id;

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { send } from './conn';
 import { useStore } from './store';
-import { createTerm, disposeTerm, getTerm as getT } from './terminals';
+import { createTerm, disposeTerm, getTerm } from './terminals';
 import '@xterm/xterm/css/xterm.css';
 
 function TermView({ id, visible, exited }: { id: string; visible: boolean; exited: boolean }) {
@@ -17,7 +17,7 @@ function TermView({ id, visible, exited }: { id: string; visible: boolean; exite
   // Becoming visible (or reconnecting / resuming while visible): reset, fit, attach. The reply is a serialized screen to write as-is.
   useEffect(() => {
     if (!visible || !connected) return;
-    const t = getT(id);
+    const t = getTerm(id);
     if (!t) return;
     t.term.reset();
     t.fit.fit();
@@ -33,7 +33,7 @@ function TermView({ id, visible, exited }: { id: string; visible: boolean; exite
     const ro = new ResizeObserver(() => {
       clearTimeout(timer);
       timer = setTimeout(() => {
-        const t = getT(id);
+        const t = getTerm(id);
         if (!t) return;
         t.fit.fit();
         send({ t: 'resize', id, cols: t.term.cols, rows: t.term.rows });

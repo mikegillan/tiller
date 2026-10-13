@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { initial, step, type Action, type ChordState } from './chords.js';
+import { helpLines, initial, step, type Action, type ChordState } from './chords.js';
 
 const run = (input: string, s: ChordState = initial) => {
   const actions: Action[] = [];
@@ -33,4 +33,13 @@ test('picker parses a multi-digit number on Enter, Esc cancels, other keys are s
   expect(run('x\r', run('\x1cl2').s).actions).toEqual(sw(1));
   expect(run('\x1b', r.s)).toEqual({ s: initial, actions: sw('cur') });
   expect(run('\r', run('\x1cl').s).actions).toEqual(sw('cur'));
+});
+test('the help lists every key the chord machine binds', () => {
+  const help = helpLines(60).join('\n');
+  for (let c = 0x21; c < 0x7f; c++) {
+    const ch = String.fromCharCode(c), [a] = run('\x1c' + ch).actions;
+    if (a!.type !== 'passthrough' && !/\d/.test(ch)) expect(help).toMatch(new RegExp(`(^| )${ch.replace(/\W/, '\\$&')} `, 'm'));
+  }
+  expect(help).toContain('1-9 jump');
+  expect(helpLines(60).every((l) => l.length <= 60 || l.startsWith(' Ctrl'))).toBe(true);
 });

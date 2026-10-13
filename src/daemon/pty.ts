@@ -45,7 +45,6 @@ export class PtySession {
   private dataCbs: Array<(d: string) => void> = [];
   private exitCbs: Array<(code: number) => void> = [];
   exited = false;
-  exitCode: number | undefined;
   get pid(): number { return this.pty.pid; }
 
   private constructor(pty: nodePty.IPty, cols: number, rows: number) {
@@ -58,7 +57,6 @@ export class PtySession {
     });
     pty.onExit(({ exitCode }) => {
       this.exited = true;
-      this.exitCode = exitCode;
       for (const cb of this.exitCbs) cb(exitCode);
       this.term.dispose();
     });
@@ -114,11 +112,6 @@ export class PtySession {
       await new Promise((r) => setTimeout(r, 150));
       if (!this.exited) this.pty.write('\r');
     });
-  }
-
-  /** Whole buffer (scrollback + screen) as plain text, trailing blank rows dropped. @xterm/addon-serialize is not installed. */
-  scrollback(): string {
-    return this.lines(Infinity).join('\n').trimEnd();
   }
 
   /** The visible screen as escape sequences with attributes, for a client to repaint from. */

@@ -5,7 +5,7 @@ import { classify, composerTextOf } from './pty.js';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ack, deliver, inbox, messageStatus, startNotices, type Mgr } from './messaging.js';
+import { ack, deliver, flushInbox, inbox, messageStatus, startNotices, type Mgr } from './messaging.js';
 
 const PROMPT = ['some output', '────────────────── n-b', '❯ ', '──────────────────'];
 
@@ -259,6 +259,17 @@ describe('mod inbox', () => {
       await vi.advanceTimersByTimeAsync(60_000 + 1);
       expect(inbox(m2, 'b')).toEqual([]);
       expect(inbox(withHome(), 'b')).toEqual([]); // expired entry is not reloaded
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it('flushInbox writes a pending save at once, so a shutdown inside the debounce loses nothing', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'o8inbox-'));
+    try {
+      const m1 = Object.assign(Object.create(m.mgr), { home }) as Mgr;
+      inbox(m1, 'b');
+      const sent = await deliver(m1, 'a', 'b', 'just before shutdown');
+      flushInbox(m1); // no timers advanced: the 50 ms debounce has not fired
+      expect(JSON.parse(readFileSync(join(home, 'inbox.json'), 'utf8')).items.map((i: { msg: { id: string } }) => i.msg.id)).toEqual([sent.messageId]);
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });

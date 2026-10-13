@@ -6,7 +6,7 @@ import type { NodeView } from '../shared/protocol.js';
 import type { NotifyEvent } from './manager.js';
 
 const THROTTLE_MS = 5000;
-export const APP_BUNDLE = 'dev.orchestr8.app';
+const APP_BUNDLE = 'dev.orchestr8.app';
 
 export interface Content { title: string; subtitle?: string; body: string; sound: boolean }
 

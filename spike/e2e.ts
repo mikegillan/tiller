@@ -104,7 +104,7 @@ async function main(): Promise<void> {
   // e: close + exit/resume
   log('--- e: close, exit, resume');
   mark = history.length;
-  send({ t: 'close', id: n1 });
+  send({ t: 'close', id: n1, force: true });
   check(!!(await waitFor('removed', 5000, () => seen(mark, (m) => m.t === 'removed' && m.id === n1))), 'removed arrived for n1');
   await sleep(300);
   check(!readdirSync(`${HOME}/nodes`).includes(n1), 'n1 node dir deleted');
@@ -124,7 +124,7 @@ async function main(): Promise<void> {
   const st = nodes.get(n2)!.status;
   check(/TRUST OK/.test(st.lastAssistantMessage ?? ''), `resumed session remembers: ${JSON.stringify(st.lastAssistantMessage)}`);
   check(st.sessionId === sid || !!st.sessionId, `sessionId after resume ${st.sessionId} (before ${sid})`);
-  send({ t: 'close', id: n2 });
+  send({ t: 'close', id: n2, force: true });
   await sleep(500);
 
   // f: UI

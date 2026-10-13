@@ -9,7 +9,7 @@ fn read(name: &str) -> Option<String> {
     fs::read_to_string(home().join(name)).ok().map(|s| s.trim().to_string())
 }
 
-// Same lookup as src/daemon/up.ts daemonPort.
+// Same lookup as src/daemon/home.ts daemonPort.
 fn port() -> u16 {
     env::var("O8_PORT").ok().or_else(|| read("port")).and_then(|p| p.parse().ok()).unwrap_or(7788)
 }
@@ -37,16 +37,6 @@ fn ensure_daemon(port: u16) -> Result<(), String> {
     Err(format!("daemon did not come up on port {port}; see {}", home().join("daemon.log").display()))
 }
 
-// Number of nodes that need the human (blocked or waiting), or None if the daemon did not answer.
-fn needs_you(port: u16, token: &str) -> Option<i64> {
-    let res: serde_json::Value = reqwest::blocking::Client::new()
-        .post(format!("http://127.0.0.1:{port}/api/list_nodes"))
-        .bearer_auth(token).header("X-O8-Node", "human").json(&serde_json::json!({}))
-        .timeout(Duration::from_secs(2)).send().ok()?.json().ok()?;
-    let n = res["data"].as_array()?.iter().filter(|n| matches!(n["state"].as_str(), Some("blocked" | "waiting"))).count();
-    Some(n as i64)
-}
-
 pub fn run() {
     let app = tauri::Builder::default()
         .setup(|app| {
@@ -57,12 +47,8 @@ pub fn run() {
                 let token = read("admin-token").unwrap_or_default();
                 // `o8` launches the app with `--node <id>` so it opens on that node.
                 let node = env::args().skip_while(|a| a != "--node").nth(1).map(|n| format!("&node={n}")).unwrap_or_default();
+                // The UI sets the Dock badge itself (ui/hooks.ts useDocumentSync).
                 let _ = win.navigate(Url::parse(&format!("http://127.0.0.1:{port}/?k={token}&app=1{node}")).unwrap());
-                loop {
-                    let count = needs_you(port, &token).filter(|&n| n > 0);
-                    let _ = win.set_badge_count(count);
-                    thread::sleep(Duration::from_secs(3));
-                }
             });
             Ok(())
         })

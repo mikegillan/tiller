@@ -1,14 +1,13 @@
 // Thin client for the daemon's POST /api/<tool>. Inside a node it uses O8_NODE_ID / O8_TOKEN_FILE / O8_ENDPOINT;
 // outside it acts as `human` with the admin token in <home>/admin-token.
 import { mux } from '../client/mux.js';
-import { attach } from './attach.js';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { promptPath } from './launch.js';
-import { daemonPort as portFor, findDaemon, pickOrchestrator, startDaemon } from './up.js';
+import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
+import { findDaemon, pickOrchestrator, startDaemon } from './up.js';
 
 const usage = () => `o8: control orchestr8. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
 
@@ -17,7 +16,7 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 status | stop                                    show or stop the daemon (o8d runs it in the foreground)
   o8 new <title> [--cwd P] [--model M] [--prompt T] [--role R]  start a Claude node and attach to it in the terminal
   o8 ps | list                                        show nodes
-  o8 attach <id> [--plain]                            open the sidebar client on a node (Ctrl-\\ ? for keys; --plain is the old single-pane view)
+  o8 attach <id>                                      open the sidebar client on a node (Ctrl-\\ ? for keys)
   o8 select <id>                                      show a node in the app (opens the app if it is built)
   o8 resume <id>                                      relaunch an exited Claude node
   o8 prune                                            remove every exited node that has no live descendant
@@ -31,15 +30,15 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
 
 const fail = (msg: string): never => { console.error(msg); process.exit(1); };
 
-const home = process.env.O8_HOME ?? join(homedir(), '.orchestr8');
-const readHome = (name: string) => readFileSync(join(home, name), 'utf8').trim();
+const home = homeDir();
+const adminToken = () => readFileSync(join(home, ADMIN_TOKEN_FILE), 'utf8').trim();
 const daemonPort = () => portFor(home);
 
 async function call(tool: string, args: Record<string, unknown>, print = true, soft = false): Promise<{ data?: any; error?: string }> {
   const env = process.env;
   const node = env.O8_NODE_ID && env.O8_TOKEN_FILE;
   let token: string;
-  try { token = readFileSync(node ? env.O8_TOKEN_FILE! : join(home, 'admin-token'), 'utf8').trim(); }
+  try { token = node ? readFileSync(env.O8_TOKEN_FILE!, 'utf8').trim() : adminToken(); }
   catch (e) { return fail(`cannot read token (is the daemon running?): ${(e as Error).message}`); }
   const endpoint = env.O8_ENDPOINT ?? `http://127.0.0.1:${daemonPort()}`;
   const res = await fetch(`${endpoint}/api/${tool}`, {
@@ -65,7 +64,7 @@ const { values: f, positionals: pos } = parseArgs({
   args: rest, allowPositionals: true,
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' },
-    'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, plain: { type: 'boolean' }, force: { type: 'boolean' }, lines: { type: 'string' },
+    'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
   },
 });
 
@@ -76,12 +75,12 @@ switch (cmd) {
     break;
   case 'attach':
     if (!pos[0]) fail(usage());
-    process.exit(await (f.plain ? attach : mux)(pos[0], { port: daemonPort(), token: readHome('admin-token') }));
+    process.exit(await mux(pos[0], { port: daemonPort(), token: adminToken() }));
     break;
   case 'new': {
     if (!pos[0]) fail(usage());
     const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, role: f.role }, false);
-    process.exit(await mux(data.nodeId, { port: daemonPort(), token: readHome('admin-token') }));
+    process.exit(await mux(data.nodeId, { port: daemonPort(), token: adminToken() }));
     break;
   }
   case 'prompts':
@@ -148,13 +147,13 @@ switch (cmd) {
       console.log(`started ${title} (${id})`);
     }
     const target = id;
-    if (cmd === 'mux') process.exit(await mux(target, { port, token: readHome('admin-token') }));
+    if (cmd === 'mux') process.exit(await mux(target, { port, token: adminToken() }));
     if (existsSync(APP)) {
       openApp(port, target);
       await call('select', { nodeId: target }, false);
     } else {
       console.log('app not built: run npm run app:build');
-      spawnSync('open', [`http://127.0.0.1:${port}/?k=${readHome('admin-token')}&node=${target}`]);
+      spawnSync('open', [`http://127.0.0.1:${port}/?k=${adminToken()}&node=${target}`]);
     }
     break;
   }

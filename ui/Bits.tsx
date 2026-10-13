@@ -1,6 +1,5 @@
 import type { NodeView } from '../src/shared/protocol';
-import { shortEffort, shortModel } from '../src/shared/format';
-import { ctxLevel, fmtTokens } from './format';
+import { ctxLevel, fmtTokens, shortEffort, shortModel } from '../src/shared/format';
 import { KIND_LABEL, type StatusKind } from './tree';
 
 export const StateDot = ({ kind }: { kind: StatusKind }) => <span className={`dot ${kind}`} title={KIND_LABEL[kind]} />;
@@ -19,11 +18,11 @@ export function NodeMeta({ node, detail }: { node: NodeView; detail?: boolean })
   const s = node.status;
   const model = shortModel(s.model ?? node.model);
   const parts = [
-    model && <span key="m">{model}</span>,
-    s.effort && <span key="e">{shortEffort(s.effort)}</span>,
-    s.contextPct !== undefined && <CtxBar key="c" pct={s.contextPct} />,
-    detail && s.contextTokens && s.contextWindow ? <span key="t">{fmtTokens(s.contextTokens)}/{fmtTokens(s.contextWindow)}</span> : null,
-    s.costUsd !== undefined && <span key="$">${s.costUsd.toFixed(2)}</span>,
+    model && <span>{model}</span>,
+    s.effort && <span>{shortEffort(s.effort)}</span>,
+    s.contextPct !== undefined && <CtxBar pct={s.contextPct} />,
+    detail && s.contextTokens && s.contextWindow ? <span>{fmtTokens(s.contextTokens)}/{fmtTokens(s.contextWindow)}</span> : null,
+    s.costUsd !== undefined && <span>${s.costUsd.toFixed(2)}</span>,
   ].filter(Boolean);
   if (!parts.length) return null;
   return <div className="meta">{parts.map((p, i) => <span className="part" key={i}>{p}</span>)}</div>;

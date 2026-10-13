@@ -5,22 +5,22 @@ import type { InboxMessage, NodeView, SendResult } from '../shared/protocol.js';
 import type { NodeManager } from './manager.js';
 import { logError } from './util.js';
 
-export const RATE_MS = 10_000;
-export const QUEUE_CAP = 16;
-export const QUEUE_TTL_MS = 5 * 60_000;
-export const RECEIPT_MS = 8000;
-export const WAITING_NOTICE_MS = 15 * 60_000;
-export const RETRY_MS = 1000;
-export const STATUS_TTL_MS = 3600_000;
+const RATE_MS = 10_000;
+const QUEUE_CAP = 16;
+const QUEUE_TTL_MS = 5 * 60_000;
+const RECEIPT_MS = 8000;
+const WAITING_NOTICE_MS = 15 * 60_000;
+const RETRY_MS = 1000;
+const STATUS_TTL_MS = 3600_000;
 /** A node is mod-live while its mod's last GET /inbox is this recent. */
-export const MOD_LIVE_MS = 5000;
+const MOD_LIVE_MS = 5000;
 const SAVE_MS = 50;
 /** Caller ids that are not nodes. Both have full scope. */
 export const HUMAN = 'human';
-export const DAEMON = 'orchestr8';
+const DAEMON = 'orchestr8';
 
 export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off'> & Partial<Pick<NodeManager, 'home'>>;
-export interface DeliverOpts {
+interface DeliverOpts {
   /** Header after `from:`. Defaults to `<title> (<id>)` of the sender. */
   fromLabel?: string;
   /** Defaults to the sender's id; null prints `none`. */
@@ -79,7 +79,10 @@ function stateOf(m: Mgr): State {
   m.on('node', (v: NodeView) => kick(v.id));
   m.on('removed', (id: string) => {
     for (const [k, v] of st.status) if (v.from === id) st.status.delete(k);
-    for (const i of st.inbox.get(id) ?? []) settle(st, i, { outcome: 'gone', retryable: false, detail: 'target was closed', messageId: i.msg.id });
+    for (const i of st.inbox.get(id) ?? []) {
+      clearTimeout(i.timer);
+      setResult(st, i.msg.id, { outcome: 'gone', retryable: false, detail: 'target was closed', messageId: i.msg.id });
+    }
     st.inbox.delete(id);
     st.seen.delete(id);
     saveInbox(st);
@@ -152,8 +155,7 @@ function drain(m: Mgr, s: State, to: string): Promise<void> {
       if ('wait' in a) break;
       q.shift();
       clearTimeout(e.timer);
-      const st = s.status.get(e.id);
-      if (st) st.result = { ...a.result, messageId: e.id };
+      setResult(s, e.id, { ...a.result, messageId: e.id });
     }
     scheduleRetry(m, s, to);
   });
@@ -183,8 +185,7 @@ function enqueue(m: Mgr, s: State, e: Entry, detail: string): SendResult {
     const i = q.indexOf(e);
     if (i < 0) return;
     q.splice(i, 1);
-    const st = s.status.get(e.id);
-    if (st) st.result = { outcome: 'expired', retryable: true, detail: 'target never became idle within 5 min', messageId: e.id };
+    setResult(s, e.id, { outcome: 'expired', retryable: true, detail: 'target never became idle within 5 min', messageId: e.id });
     scheduleRetry(m, s, e.to);
   }).catch(logError), QUEUE_TTL_MS);
   e.timer.unref();
@@ -196,23 +197,32 @@ function enqueue(m: Mgr, s: State, e: Entry, detail: string): SendResult {
 
 const modLive = (s: State, id: string) => Date.now() - (s.seen.get(id) ?? -Infinity) <= MOD_LIVE_MS;
 
-function settle(s: State, i: InboxItem, result: SendResult): void {
-  clearTimeout(i.timer);
-  const st = s.status.get(i.msg.id);
+/** Record a message's final outcome for message_status. */
+function setResult(s: State, messageId: string, result: SendResult): void {
+  const st = s.status.get(messageId);
   if (st) st.result = result;
+}
+
+function writeInbox(s: State): void {
+  clearTimeout(s.saveTimer);
+  s.saveTimer = undefined;
+  const tmp = `${s.inboxFile}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify({ version: 1, items: [...s.inbox.values()].flat().map(({ timer, ...i }) => i) }));
+    renameSync(tmp, s.inboxFile!);
+  } catch (err) { logError(err); }
 }
 
 function saveInbox(s: State): void {
   if (!s.inboxFile) return;
-  s.saveTimer ??= setTimeout(() => {
-    s.saveTimer = undefined;
-    const tmp = `${s.inboxFile}.tmp`;
-    try {
-      writeFileSync(tmp, JSON.stringify({ version: 1, items: [...s.inbox.values()].flat().map(({ timer, ...i }) => i) }));
-      renameSync(tmp, s.inboxFile!);
-    } catch (err) { logError(err); }
-  }, SAVE_MS);
+  s.saveTimer ??= setTimeout(() => writeInbox(s), SAVE_MS);
   s.saveTimer.unref();
+}
+
+/** Write a pending inbox save now (at shutdown), so an ack or enqueue in the last debounce window is not lost. */
+export function flushInbox(m: Mgr): void {
+  const s = states.get(m);
+  if (s?.saveTimer) writeInbox(s);
 }
 
 /** Put `i` in its target's inbox and arm its TTL (measured from enqueue, so a reloaded item keeps its remaining time). */
@@ -224,7 +234,7 @@ function addInbox(s: State, i: InboxItem): void {
     const at = q.indexOf(i);
     if (at < 0) return;
     q.splice(at, 1);
-    settle(s, i, { outcome: 'expired', retryable: true, detail: 'not picked up by the target within 5 min', messageId: i.msg.id });
+    setResult(s, i.msg.id, { outcome: 'expired', retryable: true, detail: 'not picked up by the target within 5 min', messageId: i.msg.id });
     saveInbox(s);
   }, Math.max(0, i.msg.enqueuedAt + QUEUE_TTL_MS - Date.now()));
   i.timer.unref();
@@ -260,7 +270,8 @@ export function ack(m: Mgr, nodeId: string, id: string): boolean {
   const at = q.findIndex((i) => i.msg.id === id);
   if (at < 0) return false;
   const [i] = q.splice(at, 1);
-  settle(s, i, { outcome: 'delivered', retryable: false, messageId: id });
+  clearTimeout(i.timer);
+  setResult(s, id, { outcome: 'delivered', retryable: false, messageId: id });
   saveInbox(s);
   return true;
 }

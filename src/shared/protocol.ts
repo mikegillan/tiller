@@ -1,9 +1,15 @@
 // Shared contracts between daemon, UI and the agent-facing API. Keep this file small and stable.
 
-export type NodeKind = 'claude' | 'terminal';
+export const NODE_KINDS = ['claude', 'terminal'] as const;
+export type NodeKind = (typeof NODE_KINDS)[number];
 
 /** Agent status derived from hook events. 'none' is for plain terminals. */
 export type AgentState = 'working' | 'waiting' | 'blocked' | 'done' | 'unknown' | 'none';
+
+/** States in which an agent is waiting on the human: a permission prompt or a question. */
+export const NEEDS_YOU_STATES: readonly AgentState[] = ['blocked', 'waiting'];
+/** A live node waiting on the human. mod/hooks/notify.ts keeps its own copy (the mod cannot import src/shared). */
+export const needsYou = (s: NodeStatus) => !s.exited && NEEDS_YOU_STATES.includes(s.state);
 
 export interface NodeStatus {
   state: AgentState;
@@ -42,7 +48,8 @@ export interface NodeStatus {
 }
 
 /** Which role prompt a Claude node gets; 'none' means no role section. Default: root = orchestrator, child = worker. */
-export type Role = 'orchestrator' | 'worker' | 'none';
+export const ROLES = ['orchestrator', 'worker', 'none'] as const;
+export type Role = (typeof ROLES)[number];
 
 export interface NodeRecord {
   id: string;
@@ -114,12 +121,12 @@ export interface InboxMessage { id: string; from: string; text: string; enqueued
 export type ModEvent =
   | { event: 'turn.start'; payload: { text: string; turnId: string } }
   | { event: 'turn.complete'; payload: { answer?: string; durationMs: number; isAborted: boolean; turnId: string; reason: 'answer' | 'aborted' | 'refusal' | 'error'; usage?: Record<string, unknown> } }
-  | { event: 'session.measure'; payload: { context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: Array<{ kind: string; percentUsed: number; resetsAt?: string }> } };
+  | { event: 'session.measure'; payload: { context?: { tokens: number; window: number; percent: number }; cost?: { usd: number } } };
 /** POST /focus { id } → 204; the daemon broadcasts `focus` to ws clients (PLAN §14). */
-/** GET /children → ChildView[]: the calling node itself first (self: true), then its descendants depth-first. */
+/** GET /tree → ChildView[]: the calling node's whole tree from its root, depth-first. */
 export interface ChildView {
   id: string; title: string; depth: number; state: AgentState;
-  /** True on the calling node's own row (first row of /children; anywhere in /tree). */
+  /** True on the calling node's own row. */
   self?: boolean;
   parentId?: string | null;
   errored?: boolean; interrupted?: boolean; exited?: boolean;

@@ -1,6 +1,6 @@
 // Fake daemon for developing the UI without the real one. Token: "mock".
 //   node ui/mock-server.mjs            ws on :7789; also serves ui/dist at http://127.0.0.1:7789/?k=mock when it has been built
-// Mutations (spawn, close, rename, resume, prune, select) work in memory; a confirm request arrives 15 s after connecting.
+// Mutations (spawn, close, restart, rename, resume, prune, select) work in memory; a confirm request arrives 15 s after connecting.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
@@ -46,9 +46,8 @@ const SCREENS = {
 };
 
 const clients = new Set();
-const view = (n) => n;
 const broadcast = (m) => clients.forEach((c) => c.ws.send(JSON.stringify(m)));
-const touch = (n, patch) => { Object.assign(n.status, patch, { changedAt: Date.now() }); broadcast({ t: 'node', node: view(n) }); };
+const touch = (n, patch) => { Object.assign(n.status, patch, { changedAt: Date.now() }); broadcast({ t: 'node', node: n }); };
 
 // Light life: the working node's context creeps up.
 setInterval(() => {
@@ -70,12 +69,13 @@ wss.on('connection', (ws) => {
   const send = (m) => ws.send(JSON.stringify(m));
   let authed = false;
   ws.on('message', (raw) => {
-    const m = JSON.parse(String(raw));
+    let m;
+    try { m = JSON.parse(String(raw)); } catch { return; }
     if (!authed) {
       if (m.t !== 'auth' || m.token !== 'mock') return ws.close();
       authed = true;
       clients.add(client);
-      send({ t: 'snapshot', nodes: [...nodes.values()].map(view) });
+      send({ t: 'snapshot', nodes: [...nodes.values()] });
       setTimeout(() => ws.readyState === 1 && send({ t: 'confirm', confirmId: 'c1', text: 'ui polish wants to close node "shell".\nIt has been idle for 40 minutes.' }), 15_000);
       return;
     }
@@ -83,15 +83,16 @@ wss.on('connection', (ws) => {
     switch (m.t) {
       case 'attach': if (n) send({ t: 'data', id: m.id, data: SCREENS[n.kind](n) }); break;
       case 'input': send({ t: 'data', id: m.id, data: m.data === '\r' ? '\r\n$ ' : m.data }); break;
-      case 'select': if (n?.unread) { n.unread = false; broadcast({ t: 'node', node: view(n) }); } break;
-      case 'rename': if (n) { n.title = m.title; broadcast({ t: 'node', node: view(n) }); } break;
+      case 'select': if (n?.unread) { n.unread = false; broadcast({ t: 'node', node: n }); } break;
+      case 'rename': if (n) { n.title = m.title; broadcast({ t: 'node', node: n }); } break;
       case 'resume': if (n) touch(n, { exited: false, state: n.kind === 'terminal' ? 'none' : 'working' }); break;
+      case 'restart': if (n) touch(n, { exited: false, state: n.kind === 'terminal' ? 'none' : 'unknown', activity: 'restarting', contextPct: 0, contextTokens: 0, costUsd: 0, lastAssistantMessage: undefined }); break;
       case 'close': if (n) { nodes.delete(m.id); broadcast({ t: 'removed', id: m.id }); } break;
       case 'prune': for (const x of [...nodes.values()]) if (x.status.exited && ![...nodes.values()].some((c) => c.parentId === x.id)) { nodes.delete(x.id); broadcast({ t: 'removed', id: x.id }); } break;
       case 'spawn': {
         const id = `n${nodes.size + 1}${Date.now() % 1000}`;
-        add(id, m.parentId ?? null, m.title, m.cwd, m.kind, { model: m.model ?? 'claude-sonnet-5-5' });
-        broadcast({ t: 'node', node: view(nodes.get(id)) });
+        add(id, m.parentId ?? null, m.title, m.cwd, m.kind, { model: m.model ?? 'claude-sonnet-5-5' }, m.role ? { role: m.role } : {});
+        broadcast({ t: 'node', node: nodes.get(id) });
         break;
       }
       case 'confirm': broadcast({ t: 'confirmDone', confirmId: m.confirmId }); break;

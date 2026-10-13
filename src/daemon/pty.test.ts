@@ -27,7 +27,6 @@ describe('PtySession', () => {
     const tail = s.screenTail(10);
     expect(tail).toContain('a');
     expect(tail).toContain('b');
-    expect(s.scrollback()).toContain('a\nb');
     await s.write('hi\n');
     await until(() => box.out.includes('hi'));
     s.kill();

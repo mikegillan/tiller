@@ -8,8 +8,8 @@ export interface HookEvent {
   [key: string]: unknown;
 }
 
-export const DONE_HOLDOFF_MS = 3000;
-export const STALE_MS = 20 * 60 * 1000;
+const DONE_HOLDOFF_MS = 3000;
+const STALE_MS = 20 * 60 * 1000;
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 
@@ -138,10 +138,11 @@ export function sweep(prev: NodeStatus, now: number): NodeStatus {
   return prev.state === 'working' && now - prev.changedAt > STALE_MS ? done(prev, now, { stale: true, doneSource: 'sweep' }) : prev;
 }
 
+const active = (s: NodeStatus) => s.state === 'working' || s.state === 'waiting' || s.state === 'blocked';
+
 export function ptyExited(prev: NodeStatus, now: number): NodeStatus {
-  if (prev.exited && prev.state !== 'working' && prev.state !== 'waiting' && prev.state !== 'blocked') return prev;
-  const active = prev.state === 'working' || prev.state === 'waiting' || prev.state === 'blocked';
-  return next(prev, active ? { exited: true, state: 'done', doneSource: 'exit', activity: undefined } : { exited: true }, now);
+  if (active(prev)) return next(prev, { exited: true, state: 'done', doneSource: 'exit', activity: undefined }, now);
+  return prev.exited ? prev : next(prev, { exited: true }, now);
 }
 
 /** True when `data` typed into the node is a lone Esc or Ctrl-C and the node is working. */
@@ -153,8 +154,6 @@ export function interruptKeyPressed(prev: NodeStatus, data: string): boolean {
 export function interruptTimeout(prev: NodeStatus, now: number): NodeStatus {
   return prev.state === 'working' ? done(prev, now, { interrupted: true, doneSource: 'interrupt' }) : prev;
 }
-
-const active = (s: NodeStatus) => s.state === 'working' || s.state === 'waiting' || s.state === 'blocked';
 
 /**
  * The mod's turn.complete is authoritative: the turn is over even when no Stop hook follows (a denied permission

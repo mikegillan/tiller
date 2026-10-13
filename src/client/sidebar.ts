@@ -1,39 +1,49 @@
 // The sidebar: a rounded frame holding the whole tree (3 lines per node), an action bar for the selected node, and daemon status.
 // Layout is pure: model in, styled lines and click targets out.
-import type { NodeView } from '../shared/protocol.js';
-import { shortEffort, shortModel } from '../shared/format.js';
+import { needsYou, type NodeView } from '../shared/protocol.js';
+import { ctxLevel, fmtAge, fmtTokens, shortEffort, shortModel } from '../shared/format.js';
+import { treeOrder } from '../shared/tree.js';
+import { BINDINGS } from './chords.js';
 
-export type Seg = [sgr: string, text: string];
-export const needsYou = (n: NodeView) => !n.status.exited && (n.status.state === 'blocked' || n.status.state === 'waiting');
+type Seg = [sgr: string, text: string];
 
-export interface TreeItem { n: NodeView; head: string; cont: string }
+interface TreeItem { n: NodeView; head: string; cont: string }
 /** Tree order (roots, then each one's descendants depth-first) with the connector text for each node's first line and its continuation lines. */
 export function tree(nodes: Map<string, NodeView>): TreeItem[] {
-  const out: TreeItem[] = [];
-  const walk = (pid: string | null, guides: string, root: boolean) => {
-    const ks = [...nodes.values()].filter((n) => (n.parentId && nodes.has(n.parentId) ? n.parentId : null) === pid);
-    ks.forEach((n, i) => {
-      const last = i === ks.length - 1, g = last ? '   ' : '│  ';
-      out.push(root ? { n, head: '', cont: '  ' } : { n, head: guides + (last ? '└─ ' : '├─ '), cont: guides + g + '  ' });
-      walk(n.id, root ? '' : guides + g, false);
-    });
-  };
-  walk(null, '', true);
-  return out;
+  return treeOrder(nodes.values()).map(({ node: n, depth, lasts }) => {
+    if (depth === 0) return { n, head: '', cont: '  ' };
+    const guides = lasts.slice(1, -1).map((l) => (l ? '   ' : '│  ')).join(''), last = lasts.at(-1);
+    return { n, head: guides + (last ? '└─ ' : '├─ '), cont: guides + (last ? '   ' : '│  ') + '  ' };
+  });
 }
 
-const len = (segs: Seg[]) => segs.reduce((a, s) => a + s[1].length, 0);
+// prune: wide = the main East Asian and emoji blocks; no combining marks or ZWJ sequences. Use a full wcwidth table if titles need them.
+const wide = (c: number) => (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff)
+  || (c >= 0xfe30 && c <= 0xfe4f) || (c >= 0xff00 && c <= 0xff60) || (c >= 0xffe0 && c <= 0xffe6) || (c >= 0x1f300 && c <= 0x1faff) || (c >= 0x20000 && c <= 0x3fffd);
+const control = (c: number) => c < 0x20 || (c >= 0x7f && c <= 0x9f);
+/** Terminal cells for `t`: one per code point, two for a wide one, none for a control character (paint strips those). */
+const cells = (t: string) => { let n = 0; for (const ch of t) { const c = ch.codePointAt(0)!; n += control(c) ? 0 : wide(c) ? 2 : 1; } return n; };
+const len = (segs: Seg[]) => segs.reduce((a, s) => a + cells(s[1]), 0);
 /** Cut to `w` cells, ending in a dim ellipsis when something was dropped. */
 function cut(segs: Seg[], w: number): Seg[] {
   if (len(segs) <= w) return segs;
   const out: Seg[] = [];
   let room = Math.max(0, w - 1);
-  for (const [s, t] of segs) { if (room <= 0) break; out.push([s, t.slice(0, room)]); room -= t.length; }
+  for (const [s, t] of segs) {
+    let kept = '';
+    for (const ch of t) { if (cells(ch) > room) { room = 0; break; } kept += ch; room -= cells(ch); }
+    out.push([s, kept]);
+    if (room <= 0) break;
+  }
   return [...out, ['2', '…']];
 }
+// C0 and C1 controls: titles, activity and notices are agent- or daemon-supplied and must not reach the real terminal as escapes.
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\x00-\x1f\x7f-\x9f]/g;
+export const stripControl = (t: string) => t.replace(CONTROL, '');
 /** One line exactly `w` cells wide; `bg` (an SGR background) covers all of it, padding included. */
-export function paint(segs: Seg[], w: number, bg = ''): string {
-  const cs = cut(segs, w);
+function paint(segs: Seg[], w: number, bg = ''): string {
+  const cs = cut(segs.map(([s, t]) => [s, stripControl(t)]), w);
   return [...cs, ['', ' '.repeat(Math.max(0, w - len(cs)))] as Seg].map(([s, t]) => `\x1b[0${bg && ';' + bg}${s && ';' + s}m${t}`).join('') + '\x1b[0m';
 }
 const lr = (left: Seg[], right: string, w: number): Seg[] => {
@@ -45,21 +55,19 @@ const glyph = (n: NodeView): Seg =>
   n.status.exited ? ['2', '○'] : n.status.errored ? ['31', '✗'] :
   ({ working: ['36', '●'], blocked: ['33', '!'], waiting: ['33', '!'], done: ['32', '✓'] } as Record<string, Seg>)[n.status.state] ?? ['2', '·'];
 
-export const age = (ms: number) => { const s = Math.max(0, Math.floor(ms / 1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`; };
-const k = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`);
 
 /** `opus 5.5 · high · ctx 42% (84k/200k) $0.42`; as the width shrinks, effort, token counts and cost go first. */
 export function meta(n: NodeView, w: number): Seg[] {
   const s = n.status, pct = s.contextPct;
   const model = shortModel(s.model ?? n.model), effort = s.effort ? shortEffort(s.effort) : '';
-  const ctxColor = pct === undefined ? '' : pct < 50 ? '32' : pct <= 80 ? '33' : '31';
+  const ctxColor = pct === undefined ? '' : { ok: '32', warn: '33', bad: '31' }[ctxLevel(pct)];
   const build = (full: boolean, withEffort: boolean): Seg[] => {
     const segs: Seg[] = [];
     const add = (x: Seg) => { if (segs.length) segs.push(['2', ' · ']); segs.push(x); };
     if (model) add(['2', model]);
     if (withEffort && effort) add(['2', effort]);
     if (pct !== undefined) {
-      add([ctxColor, `ctx ${Math.round(pct)}%${full && s.contextTokens && s.contextWindow ? ` (${k(s.contextTokens)}/${k(s.contextWindow)})` : ''}`]);
+      add([ctxColor, `ctx ${Math.round(pct)}%${full && s.contextTokens && s.contextWindow ? ` (${fmtTokens(s.contextTokens)}/${fmtTokens(s.contextWindow)})` : ''}`]);
       if (full && s.costUsd !== undefined) segs.push(['2', ` $${s.costUsd.toFixed(2)}`]);
     }
     return segs;
@@ -68,11 +76,8 @@ export function meta(n: NodeView, w: number): Seg[] {
   return tries.find((t) => len(t) <= w) ?? tries[2]!;
 }
 
-export const ACTIONS: Array<{ key: string; label: string; act: string }> = [
-  { key: 'n', label: 'new child', act: 'new' }, { key: 'e', label: 'rename', act: 'rename' }, { key: 'x', label: 'kill', act: 'kill' }, { key: 'R', label: 'restart', act: 'restart' },
-  { key: 'r', label: 'resume', act: 'resume' }, { key: 'c', label: 'clear exited', act: 'clear' }, { key: 'o', label: 'new orchestrator here', act: 'orch' },
-  { key: 's', label: 'hide', act: 'sidebar' }, { key: '?', label: 'help', act: 'help' },
-];
+const ACTIONS = BINDINGS.filter((b) => b.action.type === 'act' || b.action.type === 'help')
+  .map(({ key, label, action: a }) => ({ key, label, act: a.type === 'act' ? a.key : 'help' }));
 
 /** The first visible item index such that item `i` is fully on screen, starting from `scroll` and moving only as far as needed. */
 export function revealScroll(m: SideModel, W: number, H: number, i: number): number {
@@ -91,8 +96,6 @@ export interface SideLayout {
   nodeAt: Array<string | undefined>;
   /** Clickable actions, columns 1-based within the sidebar. */
   acts: Array<{ row: number; x0: number; x1: number; act: string }>;
-  /** Items scroll..scroll+shown-1 are on screen. */
-  shown: number;
 }
 
 const BG = '48;5;236';
@@ -125,20 +128,18 @@ export function layoutSidebar(m: SideModel, W: number, H: number): SideLayout {
   const lines = [top], nodeAt: SideLayout['nodeAt'] = [undefined];
   const area = Math.max(0, H - 1 - bottom.length);
   const items3 = tree(m.nodes);
-  let shown = 0;
   for (const { n, head, cont } of items3.slice(m.scroll)) {
     const sel = n.id === m.cur, bg = sel ? BG : '';
-    const rows: Seg[][] = [lr([['2', head], glyph(n), ['', ' '], [n.status.exited ? '2' : sel || needsYou(n) ? '1' : '', n.title], ...(n.unread ? [['36', ' •'] as Seg] : [])], n.status.exited ? 'exited' : age(m.now - n.status.changedAt), w)];
+    const rows: Seg[][] = [lr([['2', head], glyph(n), ['', ' '], [n.status.exited ? '2' : sel || needsYou(n.status) ? '1' : '', n.title], ...(n.unread ? [['36', ' •'] as Seg] : [])], n.status.exited ? 'exited' : fmtAge(m.now - n.status.changedAt), w)];
     const act = n.status.activity;
     if (act) rows.push([['2', cont], [n.status.state === 'blocked' ? '33' : '2', act]]);
     const mt = meta(n, w - cont.length);
     if (mt.length) rows.push([['2', cont], ...mt]);
     if (lines.length - 1 + rows.length > area) break;
     for (const r of rows) { lines.push(frame(paint(r, w, bg))); nodeAt.push(n.id); }
-    shown++;
   }
   while (lines.length < H - bottom.length) { lines.push(frame(' '.repeat(w))); nodeAt.push(undefined); }
   const first = lines.length;
   lines.push(...bottom);
-  return { lines: lines.slice(0, H), nodeAt, shown, acts: acts.map((a) => ({ ...a, row: first + 1 + a.row, x0: a.x0 + 1, x1: a.x1 + 1 })) };
+  return { lines: lines.slice(0, H), nodeAt, acts: acts.map((a) => ({ ...a, row: first + 1 + a.row, x0: a.x0 + 1, x1: a.x1 + 1 })) };
 }

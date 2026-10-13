@@ -1,5 +1,4 @@
 #!/bin/sh
 # Resolve symlinks (npm link) so we find the repo.
-self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
-case "$self" in /*) ;; *) self="$(dirname "$0")/$self";; esac
-exec npx --prefix "$(dirname "$self")/.." tsx "$(dirname "$self")/../src/daemon/cli.ts" "$@"
+self="$0"; if [ -L "$0" ]; then self="$(readlink "$0")"; case "$self" in /*) ;; *) self="$(dirname "$0")/$self";; esac; fi
+exec "$(dirname "$self")/../node_modules/.bin/tsx" "$(dirname "$self")/../src/daemon/cli.ts" "$@"

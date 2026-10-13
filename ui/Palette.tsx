@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { StateDot } from './Bits';
 import { cwdBase } from './format';
 import { ancestry } from './sessions';
@@ -10,6 +10,8 @@ export function Palette() {
   const order = useStore((s) => s.order);
   const [q, setQ] = useState('');
   const [i, setI] = useState(0);
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => { ref.current?.showModal(); }, []);
   const all = useMemo(() => order.map((id) => nodes[id]).filter(Boolean).map((n) => {
     const root = ancestry(nodes, n.id)[0] ?? n;
     return { n, where: root === n ? cwdBase(n.cwd) : `${root.title} · ${cwdBase(n.cwd)}` };
@@ -19,14 +21,13 @@ export function Palette() {
   const close = () => openDialog(null);
   const pick = (id: string) => { selectNode(id); close(); };
   const onKey = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') close();
-    else if (e.key === 'ArrowDown') { e.preventDefault(); setI(Math.min(i + 1, hits.length - 1)); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setI(Math.min(i + 1, hits.length - 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setI(Math.max(i - 1, 0)); }
     else if (e.key === 'Enter' && hits[i]) pick(hits[i].n.id);
   };
   return (
-    <div className="overlay top" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
-      <div className="palette" role="dialog" aria-label="Jump to node">
+    <dialog ref={ref} className="dlg top" aria-label="Jump to node" onCancel={(e) => { e.preventDefault(); close(); }} onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+      <div className="palette">
         <input autoFocus placeholder="Jump to a node…" value={q} onChange={(e) => { setQ(e.target.value); setI(0); }} onKeyDown={onKey} />
         <div className="hits">
           {hits.map((h, j) => (
@@ -37,6 +38,6 @@ export function Palette() {
           {!hits.length && <p className="hint">No matches.</p>}
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }

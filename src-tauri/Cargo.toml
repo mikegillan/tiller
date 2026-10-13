@@ -2,22 +2,16 @@
 name = "orchestr8"
 version = "0.1.0"
 description = "Native shell for the orchestr8 web UI"
-authors = []
-license = ""
-repository = ""
 edition = "2024"
 rust-version = "1.90"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
 name = "orchestr8_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.7.1", features = [] }
 
 [dependencies]
 tauri = { version = "2.12.1", features = [] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
-serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking"] }

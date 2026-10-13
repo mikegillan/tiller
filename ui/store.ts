@@ -49,8 +49,9 @@ export function update(fn: (s: State) => Partial<State>) {
   state = { ...state, ...fn(state) };
   subs.forEach((f) => f());
 }
+const subscribe = (f: () => void) => (subs.add(f), () => void subs.delete(f));
 export function useStore<T>(sel: (s: State) => T): T {
-  return useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => sel(state));
+  return useSyncExternalStore(subscribe, () => sel(state));
 }
 
 const without = <T,>(xs: T[], x: T) => xs.filter((y) => y !== x);

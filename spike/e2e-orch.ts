@@ -83,7 +83,7 @@ async function main(): Promise<void> {
   const sum = await api('read', { nodeId: worker, what: 'summary' });
   log(`worker summary:\n${sum.text ?? JSON.stringify(sum)}`);
   check(/PINEAPPLE/.test(sum.text ?? '') && /Wait for a message/.test(sum.text ?? ''), 'admin read summary returns the worker conversation');
-  for (const id of [worker, orch]) send({ t: 'close', id });
+  for (const id of [worker, orch]) send({ t: 'close', id, force: id === orch });
   await sleep(500);
 }
 

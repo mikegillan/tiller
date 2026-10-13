@@ -1,10 +1,10 @@
 import type { NodeView } from '../src/shared/protocol';
 import { statusKind, type Nodes, type StatusKind } from './tree';
 
-/** Ancestors from the session root down to `id`, inclusive. Tolerates missing parents and cycles. */
+/** Ancestors from the session root down to `id`, inclusive. Tolerates missing parents; parentId is fixed at spawn, so there are no cycles. */
 export function ancestry(nodes: Nodes, id: string): NodeView[] {
   const chain: NodeView[] = [];
-  for (let n: NodeView | undefined = nodes[id]; n && !chain.includes(n); n = n.parentId ? nodes[n.parentId] : undefined) chain.unshift(n);
+  for (let n: NodeView | undefined = nodes[id]; n; n = n.parentId ? nodes[n.parentId] : undefined) chain.unshift(n);
   return chain;
 }
 

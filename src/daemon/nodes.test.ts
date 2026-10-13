@@ -31,7 +31,6 @@ describe('NodeRegistry', () => {
     r2.load();
     expect(r2.list().map((n) => n.id).sort()).toEqual([a.id, b.id].sort());
     expect(r2.get(b.id)).toMatchObject({ title: 'B2', sessionId: 's1' });
-    expect(r2.children(a.id).map((n) => n.id)).toEqual([b.id]);
     expect(r2.lineage(b.id).map((n) => n.id)).toEqual([a.id]);
   });
 

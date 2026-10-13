@@ -3,9 +3,11 @@ import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import type { ModEvent, NodeKind, NodeStatus, NodeView, Role } from '../shared/protocol.js';
+import { NEEDS_YOU_STATES, type AgentState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Role } from '../shared/protocol.js';
+import { homeDir } from './home.js';
 import { claudeLaunch, ensurePrompts, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { pruneIds } from '../shared/prune.js';
+import { flushInbox } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
 import { PtySession } from './pty.js';
 import { logError, safeEqual } from './util.js';
@@ -19,6 +21,8 @@ const TRUST_BLOCKED_ACTIVITY = 'Trust dialog: answer it in the terminal';
 const DEFAULT_SIZE = { cols: 120, rows: 40 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** A node's state before any hook arrives: a Claude node is unknown until SessionStart; a terminal has no agent state. */
+const initialState = (kind: NodeKind): AgentState => (kind === 'claude' ? 'unknown' : 'none');
 
 /**
  * Whether we may answer Claude's folder-trust dialog for `cwd`. Only when ~/.claude.json already
@@ -79,6 +83,8 @@ export class NodeManager extends EventEmitter {
   readonly registry: NodeRegistry;
   /** Base URL of the daemon, set by the server once it knows its port. */
   endpoint = '';
+  /** Whether any connected UI client has node `id` selected; set by the server. A selected node never turns unread. */
+  isSelected: (id: string) => boolean = () => false;
   private shell: string;
   private path: string;
   private secret: Buffer;
@@ -86,13 +92,12 @@ export class NodeManager extends EventEmitter {
   private statuses = new Map<string, NodeStatus>();
   private unread = new Set<string>();
   private lastHookAt = new Map<string, number>();
-  private selected = new Map<unknown, string>(); // UI client -> selected node id
   private sweepTimer: NodeJS.Timeout;
   private interruptTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(opts: ManagerOptions = {}) {
     super();
-    this.home = opts.home ?? process.env.O8_HOME ?? join(homedir(), '.orchestr8');
+    this.home = opts.home ?? homeDir();
     this.shell = opts.shell ?? process.env.SHELL ?? '/bin/sh';
     this.path = opts.path ?? process.env.PATH ?? '';
     mkdirSync(join(this.home, 'nodes'), { recursive: true, mode: 0o700 });
@@ -103,7 +108,7 @@ export class NodeManager extends EventEmitter {
     this.registry.load();
     // Nodes from a previous run have no process; they can be resumed.
     for (const n of this.registry.list()) {
-      this.statuses.set(n.id, { state: n.kind === 'claude' ? 'unknown' : 'none', exited: true, sessionId: n.sessionId, transcriptPath: n.transcriptPath, changedAt: Date.now() });
+      this.statuses.set(n.id, { state: initialState(n.kind), exited: true, sessionId: n.sessionId, transcriptPath: n.transcriptPath, changedAt: Date.now() });
     }
     this.sweepTimer = setInterval(() => this.sweepStale(), SWEEP_MS);
     this.sweepTimer.unref();
@@ -161,7 +166,7 @@ export class NodeManager extends EventEmitter {
     });
     try {
       this.writeFiles(rec.id);
-      this.statuses.set(rec.id, { state: req.kind === 'claude' ? 'unknown' : 'none', sessionId: rec.sessionId, changedAt: Date.now() });
+      this.statuses.set(rec.id, { state: initialState(req.kind), sessionId: rec.sessionId, changedAt: Date.now() });
       this.launch(rec.id, req.prompt, false);
     } catch (err) {
       this.discard(rec.id);
@@ -213,13 +218,13 @@ export class NodeManager extends EventEmitter {
     this.lastHookAt.delete(id);
     const sessionId = rec.kind === 'claude' ? randomUUID() : undefined;
     this.registry.update(id, { sessionId, transcriptPath: undefined, previousSessions: [...(rec.previousSessions ?? []), ...(old ? [old] : [])].slice(-MAX_PREVIOUS_SESSIONS) });
-    this.statuses.set(id, { state: rec.kind === 'claude' ? 'unknown' : 'none', sessionId, activity: 'restarting', changedAt: Date.now() });
+    this.statuses.set(id, { state: initialState(rec.kind), sessionId, activity: 'restarting', changedAt: Date.now() });
     try {
       this.writeFiles(id);
       this.emit('data', id, '\x1bc'); // reset attached screens before the new process draws
       this.launch(id, undefined, false);
     } catch (err) {
-      this.setStatus(id, { ...this.statuses.get(id)!, state: rec.kind === 'claude' ? 'unknown' : 'none', exited: true, activity: undefined, changedAt: Date.now() }, false);
+      this.setStatus(id, { ...this.statuses.get(id)!, state: initialState(rec.kind), exited: true, activity: undefined, changedAt: Date.now() }, false);
       return { ok: false, error: (err as Error).message };
     }
     this.emitNode(id);
@@ -249,15 +254,9 @@ export class NodeManager extends EventEmitter {
     if (this.registry.update(id, { title })) this.emitNode(id);
   }
 
-  /** Mark `id` as the node `client` is looking at, which clears its unread flag. */
-  select(id: string, client: unknown = 'default'): void {
-    this.selected.set(client, id);
+  /** A client selected `id`, which clears its unread flag. */
+  select(id: string): void {
     if (this.unread.delete(id)) this.emitNode(id);
-  }
-
-  /** Forget what a disconnected UI client had selected. */
-  deselect(client: unknown): void {
-    this.selected.delete(client);
   }
 
   input(id: string, data: string): void {
@@ -320,32 +319,35 @@ export class NodeManager extends EventEmitter {
     if (process.env.O8_DEBUG) console.log(`${new Date(now).toISOString().slice(11, 23)} mod ${nodeId.slice(0, 6)} ${ev.event} ${JSON.stringify(ev.payload).slice(0, 300)}`);
     if (ev.event === 'turn.complete') {
       const model = ev.payload.usage?.model;
-      if (typeof model === 'string' && model !== prev.model) this.setStatus(nodeId, { ...prev, model });
-      this.setStatus(nodeId, turnComplete(this.statuses.get(nodeId)!, now, ev.payload));
+      const base = typeof model === 'string' && model !== prev.model ? { ...prev, model } : prev;
+      this.setStatus(nodeId, turnComplete(base, now, ev.payload));
     } else if (ev.event === 'session.measure') {
       const { context, cost } = ev.payload;
       this.setStatus(nodeId, { ...prev, contextPct: context?.percent ?? prev.contextPct, contextTokens: context?.tokens ?? prev.contextTokens, contextWindow: context?.window ?? prev.contextWindow, costUsd: cost?.usd ?? prev.costUsd });
     }
   }
 
-  /** Flush the registry and kill every PTY. */
+  /** Flush the registry and the message inbox, and kill every PTY. */
   shutdown(): void {
     clearInterval(this.sweepTimer);
     for (const t of this.interruptTimers.values()) clearTimeout(t);
     for (const s of this.sessions.values()) s.kill();
     this.registry.flush();
+    flushInbox(this);
   }
 
   // ---- internals ----
 
   private nodeDir(id: string): string { return join(this.home, 'nodes', id); }
 
-  /** Token, settings.json and mcp.json for a node; mcp.json embeds the current endpoint. */
+  /** Token, hook-headers, settings.json and mcp.json for a node; mcp.json embeds the current endpoint. */
   private writeFiles(id: string): void {
     const dir = this.nodeDir(id);
+    const token = this.tokenFor(id);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    writeFileSync(join(dir, 'token'), this.tokenFor(id), { mode: 0o600 });
-    writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token: this.tokenFor(id) });
+    writeFileSync(join(dir, 'token'), token, { mode: 0o600 });
+    writeFileSync(join(dir, 'hook-headers'), `Authorization: Bearer ${token}\nX-O8-Node: ${id}\n`, { mode: 0o600 }); // read by hook.sh via curl -H @file
+    writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token });
   }
 
   private discard(id: string): void {
@@ -413,7 +415,7 @@ export class NodeManager extends EventEmitter {
     let kind: NotifyEvent['kind'] | undefined;
     if (notify && next.state !== prev.state) {
       if (next.state === 'done') kind = next.errored ? 'errored' : 'done';
-      else if (next.state === 'blocked' || next.state === 'waiting') kind = 'needsYou';
+      else if (NEEDS_YOU_STATES.includes(next.state)) kind = 'needsYou';
     }
     if (kind) this.markUnread(id);
     this.emitNode(id);
@@ -424,7 +426,7 @@ export class NodeManager extends EventEmitter {
   }
 
   private markUnread(id: string): void {
-    if (![...this.selected.values()].includes(id)) this.unread.add(id);
+    if (!this.isSelected(id)) this.unread.add(id);
   }
 
   private emitNode(id: string): NodeView | undefined {

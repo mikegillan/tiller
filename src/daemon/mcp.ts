@@ -1,4 +1,4 @@
-import { shortEffort, shortModel } from '../shared/format.js';
+import { fmtAge, shortEffort, shortModel } from '../shared/format.js';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -7,15 +7,16 @@ import { join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import type { NodeView } from '../shared/protocol.js';
+import { NODE_KINDS, ROLES, type NodeView } from '../shared/protocol.js';
+import { treeOrder } from '../shared/tree.js';
+import { ADMIN_TOKEN_FILE } from './home.js';
 import type { NodeManager } from './manager.js';
 import { deliver, HUMAN, inScope, isDescendant, messageStatus, startNotices } from './messaging.js';
-import { logError, safeEqual } from './util.js';
+import { logError, PREVIEW_CHARS, readBody, safeEqual } from './util.js';
 
 const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'] as const;
 const MAX_WRITE_CHARS = 2000;
 const IDEMPOTENCY_MS = 24 * 3600_000;
-const MAX_BODY = 1_000_000;
 const TRANSCRIPT_CAP = 200_000;
 
 interface Ctx { manager: NodeManager; confirm: (text: string) => Promise<boolean>; focus: (from: string, id: string) => void; caller: string }
@@ -25,8 +26,6 @@ const outcomes = new Map<string, { outcome: 'succeeded' | 'failed'; note?: strin
 
 // ---- helpers ----
 
-const age = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : ms < 3600_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 3600_000)}h`);
-
 function flags(v: NodeView): string[] {
   const s = v.status;
   return (['errored', 'interrupted', 'exited', 'stale'] as const).filter((f) => s[f]);
@@ -35,7 +34,7 @@ function flags(v: NodeView): string[] {
 function summarize(v: NodeView, now: number) {
   return {
     id: v.id, parentId: v.parentId, title: v.title, kind: v.kind, cwd: v.cwd, state: v.status.state, flags: flags(v), exited: !!v.status.exited, createdAt: v.createdAt,
-    age: age(now - v.createdAt), activity: v.status.activity, lastAssistantMessage: v.status.lastAssistantMessage?.slice(0, 200),
+    age: fmtAge(now - v.createdAt), activity: v.status.activity, lastAssistantMessage: v.status.lastAssistantMessage?.slice(0, PREVIEW_CHARS),
     outcome: outcomes.get(v.id),
     model: v.status.model, effort: v.status.effort, contextPct: v.status.contextPct, contextTokens: v.status.contextTokens, contextWindow: v.status.contextWindow, costUsd: v.status.costUsd,
   };
@@ -47,17 +46,10 @@ function modelInfo(n: ReturnType<typeof summarize>): string {
 }
 
 function tree(nodes: ReturnType<typeof summarize>[]): string {
-  const known = new Set(nodes.map((n) => n.id));
-  const lines: string[] = [];
-  const walk = (parent: string | null, depth: number) => {
-    for (const n of nodes.filter((x) => (known.has(x.parentId ?? '') ? x.parentId : null) === parent)) {
-      const extra = [...n.flags, n.activity].filter(Boolean).join(', ');
-      lines.push(`${'  '.repeat(depth)}- ${n.id} "${n.title}" [${n.kind}] ${n.state}${extra ? ` (${extra})` : ''} ${n.age}${modelInfo(n)}`);
-      walk(n.id, depth + 1);
-    }
-  };
-  walk(null, 0);
-  return lines.join('\n') || '(no nodes)';
+  return treeOrder(nodes).map(({ node: n, depth }) => {
+    const extra = [...n.flags, n.activity].filter(Boolean).join(', ');
+    return `${'  '.repeat(depth)}- ${n.id} "${n.title}" [${n.kind}] ${n.state}${extra ? ` (${extra})` : ''} ${n.age}${modelInfo(n)}`;
+  }).join('\n') || '(no nodes)';
 }
 
 /** One user/assistant transcript entry as text; tool calls become a one-line marker, tool results vanish. */
@@ -91,7 +83,7 @@ const requireOwned = (c: Ctx, id: string, allowSelf: boolean): NodeView => {
   return v;
 };
 
-const who = (c: Ctx) => (c.caller === HUMAN ? 'The user' : `Node ${c.manager.view(c.caller)?.title ?? ''} (${c.caller})`.replace('  ', ' '));
+const who = (c: Ctx) => (c.caller === HUMAN ? 'The user' : `Node ${c.manager.view(c.caller)!.title} (${c.caller})`); // authenticate() guarantees the view
 
 // ---- tools ----
 
@@ -101,9 +93,9 @@ function tool<S extends z.ZodRawShape>(description: string, shape: S, run: (c: C
 
 const spawned = new Map<string, { args: string; result: unknown; at: number }>();
 
-export const tools = {
+const tools = {
   list_nodes: tool(
-    'List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale), age, current activity, its last assistant message truncated to 200 characters, and the outcome it reported through report_outcome, if any. Use it to find node ids before calling send, read or close.',
+    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, and the outcome it reported through report_outcome, if any. Use it to find node ids before calling send, read or close.`,
     {},
     async (c) => {
       const nodes = c.manager.list().filter((v) => inScope(c.manager, c.caller, v.id)).map((v) => summarize(v, Date.now()));
@@ -113,8 +105,8 @@ export const tools = {
   spawn: tool(
     'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error.',
     {
-      kind: z.enum(['claude', 'terminal']), title: z.string().min(1), cwd: z.string().min(1), prompt: z.string().optional(),
-      model: z.string().optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), role: z.enum(['orchestrator', 'worker', 'none']).optional(), requestId: z.string().optional(),
+      kind: z.enum(NODE_KINDS), title: z.string().min(1), cwd: z.string().min(1), prompt: z.string().optional(),
+      model: z.string().optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), role: z.enum(ROLES).optional(), requestId: z.string().optional(),
     },
     async (c, { requestId, ...req }) => {
       if (req.permissionMode === 'bypassPermissions' && c.caller !== HUMAN) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
@@ -187,8 +179,7 @@ export const tools = {
     async (c, a) => {
       const views = a.nodeIds.map((id) => requireOwned(c, id, false));
       for (const v of views) {
-        if (v.parentId !== null) continue;
-        if (c.caller !== HUMAN) throw new Error(`refused: ${v.id} is an orchestrator; agents cannot close orchestrators`);
+        if (v.parentId !== null) continue; // only the human gets here with a root: requireOwned refuses agents
         if (!a.force) throw new Error(`refusing to close an orchestrator; use o8 kill --force ${v.id}`);
       }
       const list = views.map((v) => `${v.title} (${v.id})`).join(', ');
@@ -280,9 +271,11 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
   publishAdminToken: () => void;
   /** Caller id for a request's Bearer + X-O8-Node (`human` for the admin token), or undefined. */
   authenticate: (req: http.IncomingMessage) => string | undefined;
+  /** Whether `token` is the admin token (the WebSocket clients authenticate with it). */
+  isAdmin: (token: string) => boolean;
 } {
   const adminToken = randomBytes(32).toString('base64url');
-  const adminFile = join(manager.home, 'admin-token');
+  const adminFile = join(manager.home, ADMIN_TOKEN_FILE);
   const publishAdminToken = () => {
     writeFileSync(adminFile, adminToken, { mode: 0o600 });
     chmodSync(adminFile, 0o600);
@@ -293,10 +286,11 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
     for (const k of spawned.keys()) if (k.startsWith(`${id}\0`)) spawned.delete(k);
   });
 
+  const isAdmin = (token: string) => safeEqual(token, adminToken);
   const authenticate = (req: http.IncomingMessage): string | undefined => {
     const id = String(req.headers['x-o8-node'] ?? '');
     const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1] ?? '';
-    if (id === HUMAN) return safeEqual(bearer, adminToken) ? id : undefined;
+    if (id === HUMAN) return isAdmin(bearer) ? id : undefined;
     return id && manager.view(id) && manager.verifyToken(id, bearer) ? id : undefined;
   };
 
@@ -304,11 +298,8 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
     const reply = (code: number, body: unknown) => res.writeHead(code, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
     const t = (tools as Record<string, (typeof tools)[keyof typeof tools]>)[name];
     if (req.method !== 'POST' || !t) return void res.writeHead(404).end();
-    let raw = '';
-    for await (const chunk of req) {
-      raw += chunk;
-      if (raw.length > MAX_BODY) return void res.writeHead(413).end();
-    }
+    const raw = await readBody(req, res);
+    if (raw === undefined) return;
     try {
       const args = z.object(t.shape).parse(raw ? JSON.parse(raw) : {});
       reply(200, await t.run(ctx, args as never));
@@ -341,5 +332,5 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
     await mcp.connect(transport);
     await transport.handleRequest(req, res);
   };
-  return { handler, publishAdminToken, authenticate };
+  return { handler, publishAdminToken, authenticate, isAdmin };
 }

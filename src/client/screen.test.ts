@@ -28,6 +28,10 @@ test('cursor follows the node and is shown only while the node shows it; mouse m
   await feed(s, '\x1b[?25l\x1b[?1002h');
   expect(s.cursor(5)).toBe('\x1b[2;7H');
   expect(s.mouse).toBe(true);
+  await feed(s, '\x1b[?10'); await feed(s, '02l');
+  expect(s.mouse).toBe(false); // a sequence split across chunks
+  await feed(s, '\x1b[?1000;1006h');
+  expect(s.mouse).toBe(true); // a combined DECSET
 });
 
 test('SGR mouse reports are split from keys, classified and re-encoded with the sidebar offset', () => {

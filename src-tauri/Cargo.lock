@@ -2096,7 +2096,6 @@ name = "orchestr8"
 version = "0.1.0"
 dependencies = [
  "reqwest 0.12.28",
- "serde_json",
  "tauri",
  "tauri-build",
 ]

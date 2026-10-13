@@ -1,4 +1,4 @@
-import { fmtAge } from './format';
+import { fmtAge } from '../src/shared/format';
 import { useNow } from './hooks';
 import { useStore } from './store';
 

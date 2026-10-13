@@ -4,8 +4,8 @@ if [ -z "${O8_NODE_ID-}" ] || [ -z "${O8_ENDPOINT-}" ] || [ -z "${O8_TOKEN_FILE-
   cat >/dev/null 2>&1
   exit 0
 fi
-tok=$(cat "$O8_TOKEN_FILE" 2>/dev/null)
+# The auth headers come from a 0600 file next to the token, so the token never appears on curl's argv.
 curl -s -o /dev/null --max-time 5 -X POST "$O8_ENDPOINT/hook" \
-  -H "Authorization: Bearer $tok" -H "X-O8-Node: $O8_NODE_ID" \
+  -H @"${O8_TOKEN_FILE%/*}/hook-headers" \
   -H "Content-Type: application/json" --data-binary @- </dev/stdin >/dev/null 2>&1 &
 exit 0

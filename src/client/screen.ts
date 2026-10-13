@@ -3,20 +3,15 @@ import xterm from '@xterm/headless';
 import type { IBufferCell, IBufferLine } from '@xterm/headless';
 const { Terminal } = xterm;
 
-const fgCode = (c: IBufferCell) => {
-  const v = c.getFgColor();
-  return c.isFgRGB() ? `38;2;${(v >> 16) & 255};${(v >> 8) & 255};${v & 255}` : c.isFgPalette() ? (v < 8 ? `${30 + v}` : v < 16 ? `${90 + v - 8}` : `38;5;${v}`) : '';
-};
-const bgCode = (c: IBufferCell) => {
-  const v = c.getBgColor();
-  return c.isBgRGB() ? `48;2;${(v >> 16) & 255};${(v >> 8) & 255};${v & 255}` : c.isBgPalette() ? (v < 8 ? `${40 + v}` : v < 16 ? `${100 + v - 8}` : `48;5;${v}`) : '';
-};
+/** SGR for one color; `base` is 30 for foreground, 40 for background. */
+const color = (v: number, rgb: boolean, palette: boolean, base: number) =>
+  rgb ? `${base + 8};2;${(v >> 16) & 255};${(v >> 8) & 255};${v & 255}` : palette ? (v < 8 ? `${base + v}` : v < 16 ? `${base + 60 + v - 8}` : `${base + 8};5;${v}`) : '';
 const attrs = (c: IBufferCell) =>
-  [c.isBold() && '1', c.isDim() && '2', c.isItalic() && '3', c.isUnderline() && '4', c.isInverse() && '7', c.isStrikethrough() && '9', fgCode(c), bgCode(c)]
+  [c.isBold() && '1', c.isDim() && '2', c.isItalic() && '3', c.isUnderline() && '4', c.isInverse() && '7', c.isStrikethrough() && '9', color(c.getFgColor(), c.isFgRGB(), c.isFgPalette(), 30), color(c.getBgColor(), c.isBgRGB(), c.isBgPalette(), 40)]
     .filter(Boolean).join(';');
 
 /** One buffer row as text with SGR attributes: `cols` cells, empty cells as spaces, a wide character's second cell skipped. */
-export function renderRow(line: IBufferLine | undefined, cols: number, cell: IBufferCell): string {
+function renderRow(line: IBufferLine | undefined, cols: number, cell: IBufferCell): string {
   let out = '', cur = '';
   for (let x = 0; x < cols; x++) {
     const c = line?.getCell(x, cell);
@@ -40,12 +35,10 @@ export function placeholder(title: string, cols: number, rows: number): string {
 }
 
 export class NodeScreen {
-  readonly term: InstanceType<typeof Terminal>;
+  private readonly term: InstanceType<typeof Terminal>;
   private prev: string[] = [];
   private cell: IBufferCell;
   cursorVisible = true;
-  /** The node asked for mouse reports (DECSET 1000/1002/1003). */
-  mouse = false;
   /** True once something was written; the first frame after a switch waits for the snapshot. */
   dirty = false;
 
@@ -56,10 +49,12 @@ export class NodeScreen {
 
   write(data: string): void {
     for (const m of data.matchAll(/\x1b\[\?25([hl])/g)) this.cursorVisible = m[1] === 'h';
-    for (const m of data.matchAll(/\x1b\[\?100[023]([hl])/g)) this.mouse = m[1] === 'h';
     this.dirty = true;
     this.term.write(data);
   }
+
+  /** The node asked for mouse reports (DECSET 1000/1002/1003). */
+  get mouse(): boolean { return this.term.modes.mouseTrackingMode !== 'none'; }
 
   resize(cols: number, rows: number): void {
     this.cols = cols; this.rows = rows;

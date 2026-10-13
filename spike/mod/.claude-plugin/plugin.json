@@ -1,1 +1,0 @@
-{ "name": "o8-mod", "version": "0.1.0", "description": "orchestr8 spike: message delivery and turn events", "types": "./types/index.d.ts" }

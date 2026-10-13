@@ -1,18 +1,20 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { extname, join, resolve, sep } from 'node:path';
+import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
-import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
+import { NODE_KINDS, ROLES, type ClientMessage, type ServerMessage } from '../shared/protocol.js';
+import { DEFAULT_PORT } from './home.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
 import { mountMcp } from './mcp.js';
 import { modApi } from './modapi.js';
 import type { HookEvent } from './status.js';
-import { safeEqual } from './util.js';
+import { HUMAN } from './messaging.js';
+import { readBody } from './util.js';
 
 const UI_DIR = fileURLToPath(new URL('../../ui/dist', import.meta.url));
 const MAX_HOOK_BYTES = 8_000_000; // a PreToolUse payload for a large Write carries the whole file
@@ -35,8 +37,8 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('resize'), id, cols: size, rows: size }),
   z.object({ t: z.literal('select'), id }),
   z.object({
-    t: z.literal('spawn'), kind: z.enum(['claude', 'terminal']), title: z.string(), cwd: z.string().min(1),
-    prompt: z.string().optional(), model: z.string().optional(), role: z.enum(['orchestrator', 'worker', 'none']).optional(), parentId: z.string().nullable().optional(),
+    t: z.literal('spawn'), kind: z.enum(NODE_KINDS), title: z.string().min(1), cwd: z.string().min(1),
+    prompt: z.string().optional(), model: z.string().optional(), role: z.enum(ROLES).optional(), parentId: z.string().nullable().optional(),
   }),
   z.object({ t: z.literal('close'), id, force: z.boolean().optional() }),
   z.object({ t: z.literal('restart'), id }),
@@ -48,10 +50,6 @@ const clientMessage = z.discriminatedUnion('t', [
 
 export interface DaemonServer {
   port: number;
-  /** Token the UI must send as its first WebSocket message. */
-  uiToken: string;
-  /** URL to open in the browser. */
-  url: string;
   /** Ask the human to approve something. Resolves false if no UI is connected, on timeout, or on refusal. */
   confirm(text: string): Promise<boolean>;
   /** How many connected clients are looking at node `id`: it is selected there and their window is in front. */
@@ -63,19 +61,17 @@ export interface DaemonServer {
 
 interface Client { ws: WebSocket; authed: boolean; attached: Set<string>; kind?: 'app' | 'browser' | 'mux'; focused: boolean; selected?: string }
 
-export async function startServer(manager: NodeManager, opts: { port?: number; uiToken?: string } = {}): Promise<DaemonServer> {
-  const uiToken = opts.uiToken ?? randomBytes(24).toString('base64url');
-  // The CLI authenticates over /ws with the admin token mcp.ts writes after listen; empty until then, which never matches.
-  const adminToken = () => { try { return readFileSync(join(manager.home, 'admin-token'), 'utf8').trim(); } catch { return ''; } };
+export async function startServer(manager: NodeManager, opts: { port?: number } = {}): Promise<DaemonServer> {
   const clients = new Set<Client>();
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
   const focus = (from: string, id: string) => broadcast({ t: 'focus', from, id });
-  const { handler: mcp, publishAdminToken, authenticate } = mountMcp(manager, (text) => daemon.confirm(text), focus);
+  const { handler: mcp, publishAdminToken, authenticate, isAdmin } = mountMcp(manager, (text) => daemon.confirm(text), focus);
   const mod = modApi(manager, authenticate, focus, () => [...new Set([...clients].filter((c) => c.authed && c.kind).map((c) => c.kind!))]);
 
   const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
   const broadcast = (m: ServerMessage) => { for (const c of clients) if (c.authed) sendTo(c, m); };
   const appConnected = () => [...clients].some((c) => c.authed && c.kind === 'app');
+  manager.isSelected = (id) => [...clients].some((c) => c.selected === id);
 
   manager.on('node', (node) => broadcast({ t: 'node', node }));
   manager.on('removed', (rid: string) => {
@@ -102,7 +98,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
       case 'input': manager.input(m.id, m.data); return;
       case 'resize': manager.resize(m.id, m.cols, m.rows); return;
       case 'visibility': c.focused = m.focused; return;
-      case 'select': c.selected = m.id; manager.select(m.id, c); return;
+      case 'select': c.selected = m.id; manager.select(m.id); return;
       case 'spawn': manager.spawn({ kind: m.kind, title: m.title, cwd: m.cwd, prompt: m.prompt, model: m.model, role: m.role, parentId: m.parentId }); return;
       case 'close': manager.close(m.id, m.force); return;
       case 'restart': {
@@ -129,7 +125,6 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
     ws.on('close', () => {
       clearTimeout(authTimer);
       clients.delete(c);
-      manager.deselect(c);
       if (c.authed && c.kind === 'app' && !appConnected()) broadcast({ t: 'clients', app: false });
     });
     ws.on('message', (raw) => {
@@ -142,7 +137,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
         return;
       }
       if (!c.authed) {
-        if (msg.t === 'auth' && (safeEqual(msg.token, uiToken) || (adminToken() !== '' && safeEqual(msg.token, adminToken())))) {
+        if (msg.t === 'auth' && isAdmin(msg.token)) {
           c.authed = true;
           c.kind = msg.client;
           clearTimeout(authTimer);
@@ -180,14 +175,10 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
   }
 
   async function hook(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const nodeId = String(req.headers['x-o8-node'] ?? '');
-    const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1] ?? '';
-    if (!nodeId || !manager.verifyToken(nodeId, bearer)) { res.writeHead(401).end(); return; }
-    let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-      if (body.length > MAX_HOOK_BYTES) { res.writeHead(413).end(); req.destroy(); return; }
-    }
+    const nodeId = authenticate(req);
+    if (!nodeId || nodeId === HUMAN) { res.writeHead(401).end(); return; }
+    const body = await readBody(req, res, MAX_HOOK_BYTES);
+    if (body === undefined) return;
     let event: HookEvent;
     try {
       event = JSON.parse(body);
@@ -212,15 +203,13 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
     }
   }
 
-  await new Promise<void>((ok, fail) => { server.once('error', fail); server.listen(opts.port ?? 7788, '127.0.0.1', ok); });
+  await new Promise<void>((ok, fail) => { server.once('error', fail); server.listen(opts.port ?? DEFAULT_PORT, '127.0.0.1', ok); });
   const port = (server.address() as AddressInfo).port;
   manager.endpoint = `http://127.0.0.1:${port}`;
   publishAdminToken();
 
   const daemon: DaemonServer = {
     port,
-    uiToken,
-    url: `${manager.endpoint}/?k=${uiToken}`,
     confirm(text) {
       if (![...clients].some((c) => c.authed)) return Promise.resolve(false);
       const confirmId = randomUUID();

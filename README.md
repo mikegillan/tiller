@@ -1,6 +1,6 @@
 # orchestr8
 
-orchestr8 is a local daemon that runs several Claude Code sessions ("nodes") as child processes and lets one of them, the orchestrator, spawn, message and watch the others. Your own terminal stays the main interface, extended by a small Claude Code mod; a browser UI exists as an optional second view.
+orchestr8 is a local daemon that runs several Claude Code sessions ("nodes") as child processes and lets one of them, the orchestrator, spawn, message and watch the others. The main front end is a native (Tauri) app, which `o8` opens; the same UI runs in a browser, and `o8-mux` is a terminal multiplexer for the terminal. A small Claude Code mod in each node delivers messages and adds a few slash commands.
 
 The design is in [PLAN.md](PLAN.md).
 
@@ -13,7 +13,7 @@ The design is in [PLAN.md](PLAN.md).
 
     npm install && npm link
 
-This puts `o8` (client) and `o8d` (daemon) on your PATH.
+This puts `o8` (client), `o8d` (daemon), `o8-mux` (terminal multiplexer) and `o8-app` (native app) on your PATH.
 
 ## Run
 
@@ -31,11 +31,11 @@ Controls apply to the selected node and are both clickable in the sidebar and av
 
 Inside a node you will see a one-line band above the prompt and the slash commands `/o8-list`, `/o8-spawn <title> :: <prompt>`, `/o8-send <id> <text>` and `/o8-read <id>`. The orchestrator also has MCP tools to do the same.
 
-Other commands: `o8 ps` lists nodes, `o8 attach <id>` opens the sidebar client on a node (`--plain` is the previous single-pane client, kept for one release in case the renderer misbehaves), `o8 resume <id>` relaunches an exited node, `o8 kill <id...>` closes nodes, and `o8 restart <id>` relaunches a node with a fresh session.
+Other commands: `o8 ps` lists nodes, `o8 attach <id>` opens the multiplexer on a node, `o8 resume <id>` relaunches an exited node, `o8 kill <id...>` closes nodes, and `o8 restart <id>` relaunches a node with a fresh session.
 
 Orchestrators (root nodes) are never closed by accident. Agents cannot close them, the UI and multiplexer offer Restart instead of Kill, and `o8 kill <id>` on a root refuses with a hint; `o8 kill --force <id>` (or a `force` flag on the websocket `close` message) overrides it. Restart kills the node's process and relaunches it under a new session id, so a Claude orchestrator starts with an empty context while keeping its id, title, directory, model, role and children. The previous session ids are kept on the node record (`previousSessions`, newest 10). Restart is human-only for MCP callers. `o8 help` lists the rest.
 
-Messages between nodes are queued in the daemon and submitted as prompts by the receiving node's mod when it is idle, then confirmed. If a node's mod is not running, the daemon pastes the message into its terminal instead. When a child needs you or finishes, the orchestrator shows an in-session toast.
+Messages between nodes are queued in the daemon and submitted as prompts by the receiving node's mod when it is idle, then confirmed. If a node's mod is not running, the daemon pastes the message into its terminal instead. When a child needs you or finishes, the orchestrator shows an in-session toast, but only when no app, browser or multiplexer client is attached.
 
 ## Role prompts
 

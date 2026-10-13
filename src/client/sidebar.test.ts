@@ -63,3 +63,12 @@ test('the action bar offers restart instead of kill for a root', () => {
   expect(acts('b')).toContain('kill');
   expect(acts('b')).not.toContain('restart');
 });
+
+test('control characters in agent-supplied text never reach the terminal; wide characters count two cells', () => {
+  const evil = new Map([node('a', 'x\x1b]52;c;aGk=\x07\x1b[2Jy', null, { activity: 'Bash: \x9b31m' }), node('b', '世界世界世界世界世界世界', 'a')].map((n) => [n.id, n]));
+  const L = layoutSidebar({ nodes: evil, cur: 'a', scroll: 0, now: 0, port: 1, connected: true, notice: 'bad\x1bc' }, 30, 24);
+  for (const l of L.lines) expect(l.replace(/\x1b\[[0-9;]*m/g, '')).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+  expect(plain(L.lines[1]!)).toMatch(/x]52;c;aGk=\[2Jy +now│$/);
+  const row = plain(L.lines.find((l) => plain(l).includes('世'))!);
+  expect([...row].reduce((a, ch) => a + (ch >= '世' && ch <= '界' ? 2 : 1), 0)).toBe(30);
+});

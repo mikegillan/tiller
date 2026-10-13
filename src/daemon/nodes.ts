@@ -25,10 +25,10 @@ export class NodeRegistry {
     }
   }
 
-  create(partial: Omit<NodeRecord, 'id' | 'createdAt'> & Partial<Pick<NodeRecord, 'id' | 'createdAt'>>): NodeRecord {
-    let id = partial.id;
-    while (!id || this.nodes.has(id)) id = `n-${randomBytes(4).toString('hex')}`;
-    const node: NodeRecord = { ...partial, id, createdAt: partial.createdAt ?? Date.now() };
+  create(partial: Omit<NodeRecord, 'id' | 'createdAt'>): NodeRecord {
+    let id: string;
+    do id = `n-${randomBytes(4).toString('hex')}`; while (this.nodes.has(id));
+    const node: NodeRecord = { ...partial, id, createdAt: Date.now() };
     this.nodes.set(id, node);
     this.save();
     return node;
@@ -36,7 +36,6 @@ export class NodeRegistry {
 
   get(id: string): NodeRecord | undefined { return this.nodes.get(id); }
   list(): NodeRecord[] { return [...this.nodes.values()]; }
-  children(id: string): NodeRecord[] { return this.list().filter((n) => n.parentId === id); }
 
   /** Ancestors, nearest parent first. */
   lineage(id: string): NodeRecord[] {

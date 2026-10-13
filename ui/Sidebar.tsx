@@ -37,7 +37,7 @@ export function Sidebar() {
   useEffect(() => { tree.current?.querySelector('.row.sel')?.scrollIntoView({ block: 'nearest' }); }, [selected]);
 
   return (
-    <aside className="sidebar" data-sidebar>
+    <aside className="sidebar">
       <SessionSwitcher />
       <div className="tree" role="tree" tabIndex={0} ref={tree} onKeyDown={(e) => onKey(e, rows, selected)}>
         {rows.map((r) => <NodeRow key={r.node.id} row={r} />)}

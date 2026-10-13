@@ -48,6 +48,7 @@ describe('NodeManager tokens and files', () => {
     const dir = join(home, 'nodes', n.id);
     expect(statSync(join(dir, 'token')).mode & 0o777).toBe(0o600);
     expect(statSync(join(dir, 'mcp.json')).mode & 0o777).toBe(0o600);
+    expect(statSync(join(dir, 'hook-headers')).mode & 0o777).toBe(0o600);
     expect(statSync(join(dir, 'settings.json')).isFile()).toBe(true);
     expect(() => m.close(n.id)).toThrow(/orchestrator/);
     m.close(n.id, true);

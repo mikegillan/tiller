@@ -1,11 +1,11 @@
-import type { NodeView } from '../src/shared/protocol';
+import { NEEDS_YOU_STATES, type NodeView } from '../src/shared/protocol';
 
 export type StatusKind = 'working' | 'needs' | 'done' | 'errored' | 'exited' | 'unknown';
 
 export function statusKind(n: NodeView): StatusKind {
   const s = n.status;
   if (s.exited) return 'exited';
-  if (s.state === 'blocked' || s.state === 'waiting') return 'needs';
+  if (NEEDS_YOU_STATES.includes(s.state)) return 'needs';
   if (s.state === 'working') return 'working';
   if (s.state === 'done') return s.errored ? 'errored' : 'done';
   return 'unknown';
@@ -47,10 +47,7 @@ export function flattenSession(nodes: Nodes, order: string[], rootId: string, co
   }
   const all = (id: string): NodeView[] => (kids.get(id) ?? []).flatMap((c) => [c, ...all(c.id)]);
   const rows: Row[] = [];
-  const seen = new Set<string>();
   const walk = (node: NodeView, depth: number, guides: boolean[], last: boolean) => {
-    if (seen.has(node.id)) return;
-    seen.add(node.id);
     const cs = kids.get(node.id) ?? [];
     const isCollapsed = cs.length > 0 && collapsed.includes(node.id);
     rows.push({ node, depth, guides, last, hasChildren: cs.length > 0, collapsed: isCollapsed, descendants: all(node.id) });

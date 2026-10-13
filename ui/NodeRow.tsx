@@ -1,6 +1,6 @@
 import { ActionButtons } from './ActionButtons';
 import { NodeMeta, StateDot } from './Bits';
-import { fmtAge } from './format';
+import { fmtAge } from '../src/shared/format';
 import { useNow } from './hooks';
 import { Icon } from './icons';
 import { RenameInput } from './RenameInput';

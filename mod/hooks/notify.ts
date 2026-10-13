@@ -1,5 +1,6 @@
 import type { Child } from '../types'
 
+// Same rule as needsYou in src/shared/protocol.ts, which the mod cannot import.
 export const needsYou = (c: Child) => !c.exited && (c.state === 'blocked' || c.state === 'waiting')
 export const kind = (c: Child) => (c.errored ? 'error' : needsYou(c) ? 'needs' : c.state === 'done' ? 'done' : '')
 
