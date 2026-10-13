@@ -42,6 +42,7 @@ const clientMessage = z.discriminatedUnion('t', [
     isolation: z.enum(ISOLATIONS).optional(),
   }),
   z.object({ t: z.literal('close'), id, force: z.boolean().optional(), worktree: z.enum(['keep', 'discard']).optional() }),
+  z.object({ t: z.literal('merge'), id }),
   z.object({ t: z.literal('restart'), id }),
   z.object({ t: z.literal('resume'), id }),
   z.object({ t: z.literal('prune') }),
@@ -107,6 +108,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
         return;
       }
       case 'close': await manager.close(m.id, m.force, m.worktree); return;
+      case 'merge': await manager.merge(m.id); return;
       case 'restart': {
         const r = manager.restart(m.id);
         if (!r.ok) sendTo(c, { t: 'error', message: r.error, id: m.id });

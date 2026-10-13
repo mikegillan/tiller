@@ -13,6 +13,8 @@ import * as wt from './worktree.js';
 const g = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 const commit = (dir: string, file: string) => { writeFileSync(join(dir, file), `${file}\n`); g(dir, 'add', file); g(dir, 'commit', '-qm', `add ${file}`); };
 
+vi.setConfig({ testTimeout: 30_000 }); // dozens of git processes per test; slow on a loaded machine
+
 let home = '', repo = '', m: NodeManager;
 
 function setup(): void {
@@ -201,6 +203,129 @@ describe('worktree nodes', () => {
       server.closeAllConnections();
       await new Promise((r) => server.close(r));
     }
+  });
+});
+
+describe('git state and merge', () => {
+  const stop = (id: string) => m.applyHook(id, { hook_event_name: 'Stop' });
+  const config = (worktrees: object) => writeFileSync(join(m.home, 'config.json'), JSON.stringify({ worktrees }));
+
+  it('counts commits ahead and behind and dirty files, refreshed when a turn stops', async () => {
+    setup();
+    const v = await spawnW();
+    await expect.poll(() => m.view(v.id)!.status.git).toEqual({ branch: `o8/${v.id}`, base: 'main', ahead: 0, behind: 0, dirty: 0 });
+    commit(v.cwd, 'a.txt');
+    writeFileSync(join(v.cwd, 'b.txt'), 'b\n');
+    commit(repo, 'c.txt');
+    stop(v.id);
+    await expect.poll(() => m.view(v.id)!.status.git).toEqual({ branch: `o8/${v.id}`, base: 'main', ahead: 1, behind: 1, dirty: 1 });
+  });
+
+  it('refuses a conflicting merge, naming the paths and touching no file', async () => {
+    setup();
+    const v = await spawnW();
+    writeFileSync(join(v.cwd, 'README'), 'theirs\n');
+    g(v.cwd, 'commit', '-qam', 'theirs');
+    writeFileSync(join(repo, 'README'), 'ours\n');
+    g(repo, 'commit', '-qam', 'ours');
+    const head = g(repo, 'rev-parse', 'HEAD');
+    await expect(m.merge(v.id)).rejects.toThrow(`merge refused, nothing changed: o8/${v.id} conflicts with main in README`);
+    expect(g(repo, 'rev-parse', 'HEAD')).toBe(head);
+    expect(readFileSync(join(repo, 'README'), 'utf8')).toBe('ours\n');
+    expect(g(repo, 'status', '--porcelain') + g(v.cwd, 'status', '--porcelain')).toBe('');
+    expect(m.view(v.id)!.status.git?.mergedAt).toBeUndefined();
+  });
+
+  it('refuses a dirty tree; merges with a merge commit into the checked-out base and sets mergedAt; close then succeeds', async () => {
+    setup();
+    const v = await spawnW();
+    commit(v.cwd, 'a.txt');
+    writeFileSync(join(v.cwd, 'b.txt'), 'b\n');
+    await expect(m.merge(v.id)).rejects.toThrow('1 uncommitted file in the worktree');
+    rmSync(join(v.cwd, 'b.txt'));
+    const r = await m.merge(v.id);
+    expect(r).toEqual({ base: 'main', sha: g(repo, 'rev-parse', 'main'), style: 'merge' });
+    expect(g(repo, 'log', '-1', '--format=%P').split(' ')).toHaveLength(2);
+    expect(g(repo, 'log', '-1', '--format=%s')).toBe(`Merge branch 'o8/${v.id}': w`);
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('a.txt\n'); // the main checkout moved with its branch
+    expect(g(repo, 'status', '--porcelain')).toBe('');
+    expect(m.view(v.id)!.status.git).toMatchObject({ ahead: 0, mergedAt: expect.any(Number) });
+    await expect(m.merge(v.id)).rejects.toThrow('nothing to merge');
+    await m.close(v.id, true);
+    expect(g(repo, 'branch', '--list', `o8/${v.id}`)).toBe('');
+  });
+
+  it('squash makes one commit on base and the squashed branch still closes; ff-only refuses a moved base', async () => {
+    setup();
+    config({ merge: 'squash' });
+    const v = await spawnW();
+    commit(v.cwd, 'a.txt');
+    commit(v.cwd, 'b.txt');
+    const before = g(repo, 'rev-parse', 'main');
+    await m.merge(v.id);
+    expect(g(repo, 'log', '-1', '--format=%P')).toBe(before);
+    expect(g(repo, 'log', '-1', '--format=%B')).toBe(`w (squashed from o8/${v.id})\n\n* add a.txt\n* add b.txt`);
+    expect(g(repo, 'show', '--format=', '--name-only', 'main').split('\n')).toEqual(['a.txt', 'b.txt']);
+    await m.close(v.id, true);
+    expect(existsSync(v.cwd)).toBe(false);
+
+    config({ merge: 'ff-only' });
+    const f = await spawnW();
+    commit(f.cwd, 'f.txt');
+    commit(repo, 'moved.txt');
+    await expect(m.merge(f.id)).rejects.toThrow('cannot fast-forward main');
+    g(repo, 'reset', '-q', '--hard', 'HEAD~1');
+    await m.merge(f.id);
+    expect(g(repo, 'rev-parse', 'main')).toBe(g(repo, 'rev-parse', `o8/${f.id}`));
+  });
+
+  it('moves a base that is not checked out by ref only, and refuses a base checked out with uncommitted changes', async () => {
+    setup();
+    const v = await spawnW();
+    commit(v.cwd, 'a.txt');
+    writeFileSync(join(repo, 'README'), 'edited\n');
+    await expect(m.merge(v.id)).rejects.toThrow(`main is checked out at ${repo} with uncommitted changes`);
+    g(repo, 'checkout', '-q', '--', 'README');
+    g(repo, 'switch', '-q', '-c', 'other');
+    await m.merge(v.id);
+    expect(g(repo, 'show', '--format=', '--name-only', 'main^2')).toBe('a.txt');
+    expect(existsSync(join(repo, 'a.txt'))).toBe(false); // the checkout on "other" is untouched
+    expect(g(repo, 'status', '--porcelain')).toBe('');
+  });
+});
+
+describe('setup and teardown commands', () => {
+  const config = (worktrees: object) => writeFileSync(join(m.home, 'config.json'), JSON.stringify({ worktrees }));
+  const argvOf = (id: string) => { const f = join(m.home, 'nodes', id, 'argv'); return existsSync(f) ? readFileSync(f, 'utf8') : ''; };
+
+  it('setup runs in the worktree with its env before launch; a failure marks the node and restart retries it', async () => {
+    setup();
+    config({ setup: ['sleep 0.5', 'echo "$O8_NODE_ID $O8_BASE $O8_REPO $O8_WORKTREE $(pwd)" > ../setup-$O8_NODE_ID'] });
+    const v = await spawnW({ prompt: 'hi' });
+    expect(v.status).toMatchObject({ state: 'working', activity: 'setting up worktree: sleep 0.5' });
+    expect(m.session(v.id)).toBeUndefined();
+    await expect.poll(() => argvOf(v.id), { timeout: 5000 }).toContain('-- hi');
+    expect(readFileSync(join(repo, '.claude', 'worktrees', `setup-${v.id}`), 'utf8')).toBe(`${v.id} main ${repo} ${v.cwd} ${v.cwd}\n`);
+
+    config({ setup: ['echo broken; exit 3'] });
+    const bad = await spawnW({ prompt: 'brief' });
+    const log = join(m.home, 'nodes', bad.id, 'setup.log');
+    await expect.poll(() => m.view(bad.id)!.status).toMatchObject({ exited: true, errored: true, activity: `worktree setup failed: echo broken; exit 3: exited with 3; see ${log}` });
+    expect(readFileSync(log, 'utf8')).toBe('$ echo broken; exit 3\nbroken\n');
+    expect(m.session(bad.id)).toBeUndefined();
+    expect(await m.resume(bad.id)).toEqual({ ok: false, error: 'worktree setup has not succeeded; restart runs it again' });
+    config({ setup: ['true'] });
+    expect(m.restart(bad.id)).toEqual({ ok: true });
+    await expect.poll(() => argvOf(bad.id), { timeout: 5000 }).toContain('-- brief');
+  });
+
+  it('teardown runs in the worktree before close removes it', async () => {
+    setup();
+    config({ teardown: ['echo "$O8_NODE_ID" >> "$O8_REPO/../teardown.log"; test -d "$O8_WORKTREE"'] });
+    const v = await spawnW();
+    await m.close(v.id, true);
+    expect(readFileSync(join(home, 'teardown.log'), 'utf8')).toBe(`${v.id}\n`);
+    expect(existsSync(v.cwd)).toBe(false);
   });
 });
 

@@ -6,6 +6,9 @@ import { z } from 'zod';
 import { EFFORTS, ISOLATIONS, type Isolation } from '../shared/protocol.js';
 import { homeDir } from './home.js';
 
+export const MERGE_STYLES = ['merge', 'squash', 'ff-only'] as const;
+export type MergeStyle = (typeof MERGE_STYLES)[number];
+
 const RoleDefaults = z.object({ model: z.string().min(1).optional(), effort: z.enum(EFFORTS).optional() });
 const ConfigFile = z.object({
   roles: z.object({ orchestrator: RoleDefaults.optional(), worker: RoleDefaults.optional() }).optional(),
@@ -14,6 +17,10 @@ const ConfigFile = z.object({
     isolation: z.enum(ISOLATIONS).optional(),
     branchPrefix: z.string().min(1).optional(),
     include: z.array(z.string().min(1)).optional(),
+    merge: z.enum(MERGE_STYLES).optional(),
+    mergeWithoutConfirm: z.boolean().optional(),
+    setup: z.array(z.string().min(1)).optional(),
+    teardown: z.array(z.string().min(1)).optional(),
   }).strict().optional(),
   resumeOnStart: z.boolean().optional(),
   resumeMaxAgeDays: z.number().nonnegative().optional(),
@@ -21,7 +28,7 @@ const ConfigFile = z.object({
 type ConfigFile = z.infer<typeof ConfigFile>;
 type RoleDefaults = z.infer<typeof RoleDefaults>;
 
-type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include'}` | 'resumeOnStart' | 'resumeMaxAgeDays';
+type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include' | 'merge' | 'mergeWithoutConfirm' | 'setup' | 'teardown'}` | 'resumeOnStart' | 'resumeMaxAgeDays';
 
 export interface Config {
   roles: { orchestrator: RoleDefaults; worker: RoleDefaults };
@@ -29,8 +36,10 @@ export interface Config {
   /**
    * isolation: what a spawn that omits it gets, for claude nodes whose role is worker or none.
    * branchPrefix: a worktree's branch is <prefix><nodeId>. include: gitignored files to copy in; absent means .worktreeinclude.
+   * merge: how the merge verb brings a branch into its base. mergeWithoutConfirm: an agent's merge skips the human's approval.
+   * setup, teardown: shell commands run in a new worktree before launch, and in a worktree before it is removed.
    */
-  worktrees: { isolation: Isolation; branchPrefix: string; include?: string[] };
+  worktrees: { isolation: Isolation; branchPrefix: string; include?: string[]; merge: MergeStyle; mergeWithoutConfirm: boolean; setup: string[]; teardown: string[] };
   /** On start, resume the nodes that were live when the daemon last went away, unless idle for more than resumeMaxAgeDays. */
   resumeOnStart: boolean;
   resumeMaxAgeDays: number;
@@ -73,8 +82,16 @@ export function loadConfig(cwd: string | null, home = homeDir()): Config {
   const [isolation, si] = pick((c) => c.worktrees?.isolation);
   const [branchPrefix, sb] = pick((c) => c.worktrees?.branchPrefix);
   const [include, sinc] = pick((c) => c.worktrees?.include);
+  const [merge, smerge] = pick((c) => c.worktrees?.merge);
+  const [mergeWithoutConfirm, smwc] = pick((c) => c.worktrees?.mergeWithoutConfirm);
+  const [setup, ssetup] = pick((c) => c.worktrees?.setup);
+  const [teardown, steardown] = pick((c) => c.worktrees?.teardown);
   sources['worktrees.isolation'] = si; sources['worktrees.branchPrefix'] = sb; sources['worktrees.include'] = sinc;
-  const worktrees = { isolation: isolation ?? 'none', branchPrefix: branchPrefix ?? 'o8/', ...(include ? { include } : {}) };
+  sources['worktrees.merge'] = smerge; sources['worktrees.mergeWithoutConfirm'] = smwc; sources['worktrees.setup'] = ssetup; sources['worktrees.teardown'] = steardown;
+  const worktrees = {
+    isolation: isolation ?? 'none', branchPrefix: branchPrefix ?? 'o8/', ...(include ? { include } : {}),
+    merge: merge ?? 'merge', mergeWithoutConfirm: mergeWithoutConfirm ?? false, setup: setup ?? [], teardown: teardown ?? [],
+  };
   const [resumeOnStart, sr] = pick((c) => c.resumeOnStart, true);
   const [resumeMaxAgeDays, sa] = pick((c) => c.resumeMaxAgeDays, true);
   sources.resumeOnStart = sr; sources.resumeMaxAgeDays = sa;

@@ -1,4 +1,5 @@
 import type { NodeView } from '../src/shared/protocol';
+import { canMerge } from './Bits';
 import { send } from './conn';
 import { Icon, type IconName } from './icons';
 import { openDialog, setRenaming } from './store';
@@ -16,6 +17,7 @@ export function actionsFor(node: NodeView): Act[] {
     ...(!exited ? [{ key: 'child', label: 'New child', icon: 'subnode' as const, run: () => openDialog({ kind: 'spawn', parentId: node.id, cwd: node.cwd }) }] : []),
     { key: 'rename', label: 'Rename', icon: 'edit', run: () => setRenaming(node.id) },
     ...(exited ? [{ key: 'resume', label: 'Resume', icon: 'play' as const, run: () => send({ t: 'resume', id: node.id }) }] : []),
+    ...(canMerge(node) ? [{ key: 'merge', label: `Merge into ${node.status.git!.base}`, icon: 'merge' as const, run: () => send({ t: 'merge', id: node.id }) }] : []),
     last,
   ];
 }

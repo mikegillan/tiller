@@ -10,6 +10,7 @@ const PATHS = {
   trash: 'M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13',
   restart: 'M20 12a8 8 0 11-2.4-5.7M20 4v5h-5',
   search: 'M11 4a7 7 0 100 14 7 7 0 000-14zM16 16l4 4',
+  merge: 'M7 4v16M7 8a7 7 0 007 7h5M16 12l3 3-3 3',
 } as const;
 
 export type IconName = keyof typeof PATHS;

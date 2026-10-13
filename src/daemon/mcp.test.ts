@@ -174,7 +174,7 @@ describe('mcp api', () => {
     const client = new Client({ name: 't', version: '0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${manager.tokenFor(id)}`, 'X-O8-Node': id } } }));
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'list_nodes', 'message_status', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'shutdown', 'spawn', 'worktrees', 'write']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'list_nodes', 'merge', 'message_status', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'shutdown', 'spawn', 'worktrees', 'write']);
     expect(tools.find((t) => t.name === 'spawn')!.inputSchema.required).toEqual(['kind', 'title', 'cwd']);
     const r = (await client.callTool({ name: 'report_outcome', arguments: { outcome: 'succeeded' } })) as { content: Array<{ text: string }> };
     expect(r.content[0].text).toBe('{"ok":true}');

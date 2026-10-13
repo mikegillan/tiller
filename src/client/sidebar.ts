@@ -56,16 +56,20 @@ const glyph = (n: NodeView): Seg =>
   ({ working: ['36', '●'], blocked: ['33', '!'], waiting: ['33', '!'], done: ['32', '✓'] } as Record<string, Seg>)[n.status.state] ?? ['2', '·'];
 
 
-/** `⎇ n-3f2a · opus 5.5 · high · ctx 42% (84k/200k) $0.42`; as the width shrinks, the branch goes first, then effort, token counts and cost. */
+/**
+ * `⎇ n-3f2a ↑1 ±2 · opus 5.5 · high · ctx 42% (84k/200k) $0.42` (↑ commits ahead of base, ± uncommitted files, or
+ * "merged"); as the width shrinks, the branch goes first, then effort, token counts and cost.
+ */
 export function meta(n: NodeView, w: number): Seg[] {
-  const s = n.status, pct = s.contextPct;
+  const s = n.status, pct = s.contextPct, g = s.git;
   const model = shortModel(s.model ?? n.model), effort = s.effort ? shortEffort(s.effort) : '';
   const ctxColor = pct === undefined ? '' : { ok: '32', warn: '33', bad: '31' }[ctxLevel(pct)];
-  const wt = n.worktree, branch = wt && `⎇ ${wt.branch.split('/').pop()!.slice(0, 6)}`;
+  const wt = n.worktree;
+  const branch = wt && [`⎇ ${wt.branch.split('/').pop()!.slice(0, 6)}`, g?.ahead && `↑${g.ahead}`, g?.dirty && `±${g.dirty}`, g?.mergedAt && 'merged'].filter(Boolean).join(' ');
   const build = (full: boolean, withEffort: boolean, withBranch = false): Seg[] => {
     const segs: Seg[] = [];
     const add = (x: Seg) => { if (segs.length) segs.push(['2', ' · ']); segs.push(x); };
-    if (withBranch && branch) add([wt?.missing ? '33' : '2', branch]);
+    if (withBranch && branch) add([wt?.missing || g?.missing ? '33' : '2', branch]);
     if (model) add(['2', model]);
     if (withEffort && effort) add(['2', effort]);
     if (pct !== undefined) {

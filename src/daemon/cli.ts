@@ -30,6 +30,8 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 kill [--force] [--keep-branch|--discard] <id...> | close <id...>  close and delete nodes (an orchestrator needs --force);
                                                       a node's worktree must be clean and merged unless --keep-branch
                                                       (commit as WIP, keep the branch) or --discard (delete both)
+  o8 merge <id> [--close]                             merge a worktree node's branch into its base (refused on conflict,
+                                                      naming the paths); --close then closes the node
   o8 send <id> "text"
   o8 read <id> [summary|transcript|terminal] [--lines N]
   o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--request-id ID]
@@ -76,7 +78,7 @@ const { values: f, positionals: pos } = parseArgs({
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
     'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
-    worktree: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' },
+    worktree: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' },
   },
 });
 
@@ -110,6 +112,8 @@ switch (cmd) {
       'roles.orchestrator.model': o.model, 'roles.orchestrator.effort': o.effort, 'roles.worker.model': w.model, 'roles.worker.effort': w.effort,
       closeWithoutConfirm: c.closeWithoutConfirm,
       'worktrees.isolation': c.worktrees.isolation, 'worktrees.branchPrefix': c.worktrees.branchPrefix, 'worktrees.include': c.worktrees.include?.join(', ') ?? '(.worktreeinclude)',
+      'worktrees.merge': c.worktrees.merge, 'worktrees.mergeWithoutConfirm': c.worktrees.mergeWithoutConfirm,
+      'worktrees.setup': JSON.stringify(c.worktrees.setup), 'worktrees.teardown': JSON.stringify(c.worktrees.teardown),
       resumeOnStart: c.resumeOnStart, resumeMaxAgeDays: c.resumeMaxAgeDays,
     };
     for (const [k, v] of Object.entries(values)) console.log(`${k}: ${v ?? '(claude default)'}  [${c.sources[k as keyof typeof values]}]`);
@@ -150,6 +154,12 @@ switch (cmd) {
     if (f['keep-branch'] && f.discard) fail('--keep-branch and --discard exclude each other');
     await call('close', { nodeIds: pos, force: f.force, worktree: f['keep-branch'] ? 'keep' : f.discard ? 'discard' : undefined });
     break;
+  case 'merge': {
+    if (!pos[0]) fail(usage());
+    const { data } = await call('merge', { nodeId: pos[0] });
+    if (data?.ok && f.close) await call('close', { nodeIds: [pos[0]] });
+    break;
+  }
   case 'worktrees':
     if (pos[0] && pos[0] !== 'clean') fail(usage());
     await call('worktrees', { cwd: realpathSync(resolve(f.cwd ?? process.cwd())), clean: pos[0] ? (f.force ? 'force' : 'safe') : undefined });

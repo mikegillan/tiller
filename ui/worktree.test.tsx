@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { NodeMeta } from './Bits';
+import { canMerge, hasChanges, NodeMeta } from './Bits';
 import { worktreeCloses } from './Dialogs';
 import { mk } from './fixtures';
 
@@ -14,6 +14,16 @@ describe('worktree', () => {
     expect(html).toMatch(/^<div class="meta"><span class="part"><span class="branch" title="branch o8\/n-3f2a9c1d from main">⎇ o8\/n-3f2a9c1d<\/span>/);
     expect(html).not.toContain('missing');
     expect(renderToStaticMarkup(<NodeMeta node={{ ...mk('a', null, 0), worktree: { ...wt, missing: true } }} />)).toContain('<span class="warn"');
+  });
+
+  it('shows ahead, dirty and merged; marks changes only once the work stops, and offers Merge only with commits and no turn running', () => {
+    const git = { branch: wt.branch, base: 'main', ahead: 2, behind: 0, dirty: 1 };
+    const node = (status: object) => ({ ...mk('a', null, 0, { state: 'done', git, ...status }), worktree: wt });
+    const text = (n: ReturnType<typeof node>) => renderToStaticMarkup(<NodeMeta node={n} />).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    expect(text(node({}))).toBe('⎇ o8/n-3f2a9c1d ↑2 1 dirty');
+    expect(text(node({ git: { ...git, ahead: 0, dirty: 0, mergedAt: 1 } }))).toBe('⎇ o8/n-3f2a9c1d merged');
+    expect([node({}), node({ state: 'working' }), node({ state: 'working', exited: true }), node({ git: { ...git, mergedAt: 1 } })].map(hasChanges)).toEqual([true, false, true, false]);
+    expect([node({}), node({ state: 'working' }), node({ git: { ...git, ahead: 0 } }), node({ git: { ...git, mergedAt: 1 } })].map(canMerge)).toEqual([true, false, false, false]);
   });
 
   it('the close dialog sends no worktree option for Close, keep for Keep branch, discard for Discard', () => {
