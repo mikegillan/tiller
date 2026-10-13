@@ -69,7 +69,7 @@ export function meta(n: NodeView, w: number): Seg[] {
 }
 
 export const ACTIONS: Array<{ key: string; label: string; act: string }> = [
-  { key: 'n', label: 'new child', act: 'new' }, { key: 'e', label: 'rename', act: 'rename' }, { key: 'x', label: 'kill', act: 'kill' },
+  { key: 'n', label: 'new child', act: 'new' }, { key: 'e', label: 'rename', act: 'rename' }, { key: 'x', label: 'kill', act: 'kill' }, { key: 'R', label: 'restart', act: 'restart' },
   { key: 'r', label: 'resume', act: 'resume' }, { key: 'c', label: 'clear exited', act: 'clear' }, { key: 'o', label: 'new orchestrator here', act: 'orch' },
   { key: 's', label: 'hide', act: 'sidebar' }, { key: '?', label: 'help', act: 'help' },
 ];
@@ -105,7 +105,8 @@ export function layoutSidebar(m: SideModel, W: number, H: number): SideLayout {
   const top = paint([['2', '╭─ '], ['1', 'orchestr8'], ['2', count + '─'.repeat(Math.max(0, W - 13 - count.length)) + '╮']], W);
 
   // Bottom block: actions, divider, status, keys / prompt.
-  const items = ACTIONS.filter((a) => a.act !== 'resume' || cur?.status.exited);
+  const root = cur?.parentId === null; // an orchestrator is restarted, never killed
+  const items = ACTIONS.filter((a) => (a.act !== 'resume' || cur?.status.exited) && (a.act !== 'kill' || !root) && (a.act !== 'restart' || root));
   const actRows: Seg[][] = [[]];
   const acts: SideLayout['acts'] = [];
   for (const a of items) {

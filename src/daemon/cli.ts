@@ -21,7 +21,8 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 select <id>                                      show a node in the app (opens the app if it is built)
   o8 resume <id>                                      relaunch an exited Claude node
   o8 prune                                            remove every exited node that has no live descendant
-  o8 kill <id...> | close <id...>                     close and delete nodes
+  o8 restart <id>                                     relaunch a node with a fresh session (clears its context; children are kept)
+  o8 kill [--force] <id...> | close <id...>           close and delete nodes (an orchestrator needs --force)
   o8 send <id> "text"
   o8 read <id> [summary|transcript|terminal] [--lines N]
   o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--permission-mode M] [--role orchestrator|worker|none] [--request-id ID]
@@ -64,7 +65,7 @@ const { values: f, positionals: pos } = parseArgs({
   args: rest, allowPositionals: true,
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' },
-    'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, plain: { type: 'boolean' }, lines: { type: 'string' },
+    'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, plain: { type: 'boolean' }, force: { type: 'boolean' }, lines: { type: 'string' },
   },
 });
 
@@ -98,6 +99,10 @@ switch (cmd) {
     if (!pos[0]) fail(usage());
     await call('resume', { nodeId: pos[0] });
     break;
+  case 'restart':
+    if (!pos[0]) fail(usage());
+    await call('restart', { nodeId: pos[0] });
+    break;
   case 'prune': {
     const { data } = await call('prune', {}, false);
     console.log(`removed ${data.removed.length} exited node${data.removed.length === 1 ? '' : 's'}`);
@@ -117,7 +122,7 @@ switch (cmd) {
   case 'close':
   case 'kill':
     if (!pos.length) fail(usage());
-    await call('close', { nodeIds: pos });
+    await call('close', { nodeIds: pos, force: f.force });
     break;
   case undefined:
   case 'up':

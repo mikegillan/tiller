@@ -8,6 +8,7 @@ const PATHS = {
   panel: 'M4 5h16v14H4V5zM15 5v14',
   subnode: 'M6 4v9a3 3 0 003 3h9M14 12l4 4-4 4',
   trash: 'M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13',
+  restart: 'M20 12a8 8 0 11-2.4-5.7M20 4v5h-5',
   search: 'M11 4a7 7 0 100 14 7 7 0 000-14zM16 16l4 4',
 } as const;
 

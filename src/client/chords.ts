@@ -1,10 +1,10 @@
 // Chord state machine shared by both attach clients. Prefix Ctrl-\ then one key: d detach, j/k next/prev node, ! next node needing you,
-// b back, l picker, 1-9 jump, n new child, r resume, x kill, c clear exited, e rename, o new orchestrator, s sidebar, ? help, Ctrl-\ twice sends a literal Ctrl-\.
+// b back, l picker, 1-9 jump, n new child, r resume, x kill, R restart (orchestrator), c clear exited, e rename, o new orchestrator, s sidebar, ? help, Ctrl-\ twice sends a literal Ctrl-\.
 
 const CHORD = '\x1c';
-export const HELP = 'Ctrl-\\ then: d detach, j/k next/prev, ! needs you, b back, 1-9 jump, n new child, r resume, x kill, c clear exited, e rename, o new root, s sidebar, Ctrl-\\ literal';
+export const HELP = 'Ctrl-\\ then: d detach, j/k next/prev, ! needs you, b back, 1-9 jump, n new child, r resume, x kill, R restart (orchestrator), c clear exited, e rename, o new root, s sidebar, Ctrl-\\ literal';
 
-export type ActKey = 'new' | 'resume' | 'kill' | 'rename' | 'orch' | 'sidebar' | 'clear';
+export type ActKey = 'new' | 'resume' | 'kill' | 'restart' | 'rename' | 'orch' | 'sidebar' | 'clear';
 export type Target = 'next' | 'prev' | 'needs' | 'back' | 'cur' | number;
 export type Action =
   | { type: 'passthrough'; data: string } | { type: 'switch'; target: Target } | { type: 'echo'; data: string }
@@ -14,7 +14,7 @@ export const initial: ChordState = { held: false, pick: null };
 
 const keys: Record<string, Action> = {
   d: { type: 'detach' }, j: { type: 'switch', target: 'next' }, k: { type: 'switch', target: 'prev' },
-  n: { type: 'act', key: 'new' }, r: { type: 'act', key: 'resume' }, x: { type: 'act', key: 'kill' }, e: { type: 'act', key: 'rename' },
+  n: { type: 'act', key: 'new' }, r: { type: 'act', key: 'resume' }, x: { type: 'act', key: 'kill' }, R: { type: 'act', key: 'restart' }, e: { type: 'act', key: 'rename' },
   c: { type: 'act', key: 'clear' }, o: { type: 'act', key: 'orch' }, s: { type: 'act', key: 'sidebar' },
   '!': { type: 'switch', target: 'needs' }, b: { type: 'switch', target: 'back' }, l: { type: 'picker' }, '?': { type: 'help' },
 };

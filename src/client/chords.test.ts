@@ -9,7 +9,7 @@ const run = (input: string, s: ChordState = initial) => {
 const sw = (target: any) => [{ type: 'switch', target }];
 
 test.each([
-  ['d', [{ type: 'detach' }]], ['j', sw('next')], ['k', sw('prev')], ['n', [{ type: 'act', key: 'new' }]], ['s', [{ type: 'act', key: 'sidebar' }]], ['!', sw('needs')], ['b', sw('back')],
+  ['d', [{ type: 'detach' }]], ['j', sw('next')], ['k', sw('prev')], ['n', [{ type: 'act', key: 'new' }]], ['R', [{ type: 'act', key: 'restart' }]], ['x', [{ type: 'act', key: 'kill' }]], ['s', [{ type: 'act', key: 'sidebar' }]], ['!', sw('needs')], ['b', sw('back')],
   ['?', [{ type: 'help' }]], ['l', [{ type: 'picker' }]], ['1', sw(0)], ['9', sw(8)],
 ])('Ctrl-\\ %s', (key, actions) => {
   expect(run('\x1c' + key).actions).toEqual(actions);

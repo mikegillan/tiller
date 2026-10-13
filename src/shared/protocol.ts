@@ -59,6 +59,8 @@ export interface NodeRecord {
   sessionId?: string;
   /** Claude's transcript file, from SessionStart. Persisted so Resume can find it. */
   transcriptPath?: string;
+  /** Session ids from before each restart, oldest first (at most 10), for a later history feature. */
+  previousSessions?: string[];
 }
 
 export interface NodeView extends NodeRecord {
@@ -89,8 +91,9 @@ export type ClientMessage =
   | { t: 'input'; id: string; data: string }
   | { t: 'resize'; id: string; cols: number; rows: number }
   | { t: 'select'; id: string }                // clears unread
-  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; parentId?: string | null }
-  | { t: 'close'; id: string }
+  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; role?: Role; parentId?: string | null }
+  | { t: 'close'; id: string; force?: boolean }  // a root (orchestrator) is refused without force
+  | { t: 'restart'; id: string }               // relaunch with a fresh session: clears context, keeps the node and its children
   | { t: 'resume'; id: string }
   | { t: 'prune' }                             // remove every exited node that has no live descendant
   | { t: 'rename'; id: string; title: string }

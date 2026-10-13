@@ -36,9 +36,10 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('select'), id }),
   z.object({
     t: z.literal('spawn'), kind: z.enum(['claude', 'terminal']), title: z.string(), cwd: z.string().min(1),
-    prompt: z.string().optional(), model: z.string().optional(), parentId: z.string().nullable().optional(),
+    prompt: z.string().optional(), model: z.string().optional(), role: z.enum(['orchestrator', 'worker', 'none']).optional(), parentId: z.string().nullable().optional(),
   }),
-  z.object({ t: z.literal('close'), id }),
+  z.object({ t: z.literal('close'), id, force: z.boolean().optional() }),
+  z.object({ t: z.literal('restart'), id }),
   z.object({ t: z.literal('resume'), id }),
   z.object({ t: z.literal('prune') }),
   z.object({ t: z.literal('rename'), id, title: z.string() }),
@@ -102,8 +103,13 @@ export async function startServer(manager: NodeManager, opts: { port?: number; u
       case 'resize': manager.resize(m.id, m.cols, m.rows); return;
       case 'visibility': c.focused = m.focused; return;
       case 'select': c.selected = m.id; manager.select(m.id, c); return;
-      case 'spawn': manager.spawn({ kind: m.kind, title: m.title, cwd: m.cwd, prompt: m.prompt, model: m.model, parentId: m.parentId }); return;
-      case 'close': manager.close(m.id); return;
+      case 'spawn': manager.spawn({ kind: m.kind, title: m.title, cwd: m.cwd, prompt: m.prompt, model: m.model, role: m.role, parentId: m.parentId }); return;
+      case 'close': manager.close(m.id, m.force); return;
+      case 'restart': {
+        const r = manager.restart(m.id);
+        if (!r.ok) sendTo(c, { t: 'error', message: r.error, id: m.id });
+        return;
+      }
       case 'resume': {
         const r = manager.resume(m.id);
         if (!r.ok) sendTo(c, { t: 'error', message: r.error, id: m.id });

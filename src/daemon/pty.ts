@@ -46,6 +46,7 @@ export class PtySession {
   private exitCbs: Array<(code: number) => void> = [];
   exited = false;
   exitCode: number | undefined;
+  get pid(): number { return this.pty.pid; }
 
   private constructor(pty: nodePty.IPty, cols: number, rows: number) {
     this.pty = pty;

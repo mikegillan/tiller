@@ -56,3 +56,10 @@ test('exited rows read "exited" with a dim ○ and title; revealScroll brings a 
   expect(layoutSidebar({ ...m, scroll: s }, 30, 24).nodeAt).toContain('n29');
   expect(revealScroll({ ...m, cur: 'n0' }, 30, 24, 0)).toBe(0);
 });
+
+test('the action bar offers restart instead of kill for a root', () => {
+  const acts = (cur: string) => layoutSidebar({ nodes, cur, scroll: 0, now: 5000, port: 7788, connected: true }, 60, 24).acts.map((a) => a.act);
+  expect(acts('a')).toEqual(['new', 'rename', 'restart', 'clear', 'orch', 'sidebar', 'help']);
+  expect(acts('b')).toContain('kill');
+  expect(acts('b')).not.toContain('restart');
+});

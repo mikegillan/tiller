@@ -10,6 +10,7 @@ export interface Confirm { confirmId: string; text: string }
 export type Dialog =
   | { kind: 'spawn'; parentId: string | null; cwd: string }
   | { kind: 'kill'; id: string }
+  | { kind: 'restart'; id: string }
   | { kind: 'palette' };
 
 export interface State {

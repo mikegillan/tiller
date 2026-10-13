@@ -11,6 +11,7 @@ import { PtySession } from './pty.js';
 import { logError, safeEqual } from './util.js';
 import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, turnComplete, type HookEvent } from './status.js';
 
+const MAX_PREVIOUS_SESSIONS = 10;
 const INTERRUPT_MS = 1500;
 const SWEEP_MS = 60_000;
 const TRUST_WATCH_MS = 20_000;
@@ -197,7 +198,37 @@ export class NodeManager extends EventEmitter {
     return { ok: true };
   }
 
-  close(id: string): void {
+  /**
+   * Kill the node's process and relaunch it with the same record under a fresh session id, so a Claude node starts with
+   * an empty context. Children and parentId are untouched; the old session ids are kept in previousSessions.
+   */
+  restart(id: string): { ok: true } | { ok: false; error: string } {
+    const rec = this.registry.get(id);
+    if (!rec) return { ok: false, error: 'No such node' };
+    const old = this.statuses.get(id)?.sessionId ?? rec.sessionId;
+    clearTimeout(this.interruptTimers.get(id));
+    const s = this.sessions.get(id);
+    this.sessions.delete(id); // first, so the exit callback ignores it
+    s?.kill();
+    this.lastHookAt.delete(id);
+    const sessionId = rec.kind === 'claude' ? randomUUID() : undefined;
+    this.registry.update(id, { sessionId, transcriptPath: undefined, previousSessions: [...(rec.previousSessions ?? []), ...(old ? [old] : [])].slice(-MAX_PREVIOUS_SESSIONS) });
+    this.statuses.set(id, { state: rec.kind === 'claude' ? 'unknown' : 'none', sessionId, activity: 'restarting', changedAt: Date.now() });
+    try {
+      this.writeFiles(id);
+      this.emit('data', id, '\x1bc'); // reset attached screens before the new process draws
+      this.launch(id, undefined, false);
+    } catch (err) {
+      this.setStatus(id, { ...this.statuses.get(id)!, state: rec.kind === 'claude' ? 'unknown' : 'none', exited: true, activity: undefined, changedAt: Date.now() }, false);
+      return { ok: false, error: (err as Error).message };
+    }
+    this.emitNode(id);
+    return { ok: true };
+  }
+
+  /** Close and delete a node. A root (orchestrator) is refused unless `force`; use restart to clear one instead. */
+  close(id: string, force = false): void {
+    if (!force && this.registry.get(id)?.parentId === null) throw new Error('refusing to close an orchestrator: restart it instead, or force the close');
     const s = this.sessions.get(id);
     clearTimeout(this.interruptTimers.get(id));
     this.sessions.delete(id); // first, so the exit callback ignores it
@@ -210,7 +241,7 @@ export class NodeManager extends EventEmitter {
   /** Close every exited node with no live descendant; returns the removed ids. */
   prune(): string[] {
     const ids = pruneIds(this.list());
-    for (const id of ids) this.close(id);
+    for (const id of ids) this.close(id, true); // exited only, so never a live orchestrator
     return ids;
   }
 

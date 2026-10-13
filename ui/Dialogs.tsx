@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { NodeKind } from '../src/shared/protocol';
+import type { NodeKind, Role } from '../src/shared/protocol';
 import { send } from './conn';
 import { Modal } from './Modal';
 import { expectSpawn, openDialog, useStore, type Dialog } from './store';
@@ -14,11 +14,14 @@ function SpawnDialog({ d }: { d: Spawn }) {
   const [cwd, setCwd] = useState(d.cwd);
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState('');
+  const byPosition: Role = d.parentId ? 'worker' : 'orchestrator';
+  const [role, setRole] = useState<Role>(byPosition);
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     send({
       t: 'spawn', kind, title: title.trim() || kind, cwd: cwd.trim(), parentId: d.parentId,
       ...(kind === 'claude' && prompt.trim() ? { prompt } : {}),
+      ...(kind === 'claude' && role !== byPosition ? { role } : {}),
       ...(model.trim() ? { model: model.trim() } : {}),
     });
     expectSpawn();
@@ -36,6 +39,7 @@ function SpawnDialog({ d }: { d: Spawn }) {
         <label>Working directory<input className="mono" value={cwd} onChange={(e) => setCwd(e.target.value)} required placeholder="/path/to/project" /></label>
         {kind === 'claude' && <label>Initial prompt<textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional" /></label>}
         <label>Model<input className="mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="Default" /></label>
+        {kind === 'claude' && <label>Role<select value={role} onChange={(e) => setRole(e.target.value as Role)}>{(['orchestrator', 'worker', 'none'] as const).map((r) => <option key={r}>{r}</option>)}</select></label>}
         <div className="btns"><button type="button" className="btn" onClick={close}>Cancel</button><button type="submit" className="btn primary">Spawn</button></div>
       </form>
     </Modal>
@@ -56,9 +60,24 @@ function KillDialog({ id }: { id: string }) {
   );
 }
 
+function RestartDialog({ id }: { id: string }) {
+  const node = useStore((s) => s.nodes[id]);
+  if (!node) return null;
+  return (
+    <Modal title={`Restart ${node.title}?`} onClose={close}>
+      <p>Its context is cleared; children are kept.</p>
+      <div className="btns">
+        <button className="btn" autoFocus onClick={close}>Cancel</button>
+        <button className="btn primary" onClick={() => { send({ t: 'restart', id }); close(); }}>Restart</button>
+      </div>
+    </Modal>
+  );
+}
+
 export function Dialogs() {
   const d = useStore((s) => s.dialog);
   if (d?.kind === 'spawn') return <SpawnDialog d={d} />;
   if (d?.kind === 'kill') return <KillDialog id={d.id} />;
+  if (d?.kind === 'restart') return <RestartDialog id={d.id} />;
   return null;
 }

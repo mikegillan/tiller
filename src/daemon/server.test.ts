@@ -64,7 +64,13 @@ describe('websocket', () => {
     send({ t: 'input', id, data: 'echo hi\r' });
     await until(() => seen.find((m) => m.t === 'data' && m.id === id && m.data.includes('hi')));
 
-    send({ t: 'close', id });
+    send({ t: 'close', id }); // a root is an orchestrator: refused without force
+    await until(() => seen.find((m) => m.t === 'error' && m.id === id && /orchestrator/.test(m.message)));
+    expect(manager.list()).toHaveLength(1);
+    send({ t: 'restart', id });
+    await until(() => seen.find((m) => m.t === 'data' && m.id === id && m.data === '\x1bc'));
+    expect(manager.list().map((n) => n.id)).toEqual([id]);
+    send({ t: 'close', id, force: true });
     await until(() => seen.find((m) => m.t === 'removed' && m.id === id));
     expect(manager.list()).toEqual([]);
   });

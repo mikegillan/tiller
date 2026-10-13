@@ -7,13 +7,16 @@ interface Act { key: string; label: string; icon: IconName; run: () => void; dan
 
 export function actionsFor(node: NodeView): Act[] {
   const exited = !!node.status.exited;
+  const last: Act = node.parentId === null // an orchestrator is restarted, never closed
+    ? { key: 'restart', label: 'Restart', icon: 'restart', run: () => openDialog({ kind: 'restart', id: node.id }) }
+    : exited
+      ? { key: 'remove', label: 'Remove', icon: 'trash', danger: true, run: () => send({ t: 'close', id: node.id }) }
+      : { key: 'kill', label: 'Kill', icon: 'x', danger: true, run: () => openDialog({ kind: 'kill', id: node.id }) };
   return [
     ...(!exited ? [{ key: 'child', label: 'New child', icon: 'subnode' as const, run: () => openDialog({ kind: 'spawn', parentId: node.id, cwd: node.cwd }) }] : []),
     { key: 'rename', label: 'Rename', icon: 'edit', run: () => setRenaming(node.id) },
     ...(exited ? [{ key: 'resume', label: 'Resume', icon: 'play' as const, run: () => send({ t: 'resume', id: node.id }) }] : []),
-    exited
-      ? { key: 'remove', label: 'Remove', icon: 'trash', danger: true, run: () => send({ t: 'close', id: node.id }) }
-      : { key: 'kill', label: 'Kill', icon: 'x', danger: true, run: () => openDialog({ kind: 'kill', id: node.id }) },
+    last,
   ];
 }
 

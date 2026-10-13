@@ -182,15 +182,20 @@ export const tools = {
     }),
 
   close: tool(
-    'Close and delete nodes. Every id must exist and be a descendant of yours, otherwise the whole batch is refused and nothing is closed. The human approves the batch once in the UI; if they decline you get {ok:false, reason:"denied"}.',
-    { nodeIds: z.array(z.string().min(1)).min(1) },
+    'Close and delete nodes. Every id must exist and be a descendant of yours, otherwise the whole batch is refused and nothing is closed. Orchestrators (root nodes) cannot be closed by agents. The human approves the batch once in the UI; if they decline you get {ok:false, reason:"denied"}.',
+    { nodeIds: z.array(z.string().min(1)).min(1), force: z.boolean().optional() },
     async (c, a) => {
       const views = a.nodeIds.map((id) => requireOwned(c, id, false));
+      for (const v of views) {
+        if (v.parentId !== null) continue;
+        if (c.caller !== HUMAN) throw new Error(`refused: ${v.id} is an orchestrator; agents cannot close orchestrators`);
+        if (!a.force) throw new Error(`refusing to close an orchestrator; use o8 kill --force ${v.id}`);
+      }
       const list = views.map((v) => `${v.title} (${v.id})`).join(', ');
       if (c.caller !== HUMAN && !(await c.confirm(`${who(c)} wants to close ${views.length} node(s): ${list}`))) {
         return { data: { ok: false, reason: 'denied' } };
       }
-      for (const id of a.nodeIds) c.manager.close(id);
+      for (const id of a.nodeIds) c.manager.close(id, true); // roots were vetted above
       return { data: { ok: true, closed: a.nodeIds } };
     }),
 
@@ -200,6 +205,16 @@ export const tools = {
     async (c, a) => {
       if (c.caller !== HUMAN) throw new Error('resume is only for the human');
       const r = c.manager.resume(a.nodeId);
+      if (!r.ok) throw new Error(r.error);
+      return { data: { ok: true } };
+    }),
+
+  restart: tool(
+    'Restart a node: kill its process and relaunch it with a fresh session, which clears its context. Its title, directory, model and children are kept. Only the human may call this.',
+    { nodeId: z.string().min(1) },
+    async (c, a) => {
+      if (c.caller !== HUMAN) throw new Error('restart is only for the human');
+      const r = c.manager.restart(a.nodeId);
       if (!r.ok) throw new Error(r.error);
       return { data: { ok: true } };
     }),

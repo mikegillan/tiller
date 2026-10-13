@@ -13,7 +13,7 @@ import { layoutSidebar, needsYou, revealScroll, tree, type SideLayout } from './
 const ON = '\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[2J';
 const OFF = '\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l';
 const HELP_LINES = ['orchestr8 keys (Ctrl-\\ then):', ' d detach   b back   j/k next/prev   ! next needing you   1-9 jump to nth node',
-  ' n new child   r resume   x kill   e rename   o new orchestrator here   s sidebar   ? help', ' Ctrl-\\ twice sends a literal Ctrl-\; click a node or an action in the sidebar', ' (any key closes this)'];
+  ' n new child   r resume   x kill   R restart orchestrator   e rename   o new orchestrator here   s sidebar   ? help', ' Ctrl-\\ twice sends a literal Ctrl-\; click a node or an action in the sidebar', ' (any key closes this)'];
 
 export function mux(startId: string, { port, token }: { port: number; token: string }): Promise<number> {
   const { stdin, stdout } = process;
@@ -121,6 +121,8 @@ export function mux(startId: string, { port, token }: { port: number; token: str
     else if (!n) return;
     else if (key === 'new') ask('new child: ', '', false, (title) => { awaiting = true; send({ t: 'spawn', kind: 'claude', title, cwd: n.cwd, parentId: n.id }); });
     else if (key === 'rename') ask('rename: ', n.title, false, (title) => send({ t: 'rename', id: n.id, title }));
+    else if (key === 'kill' && n.parentId === null) setNotice("orchestrators can't be killed; use R to restart");
+    else if (key === 'restart') ask(`restart ${n.title}? context is cleared, children kept. y/n`, '', true, () => send({ t: 'restart', id: n.id }));
     else if (key === 'kill') { if (n.status.exited) send({ t: 'close', id: n.id }); else ask(`kill ${n.title}? y/n`, '', true, () => send({ t: 'close', id: n.id })); }
     else if (key === 'clear') {
       const c = pruneIds([...nodes.values()]).length;

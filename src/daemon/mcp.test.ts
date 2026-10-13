@@ -57,6 +57,22 @@ describe('mcp api', () => {
     expect(list.data.find((n: any) => n.id === child)).toMatchObject({ parentId: id, kind: 'terminal', flags: [] });
   });
 
+  it('refuses to close an orchestrator unless the human forces it; restart is human-only', async () => {
+    const root = (await spawnT('root')).body.data.nodeId as string;
+    const kid = (await spawnT('kid', root, manager.tokenFor(root))).body.data.nodeId as string;
+    const tok = (id: string) => manager.tokenFor(id);
+    expect((await api('close', { nodeIds: [root] }, kid, tok(kid))).body.error).toMatch(/descendants/); // a child cannot reach its parent
+    expect((await api('close', { nodeIds: [root] }, root, tok(root))).body.error).toMatch(/descendants/); // nor itself
+    expect((await api('close', { nodeIds: [root], force: true }, kid, tok(kid))).status).toBe(400);
+    expect((await api('close', { nodeIds: [root] })).body.error).toBe(`refusing to close an orchestrator; use o8 kill --force ${root}`);
+    expect(manager.view(root)).toBeDefined();
+    expect((await api('restart', { nodeId: root }, kid, tok(kid))).body.error).toMatch(/only for the human/);
+    expect((await api('restart', { nodeId: root })).body.data).toEqual({ ok: true });
+    expect(manager.view(kid)!.parentId).toBe(root);
+    expect((await api('close', { nodeIds: [root], force: true })).body.data).toMatchObject({ ok: true });
+    expect(manager.view(root)).toBeUndefined();
+  });
+
   it('enforces read scope and descendant-only close, with one confirm per batch', async () => {
     const p = (await spawnT('p2')).body.data.nodeId as string;
     const c1 = (await spawnT('c1', p, manager.tokenFor(p))).body.data.nodeId as string;
@@ -128,7 +144,7 @@ describe('mcp api', () => {
     const client = new Client({ name: 't', version: '0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${manager.tokenFor(id)}`, 'X-O8-Node': id } } }));
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'list_nodes', 'message_status', 'prune', 'read', 'rename', 'report_outcome', 'resume', 'select', 'send', 'shutdown', 'spawn', 'write']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'list_nodes', 'message_status', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'shutdown', 'spawn', 'write']);
     expect(tools.find((t) => t.name === 'spawn')!.inputSchema.required).toEqual(['kind', 'title', 'cwd']);
     const r = (await client.callTool({ name: 'report_outcome', arguments: { outcome: 'succeeded' } })) as { content: Array<{ text: string }> };
     expect(r.content[0].text).toBe('{"ok":true}');
