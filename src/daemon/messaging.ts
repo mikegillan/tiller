@@ -305,7 +305,7 @@ export function ack(m: Mgr, nodeId: string, id: string): boolean {
   if (at < 0) return false;
   const [i] = q.splice(at, 1);
   clearTimeout(i.timer);
-  setResult(s, id, { outcome: 'delivered', retryable: false, messageId: id });
+  setResult(s, id, { outcome: 'delivered', retryable: false, messageId: id, ...(i.msg.steer ? { steer: true } : {}) });
   saveInbox(s);
   return true;
 }

@@ -382,6 +382,9 @@ describe('steer (mode now)', () => {
     const [msg] = inbox(m.mgr, 'b');
     expect(msg.steer).toBe(true);
     expect(msg.text).toContain('\nsteer: the sender interrupted your turn');
+    expect(claim(m.mgr, 'b', msg.id)).toBe(true);
+    expect(ack(m.mgr, 'b', msg.id)).toBe(true);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'delivered', steer: true });
   });
 });
 
