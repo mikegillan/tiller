@@ -1,7 +1,7 @@
 // The sidebar: a rounded frame holding the whole tree (3 lines per node), an action bar for the selected node, and daemon status.
 // Layout is pure: model in, styled lines and click targets out.
 import { needsYou, type NodeView, type Usage } from '../shared/protocol.js';
-import { ctxLevel, fmtAge, fmtTokens, shortEffort, shortModel, usageParts } from '../shared/format.js';
+import { ctxLevel, fmtAge, fmtTokens, outcomeLine, shortEffort, shortModel, usageParts } from '../shared/format.js';
 import { fmtUsd, subtreeSpend, todaySpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { BINDINGS } from './chords.js';
@@ -146,7 +146,7 @@ export function layoutSidebar(m: SideModel, W: number, H: number): SideLayout {
     const rows: Seg[][] = [lr([['2', head], glyph(n), ['', ' '], [n.status.exited ? '2' : sel || needsYou(n.status) ? '1' : '', n.title], ...(n.unread ? [['36', ' •'] as Seg] : []), ...(n.gate ? [[n.gate === 'failed' ? '31' : '2', ` gate ${n.gate}`] as Seg] : [])], n.status.exited ? 'exited' : `${n.status.stalled ? 'no activity ' : ''}${fmtAge(m.now - n.status.changedAt)}`, w)];
     const act = n.status.activity, o = n.outcome;
     if (act) rows.push([['2', cont], [n.status.state === 'blocked' ? '33' : '2', act]]);
-    else if (o) rows.push([['2', cont], [o.outcome === 'failed' ? '31' : '32', o.outcome], ['2', (o.summary ?? o.note) ? ` · ${o.summary ?? o.note}` : '']]);
+    else if (o) rows.push([['2', cont], [o.outcome === 'failed' ? '31' : '32', outcomeLine(o)]]);
     const mt = meta(n, w - cont.length, subtreeSpend(m.nodes.values(), n.id));
     if (mt.length) rows.push([['2', cont], ...mt]);
     if (lines.length - 1 + rows.length > area) break;

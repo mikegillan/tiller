@@ -74,7 +74,7 @@ function worktreeText(o: { worktree?: Worktree; sharesWorktreeOf?: string }): st
 export function systemPrompt(o: { nodeId: string; title: string; parentId: string | null; home: string; cwd: string; role?: Role; worktree?: Worktree; sharesWorktreeOf?: string; sessionDir?: string; preset?: Preset }): string {
   const preamble = `You are orchestr8 node ${o.nodeId}, titled "${o.title}". Your parent node is ${o.parentId ?? 'none'}.
 
-The orchestr8 MCP tools spawn and control other nodes: list_nodes, spawn, send, read, write, close, merge, rename, message_status, notify_when, withdraw and report_outcome. Spawning never moves the user's view.
+The orchestr8 MCP tools spawn and control other nodes. Spawning never moves the user's view.
 
 Other nodes and the orchestr8 daemon send you messages, which arrive as prompts submitted by the orchestr8 plugin, framed like this:
 --- O8 MESSAGE <nonce> ---

@@ -3,7 +3,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { NEEDS_YOU_STATES, type AgentState, type DigestItem } from '../shared/protocol.js';
+import { outcomeLine } from '../shared/format.js';
+import { NEEDS_YOU_STATES, type AgentState, type DigestItem, type Outcome } from '../shared/protocol.js';
 import { logError } from './util.js';
 
 export const SESSIONS_DIR = 'sessions';
@@ -116,7 +117,7 @@ const RANK: Record<DigestItem['kind'], number> = { needsYou: 0, errored: 1, fini
 
 /**
  * Per node, what the log says happened since the human looked away: still blocked or waiting (with the question or
- * activity), errored or failed (with the note), or finished (with the outcome note). Needs-you first, newest first within.
+ * activity), errored or failed (with the outcome line), or finished (with the outcome line). Needs-you first, newest first within.
  */
 export function buildDigest(events: SessionEvent[]): DigestItem[] {
   const byNode = new Map<string, { title: string; state?: SessionEvent; outcome?: SessionEvent }>();
@@ -132,9 +133,10 @@ export function buildDigest(events: SessionEvent[]): DigestItem[] {
     const to = state?.to as AgentState | undefined;
     const at = Math.max(state?.ts ?? 0, outcome?.ts ?? 0);
     const text = (...xs: unknown[]) => xs.find((x): x is string => typeof x === 'string' && x !== '');
+    const reported = outcome && outcomeLine(outcome as unknown as Outcome); // an outcome event's data is the Outcome
     if (to && NEEDS_YOU_STATES.includes(to) && !state!.exited) items.push({ id, title, kind: 'needsYou', text: text(state!.activity, state!.message), at });
-    else if (state?.errored || outcome?.outcome === 'failed') items.push({ id, title, kind: 'errored', text: text(outcome?.note, state?.activity, state?.message), at });
-    else if (outcome || to === 'done') items.push({ id, title, kind: 'finished', text: text(outcome?.note, state?.message), at });
+    else if (state?.errored || outcome?.outcome === 'failed') items.push({ id, title, kind: 'errored', text: text(reported, state?.activity, state?.message), at });
+    else if (outcome || to === 'done') items.push({ id, title, kind: 'finished', text: text(reported, state?.message), at });
   }
   return items.sort((a, b) => RANK[a.kind] - RANK[b.kind] || b.at - a.at);
 }

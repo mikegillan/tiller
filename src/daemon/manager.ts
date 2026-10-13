@@ -145,6 +145,7 @@ export interface NotifyEvent { id: string; kind: 'done' | 'needsYou' | 'errored'
  * Owns the registry, the live PTYs and the per-node status. Events (node:events):
  *   'node'    (view: NodeView)            created or changed
  *   'removed' (id: string)
+ *   'outcome' (id: string)               report_outcome recorded an outcome, before the 'node' event that shows it
  *   'hook'    (id: string, event: HookEvent)  every accepted hook, before status is updated
  *   'data'    (id: string, data: string)  raw PTY output
  *   'notify'  (n: NotifyEvent)
@@ -178,9 +179,9 @@ export class NodeManager extends EventEmitter {
   private setups = new Map<string, { abort: AbortController; done: Promise<void> }>();
   /** Nodes whose setup has not succeeded yet, with the prompt to launch them with once it does; restart retries it. */
   private needsSetup = new Map<string, string | undefined>();
-  /** What each node reported through report_outcome, and its completion gate's last run. Neither is persisted. */
+  /** What each node reported through report_outcome, and its completion gate's last run with the failed runs since its last outcome. Neither is persisted. */
   private outcomes = new Map<string, Outcome>();
-  private gates = new Map<string, { state: NonNullable<NodeView['gate']>; command: string }>();
+  private gates = new Map<string, { state: NonNullable<NodeView['gate']>; command: string; failures: number }>();
   /** Ids that were live when the daemon last went away, until resumeLive has dealt with them. */
   private pendingResume: Set<string>;
   /** Set by shutdown: the live set is then frozen, so the PTYs' exits do not empty it. */
@@ -1058,6 +1059,9 @@ export class NodeManager extends EventEmitter {
 
   setOutcome(id: string, o: Outcome): void {
     this.outcomes.set(id, o);
+    const gate = this.gates.get(id);
+    if (gate) gate.failures = 0;
+    this.emit('outcome', id);
     this.emitNode(id);
     const { at: _at, ...data } = o;
     this.logEvent(id, 'outcome', data);
@@ -1071,28 +1075,36 @@ export class NodeManager extends EventEmitter {
     return gate && trustPolicy(dir!, readClaudeJson()) === 'auto' ? gate : undefined;
   }
 
+  /** Whether the node's completion gate is running now. */
+  gateRunning(id: string): boolean {
+    return this.gates.get(id)?.state === 'running';
+  }
+
   /**
    * Run the gate command once in the node's cwd with the setup runner and env, appending to <node dir>/gate.log. While it
-   * runs the node shows activity "gate: <command>". Resolves with whether it passed and the last lines of this run's output.
+   * runs the node shows activity "gate: <command>". Resolves with whether it passed, the last lines of this run's output,
+   * and the failed runs since the node's last recorded outcome, this one included.
    */
-  async runGate(id: string, gate: NonNullable<Config['gate']>): Promise<{ ok: boolean; tail: string }> {
+  async runGate(id: string, gate: NonNullable<Config['gate']>): Promise<{ ok: boolean; tail: string; failures: number }> {
     const rec = this.registry.get(id);
-    if (!rec) return { ok: false, tail: 'node is gone' };
+    if (!rec) return { ok: false, tail: 'node is gone', failures: 0 };
+    const failures = this.gates.get(id)?.failures ?? 0;
     const log = join(this.nodeDir(id), 'gate.log');
     const start = existsSync(log) ? statSync(log).size : 0;
     const env = rec.worktree ? this.worktreeEnv(id, rec.worktree) : buildChildEnv({ PATH: this.path, O8_NODE_ID: id });
-    this.gates.set(id, { state: 'running', command: gate.command });
+    this.gates.set(id, { state: 'running', command: gate.command, failures });
     this.emitNode(id);
     // prune: a node closed mid-gate leaves the command running until it ends or times out; add an abort if gates get long.
     const err = await wt.runCommands([gate.command], { cwd: rec.cwd, env, log, timeout: gate.timeoutMinutes * 60_000 }).then(() => undefined, (e: Error) => e);
     let out = '';
     try { out = readFileSync(log).subarray(start).toString(); } catch { /* node closed meanwhile */ }
     const lines = [...out.trimEnd().split('\n'), ...(err ? [err.message] : [])];
+    const after = err ? failures + 1 : failures;
     if (this.registry.get(id)) {
-      this.gates.set(id, { state: err ? 'failed' : 'passed', command: gate.command });
+      this.gates.set(id, { state: err ? 'failed' : 'passed', command: gate.command, failures: after });
       this.emitNode(id);
     }
-    return { ok: !err, tail: lines.slice(-GATE_TAIL_LINES).join('\n') };
+    return { ok: !err, tail: lines.slice(-GATE_TAIL_LINES).join('\n'), failures: after };
   }
 
   /** Best effort: run the teardown commands in a worktree about to be removed. A failure is logged and never blocks removal. */

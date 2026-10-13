@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
-import { dndActive } from '../src/shared/protocol';
+import { dndActive, needsYou } from '../src/shared/protocol';
 import { send } from './conn';
 import { titleFor } from './format';
 import { getState, selectNode, useStore } from './store';
 import { trayState } from './tray';
-import { needsYou } from './tree';
 import { IN_APP, syncUrl } from './url';
 
 /** One shared clock so every age label updates together. */
@@ -30,7 +29,7 @@ export const toggleDnd = () => send(dndActive(getState().dnd, Date.now()) ? { t:
  * ?node= in step with the selection.
  */
 export function useDocumentSync() {
-  const needs = useStore((s) => Object.values(s.nodes).filter(needsYou).length);
+  const needs = useStore((s) => Object.values(s.nodes).filter((n) => needsYou(n.status)).length);
   const selected = useStore((s) => s.selected);
   const nodes = useStore((s) => s.nodes);
   const order = useStore((s) => s.order);

@@ -2,7 +2,7 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
-import { dndActive, type Dnd, type NodeView } from '../shared/protocol.js';
+import { dndActive, finished, type Dnd, type NodeView } from '../shared/protocol.js';
 import type { Notifications, NotifyLevel } from './config.js';
 import type { NotifyEvent } from './manager.js';
 
@@ -80,7 +80,6 @@ export function notifyArgs(c: Content, id: string, d: Pick<NotifierDeps, 'termin
   };
 }
 
-const finished = (v: NodeView) => v.status.exited || v.status.state === 'done';
 const failed = (v: NodeView) => !!v.status.errored || v.outcome?.outcome === 'failed';
 
 /**
@@ -115,7 +114,7 @@ export function createNotifier(d: NotifierDeps): (n: NotifyEvent) => void {
     const root = tree[0] ?? node;
     if (d.config(n.id).treeDoneSummary) {
       const agents = tree.filter((v) => v.kind === 'claude'); // a plain terminal never finishes
-      if (!agents.length || !agents.every(finished)) announced.delete(root.id);
+      if (!agents.length || !agents.every((v) => finished(v.status))) announced.delete(root.id);
       // An exit after the tree was announced (a node quitting once done) is not a new finish.
       else if (n.kind !== 'needsYou' && (n.kind !== 'exited' || !announced.has(root.id))) {
         announced.add(root.id);

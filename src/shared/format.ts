@@ -1,4 +1,4 @@
-import type { RateLimit, Usage } from './protocol.js';
+import type { Outcome, RateLimit, Usage } from './protocol.js';
 
 const FAMILY =/^claude-(opus|sonnet|haiku|fable)-(\d+)-(\d+)$/;
 
@@ -51,4 +51,10 @@ export function usageParts(limits: readonly RateLimit[], compact = false, now = 
 export function usageLine(u: Usage | undefined, now = Date.now()): string {
   if (!u) return 'usage: no report yet';
   return `usage: ${usageParts(u.rateLimits, false, now).map((p) => p.text).join(' · ')} (from ${u.nodeId}, ${fmtAge(now - u.at)} ago)`;
+}
+
+/** A reported outcome as one line: "succeeded (gate passed): <summary, else note>", the text capped at 200 characters. */
+export function outcomeLine(o: Pick<Outcome, 'outcome' | 'gate' | 'summary' | 'note'>): string {
+  const text = (o.summary || o.note)?.replace(/\s+/g, ' ').trim().slice(0, 200);
+  return `${o.outcome}${o.gate ? ` (gate ${o.gate})` : ''}${text ? `: ${text}` : ''}`;
 }

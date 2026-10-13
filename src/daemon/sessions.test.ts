@@ -130,7 +130,7 @@ describe('buildDigest', () => {
     const ev = (ts: number, type: string, id: string, rest: object = {}): SessionEvent => ({ ts, type, id, title: id.toUpperCase(), ...rest });
     const log = [
       ev(1, 'state', 'done1', { from: 'working', to: 'done', message: 'all green' }),
-      ev(2, 'outcome', 'done1', { outcome: 'succeeded', note: 'merged the fix' }),
+      ev(2, 'outcome', 'done1', { outcome: 'succeeded', note: 'merged', summary: 'merged the fix' }),
       ev(3, 'state', 'ask', { from: 'working', to: 'waiting', message: 'Which port should I use?' }),
       ev(4, 'state', 'perm', { from: 'working', to: 'blocked', activity: 'needs approval: Bash rm -rf build' }),
       ev(5, 'state', 'answered', { from: 'working', to: 'blocked', activity: 'needs approval: x' }),
@@ -144,10 +144,10 @@ describe('buildDigest', () => {
     expect(buildDigest(log).map((i) => [i.kind, i.id, i.text])).toEqual([
       ['needsYou', 'perm', 'needs approval: Bash rm -rf build'],
       ['needsYou', 'ask', 'Which port should I use?'],
-      ['errored', 'failed', 'tests do not pass'],
+      ['errored', 'failed', 'failed: tests do not pass'],
       ['errored', 'crash', 'API error'],
       ['finished', 'done2', 'wrote the README'],
-      ['finished', 'done1', 'merged the fix'],
+      ['finished', 'done1', 'succeeded: merged the fix'],
     ]);
     expect(buildDigest(log)[0]!.title).toBe('PERM');
   });

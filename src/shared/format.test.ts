@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { ctxLevel, fmtAge, fmtTokens, shortEffort, shortModel, usageLine, usageParts } from './format.js';
+import { ctxLevel, fmtAge, fmtTokens, outcomeLine, shortEffort, shortModel, usageLine, usageParts } from './format.js';
 
 describe('format', () => {
+  it('renders an outcome as one line, summary before note', () => {
+    expect(outcomeLine({ outcome: 'succeeded', gate: 'passed', summary: 'did\n  it', note: 'n' })).toBe('succeeded (gate passed): did it');
+    expect(outcomeLine({ outcome: 'failed', note: 'broke' })).toBe('failed: broke');
+    expect(outcomeLine({ outcome: 'succeeded' })).toBe('succeeded');
+  });
   it('shortens model ids', () => {
     expect(shortModel('claude-opus-5-5')).toBe('opus 5.5');
     expect(shortModel('claude-sonnet-5-5')).toBe('sonnet 5.5');
