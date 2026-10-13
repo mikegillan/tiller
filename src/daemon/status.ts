@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import type { NodeStatus } from '../shared/protocol.js';
+import type { AgentState, NodeKind, NodeStatus } from '../shared/protocol.js';
 
 /** Raw JSON Claude Code posts to a hook. Payloads vary, so only the name is typed. */
 export interface HookEvent {
@@ -10,6 +10,9 @@ export interface HookEvent {
 
 const DONE_HOLDOFF_MS = 3000;
 const STALE_MS = 20 * 60 * 1000;
+
+/** A node's state before any hook arrives: a Claude node is unknown until SessionStart; a terminal has no agent state. */
+export const initialState = (kind: NodeKind): AgentState => (kind === 'claude' ? 'unknown' : 'none');
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 
@@ -118,12 +121,8 @@ function step(prev: NodeStatus, event: HookEvent, now: number): NodeStatus {
     case 'StopFailure':
       return done(prev, now, { doneSource: 'stop', errored: true, lastAssistantMessage: str(event.last_assistant_message) ?? prev.lastAssistantMessage });
 
-    case 'SessionStart':
-      return next(prev, {
-        state: 'unknown', activity: undefined,
-        sessionId: str(event.session_id) ?? prev.sessionId,
-        transcriptPath: str(event.transcript_path) ?? prev.transcriptPath,
-      }, now);
+    case 'SessionStart': // the manager records its session_id and transcript_path on the node's record
+      return next(prev, { state: 'unknown', activity: undefined }, now);
 
     case 'SessionEnd':
       return next(prev, { state: 'unknown', activity: undefined }, now);

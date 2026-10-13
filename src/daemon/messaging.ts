@@ -25,7 +25,7 @@ const SAVE_MS = 50;
 export const HUMAN = 'human';
 export const DAEMON = 'orchestr8';
 
-export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input' | 'logEvent' | 'projectDir'> & Partial<Pick<NodeManager, 'home'>>;
+export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input' | 'logEvent' | 'projectDir'> & Partial<Pick<NodeManager, 'home' | 'runtimes'>>;
 interface DeliverOpts {
   /** "now" interrupts a working target and delivers at once; default "queue". */
   mode?: SendMode;

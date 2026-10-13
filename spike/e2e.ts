@@ -29,7 +29,7 @@ ws.on('message', (raw) => {
   if (m.t === 'snapshot') for (const n of m.nodes) nodes.set(n.id, n);
   else if (m.t === 'node') {
     nodes.set(m.node.id, m.node);
-    log(`node ${m.node.id.slice(0, 6)} ${m.node.title} state=${m.node.status.state} activity=${JSON.stringify(m.node.status.activity ?? '')} flags=[${flags(m.node)}] sid=${m.node.status.sessionId?.slice(0, 8) ?? ''}`);
+    log(`node ${m.node.id.slice(0, 6)} ${m.node.title} state=${m.node.status.state} activity=${JSON.stringify(m.node.status.activity ?? '')} flags=[${flags(m.node)}] sid=${m.node.sessionId?.slice(0, 8) ?? ''}`);
   } else if (m.t === 'removed') { nodes.delete(m.id); log(`removed ${m.id.slice(0, 6)}`); }
   else if (m.t === 'data') log(`data ${m.id.slice(0, 6)} ${JSON.stringify(m.data.slice(0, 80))}`);
   else log(`${m.t} ${JSON.stringify(m).slice(0, 200)}`);
@@ -74,8 +74,8 @@ async function main(): Promise<void> {
   check(!!(await waitFor('working', 30_000, () => state(n1) === 'working')), 'n1 reached working');
   check(!!(await waitFor('done', 120_000, () => state(n1) === 'done')), 'n1 reached done');
   check(seen(mark, (m) => m.t === 'notify' && m.id === n1 && m.kind === 'done'), 'notify kind=done for n1');
-  const s1 = nodes.get(n1)!.status;
-  check(!!s1.sessionId && !!s1.transcriptPath, `n1 sessionId/transcriptPath set (${s1.sessionId} ${s1.transcriptPath})`);
+  const r1 = nodes.get(n1)!, s1 = r1.status;
+  check(!!r1.sessionId && !!r1.transcriptPath, `n1 sessionId/transcriptPath set (${r1.sessionId} ${r1.transcriptPath})`);
   check(/HELLO E2E/.test(s1.lastAssistantMessage ?? ''), `n1 lastAssistantMessage=${JSON.stringify(s1.lastAssistantMessage)}`);
   const sb1 = await attachText(n1);
   check(sb1.includes('HELLO E2E'), 'attach scrollback contains HELLO E2E');
@@ -89,7 +89,7 @@ async function main(): Promise<void> {
   typeInto(n2, '\x1b[B'); await sleep(300); typeInto(n2, '\r');
   check(!!(await waitFor('working', 60_000, () => state(n2) === 'working')), 'n2 working after trust answered');
   check(!!(await waitFor('done', 120_000, () => state(n2) === 'done')), 'n2 done');
-  check(!!nodes.get(n2)?.status.sessionId && /TRUST OK/.test(nodes.get(n2)?.status.lastAssistantMessage ?? ''), 'n2 sessionId + reply');
+  check(!!nodes.get(n2)?.sessionId && /TRUST OK/.test(nodes.get(n2)?.status.lastAssistantMessage ?? ''), 'n2 sessionId + reply');
 
   // d: interrupt (on n1)
   log('--- d: interrupt');
@@ -113,7 +113,7 @@ async function main(): Promise<void> {
   check(!!(await waitFor('exited', 30_000, () => nodes.get(n2)?.status.exited)), 'n2 exited after /exit');
   mark = history.length;
   send({ t: 'resume', id: n2 });
-  const sid = nodes.get(n2)!.status.sessionId;
+  const sid = nodes.get(n2)!.sessionId;
   check(!!(await waitFor('SessionStart', 60_000, () => seen(mark, (m) => m.t === 'node' && m.node.id === n2 && !m.node.status.exited && m.node.status.state === 'unknown'))), 'n2 resumed (relaunched, state unknown)');
   await sleep(4000);
   if (history.slice(mark).some((m) => m.t === 'error')) check(false, 'resume produced an error message');
@@ -121,9 +121,9 @@ async function main(): Promise<void> {
   typeInto(n2, 'What did you reply earlier? One line.\r');
   check(!!(await waitFor('working', 30_000, () => state(n2) === 'working')), 'n2 working after resume');
   check(!!(await waitFor('done', 120_000, () => state(n2) === 'done')), 'n2 done after resume');
-  const st = nodes.get(n2)!.status;
+  const r2 = nodes.get(n2)!, st = r2.status;
   check(/TRUST OK/.test(st.lastAssistantMessage ?? ''), `resumed session remembers: ${JSON.stringify(st.lastAssistantMessage)}`);
-  check(st.sessionId === sid || !!st.sessionId, `sessionId after resume ${st.sessionId} (before ${sid})`);
+  check(r2.sessionId === sid || !!r2.sessionId, `sessionId after resume ${r2.sessionId} (before ${sid})`);
   send({ t: 'close', id: n2, force: true });
   await sleep(500);
 

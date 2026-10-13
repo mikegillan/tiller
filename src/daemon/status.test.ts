@@ -107,15 +107,14 @@ describe('reduce', () => {
     expect(reduce(w, ev('StopFailure'), NOW)).toMatchObject({ state: 'done', errored: true });
   });
 
-  it('SessionStart sets unknown plus session and transcript; SessionEnd sets unknown', () => {
+  it('SessionStart and SessionEnd set unknown', () => {
     const r = reduce(st({ state: 'done' }), ev('SessionStart', { session_id: 's2', transcript_path: '/t.jsonl', cwd: '/', source: 'clear' }), NOW);
-    expect(r).toMatchObject({ state: 'unknown', sessionId: 's2', transcriptPath: '/t.jsonl', changedAt: NOW });
+    expect(r).toMatchObject({ state: 'unknown', changedAt: NOW });
     expect(reduce(st({ state: 'working' }), ev('SessionEnd'), NOW).state).toBe('unknown');
   });
 
-  it('other events apply across sessions but do not change sessionId', () => {
-    const r = reduce(st({ state: 'done', sessionId: 'old' }), ev('UserPromptSubmit', { session_id: 'new' }), NOW);
-    expect(r).toMatchObject({ state: 'working', sessionId: 'old' });
+  it('other events apply across sessions', () => {
+    expect(reduce(st({ state: 'done' }), ev('UserPromptSubmit', { session_id: 'new' }), NOW).state).toBe('working');
   });
 
   it('unrecognised events return prev by reference', () => {

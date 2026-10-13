@@ -14,7 +14,8 @@ import { treeOrder } from '../shared/tree.js';
 import { loadConfig, type Config } from './config.js';
 import { ADMIN_TOKEN_FILE } from './home.js';
 import { notifyWhen } from './deps.js';
-import { closeRefusal, type NodeManager, type WorktreeReport } from './manager.js';
+import type { NodeManager } from './manager.js';
+import { closeRefusal, type WorktreeReport } from './worktree-lifecycle.js';
 import { MAX_PATCH_BYTES, MergeConflict } from './worktree.js';
 import { PERMISSION_MODES } from './presets.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
@@ -235,7 +236,7 @@ const tools = {
         await s.flush();
         return { text: s.screenTail(a.lines ?? 60).join('\n') };
       }
-      const path = v.status.transcriptPath;
+      const path = v.transcriptPath;
       if (!path) throw new Error('node has no transcript yet (not a Claude node, or it has not started); try what: "terminal"');
       const entries = (await readFile(path, 'utf8')).split('\n').flatMap((l) => renderEntry(l) ?? []);
       if (a.what === 'summary') return { text: entries.slice(-(a.lines ?? 30)).join('\n\n') };

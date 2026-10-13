@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { launchArgs } from './launch.js';
-import { NodeManager, trustPolicy } from './manager.js';
+import { NodeManager } from './manager.js';
+import { trustPolicy } from './worktree-lifecycle.js';
 
 describe('trustPolicy', () => {
   const json = { projects: { '/work/repo': { hasTrustDialogAccepted: true }, '/work/no': { hasTrustDialogAccepted: false } } };
@@ -98,6 +99,34 @@ describe('NodeManager tokens and files', () => {
   });
 });
 
+describe('NodeManager runtime state', () => {
+  let home = '';
+  let m: NodeManager;
+  afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
+
+  it('SessionStart records the session id and transcript on the node; other events leave them', async () => {
+    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    m = new NodeManager({ home, shell: '/bin/sh' });
+    const { id } = await m.spawn({ kind: 'terminal', title: 't', cwd: tmpdir() });
+    m.applyHook(id, { hook_event_name: 'SessionStart', session_id: 's2', transcript_path: '/t.jsonl' });
+    m.applyHook(id, { hook_event_name: 'UserPromptSubmit', session_id: 'other' });
+    expect(m.view(id)).toMatchObject({ sessionId: 's2', transcriptPath: '/t.jsonl' });
+  });
+
+  it('close leaves no runtime state behind', async () => {
+    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    m = new NodeManager({ home, shell: '/bin/sh' });
+    const { id } = await m.spawn({ kind: 'terminal', title: 't', cwd: tmpdir() });
+    m.applyHook(id, { hook_event_name: 'UserPromptSubmit' });
+    m.applyHook(id, { hook_event_name: 'Stop' }); // done: unread
+    m.setOutcome(id, { outcome: 'succeeded', at: Date.now() });
+    m.input(id, '\x1b'); // arms the interrupt timer
+    expect(m.runtimes.get(id)).toMatchObject({ unread: true, outcome: { outcome: 'succeeded' } });
+    await m.close(id, true);
+    expect([...m.runtimes.keys()]).toEqual([]);
+  });
+});
+
 describe('NodeManager restart', () => {
   let home = '';
   let m: NodeManager;
@@ -125,6 +154,7 @@ describe('NodeManager restart', () => {
     m = new NodeManager({ home, shell: '/bin/sh' });
     // A missing cwd makes the launch fail without starting claude; the record and launch arguments are what is under test.
     const id = m.registry.create({ parentId: null, kind: 'claude', title: 'c', cwd: '/no/such/dir', sessionId: 's0' }).id;
+    m.runtimes.set(id, {}); // as spawn does
     const first = new Set<string>();
     for (let i = 0; i < 12; i++) { expect(m.restart(id)).toMatchObject({ ok: false }); first.add(m.registry.get(id)!.sessionId!); }
     const rec = m.registry.get(id)!;
@@ -231,9 +261,9 @@ describe('NodeManager live set and resume on start', () => {
     expect(await m.resumeLive()).toBe('resume on start: resumed 2, skipped 3: deleted (no such node), idle (idle over 3 days), nowt (worktree missing)');
     expect(order).toEqual(['root', 'kid', 'nowt']);
     expect(m.view('root')!.status.exited).toBeFalsy();
-    expect(m.view('kid')!.status).toMatchObject({ sessionId: 's-kid' });
+    expect(m.view('kid')).toMatchObject({ sessionId: 's-kid' });
     expect(m.view('idle')!.status.exited).toBe(true);
-    await expect.poll(saved).toEqual(['root', 'kid']); // only what came back up
+    await expect.poll(() => saved().sort()).toEqual(['kid', 'root']); // only what came back up
     expect(await m.resumeLive()).toBe('resume on start: nothing to resume');
   });
 });
