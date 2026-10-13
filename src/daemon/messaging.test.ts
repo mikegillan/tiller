@@ -29,6 +29,7 @@ class FakeManager extends EventEmitter {
   nodes = new Map<string, NodeView>();
   sessions = new Map<string, FakeSession>();
   view = (id: string) => this.nodes.get(id);
+  projectDir = (n: { cwd: string }) => n.cwd;
   session = (id: string) => this.sessions.get(id) as never;
   typed: [string, string][] = [];
   input = (id: string, data: string) => { this.typed.push([id, data]); };

@@ -66,11 +66,11 @@ describe('spawn-or-reuse with a real manager', () => {
   let m: NodeManager;
   afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
-  it('reuses the orchestrator for the realpath of cwd, spawns none for a new dir', () => {
+  it('reuses the orchestrator for the realpath of cwd, spawns none for a new dir', async () => {
     home = mkdtempSync(join(tmpdir(), 'o8-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
     const dir = realpathSync(tmpdir()); // /var -> /private/var on macOS
-    const v = m.spawn({ kind: 'terminal', title: 'orch', cwd: dir, parentId: null });
+    const v = (await m.spawn({ kind: 'terminal', title: 'orch', cwd: dir, parentId: null }));
     const asClaude = [{ ...v, kind: 'claude' as const, exited: false }]; // terminal stands in for claude: no real claude in tests
     expect(pickOrchestrator(asClaude, dir)?.id).toBe(v.id);
     expect(pickOrchestrator(asClaude, join(dir, 'other'))).toBeUndefined();

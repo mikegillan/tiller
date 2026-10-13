@@ -49,7 +49,7 @@ process.stdin.on('data', (d) => {
 `);
     chmodSync(join(bin, 'claude'), 0o755);
     m = new NodeManager({ home: join(home, 'o8'), shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
-    const { id } = m.spawn({ kind: 'claude', title: 'c', cwd: proj });
+    const { id } = (await m.spawn({ kind: 'claude', title: 'c', cwd: proj }));
     await expect.poll(() => m!.session(id)?.screenTail(30).join('\n') ?? 'exited', { timeout: 3000 }).toContain('trusted');
     expect(m.view(id)!.status.exited).toBeFalsy();
   });
@@ -78,7 +78,7 @@ describe('NodeManager tokens and files', () => {
   it('writes node files with restrictive modes and removes them on close', async () => {
     home = mkdtempSync(join(tmpdir(), 'o8-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
-    const n = m.spawn({ kind: 'terminal', title: 't', cwd: tmpdir() });
+    const n = (await m.spawn({ kind: 'terminal', title: 't', cwd: tmpdir() }));
     const dir = join(home, 'nodes', n.id);
     expect(statSync(join(dir, 'token')).mode & 0o777).toBe(0o600);
     expect(statSync(join(dir, 'mcp.json')).mode & 0o777).toBe(0o600);
@@ -90,10 +90,10 @@ describe('NodeManager tokens and files', () => {
     expect(m.list()).toEqual([]);
   });
 
-  it('cleans up when the cwd is bad', () => {
+  it('cleans up when the cwd is bad', async () => {
     home = mkdtempSync(join(tmpdir(), 'o8-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
-    expect(() => m.spawn({ kind: 'terminal', title: 't', cwd: '/no/such/dir' })).toThrow(/working directory/);
+    await expect(m.spawn({ kind: 'terminal', title: 't', cwd: '/no/such/dir' })).rejects.toThrow(/working directory/);
     expect(m.list()).toEqual([]);
   });
 });
@@ -106,8 +106,8 @@ describe('NodeManager restart', () => {
   it('relaunches a terminal node with a new process, same id, children kept; refuses to close a root; prune keeps a live root', async () => {
     home = mkdtempSync(join(tmpdir(), 'o8-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
-    const root = m.spawn({ kind: 'terminal', title: 'root', cwd: tmpdir() });
-    const kid = m.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: root.id });
+    const root = (await m.spawn({ kind: 'terminal', title: 'root', cwd: tmpdir() }));
+    const kid = (await m.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: root.id }));
     const pid = m.session(root.id)!.pid;
     expect(m.restart(root.id)).toEqual({ ok: true });
     expect(m.session(root.id)!.pid).not.toBe(pid);
@@ -143,7 +143,7 @@ describe('NodeManager model and effort defaults', () => {
   let m: NodeManager;
   afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
-  it('records the configured model for the role unless spawn passes one; project beats home', () => {
+  it('records the configured model for the role unless spawn passes one; project beats home', async () => {
     home = mkdtempSync(join(tmpdir(), 'o8-'));
     const bin = join(home, 'bin'), proj = join(home, 'proj');
     mkdirSync(bin);
@@ -153,13 +153,13 @@ describe('NodeManager model and effort defaults', () => {
     writeFileSync(join(home, 'config.json'), JSON.stringify({ roles: { orchestrator: { model: 'opus' }, worker: { model: 'sonnet' } } }));
     writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ roles: { worker: { model: 'haiku' } } }));
     m = new NodeManager({ home, shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
-    const model = (req: { parentId?: string; model?: string; role?: 'none' }) => m.registry.get(m.spawn({ kind: 'claude', title: 'c', cwd: proj, ...req }).id)!.model;
-    const root = m.spawn({ kind: 'claude', title: 'root', cwd: proj });
+    const model = async (req: { parentId?: string; model?: string; role?: 'none' }) => m.registry.get((await m.spawn({ kind: 'claude', title: 'c', cwd: proj, ...req })).id)!.model;
+    const root = (await m.spawn({ kind: 'claude', title: 'root', cwd: proj }));
     expect(m.registry.get(root.id)!.model).toBe('opus');        // orchestrator: home file
-    expect(model({ parentId: root.id })).toBe('haiku');         // worker: project file
-    expect(model({ role: 'none' })).toBe('haiku');              // none counts as worker
-    expect(model({ parentId: root.id, model: 'x' })).toBe('x'); // explicit spawn argument
-    expect(m.registry.get(m.spawn({ kind: 'terminal', title: 't', cwd: proj }).id)!.model).toBeUndefined();
+    expect(await model({ parentId: root.id })).toBe('haiku');         // worker: project file
+    expect(await model({ role: 'none' })).toBe('haiku');              // none counts as worker
+    expect(await model({ parentId: root.id, model: 'x' })).toBe('x'); // explicit spawn argument
+    expect(m.registry.get((await m.spawn({ kind: 'terminal', title: 't', cwd: proj })).id)!.model).toBeUndefined();
   });
 
   it('resolves effort from spawn, then the project file, then the home file, and passes it to claude as --effort', async () => {
@@ -174,13 +174,13 @@ describe('NodeManager model and effort defaults', () => {
     writeFileSync(join(home, 'config.json'), JSON.stringify({ roles: { orchestrator: { effort: 'max' }, worker: { effort: 'high' } } }));
     writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ roles: { worker: { effort: 'low' } } }));
     m = new NodeManager({ home, shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
-    const root = m.spawn({ kind: 'claude', title: 'root', cwd: proj });
-    const spawn = (req: { cwd?: string; effort?: 'medium' }) => m.registry.get(m.spawn({ kind: 'claude', title: 'c', cwd: proj, parentId: root.id, ...req }).id)!;
+    const root = (await m.spawn({ kind: 'claude', title: 'root', cwd: proj }));
+    const spawn = async (req: { cwd?: string; effort?: 'medium' }) => m.registry.get((await m.spawn({ kind: 'claude', title: 'c', cwd: proj, parentId: root.id, ...req })).id)!;
     expect(m.registry.get(root.id)!.effort).toBe('max');            // orchestrator: home file
-    const fromProject = spawn({});
+    const fromProject = await spawn({});
     expect(fromProject.effort).toBe('low');                          // worker: project beats home
-    expect(spawn({ cwd: other }).effort).toBe('high');               // no project file: home
-    expect(spawn({ effort: 'medium' }).effort).toBe('medium');       // explicit spawn argument
+    expect((await spawn({ cwd: other })).effort).toBe('high');               // no project file: home
+    expect((await spawn({ effort: 'medium' })).effort).toBe('medium');       // explicit spawn argument
     const argvFile = join(home, 'nodes', fromProject.id, 'argv');
     await expect.poll(() => { try { return readFileSync(argvFile, 'utf8'); } catch { return ''; } }).toContain('--effort low');
   });
@@ -195,8 +195,8 @@ describe('NodeManager live set and resume on start', () => {
   it('saves the live ids as processes start and exit, keeps them on shutdown and clears them on an explicit stop', async () => {
     home = mkdtempSync(join(tmpdir(), 'o8-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
-    const a = m.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir() });
-    const b = m.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir(), parentId: a.id });
+    const a = (await m.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir() }));
+    const b = (await m.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir(), parentId: a.id }));
     await expect.poll(saved).toEqual([a.id, b.id]);
     process.kill(m.session(b.id)!.pid, 'SIGKILL');
     await expect.poll(saved).toEqual([a.id]);
@@ -249,20 +249,20 @@ describe('NodeManager guardrails', () => {
     mkdirSync(join(proj, '.orchestr8'), { recursive: true });
     writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ limits: { maxDepth: 2, maxChildren: 2, maxLiveNodes: 4 } }));
     m = new NodeManager({ home, shell: '/bin/sh' });
-    const spawn = (parentId: string | null, byHuman = false) => m.spawn({ kind: 'terminal', title: 't', cwd: proj, parentId, byHuman }).id;
-    const root = spawn(null, true);
-    const c1 = spawn(root);
-    spawn(root);
-    expect(() => spawn(root)).toThrow('refused: limits.maxChildren is 2 and ' + root + ' has 2 live children; reuse an idle worker (send it the work) or close finished ones');
-    const c3 = spawn(root, true); // the human is exempt; 4 live now
-    expect(() => spawn(c1)).toThrow(/^refused: limits\.maxLiveNodes is 4 and 4 nodes are live; reuse an idle worker/);
+    const spawn = async (parentId: string | null, byHuman = false) => (await m.spawn({ kind: 'terminal', title: 't', cwd: proj, parentId, byHuman })).id;
+    const root = await spawn(null, true);
+    const c1 = await spawn(root);
+    await spawn(root);
+    await expect(spawn(root)).rejects.toThrow('refused: limits.maxChildren is 2 and ' + root + ' has 2 live children; reuse an idle worker (send it the work) or close finished ones');
+    const c3 = await spawn(root, true); // the human is exempt; 4 live now
+    await expect(spawn(c1)).rejects.toThrow(/^refused: limits\.maxLiveNodes is 4 and 4 nodes are live; reuse an idle worker/);
     await m.close(c3);
-    const g = spawn(c1); // depth 2 is allowed
-    expect(() => spawn(g)).toThrow(/^refused: limits\.maxDepth is 2 and the new node would be 3 levels below the root; reuse/);
+    const g = await spawn(c1); // depth 2 is allowed
+    await expect(spawn(g)).rejects.toThrow(/^refused: limits\.maxDepth is 2 and the new node would be 3 levels below the root; reuse/);
     expect(m.list()).toHaveLength(4); // nothing was created by the refusals
   });
 
-  it('keeps each node\'s spend across a session restart and a daemon restart', () => {
+  it('keeps each node\'s spend across a session restart and a daemon restart', async () => {
     home = mkdtempSync(join(tmpdir(), 'o8-'));
     const bin = join(home, 'bin');
     mkdirSync(bin);
@@ -270,7 +270,7 @@ describe('NodeManager guardrails', () => {
     chmodSync(join(bin, 'claude'), 0o755);
     const opts = { home, shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` };
     m = new NodeManager(opts);
-    const id = m.spawn({ kind: 'claude', title: 'c', cwd: home, byHuman: true }).id;
+    const id = (await m.spawn({ kind: 'claude', title: 'c', cwd: home, byHuman: true })).id;
     const measure = (usd: number) => m.applyModEvent(id, { event: 'session.measure', payload: { cost: { usd } } });
     measure(0.5);
     measure(0.8);  // session totals: +0.3

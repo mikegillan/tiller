@@ -6,7 +6,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { NEEDS_YOU_STATES, type AgentState, type Diff, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Pending, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { loadConfig, type Config, type Limits, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
-import { ensurePresets, loadPreset } from './presets.js';
+import { ensurePresets, loadPreset, type Preset } from './presets.js';
 import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
@@ -193,6 +193,8 @@ export class NodeManager extends EventEmitter {
   /** Armed nodes loaded from the record; they wait for resumeLive, which runs once the daemon has its endpoint. */
   private restored = new Set<string>();
   private scheduled = false;
+  /** projectDir's main checkout of each cwd outside a worktree node. */
+  private projectDirs = new Map<string, string>();
 
   constructor(opts: ManagerOptions = {}) {
     super();
@@ -297,19 +299,24 @@ export class NodeManager extends EventEmitter {
 
   // ---- lifecycle ----
 
-  /** The request's isolation, else the config default for a claude node whose role is worker or none. */
-  isolationFor(req: SpawnRequest): Isolation {
-    req = this.withPreset(req);
-    if (req.isolation) return req.isolation;
-    if (req.kind !== 'claude' || roleFor(req.role, req.parentId ?? null) === 'orchestrator') return 'none';
-    return loadConfig(req.cwd, this.home).worktrees.isolation;
+  /**
+   * The directory whose .orchestr8 config, presets and role prompts apply to a node or spawn request: its worktree's
+   * repo, else the main checkout of its cwd (the cwd itself outside git). Never a worktree's own branch, which the node
+   * in it can edit.
+   */
+  projectDir(n: { cwd: string; worktree?: Worktree }): string {
+    if (n.worktree) return n.worktree.repo;
+    let dir = this.projectDirs.get(n.cwd);
+    // prune: cached for the daemon's life, so a later `git init` above a cwd is missed until restart; clear it if that matters.
+    if (dir === undefined) this.projectDirs.set(n.cwd, dir = wt.mainCheckoutSync(n.cwd) ?? n.cwd);
+    return dir;
   }
 
-  /** Throw when an agent's spawn would pass limits.maxDepth, maxChildren or maxLiveNodes (from req.cwd's config). */
-  private checkLimits(req: SpawnRequest): void {
+  /** Throw when an agent's spawn would pass limits.maxDepth, maxChildren or maxLiveNodes. */
+  private checkLimits(req: SpawnRequest, limits: Limits): void {
     if (req.byHuman) return;
     const parentId = req.parentId ?? null;
-    const { maxDepth, maxChildren, maxLiveNodes } = loadConfig(req.cwd, this.home).limits;
+    const { maxDepth, maxChildren, maxLiveNodes } = limits;
     const refuse = (cap: keyof Limits, value: number, what: string) => {
       throw new Error(`refused: limits.${cap} is ${value} and ${what}; reuse an idle worker (send it the work) or close finished ones`);
     };
@@ -320,71 +327,52 @@ export class NodeManager extends EventEmitter {
     if (this.sessions.size >= maxLiveNodes) refuse('maxLiveNodes', maxLiveNodes, `${this.sessions.size} nodes are live`);
   }
 
-  /** The request with its preset's role, model, effort, permissionMode and isolation filling what it leaves unset. */
-  private withPreset(req: SpawnRequest): SpawnRequest {
-    if (!req.preset) return req;
-    if (req.kind !== 'claude') throw new Error('a preset is for claude nodes only');
-    const p = loadPreset(req.preset, req.cwd, this.home);
-    return { ...req, role: req.role ?? p.role, model: req.model ?? p.model, effort: req.effort ?? p.effort, permissionMode: req.permissionMode ?? p.permissionMode, isolation: req.isolation ?? p.isolation };
-  }
-
-  /** Spawn a node without a worktree. A spawn that resolves to isolation "worktree" goes through spawnWorktree. */
-  spawn(req: SpawnRequest): NodeView {
-    req = this.withPreset(req);
-    if (this.isolationFor(req) === 'worktree') throw new Error('a worktree spawn is asynchronous: call spawnWorktree');
-    this.checkLimits(req);
+  /**
+   * Spawn a node. Each of role, model, effort, permissionMode and isolation comes from the request, else its preset,
+   * else: model and effort from the project config's defaults for its role; permissionMode from an agent parent's own
+   * mode unless that is bypassPermissions; isolation from the config for a claude node whose role is worker or none.
+   * Isolation "worktree" gives the node <main checkout>/.claude/worktrees/<id> on branch <prefix><id>, branched from the
+   * HEAD of the checkout req.cwd is in; the repo must have a commit and be trusted by Claude. Any failure removes the
+   * worktree and branch and discards the record.
+   */
+  async spawn(req: SpawnRequest): Promise<NodeView> {
+    const parentId = req.parentId ?? null, dir = this.projectDir(req);
+    const config = loadConfig(dir, this.home);
+    if (req.preset && req.kind !== 'claude') throw new Error('a preset is for claude nodes only');
+    const p: Partial<Preset> = req.preset ? loadPreset(req.preset, dir, this.home) : {};
+    const role = req.role ?? p.role, isOrchestrator = roleFor(role, parentId) === 'orchestrator';
+    const defaults = req.kind === 'claude' ? config.roles[isOrchestrator ? 'orchestrator' : 'worker'] : {};
+    const inherited = req.byHuman || !parentId ? undefined : this.statuses.get(parentId)?.permissionMode ?? this.registry.get(parentId)?.permissionMode;
+    const permissionMode = req.permissionMode ?? p.permissionMode ?? (inherited === 'bypassPermissions' ? undefined : inherited);
+    if (permissionMode === 'bypassPermissions' && !req.byHuman) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
+    const isolation = req.isolation ?? p.isolation ?? (req.kind !== 'claude' || isOrchestrator ? 'none' : config.worktrees.isolation);
+    if (isolation === 'worktree' && req.kind !== 'claude') throw new Error('isolation "worktree" is for claude nodes only');
+    this.checkLimits(req, config.limits);
     this.checkDependencies(req);
-    const parentId = req.parentId ?? null;
-    // Unset model or effort: the config's value for the node's role (role none counts as worker), recorded so restart keeps it.
-    const defaults = req.kind === 'claude' ? loadConfig(req.cwd, this.home).roles[roleFor(req.role, parentId) === 'orchestrator' ? 'orchestrator' : 'worker'] : {};
-    const model = req.model ?? defaults.model, effort = req.effort ?? defaults.effort;
-    const rec = this.registry.create({
+    let head: { base: string; baseSha: string } | undefined;
+    if (isolation === 'worktree') {
+      const repo = await wt.mainCheckout(req.cwd);
+      head = await wt.headInfo(req.cwd);
+      if (!trustedForWorktree(repo, readClaudeJson())) throw new Error(`refusing isolation "worktree": Claude does not trust ${repo} yet; run claude once in ${repo} to trust it`);
+    }
+    const rec = this.registry.create({ // the resolved fields, so restart keeps them
       parentId, kind: req.kind, title: req.title, cwd: req.cwd,
-      model, effort, permissionMode: req.permissionMode, role: req.role, preset: req.preset,
+      model: req.model ?? p.model ?? defaults.model, effort: req.effort ?? p.effort ?? defaults.effort, permissionMode, role, preset: req.preset,
       sessionId: req.kind === 'claude' ? randomUUID() : undefined,
     });
-    if (this.arm(rec.id, req, 'none')) return this.emitNode(rec.id)!;
+    if (this.arm(rec.id, req, isolation)) return this.emitNode(rec.id)!;
     try {
-      this.writeFiles(rec.id);
-      this.statuses.set(rec.id, { state: initialState(req.kind), sessionId: rec.sessionId, changedAt: Date.now() });
-      this.launch(rec.id, req.prompt, false);
+      if (isolation === 'worktree') await this.addWorktree(rec.id, req.prompt, head);
+      else {
+        this.writeFiles(rec.id);
+        this.statuses.set(rec.id, { state: initialState(req.kind), sessionId: rec.sessionId, changedAt: Date.now() });
+        this.launch(rec.id, req.prompt, false);
+      }
     } catch (err) {
       this.discard(rec.id);
       throw err;
     }
-    this.logEvent(rec.id, 'spawn', { parentId, kind: req.kind });
-    return this.emitNode(rec.id)!;
-  }
-
-  /**
-   * Spawn a Claude node in its own worktree, <main checkout>/.claude/worktrees/<id> on branch <prefix><id>, branched
-   * from the HEAD of the checkout req.cwd is in. The repo must have a commit and be trusted by Claude. Any failure
-   * removes the worktree and branch and discards the record.
-   */
-  async spawnWorktree(req: SpawnRequest): Promise<NodeView> {
-    if (req.kind !== 'claude') throw new Error('isolation "worktree" is for claude nodes only');
-    req = this.withPreset(req);
-    this.checkLimits(req);
-    this.checkDependencies(req);
-    const repo = await wt.mainCheckout(req.cwd);
-    const head = await wt.headInfo(req.cwd);
-    if (!trustedForWorktree(repo, readClaudeJson())) throw new Error(`refusing isolation "worktree": Claude does not trust ${repo} yet; run claude once in ${repo} to trust it`);
-    const config = loadConfig(repo, this.home); // the main checkout's file, whichever branch req.cwd has checked out
-    const parentId = req.parentId ?? null;
-    const defaults = config.roles[roleFor(req.role, parentId) === 'orchestrator' ? 'orchestrator' : 'worker'];
-    const rec = this.registry.create({
-      parentId, kind: 'claude', title: req.title, cwd: req.cwd,
-      model: req.model ?? defaults.model, effort: req.effort ?? defaults.effort, permissionMode: req.permissionMode, role: req.role, preset: req.preset,
-      sessionId: randomUUID(),
-    });
-    if (this.arm(rec.id, req, 'worktree')) return this.emitNode(rec.id)!;
-    try {
-      await this.addWorktree(rec.id, req.prompt, head);
-    } catch (err) {
-      this.discard(rec.id);
-      throw err;
-    }
-    this.logEvent(rec.id, 'spawn', { parentId, kind: 'claude', branch: this.registry.get(rec.id)!.worktree!.branch });
+    this.logEvent(rec.id, 'spawn', { parentId, kind: req.kind, ...(rec.worktree ? { branch: rec.worktree.branch } : {}) });
     return this.emitNode(rec.id)!;
   }
 
@@ -441,7 +429,7 @@ export class NodeManager extends EventEmitter {
    */
   private arm(id: string, req: SpawnRequest, isolation: Isolation): boolean {
     const after = req.after ?? [], afterSuccess = req.afterSuccess ?? [];
-    const max = loadConfig(req.cwd, this.home).limits.maxWorking;
+    const max = loadConfig(this.projectDir(req), this.home).limits.maxWorking;
     const queue = req.kind === 'claude' && !req.now && max > 0 && (this.workingCount() >= max || this.list().some((v) => v.status.state === 'queued'));
     if (!after.length && !afterSuccess.length && !queue) return false;
     const rec = this.registry.update(id, { pending: { after, afterSuccess, met: [], prompt: req.prompt, isolation, ...(req.now ? { now: true } : {}) } })!;
@@ -473,7 +461,7 @@ export class NodeManager extends EventEmitter {
         if (!unmet.length) this.logEvent(rec.id, 'release', { after: p.after, afterSuccess: p.afterSuccess });
         if (blocked) this.blockedNotice(rec.id, blocked);
       }
-      const max = loadConfig(rec.cwd, this.home).limits.maxWorking;
+      const max = loadConfig(this.projectDir(rec), this.home).limits.maxWorking;
       let state: AgentState = 'armed', activity: string;
       if (unmet.length) activity = blocked ? `blocked by ${blocked}` : `after ${unmet.join(', ')}`;
       else if (rec.kind === 'claude' && !p.now && max > 0 && working >= max) {
@@ -1066,7 +1054,7 @@ export class NodeManager extends EventEmitter {
   /** The completion gate for a node: config `gate` from its main checkout (else its cwd), when Claude trusts that directory, as for setup. */
   gateConfig(id: string): Config['gate'] {
     const rec = this.registry.get(id);
-    const dir = rec && (rec.worktree?.repo ?? rec.cwd);
+    const dir = rec && this.projectDir(rec);
     const gate = dir ? loadConfig(dir, this.home).gate : undefined;
     return gate && trustPolicy(dir!, readClaudeJson()) === 'auto' ? gate : undefined;
   }
@@ -1135,10 +1123,9 @@ export class NodeManager extends EventEmitter {
     const sessionDir = ensureSession(this.home, { rootId: root.id, title: root.title, cwd: root.cwd, createdAt: root.createdAt });
     const input: LaunchInput = {
       nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path,
-      title: rec.title, parentId: rec.parentId, home: this.home, cwd: rec.cwd, role: rec.role, sessionId: this.statuses.get(id)?.sessionId ?? rec.sessionId ?? '',
+      title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, sessionId: this.statuses.get(id)?.sessionId ?? rec.sessionId ?? '',
       resume, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
-      // From the main checkout, as at spawn: a worktree may not carry an uncommitted or ignored .orchestr8/agents.
-      preset: rec.preset ? loadPreset(rec.preset, rec.worktree?.repo ?? rec.cwd, this.home) : undefined,
+      preset: rec.preset ? loadPreset(rec.preset, this.projectDir(rec), this.home) : undefined,
     };
     const spec: LaunchSpec = rec.kind === 'claude' ? claudeLaunch(input) : terminalLaunch(input, this.shell);
     const cwd = rec.worktree?.repo ?? rec.cwd; // claude adopts the worktree itself through --worktree, or re-enters it on --resume
@@ -1209,8 +1196,8 @@ export class NodeManager extends EventEmitter {
   private sweepStale(): void {
     const now = Date.now();
     for (const [id, prev] of this.statuses) {
-      const cwd = this.registry.get(id)?.cwd ?? null;
-      const stalled = prev.state === 'working' ? stall(prev, now, loadConfig(cwd, this.home).limits.stallMinutes * 60_000) : prev;
+      const rec = this.registry.get(id);
+      const stalled = prev.state === 'working' ? stall(prev, now, loadConfig(rec ? this.projectDir(rec) : null, this.home).limits.stallMinutes * 60_000) : prev;
       this.setStatus(id, sweep(stalled, now));
     }
   }

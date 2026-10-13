@@ -98,9 +98,9 @@ describe('spawn with a preset', () => {
     writeFileSync(join(home, 'config.json'), JSON.stringify({ roles: { worker: { model: 'sonnet', effort: 'high' } } }));
     put(join(proj, '.orchestr8', 'agents'), 'greeter', GREETER);
     m = new NodeManager({ home, shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
-    const spawn = (req: { model?: string; permissionMode?: string; preset?: string }) => m!.registry.get(m!.spawn({ kind: 'claude', title: 'c', cwd: proj, parentId: 'p', ...req }).id)!;
+    const spawn = async (req: { model?: string; permissionMode?: string; preset?: string }) => m!.registry.get((await m!.spawn({ kind: 'claude', title: 'c', cwd: proj, parentId: 'p', ...req })).id)!;
 
-    const g = spawn({ preset: 'greeter' });
+    const g = await spawn({ preset: 'greeter' });
     expect(g).toMatchObject({ preset: 'greeter', model: 'haiku', effort: 'low', permissionMode: 'plan' });
     const argv = () => { try { return readFileSync(join(home, 'nodes', g.id, 'argv'), 'utf8').split('\n'); } catch { return []; } };
     await expect.poll(argv).toContain('--agent');
@@ -109,8 +109,8 @@ describe('spawn with a preset', () => {
     expect([flag('--model'), flag('--effort'), flag('--permission-mode'), flag('--agent')]).toEqual(['haiku', 'low', 'plan', 'greeter']);
     expect(a.join('\n')).toContain('# Role\n# Greeter\n\nSay marmalade.');
 
-    expect(spawn({ preset: 'greeter', model: 'opus', permissionMode: 'acceptEdits' })).toMatchObject({ model: 'opus', effort: 'low', permissionMode: 'acceptEdits' });
-    expect(spawn({})).toMatchObject({ model: 'sonnet', effort: 'high' });
-    expect(() => spawn({ preset: 'nope' })).toThrow(/no preset "nope"/);
+    expect(await spawn({ preset: 'greeter', model: 'opus', permissionMode: 'acceptEdits' })).toMatchObject({ model: 'opus', effort: 'low', permissionMode: 'acceptEdits' });
+    expect(await spawn({})).toMatchObject({ model: 'sonnet', effort: 'high' });
+    await expect(spawn({ preset: 'nope' })).rejects.toThrow(/no preset "nope"/);
   });
 });

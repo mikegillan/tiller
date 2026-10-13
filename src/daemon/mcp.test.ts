@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -132,6 +133,31 @@ describe('mcp api', () => {
     setMode('always');
     const [g] = await kids(1);
     expect(await close([g])).toBe(0);
+  });
+
+  it('closeWithoutConfirm comes from the main checkout, not a worktree branch\'s own copy', async () => {
+    const repo = join(home, 'wt-repo'), path = join(repo, '.claude', 'worktrees', 'x');
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' }).trim();
+    const setMode = (dir: string, mode: string) => {
+      mkdirSync(join(dir, '.orchestr8'), { recursive: true });
+      writeFileSync(join(dir, '.orchestr8', 'config.json'), JSON.stringify({ closeWithoutConfirm: mode }));
+    };
+    mkdirSync(repo);
+    git(repo, 'init', '-q', '-b', 'main');
+    setMode(repo, 'never');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-qm', 'never');
+    git(repo, 'worktree', 'add', '-q', '-b', 'o8/x', path);
+    setMode(path, 'always'); // the worker's branch copy, which it can edit
+    const p = (await spawnT('wt', 'human', admin, { cwd: path })).body.data.nodeId as string;
+    manager.registry.update(p, { worktree: { repo, path, branch: 'o8/x', base: 'main', baseSha: git(repo, 'rev-parse', 'HEAD') } });
+    const tok = manager.tokenFor(p);
+    const kid = (await spawnT('k', p, tok, { cwd: path })).body.data.nodeId as string;
+    const grandkid = (await spawnT('g', kid, manager.tokenFor(kid))).body.data.nodeId as string;
+    const close = async (caller: string, id: string) => { confirms.length = 0; await api('close', { nodeIds: [id] }, caller, manager.tokenFor(caller)); return confirms.length; };
+    expect(await close(kid, grandkid)).toBe(1); // a plain node whose cwd is in the worktree: the main checkout by git
+    expect(await close(p, kid)).toBe(1);        // the worktree node itself: its worktree's repo
+    await manager.close(p, true, 'discard'); // stay under limits.maxLiveNodes for the later tests
   });
 
   it('only the human may spawn with bypassPermissions; the mode is validated', async () => {

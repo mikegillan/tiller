@@ -33,7 +33,7 @@ function setup(): void {
   m = new NodeManager({ home: join(home, 'o8'), shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
 }
 
-const spawnW = (extra: Partial<SpawnRequest> = {}) => m.spawnWorktree({ kind: 'claude', title: 'w', cwd: repo, ...extra });
+const spawnW = (extra: Partial<SpawnRequest> = {}) => m.spawn({ kind: 'claude', title: 'w', cwd: repo, isolation: 'worktree', ...extra });
 const exited = async (id: string) => { m.session(id)!.kill(); await expect.poll(() => m.view(id)!.status.exited).toBe(true); };
 
 afterEach(() => {
@@ -63,7 +63,7 @@ describe('worktree nodes', () => {
 
   it('refuses a terminal, a cwd outside git, a repo with no commits and an untrusted repo, leaving nothing behind', async () => {
     setup();
-    await expect(m.spawnWorktree({ kind: 'terminal', title: 't', cwd: repo })).rejects.toThrow(/claude nodes only/);
+    await expect(m.spawn({ kind: 'terminal', title: 't', cwd: repo, isolation: 'worktree' })).rejects.toThrow(/claude nodes only/);
     await expect(spawnW({ cwd: join(home, 'bin') })).rejects.toThrow(/not inside a git work tree/);
     const empty = join(home, 'empty');
     mkdirSync(empty);
@@ -72,7 +72,6 @@ describe('worktree nodes', () => {
     // A trusted ancestor is not enough: claude --worktree checks the repo's own entry.
     writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [home]: { hasTrustDialogAccepted: true }, [repo]: { hasTrustDialogAccepted: false } } }));
     await expect(spawnW()).rejects.toThrow(`run claude once in ${repo} to trust it`);
-    expect(() => m.spawn({ kind: 'claude', title: 'c', cwd: repo, isolation: 'worktree' })).toThrow(/spawnWorktree/);
     expect(m.list()).toEqual([]);
     expect(g(repo, 'branch', '--list', 'o8/*')).toBe('');
   });
@@ -85,7 +84,7 @@ describe('worktree nodes', () => {
     writeFileSync(join(path, 'b.txt'), 'b\n');
     await expect(m.close(v.id, true)).rejects.toThrow(/^worktree kept: 1 dirty file, 1 unmerged commit; close with keep or discard$/);
     expect(m.session(v.id)).toBeDefined(); // a refused close leaves the node running
-    const sharer = m.spawn({ kind: 'terminal', title: 's', cwd: path, parentId: v.id });
+    const sharer = (await m.spawn({ kind: 'terminal', title: 's', cwd: path, parentId: v.id }));
     await expect(m.close(v.id, true, 'discard')).rejects.toThrow(`worktree in use by ${sharer.id}; close those nodes first`);
     await expect(m.close(v.id, true)).rejects.toThrow(`worktree kept: 1 dirty file, 1 unmerged commit; close with keep or discard; in use by ${sharer.id}`);
     await m.close(sharer.id);
@@ -182,7 +181,7 @@ describe('worktree nodes', () => {
     const server = http.createServer((req, res) => void handler(req, res));
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     try {
-      const parent = m.spawn({ kind: 'terminal', title: 'boss', cwd: repo });
+      const parent = (await m.spawn({ kind: 'terminal', title: 'boss', cwd: repo }));
       const kid = await spawnW({ parentId: parent.id });
       commit(kid.cwd, 'a.txt');
       await exited(kid.id);
@@ -255,7 +254,7 @@ describe('git state and merge', () => {
 
   it('refuses a diff for a node without a worktree', async () => {
     setup();
-    const t = m.spawn({ kind: 'terminal', title: 't', cwd: repo });
+    const t = (await m.spawn({ kind: 'terminal', title: 't', cwd: repo }));
     await expect(m.diff(t.id)).rejects.toThrow(`${t.id} has no worktree of its own to diff`);
   });
 

@@ -7,12 +7,13 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
-import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type ClientMessage, type Dnd, type ServerMessage, type Usage } from '../shared/protocol.js';
+import type { ClientMessage, Dnd, ServerMessage, Usage } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
 import { DEFAULT_PORT } from './home.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
 import { mountMcp } from './mcp.js';
 import { modApi } from './modapi.js';
+import { SPAWN_FIELDS } from './spawnfields.js';
 import type { HookEvent } from './status.js';
 import { deliver, HUMAN } from './messaging.js';
 import { readBody } from './util.js';
@@ -37,11 +38,7 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('input'), id, data: z.string() }),
   z.object({ t: z.literal('resize'), id, cols: size, rows: size }),
   z.object({ t: z.literal('select'), id }),
-  z.object({
-    t: z.literal('spawn'), kind: z.enum(NODE_KINDS), title: z.string().min(1), cwd: z.string().min(1),
-    prompt: z.string().optional(), model: z.string().optional(), effort: z.enum(EFFORTS).optional(), role: z.enum(ROLES).optional(), parentId: z.string().nullable().optional(),
-    isolation: z.enum(ISOLATIONS).optional(), preset: z.string().min(1).optional(), after: z.array(id).optional(), afterSuccess: z.array(id).optional(), now: z.boolean().optional(),
-  }),
+  z.object({ t: z.literal('spawn'), ...SPAWN_FIELDS, parentId: z.string().nullable().optional() }),
   z.object({ t: z.literal('close'), id, force: z.boolean().optional(), worktree: z.enum(['keep', 'discard']).optional() }),
   z.object({ t: z.literal('merge'), id }),
   z.object({ t: z.literal('restart'), id, prompt: z.string().optional() }),
@@ -128,9 +125,8 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       }
       case 'select': c.selected = m.id; manager.select(m.id); return;
       case 'spawn': {
-        const req = { kind: m.kind, title: m.title, cwd: m.cwd, prompt: m.prompt, model: m.model, effort: m.effort, role: m.role, parentId: m.parentId, isolation: m.isolation, preset: m.preset, after: m.after, afterSuccess: m.afterSuccess, now: m.now, byHuman: true };
-        if (manager.isolationFor(req) === 'worktree') await manager.spawnWorktree(req);
-        else manager.spawn(req);
+        const { t: _, ...req } = m;
+        await manager.spawn({ ...req, byHuman: true });
         return;
       }
       case 'close': await manager.close(m.id, m.force, m.worktree); return;

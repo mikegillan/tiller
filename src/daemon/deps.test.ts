@@ -19,7 +19,7 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
     rmSync(home, { recursive: true, force: true });
   });
 
-  function setup(config?: object) {
+  async function setup(config?: object) {
     home = mkdtempSync(join(tmpdir(), 'o8-deps-'));
     const bin = join(home, 'bin'), proj = join(home, 'proj');
     mkdirSync(bin);
@@ -34,8 +34,8 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
       return m;
     };
     const m = open();
-    const root = m.spawn({ kind: 'claude', title: 'root', cwd: proj, byHuman: true }).id;
-    const child = (title: string, extra = {}) => m.spawn({ kind: 'claude', title, cwd: proj, parentId: root, prompt: 'go', ...extra }).id;
+    const root = (await m.spawn({ kind: 'claude', title: 'root', cwd: proj, byHuman: true })).id;
+    const child = async (title: string, extra = {}) => (await m.spawn({ kind: 'claude', title, cwd: proj, parentId: root, prompt: 'go', ...extra })).id;
     const turn = (id: string, end = true) => {
       m.applyHook(id, { hook_event_name: 'UserPromptSubmit' });
       if (end) m.applyHook(id, { hook_event_name: 'Stop' });
@@ -46,11 +46,11 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
   }
 
   it('launches an after node when its dependency ends a turn begun after the spawn, and not before', async () => {
-    const { m, child, turn, live } = setup();
-    const a = child('a');
+    const { m, child, turn, live } = await setup();
+    const a = await child('a');
     m.applyHook(a, { hook_event_name: 'UserPromptSubmit' }); // a turn already running when b is armed does not count
     await tick();
-    const b = child('b', { after: [a] });
+    const b = await child('b', { after: [a] });
     expect(m.view(b)!.status).toMatchObject({ state: 'armed', activity: `after ${a}` });
     m.applyHook(a, { hook_event_name: 'Stop' });
     await tick();
@@ -62,10 +62,10 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
   });
 
   it('afterSuccess waits for the outcome, and a failed one blocks with a notice to the parent', async () => {
-    const { m, root, child, turn, outcome, live } = setup();
+    const { m, root, child, turn, outcome, live } = await setup();
     inbox(m, root); // the root's mod is polling, so notices land in its inbox
-    const a = child('a'), c = child('c');
-    const b = child('b', { afterSuccess: [a] }), d = child('d', { afterSuccess: [c] });
+    const a = await child('a'), c = await child('c');
+    const b = await child('b', { afterSuccess: [a] }), d = await child('d', { afterSuccess: [c] });
     turn(a);
     await tick();
     expect(live(b)).toBe(false);
@@ -80,18 +80,18 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
     expect(notices[0].text).toContain(`blocked by ${c}: tests broke`);
   });
 
-  it('refuses unknown dependencies and ones outside the caller\'s scope', () => {
-    const { m, child, proj } = setup();
-    expect(() => child('x', { after: ['n-00000000'] })).toThrow(/no such node n-00000000/);
-    const other = m.spawn({ kind: 'claude', title: 'other root', cwd: proj, byHuman: true }).id;
-    expect(() => child('y', { afterSuccess: [other] })).toThrow(/outside your lineage/);
+  it('refuses unknown dependencies and ones outside the caller\'s scope', async () => {
+    const { m, child, proj } = await setup();
+    await expect(child('x', { after: ['n-00000000'] })).rejects.toThrow(/no such node n-00000000/);
+    const other = (await m.spawn({ kind: 'claude', title: 'other root', cwd: proj, byHuman: true })).id;
+    await expect(child('y', { afterSuccess: [other] })).rejects.toThrow(/outside your lineage/);
     expect(m.list().map((v) => v.title)).not.toContain('y');
   });
 
   it('notify_when all sends one message with every outcome', async () => {
-    const { m, root, child, outcome } = setup();
+    const { m, root, child, outcome } = await setup();
     inbox(m, root);
-    const a = child('a'), b = child('b');
+    const a = await child('a'), b = await child('b');
     expect(notifyWhen(m, root, { ids: [a, b], when: 'all', of: 'success' })).toEqual({ replaced: false });
     expect(notifyWhen(m, root, { ids: [b, a], when: 'all', of: 'success' })).toEqual({ replaced: true });
     outcome(a, 'succeeded', 'did a');
@@ -109,8 +109,8 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
   });
 
   it('limits.maxWorking queues the third spawn and launches it when one finishes', async () => {
-    const { m, child, turn, live } = setup({ limits: { maxWorking: 2 } });
-    const a = child('a'), b = child('b'), c = child('c');
+    const { m, child, turn, live } = await setup({ limits: { maxWorking: 2 } });
+    const a = await child('a'), b = await child('b'), c = await child('c');
     expect(live(a) && live(b)).toBe(true);
     expect(m.view(c)!.status).toMatchObject({ state: 'queued', activity: 'queued: 2 working, limits.maxWorking 2' });
     m.applyHook(b, { hook_event_name: 'UserPromptSubmit' }); // working, still holds its slot
@@ -121,9 +121,9 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
   });
 
   it('armed nodes survive a manager restart', async () => {
-    const { m, open, child } = setup();
-    const a = child('a');
-    const b = child('b', { afterSuccess: [a] });
+    const { m, open, child } = await setup();
+    const a = await child('a');
+    const b = await child('b', { afterSuccess: [a] });
     m.shutdown();
     const m2 = open();
     expect(m2.view(b)!.status.state).toBe('armed');

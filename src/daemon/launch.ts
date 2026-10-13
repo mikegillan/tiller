@@ -106,7 +106,7 @@ export interface LaunchInput {
   path: string;
   title: string;
   parentId: string | null;
-  /** Daemon home (holds prompts/) and the node's cwd (may hold .orchestr8/ overrides). */
+  /** Daemon home (holds prompts/) and the node's project directory (may hold .orchestr8/ overrides; see NodeManager.projectDir). */
   home: string;
   cwd: string;
   role?: Role;

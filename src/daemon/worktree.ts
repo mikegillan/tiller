@@ -1,7 +1,7 @@
 // Git helpers for per-node worktrees: <repo>/.claude/worktrees/<nodeId> on branch <prefix><nodeId>.
 // Every git call goes through execFile with an argument array and a timeout. Only the setup and teardown commands from
 // the config run through a shell (runCommands), by design.
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { closeSync, existsSync, openSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,6 +34,16 @@ export async function mainCheckout(cwd: string): Promise<string> {
   const [first, second] = out.split('\n');
   if (second === 'bare') throw new Error(`a bare repository has no main checkout: ${cwd}`);
   return first!.slice('worktree '.length);
+}
+
+/** mainCheckout for synchronous callers: undefined outside a git work tree or in a bare repository. */
+export function mainCheckoutSync(cwd: string): string | undefined {
+  try {
+    const [first, second] = execFileSync('git', ['-C', cwd, 'worktree', 'list', '--porcelain'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).split('\n');
+    return second === 'bare' ? undefined : first!.slice('worktree '.length);
+  } catch {
+    return undefined;
+  }
 }
 
 /** The checkout's HEAD: its branch name (or the sha when detached) and sha. */

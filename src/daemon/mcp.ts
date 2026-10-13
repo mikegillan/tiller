@@ -8,7 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type Diff, type NodeView, type Outcome } from '../shared/protocol.js';
+import type { Diff, NodeView, Outcome } from '../shared/protocol.js';
 import { fmtUsd, subtreeSpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { loadConfig, type Config } from './config.js';
@@ -16,7 +16,8 @@ import { ADMIN_TOKEN_FILE } from './home.js';
 import { notifyWhen } from './deps.js';
 import { closeRefusal, type NodeManager, type WorktreeReport } from './manager.js';
 import { MAX_PATCH_BYTES, MergeConflict } from './worktree.js';
-import { loadPreset, PERMISSION_MODES } from './presets.js';
+import { PERMISSION_MODES } from './presets.js';
+import { SPAWN_FIELDS } from './spawnfields.js';
 import { DAEMON, deliver, HUMAN, inScope, isDescendant, messageStatus, QUEUE_CAP, QUEUE_TTL_MS, RATE_MS, startNotices, withdraw } from './messaging.js';
 import { logError, PREVIEW_CHARS, readBody, safeEqual } from './util.js';
 
@@ -184,15 +185,9 @@ const tools = {
     }),
 
   spawn: tool(
-    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `model` and `effort` to use the defaults for the role from the project config, if any. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. isolation "worktree" (claude nodes only) gives the child its own git worktree at <main checkout>/.claude/worktrees/<id> on a new branch from the HEAD of the checkout `cwd` is in, which needs a repo with a commit that Claude already trusts, and the reply then carries worktree { path, branch, base }. Omitting isolation uses the project config (default "none"), so a child whose cwd is inside an existing worktree shares that tree. `preset` names a spawn preset (.orchestr8/agents/<name>.md in `cwd`, else ~/.orchestr8/agents/<name>.md; built-in: "reviewer", "researcher"): it sets the role text, model, effort, permissionMode, isolation and tool restrictions, and any argument you pass overrides it. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error. `after` and `afterSuccess` (node ids in your scope) create the node armed, with no process yet: it launches by itself, exactly as this spawn would, once each `after` node has finished a turn that began after this spawn (or has exited), and each `afterSuccess` node has reported succeeded through report_outcome (gate passed, when one is configured). A failed report blocks it and you get a message; close it to drop it. When the project sets limits.maxWorking and that many claude nodes are working, a new node is queued instead and launched in creation order as others stop. The reply then has state "armed" or "queued" and what it waits on.',
-    {
-      kind: z.enum(NODE_KINDS), title: z.string().min(1), cwd: z.string().min(1), prompt: z.string().optional(),
-      model: z.string().optional(), effort: z.enum(EFFORTS).optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), role: z.enum(ROLES).optional(), isolation: z.enum(ISOLATIONS).optional(), preset: z.string().min(1).optional(), requestId: z.string().optional(),
-      after: z.array(z.string().min(1)).optional(), afterSuccess: z.array(z.string().min(1)).optional(), now: z.boolean().optional(),
-    },
+    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `model` and `effort` to use the defaults for the role from the project config, if any. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. isolation "worktree" (claude nodes only) gives the child its own git worktree at <main checkout>/.claude/worktrees/<id> on a new branch from the HEAD of the checkout `cwd` is in, which needs a repo with a commit that Claude already trusts, and the reply then carries worktree { path, branch, base }. Omitting isolation uses the project config (default "none"), so a child whose cwd is inside an existing worktree shares that tree. `preset` names a spawn preset (.orchestr8/agents/<name>.md in the main checkout of `cwd`, else ~/.orchestr8/agents/<name>.md; built-in: "reviewer", "researcher"): it sets the role text, model, effort, permissionMode, isolation and tool restrictions, and any argument you pass overrides it. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error. `after` and `afterSuccess` (node ids in your scope) create the node armed, with no process yet: it launches by itself, exactly as this spawn would, once each `after` node has finished a turn that began after this spawn (or has exited), and each `afterSuccess` node has reported succeeded through report_outcome (gate passed, when one is configured). A failed report blocks it and you get a message; close it to drop it. When the project sets limits.maxWorking and that many claude nodes are working, a new node is queued instead and launched in creation order as others stop. The reply then has state "armed" or "queued" and what it waits on.',
+    { ...SPAWN_FIELDS, permissionMode: z.enum(PERMISSION_MODES).optional(), requestId: z.string().optional() },
     async (c, { requestId, ...req }) => {
-      const presetMode = req.preset ? loadPreset(req.preset, req.cwd, c.manager.home).permissionMode : undefined;
-      if ((req.permissionMode ?? presetMode) === 'bypassPermissions' && c.caller !== HUMAN) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
       if (req.now && c.caller !== HUMAN) throw new Error('refused: only the human may bypass limits.maxWorking with now');
       const now = Date.now();
       for (const [k, v] of spawned) if (now - v.at > IDEMPOTENCY_MS) spawned.delete(k);
@@ -203,11 +198,7 @@ const tools = {
         if (prior.args !== args) throw new Error(`requestId ${requestId} was already used with different arguments`);
         return { data: { ...(prior.result as object), replayed: true } };
       }
-      const caller = c.caller === HUMAN ? undefined : c.manager.view(c.caller);
-      const inherited = caller?.status.permissionMode ?? caller?.permissionMode;
-      const permissionMode = req.permissionMode ?? presetMode ?? (inherited === 'bypassPermissions' ? undefined : inherited); // bypass stays human-only
-      const r = { ...req, permissionMode, parentId: c.caller === HUMAN ? null : c.caller, byHuman: c.caller === HUMAN };
-      const view = c.manager.isolationFor(r) === 'worktree' ? await c.manager.spawnWorktree(r) : c.manager.spawn(r);
+      const view = await c.manager.spawn({ ...req, parentId: c.caller === HUMAN ? null : c.caller, byHuman: c.caller === HUMAN });
       const w = view.worktree;
       const held = view.status.state === 'armed' || view.status.state === 'queued' ? { state: view.status.state, waiting: view.status.activity } : {};
       const result = w ? { nodeId: view.id, worktree: { path: w.path, branch: w.branch, base: w.base } } : { nodeId: view.id, ...held };
@@ -293,7 +284,7 @@ const tools = {
         if (a.worktree === 'discard') destroys.push(`${v.title}: discards ${check.unmerged.length} commit(s) and ${check.dirty.length} changed file(s) on ${v.worktree!.branch}`);
       }
       const list = views.map((v) => `${v.title} (${v.id})`).join(', ');
-      const mode = c.caller === HUMAN ? undefined : loadConfig(c.manager.view(c.caller)!.cwd, c.manager.home).closeWithoutConfirm;
+      const mode = c.caller === HUMAN ? undefined : loadConfig(c.manager.projectDir(c.manager.view(c.caller)!), c.manager.home).closeWithoutConfirm;
       const preapproved = a.worktree !== 'discard' && (mode === 'always' || (mode === 'done' && views.every((v) => v.status.exited || v.status.state === 'done' || v.outcome)));
       const text = `${who(c)} wants to close ${views.length} node(s): ${list}${destroys.length ? `. This deletes their worktrees: ${destroys.join('; ')}` : ''}`;
       if (c.caller !== HUMAN && !preapproved && !(await c.confirm(text))) {
