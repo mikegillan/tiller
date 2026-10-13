@@ -24,7 +24,7 @@ const SAVE_MS = 50;
 export const HUMAN = 'human';
 export const DAEMON = 'orchestr8';
 
-export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input'> & Partial<Pick<NodeManager, 'home'>>;
+export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input' | 'projectDir'> & Partial<Pick<NodeManager, 'home'>>;
 interface DeliverOpts {
   /** "now" interrupts a working target and delivers at once; default "queue". */
   mode?: SendMode;
@@ -389,7 +389,7 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
   if (fromId !== DAEMON && fromId !== HUMAN) {
     const recent = (s.sent.get(key) ?? []).filter((x) => now - x.at < LOOP_MS);
     s.sent.set(key, recent);
-    const max = loadConfig(from?.cwd ?? null, m.home).limits.maxMessagesPer10Min;
+    const max = loadConfig(from ? m.projectDir(from) : null, m.home).limits.maxMessagesPer10Min;
     const why = recent.length >= max ? `${recent.length} messages to ${toId} in 10 min (limits.maxMessagesPer10Min)`
       : recent.some((x) => x.text === text) ? `the same message to ${toId} twice in 10 min` : undefined;
     if (why) {

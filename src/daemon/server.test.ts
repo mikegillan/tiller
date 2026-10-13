@@ -88,7 +88,7 @@ describe('POST /hook', () => {
   it('rejects a wrong token and drives status with a right one', async () => {
     await connect();
     await until(() => seen.find((m) => m.t === 'snapshot'));
-    const node = manager.spawn({ kind: 'terminal', title: 'agent', cwd: tmpdir() });
+    const node = (await manager.spawn({ kind: 'terminal', title: 'agent', cwd: tmpdir() }));
     const token = manager.tokenFor(node.id);
     expect((await post(node.id, 'bad', { hook_event_name: 'Stop' })).status).toBe(401);
     expect((await post('n-other', token, { hook_event_name: 'Stop' })).status).toBe(401);
@@ -106,8 +106,8 @@ describe('POST /hook', () => {
   });
 
   it('serves the mod API: auth, inbox, mod-event measure and tree', async () => {
-    const parent = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
-    const kid = manager.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: parent.id });
+    const parent = (await manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() }));
+    const kid = (await manager.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: parent.id }));
     const call = (path: string, id: string, token: string, init: RequestInit = {}) =>
       fetch(`http://127.0.0.1:${server.port}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': id, 'Content-Type': 'application/json' } });
     const tp = manager.tokenFor(parent.id), tk = manager.tokenFor(kid.id);
@@ -129,8 +129,8 @@ describe('POST /hook', () => {
   });
 
   it('mod-event rateLimits: keeps the newest report from any node, broadcasts it, drops a malformed one', async () => {
-    const a = manager.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir() });
-    const b = manager.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir() });
+    const a = (await manager.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir() }));
+    const b = (await manager.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir() }));
     const post = (id: string, payload: unknown) => fetch(`http://127.0.0.1:${server.port}/mod-event`, {
       method: 'POST', body: JSON.stringify({ event: 'session.measure', payload }),
       headers: { Authorization: `Bearer ${manager.tokenFor(id)}`, 'X-O8-Node': id, 'Content-Type': 'application/json' },
@@ -160,18 +160,18 @@ describe('POST /hook', () => {
   });
 
   it('GET /tree: the whole tree from the root, the caller marked self', async () => {
-    const root = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
-    const a = manager.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir(), parentId: root.id });
-    const a1 = manager.spawn({ kind: 'terminal', title: 'a1', cwd: tmpdir(), parentId: a.id });
-    const b = manager.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir(), parentId: root.id });
-    manager.spawn({ kind: 'terminal', title: 'elsewhere', cwd: tmpdir() });
+    const root = (await manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() }));
+    const a = (await manager.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir(), parentId: root.id }));
+    const a1 = (await manager.spawn({ kind: 'terminal', title: 'a1', cwd: tmpdir(), parentId: a.id }));
+    const b = (await manager.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir(), parentId: root.id }));
+    (await manager.spawn({ kind: 'terminal', title: 'elsewhere', cwd: tmpdir() }));
     const res = await fetch(`http://127.0.0.1:${server.port}/tree`, { headers: { Authorization: `Bearer ${manager.tokenFor(a.id)}`, 'X-O8-Node': a.id } });
     const rows = await res.json() as Array<{ id: string; depth: number; self?: boolean }>;
     expect(rows.map((r) => [r.id, r.depth, !!r.self])).toEqual([[root.id, 0, false], [a.id, 1, true], [a1.id, 2, false], [b.id, 1, false]]);
   });
 
   it('X-O8-Clients lists the connected client kinds on /tree and /inbox', async () => {
-    const n = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
+    const n = (await manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() }));
     const header = async (path: string) => (await fetch(`http://127.0.0.1:${server.port}${path}`, { headers: { Authorization: `Bearer ${manager.tokenFor(n.id)}`, 'X-O8-Node': n.id } })).headers.get('x-o8-clients');
     expect(await header('/tree')).toBe('');
     await connect(adminToken(), 'app');
@@ -181,9 +181,9 @@ describe('POST /hook', () => {
   });
 
   it('POST /focus: auth, lineage scope, broadcast', async () => {
-    const parent = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
-    const kid = manager.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: parent.id });
-    const other = manager.spawn({ kind: 'terminal', title: 'other', cwd: tmpdir() });
+    const parent = (await manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() }));
+    const kid = (await manager.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: parent.id }));
+    const other = (await manager.spawn({ kind: 'terminal', title: 'other', cwd: tmpdir() }));
     const focus = (caller: string, token: string, id: string) =>
       fetch(`http://127.0.0.1:${server.port}/focus`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': caller }, body: JSON.stringify({ id }) });
     const tp = manager.tokenFor(parent.id), tk = manager.tokenFor(kid.id);
@@ -192,7 +192,7 @@ describe('POST /hook', () => {
     expect((await focus(parent.id, 'bad', kid.id)).status).toBe(401);
     expect((await focus(parent.id, tp, other.id)).status).toBe(403);
     expect((await focus(kid.id, tk, other.id)).status).toBe(403);
-    const cousin = manager.spawn({ kind: 'terminal', title: 'cousin', cwd: tmpdir(), parentId: manager.spawn({ kind: 'terminal', title: 'aunt', cwd: tmpdir(), parentId: parent.id }).id });
+    const cousin = (await manager.spawn({ kind: 'terminal', title: 'cousin', cwd: tmpdir(), parentId: (await manager.spawn({ kind: 'terminal', title: 'aunt', cwd: tmpdir(), parentId: parent.id })).id }));
     expect((await focus(kid.id, tk, cousin.id)).status).toBe(204); // anywhere in the same tree
     expect((await focus(parent.id, tp, kid.id)).status).toBe(204);
     expect((await focus(kid.id, tk, parent.id)).status).toBe(204); // a child may focus its parent
@@ -206,7 +206,7 @@ describe('client tracking', () => {
     await connect(adminToken(), 'app');
     const snap = await until(() => seen.find((m) => m.t === 'snapshot'));
     expect(snap).toMatchObject({ appConnected: true });
-    const id = manager.spawn({ kind: 'terminal', title: 'sh', cwd: tmpdir() }).id;
+    const id = (await manager.spawn({ kind: 'terminal', title: 'sh', cwd: tmpdir() })).id;
     const watching = (n: number) => until(() => (server.watchers(id) === n ? true : undefined));
     send({ t: 'select', id });
     send({ t: 'visibility', focused: false });

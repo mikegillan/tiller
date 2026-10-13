@@ -27,8 +27,8 @@ describe('session directories with a fake claude', () => {
 
   it('creates the root\'s directory with meta.json and gives every node in the tree its path', async () => {
     const { m, proj, nodeFile } = setup();
-    const root = m.spawn({ kind: 'claude', title: 'root', cwd: proj });
-    const worker = m.spawn({ kind: 'claude', title: 'w', cwd: proj, parentId: root.id });
+    const root = (await m.spawn({ kind: 'claude', title: 'root', cwd: proj }));
+    const worker = (await m.spawn({ kind: 'claude', title: 'w', cwd: proj, parentId: root.id }));
     const dir = sessionDir(m.home, root.id);
     expect(JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8'))).toMatchObject({ rootId: root.id, title: 'root', cwd: proj });
     await expect.poll(() => read(nodeFile(worker.id, 'env'))).toBe(`${dir}\n`);
@@ -38,7 +38,7 @@ describe('session directories with a fake claude', () => {
 
   it('restarts with the given prompt, else the handoff pointer when handoff.md exists, else no prompt', async () => {
     const { m, proj, nodeFile } = setup();
-    const { id } = m.spawn({ kind: 'claude', title: 'root', cwd: proj });
+    const { id } = (await m.spawn({ kind: 'claude', title: 'root', cwd: proj }));
     const lastArgs = async () => {
       await expect.poll(() => read(nodeFile(id, 'argv'))).not.toBe('');
       const args = read(nodeFile(id, 'argv')).trimEnd().split('\n');
@@ -63,8 +63,8 @@ describe('session directories with a fake claude', () => {
   it('appends events in order and records closedAt when the root closes', async () => {
     const { m, proj } = setup();
     const t0 = Date.now();
-    const root = m.spawn({ kind: 'claude', title: 'root', cwd: proj });
-    const w = m.spawn({ kind: 'claude', title: 'w', cwd: proj, parentId: root.id });
+    const root = (await m.spawn({ kind: 'claude', title: 'root', cwd: proj }));
+    const w = (await m.spawn({ kind: 'claude', title: 'w', cwd: proj, parentId: root.id }));
     m.applyHook(w.id, { hook_event_name: 'UserPromptSubmit', session_id: m.view(w.id)!.status.sessionId, prompt: 'go' });
     m.applyModEvent(w.id, { event: 'turn.complete', payload: { durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } });
     m.applyHook(w.id, { hook_event_name: 'Stop', session_id: m.view(w.id)!.status.sessionId, last_assistant_message: 'all done' }); // after done: still logged

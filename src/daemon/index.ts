@@ -28,7 +28,7 @@ manager.on('notify', createNotifier({
     const root = manager.view(manager.registry.lineage(id).at(-1)?.id ?? id);
     return root ? treeOrder(manager.list(), root).map((i) => i.node) : [];
   },
-  config: (id) => loadConfig(manager.registry.get(id)?.cwd ?? null, manager.home).notifications,
+  config: (id) => { const rec = manager.registry.get(id); return loadConfig(rec ? manager.projectDir(rec) : null, manager.home).notifications; },
   dnd: server.dnd,
   watchers: server.watchers,
   appConnected: server.appConnected,

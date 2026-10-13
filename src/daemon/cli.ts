@@ -10,6 +10,7 @@ import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
 import { promptPath } from './launch.js';
 import { listPresets } from './presets.js';
+import { SPAWN_FIELDS } from './spawnfields.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
 import { agentStatus, install, kickstart, LABEL, O8D, plistPath, uninstall } from './autostart.js';
 import { loginShellPath } from './pty.js';
@@ -237,10 +238,13 @@ switch (cmd) {
     console.log(`removed ${data.removed.length} exited node${data.removed.length === 1 ? '' : 's'}`);
     break;
   }
-  case 'spawn':
-    await call('spawn', { kind: f.kind, title: f.title, cwd: f.cwd ?? process.cwd(), prompt: f.prompt, model: f.model, effort: f.effort, permissionMode: f['permission-mode'], role: f.role, isolation: isolation(), preset: f.preset, requestId: f['request-id'],
-      after: ids(f.after), afterSuccess: ids(f['after-success']), now: f.now });
+  case 'spawn': {
+    // Each spawn field from its kebab-case flag; isolation, cwd and the id lists from o8's own spellings.
+    const flag = (k: string) => (f as Record<string, unknown>)[k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)];
+    const args = Object.fromEntries([...Object.keys(SPAWN_FIELDS), 'permissionMode', 'requestId'].map((k) => [k, flag(k)]));
+    await call('spawn', { ...args, cwd: f.cwd ?? process.cwd(), isolation: isolation(), after: ids(f.after), afterSuccess: ids(f['after-success']) });
     break;
+  }
   case 'diff':
     if (!pos[0]) fail(usage());
     await call('diff', { nodeId: pos[0], stat: f.stat });
