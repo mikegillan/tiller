@@ -14,5 +14,8 @@
     "command": "node_modules/.bin/tsc --noEmit && node_modules/.bin/tsc --noEmit -p ui/tsconfig.json && node_modules/.bin/vitest run",
     "retries": 2,
     "timeoutMinutes": 10
+  },
+  "limits": {
+    "stallMinutes": 10
   }
 }
