@@ -33,6 +33,14 @@
 .panel h2 .age { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .panel .msg { flex: 1; overflow: auto; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; user-select: text; }
 .hint { padding: 16px; margin: 0; color: var(--dim); }
+.outcome { flex: none; max-height: 50%; overflow: auto; padding: 12px 16px; border-bottom: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; user-select: text; }
+.outcome .verdict { font-weight: 600; }
+.outcome .verdict.succeeded { color: var(--done); }
+.outcome .verdict.failed { color: var(--bad); }
+.outcome h3 { margin: 10px 0 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); }
+.outcome p, .exited-overlay .outcome p { margin: 6px 0 0; color: inherit; }
+.outcome ul { margin: 0; padding-left: 18px; }
+.exited-overlay .outcome { margin: 0 0 16px; border: 1px solid var(--line); border-radius: 8px; max-height: 240px; }
 
 .statusbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 0 16px; border-top: 1px solid var(--line); background: var(--surface); color: var(--dim); font-size: 12px; }
 .statusbar .conn { display: flex; align-items: center; gap: 8px; }

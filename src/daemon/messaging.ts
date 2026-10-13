@@ -22,7 +22,7 @@ const MOD_LIVE_MS = 5000;
 const SAVE_MS = 50;
 /** Caller ids that are not nodes. Both have full scope. */
 export const HUMAN = 'human';
-const DAEMON = 'orchestr8';
+export const DAEMON = 'orchestr8';
 
 export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off'> & Partial<Pick<NodeManager, 'home'>>;
 interface DeliverOpts {

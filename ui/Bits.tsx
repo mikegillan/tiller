@@ -1,4 +1,4 @@
-import type { NodeView } from '../src/shared/protocol';
+import type { NodeView, Outcome } from '../src/shared/protocol';
 import { ctxLevel, fmtTokens, shortEffort, shortModel } from '../src/shared/format';
 import { fmtUsd } from '../src/shared/spend';
 import { KIND_LABEL, type StatusKind } from './tree';
@@ -46,3 +46,22 @@ export function NodeMeta({ node, detail, subtree }: { node: NodeView; detail?: b
   if (!parts.length) return null;
   return <div className="meta">{parts.map((p, i) => <span className="part" key={i}>{p}</span>)}</div>;
 }
+
+/** What a node reported through report_outcome: the verdict, then whichever structured fields it filled. */
+export function OutcomeDetails({ o }: { o: Outcome }) {
+  const list = (title: string, items?: string[]) => items?.length ? <><h3>{title}</h3><ul>{items.map((x, i) => <li key={i}>{x}</li>)}</ul></> : null;
+  return (
+    <div className="outcome">
+      <div className={`verdict ${o.outcome}`}>{o.outcome === 'succeeded' ? 'Succeeded' : 'Failed'}{o.gate && ` · gate ${o.gate}`}</div>
+      {o.summary && <p>{o.summary}</p>}
+      {o.note && <p>{o.note}</p>}
+      {o.verified && <><h3>Verified</h3><p>{o.verified}</p></>}
+      {list('Changed files', o.changedFiles)}
+      {list('Open questions', o.openQuestions)}
+    </div>
+  );
+}
+
+/** The completion gate's state as a small row marker. */
+export const GateMark = ({ gate }: { gate: NonNullable<NodeView['gate']> }) =>
+  <span className={`count${gate === 'failed' ? ' bad' : ''}`} title={`completion gate ${gate}`}>gate {gate}</span>;

@@ -67,6 +67,12 @@ The default orchestrator prompt now tells the orchestrator to give parallel work
 
 The daemon hides `.claude/worktrees/` from `git status` through `.git/info/exclude`, which ripgrep also honours, but test runners, linters and other tools that glob the tree do not. Exclude `**/.claude/worktrees/**` in them; this repo does so in `vitest.config.ts`.
 
+## Outcomes and the completion gate
+
+A worker ends its task with `report_outcome`: `succeeded` or `failed`, a note, and optionally `summary`, `changedFiles`, `verified` (what it ran and the result) and `openQuestions`. `list_nodes` returns these, the app shows them in the last-message panel and on the exited card, and the multiplexer shows the outcome and summary under an idle node.
+
+The `gate` config key makes a `succeeded` report wait for a check, for example `{"gate": {"command": "npm test", "retries": 2, "timeoutMinutes": 10}}` (retries and timeout shown at their defaults). The daemon runs the command with `sh -c` in the worker's directory, with the same environment and trust rule as worktree setup, and appends the output to `~/.orchestr8/nodes/<id>/gate.log`; the node shows "gate: <command>" meanwhile and its row carries a gate marker. If the command passes, the outcome is recorded with `gate: "passed"`. If it fails, nothing is recorded and the worker gets a message with the last 60 lines of output and is asked to fix it and report again. After `retries` more failures the outcome is recorded as failed with `gate: "failed"` and the parent is told. A worktree node reads the key from the main checkout's project file. `o8 gate [--cwd P]` runs the configured command once so you can try it.
+
 ## Browser UI (optional)
 
     npm run ui:build

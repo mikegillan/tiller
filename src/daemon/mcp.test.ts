@@ -5,10 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { systemPrompt } from './launch.js';
 import { NodeManager } from './manager.js';
 import { mountMcp } from './mcp.js';
+import { inbox } from './messaging.js';
 
 let home = '', manager: NodeManager, server: http.Server, base = '', admin = '';
 const confirms: string[] = [];
@@ -177,6 +178,65 @@ describe('mcp api', () => {
     expect(focused).toEqual([]);
     expect((await api('select', { nodeId: id })).status).toBe(200);
     expect(focused).toEqual([['human', id]]);
+  });
+
+  it('report_outcome stores the structured fields and list_nodes returns them; no gate configured records at once', async () => {
+    const p = (await spawnT('rp')).body.data.nodeId as string;
+    const w = (await spawnT('rw', p, manager.tokenFor(p))).body.data.nodeId as string;
+    const report = { outcome: 'succeeded', note: 'n', summary: 'did it', changedFiles: ['a.ts', 'b.ts'], verified: 'vitest: 3 passed', openQuestions: ['keep b?'] };
+    expect((await api('report_outcome', report, w, manager.tokenFor(w))).body.data).toEqual({ ok: true });
+    const list = (await api('list_nodes', {}, p, manager.tokenFor(p))).body;
+    expect(list.data.find((n: any) => n.id === w).outcome).toMatchObject(report);
+    expect(list.text).toContain('reported succeeded');
+  });
+
+  describe('completion gate', () => {
+    const proj = () => join(home, 'gated');
+    const tok = (id: string) => manager.tokenFor(id);
+    beforeAll(() => {
+      mkdirSync(join(proj(), '.orchestr8'), { recursive: true });
+      writeFileSync(join(proj(), '.orchestr8', 'config.json'), JSON.stringify({ gate: { command: 'test -f ok.txt && echo fine || { echo missing ok.txt; exit 3; }', retries: 1 }, limits: { maxLiveNodes: 100 } })); // earlier tests leave many nodes live
+      writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [proj()]: { hasTrustDialogAccepted: true } } })); // gate commands need trust, as setup does
+      vi.stubEnv('HOME', home);
+    });
+    afterAll(() => vi.unstubAllEnvs());
+    /** A parent and a worker in the gated project, both "claude" with a polling mod so the daemon's messages land in their inboxes. */
+    const pair = async () => {
+      const p = (await spawnT('gp', 'human', admin, { cwd: proj() })).body.data.nodeId as string;
+      const w = (await spawnT('gw', p, tok(p), { cwd: proj() })).body.data.nodeId as string;
+      for (const id of [p, w]) { manager.registry.update(id, { kind: 'claude' }); inbox(manager, id); }
+      return { p, w };
+    };
+
+    it('records a passing gate with gate: passed', async () => {
+      writeFileSync(join(proj(), 'ok.txt'), '');
+      const { w } = await pair();
+      const r = await api('report_outcome', { outcome: 'succeeded', summary: 's' }, w, tok(w));
+      expect(r.body.data).toEqual({ ok: true, gate: 'passed' });
+      expect(manager.view(w)).toMatchObject({ gate: 'passed', outcome: { outcome: 'succeeded', summary: 's', gate: 'passed' } });
+      expect(readFileSync(join(home, 'nodes', w, 'gate.log'), 'utf8')).toContain('fine');
+      rmSync(join(proj(), 'ok.txt'));
+    });
+
+    it('a failing gate messages the worker without recording; the last failure records failed and tells the parent', async () => {
+      const { p, w } = await pair();
+      const first = await api('report_outcome', { outcome: 'succeeded' }, w, tok(w));
+      expect(first.body.data).toEqual({ ok: false, gate: 'failed', attemptsLeft: 1 });
+      expect(manager.view(w)!.outcome).toBeUndefined();
+      expect(manager.view(w)!.gate).toBe('failed');
+      const [msg] = inbox(manager, w);
+      expect(msg.text).toContain('Completion gate failed (attempt 1 of 2): test -f ok.txt');
+      expect(msg.text).toContain('missing ok.txt');
+      expect(msg.text).toContain('exited with 3');
+      expect(msg.text).toContain('Fix it and call report_outcome again.');
+      expect(inbox(manager, p)).toEqual([]);
+      const last = await api('report_outcome', { outcome: 'succeeded', summary: 's' }, w, tok(w));
+      expect(last.body.data).toEqual({ ok: false, gate: 'failed', attemptsLeft: 0 });
+      expect(manager.view(w)!.outcome).toMatchObject({ outcome: 'failed', gate: 'failed', summary: 's' });
+      const [notice] = inbox(manager, p);
+      expect(notice.text).toContain(`failed its completion gate`);
+      expect(notice.text).toContain('attempt 2 of 2');
+    });
   });
 
   it('serves the tools over MCP with schemas', async () => {

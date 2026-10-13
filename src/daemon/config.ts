@@ -22,6 +22,11 @@ const ConfigFile = z.object({
     setup: z.array(z.string().min(1)).optional(),
     teardown: z.array(z.string().min(1)).optional(),
   }).strict().optional(),
+  gate: z.object({
+    command: z.string().min(1).optional(),
+    retries: z.number().int().nonnegative().optional(),
+    timeoutMinutes: z.number().positive().optional(),
+  }).strict().optional(),
   resumeOnStart: z.boolean().optional(),
   resumeMaxAgeDays: z.number().nonnegative().optional(),
   limits: z.object({
@@ -35,7 +40,7 @@ const ConfigFile = z.object({
 type ConfigFile = z.infer<typeof ConfigFile>;
 type RoleDefaults = z.infer<typeof RoleDefaults>;
 
-type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include' | 'merge' | 'mergeWithoutConfirm' | 'setup' | 'teardown'}` | 'resumeOnStart' | 'resumeMaxAgeDays' | `limits.${LimitKey}`;
+type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include' | 'merge' | 'mergeWithoutConfirm' | 'setup' | 'teardown'}` | `gate.${'command' | 'retries' | 'timeoutMinutes'}` | 'resumeOnStart' | 'resumeMaxAgeDays' | `limits.${LimitKey}`;
 type LimitKey = keyof Limits;
 
 /** Guardrails for unattended agents; the human is exempt from the spawn caps. */
@@ -63,6 +68,11 @@ export interface Config {
    * setup, teardown: shell commands run in a new worktree before launch, and in a worktree before it is removed.
    */
   worktrees: { isolation: Isolation; branchPrefix: string; include?: string[]; merge: MergeStyle; mergeWithoutConfirm: boolean; setup: string[]; teardown: string[] };
+  /**
+   * A command that must pass before a worker's report_outcome "succeeded" is accepted; absent means no gate. Once it has
+   * failed retries + 1 times the outcome is recorded as failed. Each run is stopped after timeoutMinutes.
+   */
+  gate?: { command: string; retries: number; timeoutMinutes: number };
   /** On start, resume the nodes that were live when the daemon last went away, unless idle for more than resumeMaxAgeDays. */
   resumeOnStart: boolean;
   resumeMaxAgeDays: number;
@@ -116,6 +126,11 @@ export function loadConfig(cwd: string | null, home = homeDir()): Config {
     isolation: isolation ?? 'none', branchPrefix: branchPrefix ?? 'o8/', ...(include ? { include } : {}),
     merge: merge ?? 'merge', mergeWithoutConfirm: mergeWithoutConfirm ?? false, setup: setup ?? [], teardown: teardown ?? [],
   };
+  const [command, sgc] = pick((c) => c.gate?.command);
+  const [retries, sgr] = pick((c) => c.gate?.retries);
+  const [timeoutMinutes, sgt] = pick((c) => c.gate?.timeoutMinutes);
+  sources['gate.command'] = sgc; sources['gate.retries'] = sgr; sources['gate.timeoutMinutes'] = sgt;
+  const gate = command ? { command, retries: retries ?? 2, timeoutMinutes: timeoutMinutes ?? 10 } : undefined;
   const [resumeOnStart, sr] = pick((c) => c.resumeOnStart, true);
   const [resumeMaxAgeDays, sa] = pick((c) => c.resumeMaxAgeDays, true);
   sources.resumeOnStart = sr; sources.resumeMaxAgeDays = sa;
@@ -125,5 +140,5 @@ export function loadConfig(cwd: string | null, home = homeDir()): Config {
     if (v !== undefined) limits[k] = v;
     sources[`limits.${k}`] = src;
   }
-  return { roles, closeWithoutConfirm: close ?? 'never', worktrees, resumeOnStart: resumeOnStart ?? true, resumeMaxAgeDays: resumeMaxAgeDays ?? 3, limits, sources };
+  return { roles, closeWithoutConfirm: close ?? 'never', worktrees, ...(gate ? { gate } : {}), resumeOnStart: resumeOnStart ?? true, resumeMaxAgeDays: resumeMaxAgeDays ?? 3, limits, sources };
 }

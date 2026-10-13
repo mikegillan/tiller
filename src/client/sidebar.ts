@@ -142,9 +142,10 @@ export function layoutSidebar(m: SideModel, W: number, H: number): SideLayout {
   const items3 = tree(m.nodes);
   for (const { n, head, cont } of items3.slice(m.scroll)) {
     const sel = n.id === m.cur, bg = sel ? BG : '';
-    const rows: Seg[][] = [lr([['2', head], glyph(n), ['', ' '], [n.status.exited ? '2' : sel || needsYou(n.status) ? '1' : '', n.title], ...(n.unread ? [['36', ' •'] as Seg] : [])], n.status.exited ? 'exited' : `${n.status.stalled ? 'no activity ' : ''}${fmtAge(m.now - n.status.changedAt)}`, w)];
-    const act = n.status.activity;
+    const rows: Seg[][] = [lr([['2', head], glyph(n), ['', ' '], [n.status.exited ? '2' : sel || needsYou(n.status) ? '1' : '', n.title], ...(n.unread ? [['36', ' •'] as Seg] : []), ...(n.gate ? [[n.gate === 'failed' ? '31' : '2', ` gate ${n.gate}`] as Seg] : [])], n.status.exited ? 'exited' : `${n.status.stalled ? 'no activity ' : ''}${fmtAge(m.now - n.status.changedAt)}`, w)];
+    const act = n.status.activity, o = n.outcome;
     if (act) rows.push([['2', cont], [n.status.state === 'blocked' ? '33' : '2', act]]);
+    else if (o) rows.push([['2', cont], [o.outcome === 'failed' ? '31' : '32', o.outcome], ['2', (o.summary ?? o.note) ? ` · ${o.summary ?? o.note}` : '']]);
     const mt = meta(n, w - cont.length, subtreeSpend(m.nodes.values(), n.id));
     if (mt.length) rows.push([['2', cont], ...mt]);
     if (lines.length - 1 + rows.length > area) break;

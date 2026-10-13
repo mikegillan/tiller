@@ -19,13 +19,14 @@ describe('loadConfig', () => {
 
   it('resolves each key from the project file, then the home file, then the default', () => {
     const { cwd, homeDir } = setup(
-      JSON.stringify({ roles: { worker: { model: 'haiku' } }, worktrees: { include: ['.env'], merge: 'squash' }, resumeOnStart: false, resumeMaxAgeDays: 1, limits: { maxChildren: 2 } }),
-      JSON.stringify({ roles: { worker: { model: 'sonnet', effort: 'high' }, orchestrator: { model: 'opus' } }, closeWithoutConfirm: 'done', worktrees: { isolation: 'worktree', include: ['x'], setup: ['npm ci'] }, resumeMaxAgeDays: 7, limits: { maxChildren: 5, stallMinutes: 2 } }),
+      JSON.stringify({ roles: { worker: { model: 'haiku' } }, worktrees: { include: ['.env'], merge: 'squash' }, gate: { command: 'npm test' }, resumeOnStart: false, resumeMaxAgeDays: 1, limits: { maxChildren: 2 } }),
+      JSON.stringify({ roles: { worker: { model: 'sonnet', effort: 'high' }, orchestrator: { model: 'opus' } }, closeWithoutConfirm: 'done', worktrees: { isolation: 'worktree', include: ['x'], setup: ['npm ci'] }, gate: { command: 'make', retries: 5 }, resumeMaxAgeDays: 7, limits: { maxChildren: 5, stallMinutes: 2 } }),
     );
     const proj = join(cwd, '.orchestr8', 'config.json'), home = join(homeDir, 'config.json');
     expect(loadConfig(cwd, homeDir)).toEqual({
       roles: { orchestrator: { model: 'opus' }, worker: { model: 'haiku', effort: 'high' } }, closeWithoutConfirm: 'done',
       worktrees: { isolation: 'worktree', branchPrefix: 'o8/', include: ['.env'], merge: 'squash', mergeWithoutConfirm: false, setup: ['npm ci'], teardown: [] }, // include replaces the home list whole
+      gate: { command: 'npm test', retries: 5, timeoutMinutes: 10 }, // each gate key resolves on its own
       resumeOnStart: true, resumeMaxAgeDays: 7, // daemon settings ignore the project file
       limits: { maxDepth: 3, maxChildren: 2, maxLiveNodes: 20, stallMinutes: 2, maxMessagesPer10Min: 20 },
       sources: {
@@ -33,6 +34,7 @@ describe('loadConfig', () => {
         'roles.worker.model': proj, 'roles.worker.effort': home, closeWithoutConfirm: home,
         'worktrees.isolation': home, 'worktrees.branchPrefix': 'default', 'worktrees.include': proj,
         'worktrees.merge': proj, 'worktrees.mergeWithoutConfirm': 'default', 'worktrees.setup': home, 'worktrees.teardown': 'default',
+        'gate.command': proj, 'gate.retries': home, 'gate.timeoutMinutes': 'default',
         resumeOnStart: 'default', resumeMaxAgeDays: home,
         'limits.maxDepth': 'default', 'limits.maxChildren': proj, 'limits.maxLiveNodes': 'default', 'limits.stallMinutes': home, 'limits.maxMessagesPer10Min': 'default',
       },

@@ -1,5 +1,5 @@
 import type { NodeView } from '../src/shared/protocol';
-import { canMerge } from './Bits';
+import { canMerge, OutcomeDetails } from './Bits';
 import { send } from './conn';
 import { Icon } from './icons';
 import { openDialog } from './store';
@@ -11,6 +11,7 @@ export function ExitedCard({ node }: { node: NodeView }) {
       <div className="card">
         <h2>{node.title} has exited</h2>
         <p>The process is no longer running. Resume continues the session where it left off.</p>
+        {node.outcome && <OutcomeDetails o={node.outcome} />}
         <div className="btns">
           <button className="btn primary" autoFocus onClick={() => send({ t: 'resume', id: node.id })}><Icon name="play" size={14} />Resume</button>
           {canMerge(node) && <button className="btn" onClick={() => send({ t: 'merge', id: node.id })}><Icon name="merge" size={14} />Merge into {node.status.git!.base}</button>}

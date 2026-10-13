@@ -10,6 +10,7 @@ import { promptPath } from './launch.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
 import { agentStatus, install, kickstart, LABEL, O8D, plistPath, uninstall } from './autostart.js';
 import { loginShellPath } from './pty.js';
+import { mainCheckout } from './worktree.js';
 import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, waitForDaemon } from './up.js';
 
 const usage = () => `o8: control orchestr8. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
@@ -38,7 +39,8 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--request-id ID]
   o8 prompts                                          show the role prompt files and any override for this directory
   o8 config [--cwd P]                                 show the effective config for a directory and which file each key came from
-  o8 worktrees [--cwd P]                              list node worktrees, orphans and kept branches for this repo
+  o8 gate [--cwd P]                                   run the configured completion gate command once in a directory and print the result
+  o8 worktrees [--cwd P]                            list node worktrees, orphans and kept branches for this repo
   o8 worktrees clean [--force] [--cwd P]              remove orphans and kept branches that are clean and merged; --force removes all
   o8 help`;
 
@@ -116,10 +118,21 @@ switch (cmd) {
       'worktrees.isolation': c.worktrees.isolation, 'worktrees.branchPrefix': c.worktrees.branchPrefix, 'worktrees.include': c.worktrees.include?.join(', ') ?? '(.worktreeinclude)',
       'worktrees.merge': c.worktrees.merge, 'worktrees.mergeWithoutConfirm': c.worktrees.mergeWithoutConfirm,
       'worktrees.setup': JSON.stringify(c.worktrees.setup), 'worktrees.teardown': JSON.stringify(c.worktrees.teardown),
+      'gate.command': c.gate?.command ?? '(none)', 'gate.retries': c.gate?.retries, 'gate.timeoutMinutes': c.gate?.timeoutMinutes,
       resumeOnStart: c.resumeOnStart, resumeMaxAgeDays: c.resumeMaxAgeDays,
       ...Object.fromEntries(Object.entries(c.limits).map(([k, v]) => [`limits.${k}`, v])),
     };
     for (const [k, v] of Object.entries(values)) console.log(`${k}: ${v ?? '(claude default)'}  [${c.sources[k as keyof typeof values]}]`);
+    break;
+  }
+  case 'gate': {
+    const dir = realpathSync(resolve(f.cwd ?? process.cwd()));
+    const gate = loadConfig(await mainCheckout(dir).catch(() => dir), home).gate ?? fail(`no gate.command configured for ${dir}`);
+    console.log(`$ ${gate.command}`);
+    const r = spawnSync('sh', ['-c', gate.command], { cwd: dir, stdio: 'inherit', timeout: gate.timeoutMinutes * 60_000 });
+    const end = r.error ? r.error.message : r.signal ? `stopped by ${r.signal}` : `exit ${r.status}`;
+    console.log(r.status === 0 ? 'gate passed' : `gate failed (${end})`);
+    process.exit(r.status === 0 ? 0 : 1);
     break;
   }
   case 'select':
