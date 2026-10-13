@@ -65,9 +65,9 @@ describe('session directories with a fake claude', () => {
     const t0 = Date.now();
     const root = (await m.spawn({ kind: 'claude', title: 'root', cwd: proj }));
     const w = (await m.spawn({ kind: 'claude', title: 'w', cwd: proj, parentId: root.id }));
-    m.applyHook(w.id, { hook_event_name: 'UserPromptSubmit', session_id: m.view(w.id)!.status.sessionId, prompt: 'go' });
+    m.applyHook(w.id, { hook_event_name: 'UserPromptSubmit', session_id: m.view(w.id)!.sessionId, prompt: 'go' });
     m.applyModEvent(w.id, { event: 'turn.complete', payload: { durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } });
-    m.applyHook(w.id, { hook_event_name: 'Stop', session_id: m.view(w.id)!.status.sessionId, last_assistant_message: 'all done' }); // after done: still logged
+    m.applyHook(w.id, { hook_event_name: 'Stop', session_id: m.view(w.id)!.sessionId, last_assistant_message: 'all done' }); // after done: still logged
     m.restart(w.id);
     await m.close(w.id);
     await m.close(root.id, true);

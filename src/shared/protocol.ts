@@ -33,9 +33,6 @@ export interface NodeStatus {
   stalled?: boolean;
   /** True once the PTY process has exited. */
   exited?: boolean;
-  /** Claude session id (minted at launch, updated from SessionStart). */
-  sessionId?: string;
-  transcriptPath?: string;
   /** Last assistant message text, from Stop / Notification payloads. */
   lastAssistantMessage?: string;
   /** Latest permission_mode seen in a hook payload (default, acceptEdits, plan, auto, bypassPermissions). */
@@ -151,9 +148,9 @@ export interface NodeRecord {
   createdAt: number;
   /** When the node last launched or changed state on a hook; resume on start skips nodes idle longer than daemon.resumeMaxAgeDays. */
   lastActiveAt?: number;
-  /** Persisted so a restarted daemon can offer Resume. */
+  /** Claude session id: minted at launch, updated from SessionStart. Persisted so a restarted daemon can offer Resume. */
   sessionId?: string;
-  /** Claude's transcript file, from SessionStart. Persisted so Resume can find it. */
+  /** Claude's transcript file, from SessionStart (or found by resume). Persisted so Resume can find it. */
   transcriptPath?: string;
   /** Session ids from before each restart, oldest first (at most 10), for a later history feature. */
   previousSessions?: string[];

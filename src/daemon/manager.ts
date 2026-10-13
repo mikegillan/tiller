@@ -2,9 +2,9 @@ import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve, sep } from 'node:path';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { NEEDS_YOU_STATES, type AgentState, type Diff, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Pending, type Role, type Usage, type Worktree } from '../shared/protocol.js';
+import { NEEDS_YOU_STATES, type Diff, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { loadConfig, type Config, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
@@ -12,14 +12,15 @@ import { claudeLaunch, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
-import { checkDeps } from './deps.js';
-import { DAEMON, deliver, flushInbox, HUMAN, inScope } from './messaging.js';
+import { arm, scheduleSoon, type Watch } from './deps.js';
+import { flushInbox, HUMAN, inScope } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
 import { buildChildEnv, PtySession } from './pty.js';
-import { logError, safeEqual } from './util.js';
+import { count, inside, logError, safeEqual } from './util.js';
 import * as wt from './worktree.js';
+import { addWorktree, closeWorktreeNode, mergeWorktree, readClaudeJson, refreshGit, refreshGitSoon, setMissing, setupThenLaunch, trustedForWorktree, trustPolicy, worktreeCheck, worktreeCommands, worktreeEnv, worktrees, type WorktreeCheck, type WorktreeReport } from './worktree-lifecycle.js';
 import { appendEvent, buildDigest, ensureSession, flushEvents, handoffPrompt, listSessions, markClosed, readEvents, sessionDir, sweepSessions } from './sessions.js';
-import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
+import { initialState, interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
 
 const MAX_PREVIOUS_SESSIONS = 10;
 const INTERRUPT_MS = 1500;
@@ -29,79 +30,11 @@ const TRUST_BLOCKED_ACTIVITY = 'Trust dialog: answer it in the terminal';
 /** The marker (U+276F) Claude draws in front of the selected option of a dialog. */
 const SELECTED = String.fromCodePoint(0x276f);
 const DEFAULT_SIZE = { cols: 120, rows: 40 };
-/** Main checkouts in which this daemon has created worktrees, so reconciliation finds them after a lost record. */
-const REPOS_FILE = 'worktree-repos.json';
-/** How long close waits for a killed worktree node to exit, so Claude's lock on the worktree belongs to a dead pid. */
-const EXIT_WAIT_MS = 3000;
-/** After an edit, wait this long for more before recomputing a worktree's git state. */
-const GIT_DEBOUNCE_MS = 3000;
 const GIT_EDIT_TOOLS = ['Edit', 'Write', 'Bash'];
-/** Limit for each worktree setup or teardown command. */
-const SETUP_TIMEOUT_MS = 10 * 60_000;
 /** At most one cost event per node in this long. */
 const COST_EVENT_MS = 60_000;
 /** Lines of gate output that go back to the worker. */
 const GATE_TAIL_LINES = 60;
-
-/** A node's state before any hook arrives: a Claude node is unknown until SessionStart; a terminal has no agent state. */
-const initialState = (kind: NodeKind): AgentState => (kind === 'claude' ? 'unknown' : 'none');
-const inside = (path: string, dir: string) => path === dir || path.startsWith(dir + sep);
-
-/** What stands between a node's worktree and its removal. */
-export interface WorktreeCheck { dirty: string[]; unmerged: string[]; sharing: string[] }
-
-const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
-
-/**
- * Why closing a worktree node must not go ahead, or undefined. Another live node working inside the tree always
- * refuses; uncommitted files or unmerged commits refuse unless the close says keep or discard. Short and action first:
- * the mux cuts it to 60 characters.
- */
-export function closeRefusal(c: WorktreeCheck, mode?: 'keep' | 'discard'): string | undefined {
-  const unsafe = !mode && (c.dirty.length > 0 || c.unmerged.length > 0);
-  const sharing = c.sharing.length ? `in use by ${c.sharing.join(', ')}` : '';
-  if (!unsafe) return sharing ? `worktree ${sharing}; close those nodes first` : undefined;
-  const msg = `worktree kept: ${count(c.dirty.length, 'dirty file')}, ${count(c.unmerged.length, 'unmerged commit')}; close with keep or discard`;
-  return sharing ? `${msg}; ${sharing}` : msg;
-}
-
-export interface WorktreeReport {
-  nodes: { nodeId: string; title: string; repo: string; path: string; branch: string; base: string; missing?: boolean }[];
-  /** Worktrees with this daemon's marker but no node, left by a crash between creating the worktree and saving the record. */
-  orphans: { nodeId: string; repo: string; path: string; branch?: string; base: string; dirty: string[]; unmerged: string[]; error?: string }[];
-  /** <prefix>n-<hex> branches with neither a worktree nor a node, such as those kept by close with keep. */
-  kept: { repo: string; branch: string; unmerged: string[] }[];
-  /** What a clean removed, with the commits and uncommitted files that went with it. */
-  removed: { what: string; commits: string[]; files: string[] }[];
-}
-
-/**
- * Whether we may answer Claude's folder-trust dialog for `cwd`. Only when ~/.claude.json already
- * records trust for the cwd or one of its ancestors; otherwise the human has to decide.
- */
-export function trustPolicy(cwd: string, claudeJson: unknown): 'auto' | 'manual' {
-  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
-    if (trusted(claudeJson, dir)) return 'auto';
-    if (dirname(dir) === dir) return 'manual';
-  }
-}
-
-/**
- * Whether `claude --worktree` will start in `repo`. Interactively it exits with "Workspace trust not yet accepted" unless
- * trust is recorded for the repo itself: with 2.1.296 a trusted ancestor did not count when the repo had its own entry.
- */
-export function trustedForWorktree(repo: string, claudeJson: unknown): boolean {
-  return trusted(claudeJson, repo);
-}
-
-/** Whether ~/.claude.json records trust for exactly `dir`. */
-function trusted(claudeJson: unknown, dir: string): boolean {
-  return (claudeJson as { projects?: Record<string, { hasTrustDialogAccepted?: unknown }> } | null)?.projects?.[dir]?.hasTrustDialogAccepted === true;
-}
-
-function readClaudeJson(): unknown {
-  try { return JSON.parse(readFileSync(join(homedir(), '.claude.json'), 'utf8')); } catch { return null; }
-}
 
 /** The completion gate configured for `dir`, when Claude trusts that directory, as for worktree setup. `o8 gate` uses it too. */
 export function gateFor(dir: string, home: string): Config['gate'] {
@@ -151,6 +84,41 @@ export interface ManagerOptions {
 export interface NotifyEvent { id: string; kind: 'done' | 'needsYou' | 'errored' | 'exited'; title: string; body?: string }
 
 /**
+ * What the daemon holds for one node besides its record; none of it is persisted. Created with the node (spawn, or the
+ * record loaded at start) and deleted with it in discard, so nothing per node outlives it.
+ */
+export interface NodeRuntime {
+  /** Unset only while a new worktree node's tree is being created: view() hides the node until then. */
+  status?: NodeStatus;
+  /** The live PTY; unset once the process has gone. */
+  session?: PtySession;
+  unread?: boolean;
+  lastHookAt?: number;
+  interruptTimer?: NodeJS.Timeout;
+  /** Set while the node's worktree is being created, closed or merged; each excludes the others. */
+  busy?: 'creating' | 'closing' | 'merging';
+  git?: GitState;
+  gitTimer?: NodeJS.Timeout;
+  /** A worktree setup in progress, so close can stop it. */
+  setup?: { abort: AbortController; done: Promise<void> };
+  /** Set until the worktree setup succeeds, with the prompt to launch with once it does; restart retries it. */
+  needsSetup?: { prompt: string | undefined };
+  /** What the node reported through report_outcome. */
+  outcome?: Outcome;
+  /** The completion gate's last run, with the failed runs since the node's last outcome. */
+  gate?: { state: NonNullable<NodeView['gate']>; command: string; failures: number };
+  lastCostEvent?: number;
+  /** When the latest turn began (UserPromptSubmit), for after dependencies and notify_when. */
+  turnStart?: number;
+  /** A claude node launched with a prompt whose first turn has not begun: it counts against daemon.maxWorking. */
+  starting?: boolean;
+  /** Armed from the record at start; it waits for resumeLive, which runs once the daemon has its endpoint. */
+  restored?: boolean;
+  /** The notify_when registrations this node made, by id set (deps.ts). */
+  watches?: Map<string, Watch>;
+}
+
+/**
  * Owns the registry, the live PTYs and the per-node status. Events (node:events):
  *   'node'    (view: NodeView)            created or changed
  *   'removed' (id: string)
@@ -169,38 +137,17 @@ export class NodeManager extends EventEmitter {
   endpoint = '';
   /** Whether any connected UI client has node `id` selected; set by the server. A selected node never turns unread. */
   isSelected: (id: string) => boolean = () => false;
+  /** Each node's runtime state; see NodeRuntime. worktree-lifecycle.ts and deps.ts use it too. */
+  readonly runtimes = new Map<string, NodeRuntime>();
+  /** PATH handed to children. */
+  readonly path: string;
+  /** Set by shutdown: the live set is then frozen, so the PTYs' exits do not empty it. */
+  private shutDown = false;
   private shell: string;
-  private path: string;
   private secret: Buffer;
-  private sessions = new Map<string, PtySession>();
-  private statuses = new Map<string, NodeStatus>();
-  private unread = new Set<string>();
-  private lastHookAt = new Map<string, number>();
   private sweepTimer: NodeJS.Timeout;
-  private interruptTimers = new Map<string, NodeJS.Timeout>();
-  /** Worktree nodes whose worktree is being created, or that are being closed or merged; each excludes the others. */
-  private busy = new Map<string, 'creating' | 'closing' | 'merging'>();
-  private gits = new Map<string, GitState>();
-  private gitTimers = new Map<string, NodeJS.Timeout>();
-  /** Worktree setups in progress, so close can stop one. */
-  private setups = new Map<string, { abort: AbortController; done: Promise<void> }>();
-  /** Nodes whose setup has not succeeded yet, with the prompt to launch them with once it does; restart retries it. */
-  private needsSetup = new Map<string, string | undefined>();
-  /** What each node reported through report_outcome, and its completion gate's last run with the failed runs since its last outcome. Neither is persisted. */
-  private outcomes = new Map<string, Outcome>();
-  private gates = new Map<string, { state: NonNullable<NodeView['gate']>; command: string; failures: number }>();
   /** Ids that were live when the daemon last went away, until resumeLive has dealt with them. */
   private pendingResume: Set<string>;
-  /** Set by shutdown: the live set is then frozen, so the PTYs' exits do not empty it. */
-  private stopped = false;
-  private lastCostEvent = new Map<string, number>();
-  /** When each node's latest turn began (UserPromptSubmit), for after dependencies and notify_when. Not persisted. */
-  private turnStarts = new Map<string, number>();
-  /** Claude nodes launched with a prompt whose first turn has not begun: they count against daemon.maxWorking. */
-  private starting = new Set<string>();
-  /** Armed nodes loaded from the record; they wait for resumeLive, which runs once the daemon has its endpoint. */
-  private restored = new Set<string>();
-  private scheduled = false;
   /** projectDir's main checkout of each cwd outside a worktree node. */
   private projectDirs = new Map<string, string>();
 
@@ -219,17 +166,16 @@ export class NodeManager extends EventEmitter {
     // Nodes from a previous run have no process; they can be resumed.
     for (const n of this.registry.list()) {
       if (n.pending) {
-        this.restored.add(n.id);
-        this.statuses.set(n.id, { state: 'armed', sessionId: n.sessionId, changedAt: Date.now() });
+        this.runtimes.set(n.id, { restored: true, status: { state: 'armed', changedAt: Date.now() } });
         continue;
       }
-      this.statuses.set(n.id, { state: initialState(n.kind), exited: true, sessionId: n.sessionId, transcriptPath: n.transcriptPath, changedAt: Date.now() });
-      this.refreshGit(n.id).catch(logError);
+      this.runtimes.set(n.id, { status: { state: initialState(n.kind), exited: true, changedAt: Date.now() } });
+      refreshGit(this, n.id).catch(logError);
     }
     this.sweepTimer = setInterval(() => this.sweepStale(), SWEEP_MS);
     this.sweepTimer.unref();
-    this.on('node', () => this.scheduleSoon());
-    this.on('removed', () => this.scheduleSoon());
+    this.on('node', () => scheduleSoon(this));
+    this.on('removed', () => scheduleSoon(this));
   }
 
   private loadSecret(): Buffer {
@@ -260,13 +206,13 @@ export class NodeManager extends EventEmitter {
   // ---- queries ----
 
   view(id: string): NodeView | undefined {
-    const rec = this.registry.get(id);
-    const status = this.statuses.get(id);
-    if (!rec || !status) return undefined;
+    const rec = this.registry.get(id), rt = this.runtimes.get(id);
+    const status = rt?.status;
+    if (!rec || !rt || !status) return undefined;
     const s = status.model || !rec.model ? status : { ...status, model: rec.model };
-    const git = this.gits.get(id), outcome = this.outcomes.get(id), gate = this.gates.get(id);
+    const { git, outcome, gate } = rt;
     const shown = gate?.state === 'running' ? { ...s, activity: `gate: ${gate.command}` } : s;
-    return { ...rec, status: git ? { ...shown, git } : shown, unread: this.unread.has(id), ...(outcome ? { outcome } : {}), ...(gate ? { gate: gate.state } : {}) };
+    return { ...rec, status: git ? { ...shown, git } : shown, unread: !!rt.unread, ...(outcome ? { outcome } : {}), ...(gate ? { gate: gate.state } : {}) };
   }
 
   list(): NodeView[] {
@@ -275,12 +221,12 @@ export class NodeManager extends EventEmitter {
 
   /** When the node's latest turn began, if one has since this daemon started. */
   turnStartedAt(id: string): number | undefined {
-    return this.turnStarts.get(id);
+    return this.runtimes.get(id)?.turnStart;
   }
 
   /** The live PTY, for readers such as the MCP layer. Undefined once the process is gone or the node closed. */
   session(id: string): PtySession | undefined {
-    return this.sessions.get(id);
+    return this.runtimes.get(id)?.session;
   }
 
   /** The tree's session directory: keyed by the topmost ancestor still registered (the node itself for a root). */
@@ -330,9 +276,10 @@ export class NodeManager extends EventEmitter {
     };
     const depth = parentId === null ? 0 : this.registry.lineage(parentId).length + 1;
     if (depth > maxDepth) refuse('limits.maxDepth', maxDepth, `the new node would be ${depth} levels below the root`);
-    const children = this.registry.list().filter((n) => n.parentId === parentId && this.sessions.has(n.id)).length;
+    const children = this.registry.list().filter((n) => n.parentId === parentId && this.session(n.id)).length;
     if (parentId !== null && children >= maxChildren) refuse('limits.maxChildren', maxChildren, `${parentId} has ${children} live children`);
-    if (this.sessions.size >= maxLiveNodes) refuse('daemon.maxLiveNodes', maxLiveNodes, `${this.sessions.size} nodes are live`);
+    const live = this.liveIds().length;
+    if (live >= maxLiveNodes) refuse('daemon.maxLiveNodes', maxLiveNodes, `${live} nodes are live`);
   }
 
   /**
@@ -350,7 +297,7 @@ export class NodeManager extends EventEmitter {
     const p: Partial<Preset> = req.preset ? loadPreset(req.preset, dir, this.home) : {};
     const role = req.role ?? p.role, isOrchestrator = roleFor(role, parentId) === 'orchestrator';
     const defaults = req.kind === 'claude' ? config.roles[isOrchestrator ? 'orchestrator' : 'worker'] : {};
-    const inherited = req.byHuman || !parentId ? undefined : this.statuses.get(parentId)?.permissionMode ?? this.registry.get(parentId)?.permissionMode;
+    const inherited = req.byHuman || !parentId ? undefined : this.runtimes.get(parentId)?.status?.permissionMode ?? this.registry.get(parentId)?.permissionMode;
     const permissionMode = req.permissionMode ?? p.permissionMode ?? (inherited === 'bypassPermissions' ? undefined : inherited);
     if (permissionMode === 'bypassPermissions' && !req.byHuman) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
     const isolation = req.isolation ?? p.isolation ?? (req.kind !== 'claude' || isOrchestrator ? 'none' : config.worktrees.isolation);
@@ -368,12 +315,13 @@ export class NodeManager extends EventEmitter {
       model: req.model ?? p.model ?? defaults.model, effort: req.effort ?? p.effort ?? defaults.effort, permissionMode, role, preset: req.preset,
       sessionId: req.kind === 'claude' ? randomUUID() : undefined,
     });
-    if (this.arm(rec.id, req, isolation)) return this.emitNode(rec.id)!;
+    this.runtimes.set(rec.id, {});
+    if (arm(this, rec.id, req, isolation)) return this.emitNode(rec.id)!;
     try {
-      if (isolation === 'worktree') await this.addWorktree(rec.id, req.prompt, head);
+      if (isolation === 'worktree') await addWorktree(this, rec.id, req.prompt, head);
       else {
         this.writeFiles(rec.id);
-        this.statuses.set(rec.id, { state: initialState(req.kind), sessionId: rec.sessionId, changedAt: Date.now() });
+        this.runtimes.get(rec.id)!.status = { state: initialState(req.kind), changedAt: Date.now() };
         this.launch(rec.id, req.prompt, false);
       }
     } catch (err) {
@@ -384,152 +332,12 @@ export class NodeManager extends EventEmitter {
     return this.emitNode(rec.id)!;
   }
 
-  /**
-   * Give a node its worktree, branched from the HEAD of the checkout its cwd is in (or `head`), and launch it, after the
-   * setup commands when configured. A failure removes the worktree and branch and throws; the caller deals with the record.
-   */
-  private async addWorktree(id: string, prompt: string | undefined, head?: { base: string; baseSha: string }): Promise<void> {
-    this.busy.set(id, 'creating');
-    try {
-      await this.createWorktree(id, prompt, head);
-    } finally {
-      this.busy.delete(id);
-    }
-  }
-
-  private async createWorktree(id: string, prompt: string | undefined, head?: { base: string; baseSha: string }): Promise<void> {
-    const rec = this.registry.get(id)!;
-    const repo = await wt.mainCheckout(rec.cwd);
-    const { base, baseSha } = head ?? await wt.headInfo(rec.cwd);
-    const config = loadConfig(repo, this.home); // the main checkout's file, whichever branch rec.cwd has checked out
-    const path = join(repo, wt.WORKTREES_DIR, id);
-    const worktree: Worktree = { repo, path, branch: config.worktrees.branchPrefix + id, base, baseSha };
-    this.registry.update(id, { cwd: path, worktree });
-    let added = false;
-    try {
-      this.rememberRepo(repo); // first, so startup reconciliation looks here even if a crash loses the record
-      await wt.add(repo, path, worktree.branch, baseSha);
-      added = true;
-      await wt.writeMarker(path, { home: this.home, nodeId: id, base, baseSha });
-      await wt.ensureExcluded(repo);
-      this.registry.flush(); // a crash from here on leaves a record, not an orphan
-      await wt.copyIncluded(repo, path, config.worktrees.include);
-      if (!this.registry.get(id)) throw new Error(`${id} was closed while its worktree was being created`);
-      this.writeFiles(id);
-      this.statuses.set(id, { state: initialState('claude'), sessionId: rec.sessionId, changedAt: Date.now() });
-      const setup = this.worktreeCommands(repo, 'setup');
-      if (setup.length) this.setupThenLaunch(id, worktree, setup, prompt); // in the background: it may take minutes
-      else this.launch(id, prompt, false);
-    } catch (err) {
-      if (added) await this.teardown(id, worktree).then(() => wt.remove(repo, path, true)).then(() => wt.deleteBranch(repo, worktree.branch)).catch(logError);
-      throw err;
-    }
-    this.refreshGit(id).catch(logError);
-  }
-
   /** Throw unless every after / afterSuccess id is a node in the caller's scope. No cycle can form: a dependency must already exist. */
   private checkDependencies(req: SpawnRequest): void {
     const caller = req.byHuman ? HUMAN : req.parentId ?? HUMAN;
     for (const id of [...(req.after ?? []), ...(req.afterSuccess ?? [])]) {
       if (!this.registry.get(id)) throw new Error(`refused: no such node ${id} to wait for`);
       if (!inScope(this, caller, id)) throw new Error(`refused: ${id} is outside your lineage (self, ancestors, siblings, descendants)`);
-    }
-  }
-
-  /** Claude nodes working now, or launched with a prompt whose first turn has not begun. */
-  private workingCount(): number {
-    return this.registry.list().filter((n) => n.kind === 'claude' && (this.starting.has(n.id) || (this.sessions.has(n.id) && this.statuses.get(n.id)?.state === 'working'))).length;
-  }
-
-  /**
-   * Hold a new node back, with no process, when it has dependencies or must queue for daemon.maxWorking (a claude node,
-   * unless `now`, while the cap is reached or others already queue). Returns whether it was held.
-   */
-  private arm(id: string, req: SpawnRequest, isolation: Isolation): boolean {
-    const after = req.after ?? [], afterSuccess = req.afterSuccess ?? [];
-    const max = loadConfig(null, this.home).daemon.maxWorking;
-    const queue = req.kind === 'claude' && !req.now && max > 0 && (this.workingCount() >= max || this.list().some((v) => v.status.state === 'queued'));
-    if (!after.length && !afterSuccess.length && !queue) return false;
-    const rec = this.registry.update(id, { pending: { after, afterSuccess, met: [], prompt: req.prompt, isolation, ...(req.now ? { now: true } : {}) } })!;
-    this.statuses.set(id, { state: 'armed', sessionId: rec.sessionId, changedAt: Date.now() });
-    if (after.length || afterSuccess.length) this.logEvent(id, 'arm', { parentId: rec.parentId, after, afterSuccess });
-    this.schedule();
-    return true;
-  }
-
-  private scheduleSoon(): void {
-    if (this.scheduled) return;
-    this.scheduled = true;
-    queueMicrotask(() => { this.scheduled = false; this.schedule(); });
-  }
-
-  /**
-   * Walk the armed and queued nodes in creation order: show what each waits on, tell the parent once when a failed
-   * dependency blocks one, and launch each whose dependencies are met while daemon.maxWorking has room.
-   */
-  private schedule(): void {
-    if (this.stopped) return;
-    let working = this.workingCount();
-    for (const rec of this.registry.list()) {
-      const p = rec.pending;
-      if (!p || this.restored.has(rec.id)) continue;
-      const { met, unmet, blocked } = checkDeps(this, p, rec.createdAt);
-      if (met.length !== p.met.length || blocked !== p.blocked) {
-        this.registry.update(rec.id, { pending: { ...p, met, blocked } });
-        if (!unmet.length) this.logEvent(rec.id, 'release', { after: p.after, afterSuccess: p.afterSuccess });
-        if (blocked) this.blockedNotice(rec.id, blocked);
-      }
-      const max = loadConfig(null, this.home).daemon.maxWorking;
-      let state: AgentState = 'armed', activity: string;
-      if (unmet.length) activity = blocked ? `blocked by ${blocked}` : `after ${unmet.join(', ')}`;
-      else if (rec.kind === 'claude' && !p.now && max > 0 && working >= max) {
-        state = 'queued';
-        activity = `queued: ${working} working, daemon.maxWorking ${max}`;
-      } else {
-        this.release(rec.id);
-        if (rec.kind === 'claude') working++;
-        continue;
-      }
-      const cur = this.statuses.get(rec.id)!;
-      if (cur.state === state && cur.activity === activity) continue;
-      if (state === 'queued' && cur.state !== 'queued') this.logEvent(rec.id, 'queue', { working, maxWorking: max });
-      this.setStatus(rec.id, { ...cur, state, activity, changedAt: Date.now() }, false);
-    }
-  }
-
-  private blockedNotice(id: string, blocked: string): void {
-    const rec = this.registry.get(id)!;
-    this.logEvent(id, 'block', { by: blocked });
-    if (!rec.parentId) return;
-    const text = `${id} "${rec.title}" will not launch: blocked by ${blocked}. It launches if that node later reports succeeded; close it to drop it.`;
-    deliver(this, DAEMON, rec.parentId, text, { fromLabel: `orchestr8 (armed ${id} blocked)`, replyTo: null }).catch(logError);
-  }
-
-  /** Launch a held node as its spawn would have. A failure drops it and tells its parent. */
-  private release(id: string): void {
-    const rec = this.registry.get(id)!, p = rec.pending as Pending;
-    this.registry.update(id, { pending: undefined });
-    this.logEvent(id, 'launch', p.isolation === 'worktree' ? { isolation: 'worktree' } : {});
-    const fail = (err: Error) => {
-      if (!this.registry.get(id)) return;
-      this.logEvent(id, 'launch-failed', { error: err.message });
-      if (rec.parentId) deliver(this, DAEMON, rec.parentId, `${id} "${rec.title}" failed to launch and was removed: ${err.message}`, { fromLabel: `orchestr8 (armed ${id} failed)`, replyTo: null }).catch(logError);
-      this.discard(id);
-      this.emit('removed', id);
-    };
-    try {
-      if (p.isolation === 'worktree') {
-        if (p.prompt) this.starting.add(id); // the worktree takes a while; hold its maxWorking slot meanwhile
-        this.setStatus(id, { ...this.statuses.get(id)!, state: 'unknown', activity: 'creating worktree', changedAt: Date.now() }, false);
-        this.addWorktree(id, p.prompt).then(() => this.emitNode(id), fail);
-        return;
-      }
-      this.writeFiles(id);
-      this.statuses.set(id, { state: initialState(rec.kind), sessionId: rec.sessionId, changedAt: Date.now() });
-      this.launch(id, p.prompt, false);
-      this.emitNode(id);
-    } catch (err) {
-      fail(err as Error);
     }
   }
 
@@ -546,31 +354,8 @@ export class NodeManager extends EventEmitter {
    * while the node is working, closing or setting up, when its tree has uncommitted files, or when the branch conflicts
    * with base (the error names the paths).
    */
-  async merge(id: string): Promise<{ base: string; sha: string; style: MergeStyle }> {
-    const rec = this.registry.get(id);
-    if (!rec) throw new Error(`no such node: ${id}`);
-    const w = rec.worktree;
-    if (!w) throw new Error(`${id} has no worktree of its own to merge`);
-    const s = this.statuses.get(id)!;
-    if (s.state === 'working' && !s.exited) throw new Error(`refusing to merge while ${id} is working; wait until its turn ends`);
-    if (this.setups.has(id)) throw new Error('worktree setup is running');
-    if (this.busy.has(id)) throw new Error(`${id} is already ${this.busy.get(id)}`);
-    this.busy.set(id, 'merging');
-    try {
-      await this.refreshGit(id).catch(logError);
-      const dirty = existsSync(w.path) ? await wt.dirtyFiles(w.path) : [];
-      if (dirty.length) throw new Error(`merge refused, nothing changed: ${count(dirty.length, 'uncommitted file')} in the worktree; commit them first`);
-      const style = loadConfig(w.repo, this.home).worktrees.mergeStyle;
-      const subject = style === 'squash' ? `${rec.title} (squashed from ${w.branch})` : `Merge branch '${w.branch}': ${rec.title}`;
-      const sha = await wt.mergeInto(w.repo, w.branch, w.base, style, subject);
-      const merged = { tip: await this.branchTip(w), at: Date.now() };
-      this.registry.update(id, { worktree: { ...this.registry.get(id)!.worktree!, merged } });
-      this.logEvent(id, 'merge', { branch: w.branch, base: w.base, sha: sha.slice(0, 7), style });
-      return { base: w.base, sha, style };
-    } finally {
-      this.busy.delete(id);
-      await this.refreshGit(id).catch(logError);
-    }
+  merge(id: string): Promise<{ base: string; sha: string; style: MergeStyle }> {
+    return mergeWorktree(this, id);
   }
 
   /** Relaunch an exited Claude node with `claude --resume`. Fails if the transcript or the node's worktree is gone. */
@@ -578,33 +363,35 @@ export class NodeManager extends EventEmitter {
     const rec = this.registry.get(id);
     if (!rec) return { ok: false, error: 'No such node' };
     if (rec.kind !== 'claude') return { ok: false, error: 'Only Claude nodes can be resumed' };
-    if (this.sessions.get(id)) return { ok: false, error: 'Node is still running' };
-    if (this.setups.has(id)) return { ok: false, error: 'worktree setup is running' };
-    if (this.needsSetup.has(id)) return { ok: false, error: 'worktree setup has not succeeded; restart runs it again' };
+    const rt = this.runtimes.get(id)!;
+    if (rt.session) return { ok: false, error: 'Node is still running' };
+    if (rt.setup) return { ok: false, error: 'worktree setup is running' };
+    if (rt.needsSetup) return { ok: false, error: 'worktree setup has not succeeded; restart runs it again' };
     if (rec.worktree) {
       // Without its worktree, claude --resume carries on in the main checkout with no isolation.
       const w = rec.worktree;
       const listed = existsSync(w.path) && (await wt.listWorktrees(w.repo).catch(() => [])).some((e) => e.path === w.path);
-      this.setMissing(id, !listed);
+      setMissing(this, id, !listed);
       if (!listed) return { ok: false, error: 'worktree missing' };
-      if (this.sessions.get(id)) return { ok: false, error: 'Node is still running' };
+      if (rt.session) return { ok: false, error: 'Node is still running' };
     }
-    const status = this.statuses.get(id)!;
-    const sessionId = status.sessionId ?? rec.sessionId;
+    const status = rt.status!;
+    const { sessionId } = rec;
     if (!sessionId) return { ok: false, error: 'No session to resume' };
-    const transcript = status.transcriptPath ?? rec.transcriptPath ?? transcriptFor(rec.cwd, sessionId);
+    const transcript = rec.transcriptPath ?? transcriptFor(rec.cwd, sessionId);
     if (!existsSync(transcript)) return { ok: false, error: `No conversation to resume (missing ${transcript})` };
-    this.lastHookAt.delete(id);
+    rt.lastHookAt = undefined;
     try {
       this.writeFiles(id); // the port, and so the endpoint in mcp.json, may have changed since the node was created
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
-    this.statuses.set(id, { state: 'unknown', sessionId, transcriptPath: transcript, changedAt: Date.now() });
+    this.registry.update(id, { transcriptPath: transcript });
+    rt.status = { state: 'unknown', changedAt: Date.now() };
     try {
       this.launch(id, undefined, true);
     } catch (err) {
-      this.statuses.set(id, { ...status, exited: true, changedAt: Date.now() });
+      rt.status = { ...status, exited: true, changedAt: Date.now() };
       return { ok: false, error: (err as Error).message };
     }
     this.logEvent(id, 'resume', { sessionId });
@@ -622,23 +409,24 @@ export class NodeManager extends EventEmitter {
     if (!rec) return { ok: false, error: 'No such node' };
     if (rec.pending) return { ok: false, error: 'node is armed or queued: it launches by itself; close it to drop it' };
     if (rec.worktree && !existsSync(rec.worktree.path)) return { ok: false, error: 'worktree missing' }; // --worktree would make a fresh one
-    if (this.setups.has(id)) return { ok: false, error: 'worktree setup is running' };
-    if (this.busy.has(id)) return { ok: false, error: `${id} is ${this.busy.get(id)}` };
-    const old = this.statuses.get(id)?.sessionId ?? rec.sessionId;
+    const rt = this.runtimes.get(id)!;
+    if (rt.setup) return { ok: false, error: 'worktree setup is running' };
+    if (rt.busy) return { ok: false, error: `${id} is ${rt.busy}` };
+    const old = rec.sessionId;
     this.kill(id);
-    this.lastHookAt.delete(id);
+    rt.lastHookAt = undefined;
     const sessionId = rec.kind === 'claude' ? randomUUID() : undefined;
     this.registry.update(id, { sessionId, transcriptPath: undefined, previousSessions: [...(rec.previousSessions ?? []), ...(old ? [old] : [])].slice(-MAX_PREVIOUS_SESSIONS) });
-    this.statuses.set(id, { state: initialState(rec.kind), sessionId, activity: 'restarting', changedAt: Date.now() });
+    rt.status = { state: initialState(rec.kind), activity: 'restarting', changedAt: Date.now() };
     try {
       this.writeFiles(id);
       this.emit('data', id, '\x1bc'); // reset attached screens before the new process draws
       const first = rec.kind === 'claude' ? prompt || handoffPrompt(this.sessionDirOf(id)) : undefined;
-      if (rec.worktree && this.needsSetup.has(id)) this.setupThenLaunch(id, rec.worktree, this.worktreeCommands(rec.worktree.repo, 'setup'), prompt || this.needsSetup.get(id));
+      if (rec.worktree && rt.needsSetup) setupThenLaunch(this, id, rec.worktree, worktreeCommands(this, rec.worktree.repo, 'setup'), prompt || rt.needsSetup.prompt);
       else this.launch(id, first, false);
       this.logEvent(id, 'restart', { sessionId, ...(first ? { prompt: first } : {}) });
     } catch (err) {
-      this.setStatus(id, { ...this.statuses.get(id)!, state: initialState(rec.kind), exited: true, activity: undefined, changedAt: Date.now() }, false);
+      this.setStatus(id, { ...rt.status, state: initialState(rec.kind), exited: true, activity: undefined, changedAt: Date.now() }, false);
       return { ok: false, error: (err as Error).message };
     }
     this.emitNode(id);
@@ -655,41 +443,17 @@ export class NodeManager extends EventEmitter {
   async close(id: string, force = false, worktree?: 'keep' | 'discard'): Promise<string | undefined> {
     const rec = this.registry.get(id);
     if (!force && rec?.parentId === null) throw new Error('refusing to close an orchestrator: restart it instead, or force the close');
-    if (this.busy.has(id)) throw new Error(`${id} is already ${this.busy.get(id)}`);
-    if (rec?.worktree) return this.closeWorktreeNode(id, rec.title, rec.worktree, worktree);
+    const busy = this.runtimes.get(id)?.busy;
+    if (busy) throw new Error(`${id} is already ${busy}`);
+    if (rec?.worktree) return closeWorktreeNode(this, id, rec.title, rec.worktree, worktree);
     this.kill(id);
     if (!this.registry.get(id)) return undefined;
     this.closed(id);
     return undefined;
   }
 
-  private async closeWorktreeNode(id: string, title: string, w: Worktree, mode?: 'keep' | 'discard'): Promise<string | undefined> {
-    this.busy.set(id, 'closing');
-    try {
-      await this.refreshGit(id).catch(logError);
-      const refusal = closeRefusal((await this.worktreeCheck(id))!, mode);
-      if (refusal) throw new Error(refusal);
-      const setup = this.setups.get(id);
-      setup?.abort.abort();
-      await setup?.done;
-      const s = this.kill(id);
-      if (s && !s.exited) await new Promise<void>((done) => { s.onExit(() => done()); setTimeout(done, EXIT_WAIT_MS).unref(); });
-      let note: string | undefined;
-      try {
-        note = await this.removeWorktree(id, title, w, mode);
-      } catch (err) {
-        this.setStatus(id, { ...this.statuses.get(id)!, exited: true, activity: (err as Error).message, changedAt: Date.now() }, false);
-        throw err;
-      }
-      this.closed(id, note);
-      return note;
-    } finally {
-      this.busy.delete(id);
-    }
-  }
-
   /** Log the close, record closedAt for a root's session directory, and forget the node. */
-  private closed(id: string, note?: string): void {
+  closed(id: string, note?: string): void {
     this.logEvent(id, 'close', note ? { note } : {});
     if (this.registry.get(id)?.parentId === null) markClosed(this.home, id);
     this.discard(id);
@@ -697,11 +461,14 @@ export class NodeManager extends EventEmitter {
   }
 
   /** Kill the node's process, if any, and forget it, freeing its maxWorking slot; returns the session it had. */
-  private kill(id: string): PtySession | undefined {
-    const s = this.sessions.get(id);
-    clearTimeout(this.interruptTimers.get(id));
-    this.sessions.delete(id); // first, so the exit callback ignores it
-    this.starting.delete(id);
+  kill(id: string): PtySession | undefined {
+    const rt = this.runtimes.get(id);
+    const s = rt?.session;
+    if (rt) {
+      clearTimeout(rt.interruptTimer);
+      rt.session = undefined; // first, so the exit callback ignores it
+      rt.starting = false;
+    }
     this.liveChanged();
     s?.kill();
     return s;
@@ -722,14 +489,8 @@ export class NodeManager extends EventEmitter {
   }
 
   /** Uncommitted files, unmerged commits and other live nodes inside the node's worktree; undefined when it owns none. */
-  async worktreeCheck(id: string): Promise<WorktreeCheck | undefined> {
-    const w = this.registry.get(id)?.worktree;
-    if (!w) return undefined;
-    const sharing = this.registry.list().filter((n) => n.id !== id && this.sessions.has(n.id) && inside(n.cwd, w.path)).map((n) => n.id);
-    if (!existsSync(w.path)) return { dirty: [], unmerged: [], sharing }; // missing: close keeps an unmerged branch, so nothing is lost
-    const [dirty, unmerged] = await Promise.all([wt.dirtyFiles(w.path), wt.unmergedCommits(w.repo, w.branch, w.base, w.baseSha)]);
-    // A squash merge leaves the branch's own commits outside base; it still counts as merged until the branch moves.
-    return { dirty, unmerged: unmerged.length && (await this.mergedAt(w)) ? [] : unmerged, sharing };
+  worktreeCheck(id: string): Promise<WorktreeCheck | undefined> {
+    return worktreeCheck(this, id);
   }
 
   /**
@@ -738,15 +499,8 @@ export class NodeManager extends EventEmitter {
    * clean "startup" removes orphans that are clean and have no commits; "safe" removes orphans and kept branches that are
    * clean and merged; "force" removes them all. Nothing inside a live node's cwd is removed.
    */
-  async worktrees(opts: { cwd?: string; clean?: 'startup' | 'safe' | 'force' } = {}): Promise<WorktreeReport> {
-    const repos = opts.cwd ? [await wt.mainCheckout(opts.cwd)]
-      : [...new Set([...this.knownRepos(), ...this.registry.list().flatMap((n) => (n.worktree ? [n.worktree.repo] : []))])];
-    const report: WorktreeReport = { nodes: [], orphans: [], kept: [], removed: [] };
-    for (const repo of repos) {
-      if (!existsSync(repo)) continue;
-      try { await this.reconcileRepo(repo, opts.clean, report); } catch (err) { if (opts.cwd) throw err; logError(err); }
-    }
-    return report;
+  worktrees(opts: { cwd?: string; clean?: 'startup' | 'safe' | 'force' } = {}): Promise<WorktreeReport> {
+    return worktrees(this, opts);
   }
 
   rename(id: string, title: string): void {
@@ -763,35 +517,36 @@ export class NodeManager extends EventEmitter {
 
   /** A client selected `id`, which clears its unread flag. */
   select(id: string): void {
-    if (this.unread.delete(id)) this.emitNode(id);
+    const rt = this.runtimes.get(id);
+    if (!rt?.unread) return;
+    rt.unread = false;
+    this.emitNode(id);
   }
 
   input(id: string, data: string): void {
-    const s = this.sessions.get(id);
-    if (!s) return;
-    const status = this.statuses.get(id)!;
-    if (interruptKeyPressed(status, data)) {
+    const rt = this.runtimes.get(id), s = rt?.session;
+    if (!rt || !s) return;
+    if (interruptKeyPressed(rt.status!, data)) {
       // Esc / Ctrl-C ends a turn without a Stop hook. If no hook shows up, call it interrupted.
       const sentAt = Date.now();
-      clearTimeout(this.interruptTimers.get(id));
-      const timer = setTimeout(() => {
-        this.interruptTimers.delete(id);
-        const cur = this.statuses.get(id);
-        if (cur && (this.lastHookAt.get(id) ?? 0) < sentAt) this.setStatus(id, interruptTimeout(cur, Date.now()));
+      clearTimeout(rt.interruptTimer);
+      rt.interruptTimer = setTimeout(() => {
+        rt.interruptTimer = undefined;
+        const cur = rt.status;
+        if (cur && (rt.lastHookAt ?? 0) < sentAt) this.setStatus(id, interruptTimeout(cur, Date.now()));
       }, INTERRUPT_MS);
-      timer.unref();
-      this.interruptTimers.set(id, timer);
+      rt.interruptTimer.unref();
     }
     s.write(data).catch(logError);
   }
 
   resize(id: string, cols: number, rows: number): void {
-    this.sessions.get(id)?.resize(cols, rows);
+    this.session(id)?.resize(cols, rows);
   }
 
   /** Resize to the viewer and return the visible screen serialized with attributes. */
   async attach(id: string, cols: number, rows: number): Promise<string> {
-    const s = this.sessions.get(id);
+    const s = this.session(id);
     if (!s) return '';
     s.resize(cols, rows);
     await s.flush();
@@ -799,44 +554,44 @@ export class NodeManager extends EventEmitter {
   }
 
   applyHook(nodeId: string, event: HookEvent): void {
-    const rec = this.registry.get(nodeId);
-    const prev = this.statuses.get(nodeId);
-    if (!rec || !prev) return;
+    const rec = this.registry.get(nodeId), rt = this.runtimes.get(nodeId);
+    const prev = rt?.status;
+    if (!rec || !rt || !prev) return;
     const now = Date.now();
-    this.lastHookAt.set(nodeId, now);
+    rt.lastHookAt = now;
     if (event.hook_event_name === 'UserPromptSubmit') {
-      this.turnStarts.set(nodeId, now);
-      this.starting.delete(nodeId);
+      rt.turnStart = now;
+      rt.starting = false;
     }
     this.emit('hook', nodeId, event);
     const next = reduce(prev, event, now);
     if (next.state !== prev.state) this.registry.update(nodeId, { lastActiveAt: now });
-    if (event.hook_event_name === 'SessionStart' && next.sessionId && next.sessionId !== rec.sessionId) {
-      this.registry.update(nodeId, { sessionId: next.sessionId });
-    }
-    if (event.hook_event_name === 'SessionStart' && next.transcriptPath && next.transcriptPath !== rec.transcriptPath) {
-      this.registry.update(nodeId, { transcriptPath: next.transcriptPath });
+    if (event.hook_event_name === 'SessionStart') {
+      const sessionId = typeof event.session_id === 'string' ? event.session_id : undefined;
+      const transcriptPath = typeof event.transcript_path === 'string' ? event.transcript_path : undefined;
+      if (sessionId && sessionId !== rec.sessionId) this.registry.update(nodeId, { sessionId });
+      if (transcriptPath && transcriptPath !== rec.transcriptPath) this.registry.update(nodeId, { transcriptPath });
     }
     if (next.permissionMode && next.permissionMode !== rec.permissionMode) {
       this.registry.update(nodeId, { permissionMode: next.permissionMode });
     }
     this.setStatus(nodeId, next);
     const e = event.hook_event_name;
-    if (e === 'Stop' || e === 'StopFailure') this.refreshGit(nodeId).catch(logError);
-    else if (e === 'PostToolUse' && GIT_EDIT_TOOLS.includes(String(event.tool_name)) && rec.worktree) this.refreshGitSoon(nodeId);
+    if (e === 'Stop' || e === 'StopFailure') refreshGit(this, nodeId).catch(logError);
+    else if (e === 'PostToolUse' && GIT_EDIT_TOOLS.includes(String(event.tool_name)) && rec.worktree) refreshGitSoon(this, nodeId);
   }
 
   /** Apply an event from the node's mod. turn.start carries nothing we need. */
   applyModEvent(nodeId: string, ev: ModEvent): void {
-    const prev = this.statuses.get(nodeId);
-    if (!prev) return;
+    const rt = this.runtimes.get(nodeId), prev = rt?.status;
+    if (!rt || !prev) return;
     const now = Date.now();
     if (process.env.O8_DEBUG) console.log(`${new Date(now).toISOString().slice(11, 23)} mod ${nodeId.slice(0, 6)} ${ev.event} ${JSON.stringify(ev.payload).slice(0, 300)}`);
     if (ev.event === 'turn.complete') {
       const model = ev.payload.usage?.model;
       const base = typeof model === 'string' && model !== prev.model ? { ...prev, model } : prev;
       this.setStatus(nodeId, turnComplete(base, now, ev.payload));
-      this.refreshGit(nodeId).catch(logError);
+      refreshGit(this, nodeId).catch(logError);
     } else if (ev.event === 'session.measure') {
       const { context, cost, rateLimits } = ev.payload;
       if (rateLimits?.length) { // empty off a subscription or before the first reading: keep the last report
@@ -844,8 +599,8 @@ export class NodeManager extends EventEmitter {
         this.emit('usage', this.usage);
       }
       if (cost) this.addSpend(nodeId, cost.usd, prev.costUsd, now);
-      if (cost && now - (this.lastCostEvent.get(nodeId) ?? 0) >= COST_EVENT_MS) {
-        this.lastCostEvent.set(nodeId, now);
+      if (cost && now - (rt.lastCostEvent ?? 0) >= COST_EVENT_MS) {
+        rt.lastCostEvent = now;
         this.logEvent(nodeId, 'cost', { usd: cost.usd, ...(context ? { contextPct: context.percent } : {}) });
       }
       this.setStatus(nodeId, { ...prev, contextPct: context?.percent ?? prev.contextPct, contextTokens: context?.tokens ?? prev.contextTokens, contextWindow: context?.window ?? prev.contextWindow, costUsd: cost?.usd ?? prev.costUsd });
@@ -877,8 +632,8 @@ export class NodeManager extends EventEmitter {
     }
     this.pendingResume = new Set();
     this.liveChanged();
-    this.restored.clear(); // re-arm the nodes the record held back
-    this.scheduleSoon();
+    for (const rt of this.runtimes.values()) rt.restored = undefined; // re-arm the nodes the record held back
+    scheduleSoon(this);
     return `resume on start: ${summary}`;
   }
 
@@ -887,27 +642,38 @@ export class NodeManager extends EventEmitter {
    * `clearLive` (an explicit stop: do not come back).
    */
   shutdown(opts: { clearLive?: boolean } = {}): void {
-    this.stopped = true;
+    this.shutDown = true;
     if (opts.clearLive) this.registry.setLive([]);
     clearInterval(this.sweepTimer);
-    for (const t of [...this.interruptTimers.values(), ...this.gitTimers.values()]) clearTimeout(t);
-    for (const s of this.setups.values()) s.abort.abort();
-    for (const s of this.sessions.values()) s.kill();
+    for (const rt of this.runtimes.values()) {
+      clearTimeout(rt.interruptTimer);
+      clearTimeout(rt.gitTimer);
+      rt.setup?.abort.abort();
+      rt.session?.kill();
+    }
     this.registry.flush();
     flushInbox(this);
   }
 
-  // ---- internals ----
+  // ---- internals; worktree-lifecycle.ts and deps.ts call the ones not marked private ----
 
-  private nodeDir(id: string): string { return join(this.home, 'nodes', id); }
+  /** Whether shutdown has run. */
+  get stopped(): boolean { return this.shutDown; }
 
-  /** Save the ids with a live process (plus any not yet resumed) with the registry. Call after every change to sessions. */
+  nodeDir(id: string): string { return join(this.home, 'nodes', id); }
+
+  /** Ids of the nodes with a live process. */
+  private liveIds(): string[] {
+    return [...this.runtimes].flatMap(([id, rt]) => (rt.session ? [id] : []));
+  }
+
+  /** Save the ids with a live process (plus any not yet resumed) with the registry. Call after every change to a session. */
   private liveChanged(): void {
-    if (!this.stopped) this.registry.setLive([...new Set([...this.pendingResume, ...this.sessions.keys()])]);
+    if (!this.shutDown) this.registry.setLive([...new Set([...this.pendingResume, ...this.liveIds()])]);
   }
 
   /** Token, hook-headers, settings.json and mcp.json for a node; mcp.json embeds the current endpoint. */
-  private writeFiles(id: string): void {
+  writeFiles(id: string): void {
     const dir = this.nodeDir(id);
     const token = this.tokenFor(id);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -916,161 +682,11 @@ export class NodeManager extends EventEmitter {
     writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token, worktree: !!this.registry.get(id)?.worktree, sessionDir: this.sessionDirOf(id) });
   }
 
-  private async removeWorktree(id: string, title: string, w: Worktree, mode?: 'keep' | 'discard'): Promise<string | undefined> {
-    if (!existsSync(w.path)) {
-      await wt.prune(w.repo);
-      if (!(await wt.branchExists(w.repo, w.branch))) return undefined;
-      if (mode === 'discard' || (!mode && !(await wt.unmergedCommits(w.repo, w.branch, w.base, w.baseSha)).length)) {
-        await wt.deleteBranch(w.repo, w.branch);
-        return undefined;
-      }
-      return `worktree was missing; kept branch ${w.branch}`;
-    }
-    if (mode === 'keep' && (await wt.dirtyFiles(w.path)).length) {
-      await wt.git(w.path, ['add', '-A']);
-      await wt.git(w.path, ['commit', '-q', '--no-verify', '-m', `WIP: orchestr8 node "${title}" (${id})`]);
-    } else if (!mode) {
-      const c = (await this.worktreeCheck(id))!; // again: the agent may have written something before it died
-      if (c.dirty.length || c.unmerged.length) throw new Error(`worktree kept: changed during close (${c.dirty.length} uncommitted file(s), ${c.unmerged.length} unmerged commit(s))`);
-    }
-    await wt.unlockForRemoval(w.repo, w.path, id);
-    await this.teardown(id, w);
-    await wt.remove(w.repo, w.path, mode === 'discard');
-    if (mode === 'keep') return `kept branch ${w.branch}`;
-    await wt.deleteBranch(w.repo, w.branch); // merged (checked above) or discarded
-    return undefined;
-  }
-
-  private async reconcileRepo(repo: string, clean: 'startup' | 'safe' | 'force' | undefined, r: WorktreeReport): Promise<void> {
-    await wt.prune(repo);
-    const entries = await wt.listWorktrees(repo);
-    const live = (path: string) => this.registry.list().some((n) => this.sessions.has(n.id) && inside(n.cwd, path));
-    for (const e of entries.filter((x) => x.path.startsWith(join(repo, wt.WORKTREES_DIR) + sep))) {
-      const marker = await wt.readMarker(e.path);
-      if (!marker || marker.home !== this.home || this.registry.get(marker.nodeId)?.worktree) continue; // not ours, or a node's
-      const dirty = await wt.dirtyFiles(e.path);
-      // A detached orphan has no branch to compare; only force removes it.
-      const unmerged = e.branch ? await wt.unmergedCommits(repo, e.branch, marker.base, marker.baseSha) : ['(detached HEAD)'];
-      const safe = !dirty.length && !!e.branch && (clean === 'startup' ? !(await wt.hasCommits(repo, e.branch, marker.baseSha)) : !unmerged.length);
-      const orphan = { nodeId: marker.nodeId, repo, path: e.path, branch: e.branch, base: marker.base, dirty, unmerged };
-      if (clean && (clean === 'force' || safe) && !live(e.path)) {
-        try {
-          await wt.unlockForRemoval(repo, e.path, marker.nodeId);
-          await this.teardown(marker.nodeId, { repo, path: e.path, base: marker.base });
-          await wt.remove(repo, e.path, clean === 'force');
-          if (e.branch) await wt.deleteBranch(repo, e.branch);
-          r.removed.push({ what: `worktree ${e.path}${e.branch ? ` and branch ${e.branch}` : ''}`, commits: unmerged, files: dirty });
-          continue;
-        } catch (err) {
-          r.orphans.push({ ...orphan, error: (err as Error).message });
-          continue;
-        }
-      }
-      r.orphans.push(orphan);
-    }
-    for (const n of this.registry.list()) {
-      if (n.worktree?.repo !== repo) continue;
-      this.setMissing(n.id, !entries.some((e) => e.path === n.worktree!.path));
-      const w = this.registry.get(n.id)!.worktree!;
-      r.nodes.push({ nodeId: n.id, title: n.title, repo, path: w.path, branch: w.branch, base: w.base, missing: w.missing });
-    }
-    const prefix = loadConfig(repo, this.home).worktrees.branchPrefix;
-    const used = new Set([...entries.flatMap((e) => (e.branch ? [e.branch] : [])), ...this.registry.list().flatMap((n) => (n.worktree ? [n.worktree.branch] : []))]);
-    const head = await wt.headInfo(repo);
-    for (const branch of await wt.branches(repo, prefix)) {
-      if (used.has(branch) || !/^n-[0-9a-f]{8}$/.test(branch.slice(prefix.length))) continue;
-      // The node and its recorded base are gone, so judge against the main checkout's HEAD.
-      const unmerged = await wt.unmergedCommits(repo, branch, 'HEAD', head.baseSha);
-      if (clean === 'force' || (clean === 'safe' && !unmerged.length)) {
-        await wt.deleteBranch(repo, branch);
-        r.removed.push({ what: `branch ${branch} in ${repo}`, commits: unmerged, files: [] });
-      } else {
-        r.kept.push({ repo, branch, unmerged });
-      }
-    }
-  }
-
-  private setMissing(id: string, missing: boolean): void {
-    const w = this.registry.get(id)?.worktree;
-    if (!w || !!w.missing === missing) return;
-    const { missing: _, ...rest } = w;
-    this.registry.update(id, { worktree: missing ? { ...rest, missing } : rest });
-    this.emitNode(id);
-  }
-
-  /** Recompute a worktree node's git state and re-emit the node when it changed. */
-  private async refreshGit(id: string): Promise<void> {
-    const w = this.registry.get(id)?.worktree;
-    if (!w) return;
-    const missing = !existsSync(w.path);
-    const none = { ahead: 0, behind: 0, additions: 0, deletions: 0 };
-    const [counts, dirty, mergedAt] = await Promise.all([
-      wt.branchExists(w.repo, w.branch).then(async (b) => (b ? { ...(await wt.aheadBehind(w.repo, w.branch, w.base, w.baseSha)), ...(await wt.diffStat(w)) } : none)),
-      missing ? [] : wt.dirtyFiles(w.path),
-      this.mergedAt(w),
-    ]);
-    if (!this.registry.get(id) || this.stopped) return; // closed or shut down meanwhile
-    if (missing) this.setMissing(id, true); // only resume and the worktree sweep clear it: they also check `git worktree list`
-    const next: GitState = { branch: w.branch, base: w.base, ...counts, dirty: dirty.length, ...(mergedAt ? { mergedAt } : {}) };
-    if (JSON.stringify(next) === JSON.stringify(this.gits.get(id))) return;
-    this.gits.set(id, next);
-    this.emitNode(id);
-  }
-
-  private refreshGitSoon(id: string): void {
-    clearTimeout(this.gitTimers.get(id));
-    const t = setTimeout(() => { this.gitTimers.delete(id); this.refreshGit(id).catch(logError); }, GIT_DEBOUNCE_MS);
-    t.unref();
-    this.gitTimers.set(id, t);
-  }
-
-  private branchTip = (w: Worktree) => wt.git(w.repo, ['rev-parse', '--verify', '-q', `refs/heads/${w.branch}`]).then((s) => s.trim(), () => '');
-
-  /** When the node's branch was last merged, if it has not moved since. */
-  private async mergedAt(w: Worktree): Promise<number | undefined> {
-    return w.merged && (await this.branchTip(w)) === w.merged.tip ? w.merged.at : undefined;
-  }
-
-  /** The configured setup or teardown commands for a repo, or none when Claude does not trust it (trustPolicy is not auto). */
-  private worktreeCommands(repo: string, kind: 'setup' | 'teardown'): string[] {
-    const cmds = loadConfig(repo, this.home).worktrees[kind];
-    return cmds.length && trustPolicy(repo, readClaudeJson()) === 'auto' ? cmds : [];
-  }
-
-  private worktreeEnv(id: string, w: Pick<Worktree, 'repo' | 'path' | 'base'>): Record<string, string> {
-    return buildChildEnv({ PATH: this.path, O8_NODE_ID: id, O8_WORKTREE: w.path, O8_REPO: w.repo, O8_BASE: w.base });
-  }
-
-  /**
-   * Run the worktree setup commands in the background, each shown as the node's activity, then launch with `prompt`. A
-   * failure leaves the node exited and errored, pointing at setup.log; restart runs the setup again.
-   */
-  private setupThenLaunch(id: string, w: Worktree, cmds: string[], prompt: string | undefined): void {
-    const abort = new AbortController();
-    const log = join(this.nodeDir(id), 'setup.log');
-    const show = (patch: Partial<NodeStatus>, notify = false) => this.setStatus(id, { ...this.statuses.get(id)!, ...patch, changedAt: Date.now() }, notify);
-    this.needsSetup.set(id, prompt);
-    const done = wt.runCommands(cmds, {
-      cwd: w.path, env: this.worktreeEnv(id, w), log, timeout: SETUP_TIMEOUT_MS, signal: abort.signal,
-      onStart: (cmd) => show({ state: 'unknown', activity: `setting up worktree: ${cmd}` }),
-    }).then(() => {
-      if (abort.signal.aborted || !this.registry.get(id)) return;
-      this.needsSetup.delete(id);
-      this.statuses.set(id, { state: initialState('claude'), sessionId: this.statuses.get(id)?.sessionId, changedAt: Date.now() });
-      this.launch(id, prompt, false);
-      this.emitNode(id);
-    }).catch((err: Error) => {
-      if (abort.signal.aborted || !this.registry.get(id)) return; // closed or shut down meanwhile
-      this.starting.delete(id); // no process ever started, so no exit frees its maxWorking slot
-      show({ state: 'done', errored: true, exited: true, activity: `worktree setup failed: ${err.message}; see ${log}` }, true);
-    }).finally(() => this.setups.delete(id));
-    this.setups.set(id, { abort, done });
-  }
-
   setOutcome(id: string, o: Outcome): void {
-    this.outcomes.set(id, o);
-    const gate = this.gates.get(id);
-    if (gate) gate.failures = 0;
+    const rt = this.runtimes.get(id);
+    if (!rt) return;
+    rt.outcome = o;
+    if (rt.gate) rt.gate.failures = 0;
     this.emit('outcome', id);
     this.emitNode(id);
     const { at: _at, ...data } = o;
@@ -1085,7 +701,7 @@ export class NodeManager extends EventEmitter {
 
   /** Whether the node's completion gate is running now. */
   gateRunning(id: string): boolean {
-    return this.gates.get(id)?.state === 'running';
+    return this.runtimes.get(id)?.gate?.state === 'running';
   }
 
   /**
@@ -1094,13 +710,13 @@ export class NodeManager extends EventEmitter {
    * and the failed runs since the node's last recorded outcome, this one included.
    */
   async runGate(id: string, gate: NonNullable<Config['gate']>): Promise<{ ok: boolean; tail: string; failures: number }> {
-    const rec = this.registry.get(id);
-    if (!rec) return { ok: false, tail: 'node is gone', failures: 0 };
-    const failures = this.gates.get(id)?.failures ?? 0;
+    const rec = this.registry.get(id), rt = this.runtimes.get(id);
+    if (!rec || !rt) return { ok: false, tail: 'node is gone', failures: 0 };
+    const failures = rt.gate?.failures ?? 0;
     const log = join(this.nodeDir(id), 'gate.log');
     const start = existsSync(log) ? statSync(log).size : 0;
-    const env = rec.worktree ? this.worktreeEnv(id, rec.worktree) : buildChildEnv({ PATH: this.path, O8_NODE_ID: id });
-    this.gates.set(id, { state: 'running', command: gate.command, failures });
+    const env = rec.worktree ? worktreeEnv(this, id, rec.worktree) : buildChildEnv({ PATH: this.path, O8_NODE_ID: id });
+    rt.gate = { state: 'running', command: gate.command, failures };
     this.emitNode(id);
     // prune: a node closed mid-gate leaves the command running until it ends or times out; add an abort if gates get long.
     const err = await wt.runCommands([gate.command], { cwd: rec.cwd, env, log, timeout: gate.timeoutMinutes * 60_000 }).then(() => undefined, (e: Error) => e);
@@ -1109,74 +725,51 @@ export class NodeManager extends EventEmitter {
     const lines = [...out.trimEnd().split('\n'), ...(err ? [err.message] : [])];
     const after = err ? failures + 1 : failures;
     if (this.registry.get(id)) {
-      this.gates.set(id, { state: err ? 'failed' : 'passed', command: gate.command, failures: after });
+      rt.gate = { state: err ? 'failed' : 'passed', command: gate.command, failures: after };
       this.emitNode(id);
     }
     return { ok: !err, tail: lines.slice(-GATE_TAIL_LINES).join('\n'), failures: after };
   }
 
-  /** Best effort: run the teardown commands in a worktree about to be removed. A failure is logged and never blocks removal. */
-  private async teardown(id: string, w: Pick<Worktree, 'repo' | 'path' | 'base'>): Promise<void> {
-    if (!existsSync(w.path)) return;
-    const dir = this.nodeDir(id);
-    for (const cmd of this.worktreeCommands(w.repo, 'teardown')) {
-      await wt.runCommands([cmd], { cwd: w.path, env: this.worktreeEnv(id, w), log: existsSync(dir) ? join(dir, 'setup.log') : undefined, timeout: SETUP_TIMEOUT_MS }).catch(logError);
-    }
-  }
-
-  private knownRepos(): string[] {
-    try {
-      const v: unknown = JSON.parse(readFileSync(join(this.home, REPOS_FILE), 'utf8'));
-      return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
-    } catch { return []; }
-  }
-
-  private rememberRepo(repo: string): void {
-    const repos = this.knownRepos();
-    if (!repos.includes(repo)) writeFileSync(join(this.home, REPOS_FILE), JSON.stringify([...repos, repo], null, 2));
-  }
-
-  private discard(id: string): void {
+  /** Forget the node: its record, its runtime state and its files. The caller has killed its process. */
+  discard(id: string): void {
+    const rt = this.runtimes.get(id);
+    clearTimeout(rt?.gitTimer);
+    clearTimeout(rt?.interruptTimer);
+    this.runtimes.delete(id);
     this.registry.remove(id);
-    this.statuses.delete(id);
-    this.unread.delete(id);
-    this.lastHookAt.delete(id);
-    clearTimeout(this.gitTimers.get(id));
-    for (const m of [this.gits, this.gitTimers, this.needsSetup, this.lastCostEvent, this.outcomes, this.gates, this.turnStarts]) m.delete(id);
-    this.starting.delete(id);
-    this.restored.delete(id);
     rmSync(this.nodeDir(id), { recursive: true, force: true });
   }
 
-  private launch(id: string, prompt: string | undefined, resume: boolean): void {
+  launch(id: string, prompt: string | undefined, resume: boolean): void {
     const rec = this.registry.get(id)!;
-    const owner = rec.worktree ? undefined : this.registry.list().find((n) => n.id !== id && n.worktree && this.sessions.has(n.id) && inside(rec.cwd, n.worktree.path));
+    const owner = rec.worktree ? undefined : this.registry.list().find((n) => n.id !== id && n.worktree && this.session(n.id) && inside(rec.cwd, n.worktree.path));
     const root = this.registry.lineage(id).at(-1) ?? rec;
     const sessionDir = ensureSession(this.home, { rootId: root.id, title: root.title, cwd: root.cwd, createdAt: root.createdAt });
     const input: LaunchInput = {
       nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path,
-      title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, sessionId: this.statuses.get(id)?.sessionId ?? rec.sessionId ?? '',
+      title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, sessionId: rec.sessionId ?? '',
       resume, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
       preset: rec.preset ? loadPreset(rec.preset, this.projectDir(rec), this.home) : undefined,
     };
     const spec: LaunchSpec = rec.kind === 'claude' ? claudeLaunch(input) : terminalLaunch(input, this.shell);
     const cwd = rec.worktree?.repo ?? rec.cwd; // claude adopts the worktree itself through --worktree, or re-enters it on --resume
     const s = PtySession.spawn({ ...spec, cwd, ...DEFAULT_SIZE });
-    this.sessions.set(id, s);
-    if (rec.kind === 'claude' && prompt) this.starting.add(id);
+    const rt = this.runtimes.get(id)!;
+    rt.session = s;
+    if (rec.kind === 'claude' && prompt) rt.starting = true;
     this.registry.update(id, { lastActiveAt: Date.now() });
     this.liveChanged();
     s.onData((d) => this.emit('data', id, d));
     s.onExit(() => {
-      if (this.sessions.get(id) !== s) return;
-      this.sessions.delete(id);
-      this.starting.delete(id);
+      if (rt.session !== s) return;
+      rt.session = undefined;
+      rt.starting = false;
       this.liveChanged();
-      const prev = this.statuses.get(id)!;
       this.markUnread(id);
-      this.setStatus(id, ptyExited(prev, Date.now()), false);
+      this.setStatus(id, ptyExited(rt.status!, Date.now()), false);
       this.emit('notify', { id, kind: 'exited', title: rec.title } satisfies NotifyEvent);
-      this.refreshGit(id).catch(logError);
+      refreshGit(this, id).catch(logError);
     });
     if (rec.kind === 'claude') this.watchTrust(id, s, cwd).catch(logError);
   }
@@ -1189,14 +782,14 @@ export class NodeManager extends EventEmitter {
     const auto = trustPolicy(cwd, readClaudeJson()) === 'auto';
     let downAt = 0;
     for (const end = Date.now() + TRUST_WATCH_MS; Date.now() < end; await sleep(250)) {
-      if (s.exited || this.sessions.get(id) !== s || this.lastHookAt.has(id)) return;
+      const rt = this.runtimes.get(id);
+      if (s.exited || rt?.session !== s || rt.lastHookAt !== undefined) return;
       await s.flush();
       const lines = s.screenTail(30);
       const screen = lines.join('\n');
       if (!screen.includes('Yes, I trust this folder') || !screen.includes('Enter to confirm')) continue;
       if (!auto) {
-        const prev = this.statuses.get(id)!;
-        this.setStatus(id, { ...prev, state: 'blocked', activity: TRUST_BLOCKED_ACTIVITY, changedAt: Date.now() });
+        this.setStatus(id, { ...rt.status!, state: 'blocked', activity: TRUST_BLOCKED_ACTIVITY, changedAt: Date.now() });
         return;
       }
       // The dialog draws before it takes keys, so a Down can be lost, and Enter on the default "No, exit" quits
@@ -1227,7 +820,8 @@ export class NodeManager extends EventEmitter {
 
   private sweepStale(): void {
     const now = Date.now();
-    for (const [id, prev] of this.statuses) {
+    for (const [id, { status: prev }] of this.runtimes) {
+      if (!prev) continue;
       const rec = this.registry.get(id);
       const stalled = prev.state === 'working' ? stall(prev, now, loadConfig(rec ? this.projectDir(rec) : null, this.home).limits.stallMinutes * 60_000) : prev;
       this.setStatus(id, sweep(stalled, now));
@@ -1235,10 +829,10 @@ export class NodeManager extends EventEmitter {
   }
 
   /** Store a new status, broadcast it, and notify on transitions into done / blocked / waiting. */
-  private setStatus(id: string, next: NodeStatus, notify = true): void {
-    const prev = this.statuses.get(id);
-    if (!prev || next === prev) return;
-    this.statuses.set(id, next);
+  setStatus(id: string, next: NodeStatus, notify = true): void {
+    const rt = this.runtimes.get(id), prev = rt?.status;
+    if (!rt || !prev || next === prev) return;
+    rt.status = next;
     // The Stop hook's message often lands just after the mod's turn.complete has already moved the node to done.
     const message = next.lastAssistantMessage && next.lastAssistantMessage !== prev.lastAssistantMessage ? next.lastAssistantMessage.slice(0, 300) : undefined;
     if (next.state !== prev.state || !!next.exited !== !!prev.exited || (message && next.state !== 'working')) {
@@ -1258,10 +852,11 @@ export class NodeManager extends EventEmitter {
   }
 
   private markUnread(id: string): void {
-    if (!this.isSelected(id)) this.unread.add(id);
+    const rt = this.runtimes.get(id);
+    if (rt && !this.isSelected(id)) rt.unread = true;
   }
 
-  private emitNode(id: string): NodeView | undefined {
+  emitNode(id: string): NodeView | undefined {
     const v = this.view(id);
     if (v) this.emit('node', v);
     return v;
