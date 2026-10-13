@@ -21,6 +21,8 @@ const INTERRUPT_MS = 1500;
 const SWEEP_MS = 60_000;
 const TRUST_WATCH_MS = 20_000;
 const TRUST_BLOCKED_ACTIVITY = 'Trust dialog: answer it in the terminal';
+/** The marker (U+276F) Claude draws in front of the selected option of a dialog. */
+const SELECTED = String.fromCodePoint(0x276f);
 const DEFAULT_SIZE = { cols: 120, rows: 40 };
 /** Main checkouts in which this daemon has created worktrees, so reconciliation finds them after a lost record. */
 const REPOS_FILE = 'worktree-repos.json';
@@ -711,20 +713,28 @@ export class NodeManager extends EventEmitter {
    */
   private async watchTrust(id: string, s: PtySession, cwd: string): Promise<void> {
     const auto = trustPolicy(cwd, readClaudeJson()) === 'auto';
+    let downAt = 0;
     for (const end = Date.now() + TRUST_WATCH_MS; Date.now() < end; await sleep(250)) {
       if (s.exited || this.sessions.get(id) !== s || this.lastHookAt.has(id)) return;
       await s.flush();
-      const screen = s.screenTail(30).join('\n');
+      const lines = s.screenTail(30);
+      const screen = lines.join('\n');
       if (!screen.includes('Yes, I trust this folder') || !screen.includes('Enter to confirm')) continue;
-      if (auto) {
-        await s.write('\x1b[B');
-        await sleep(300);
-        await s.write('\r');
-      } else {
+      if (!auto) {
         const prev = this.statuses.get(id)!;
         this.setStatus(id, { ...prev, state: 'blocked', activity: TRUST_BLOCKED_ACTIVITY, changedAt: Date.now() });
+        return;
       }
-      return;
+      // The dialog draws before it takes keys, so a Down can be lost, and Enter on the default "No, exit" quits
+      // Claude. Confirm only once Yes shows selected; repeat a Down that has not landed after a second.
+      if (lines.some((l) => l.trimStart().startsWith(`${SELECTED} `) && l.includes('Yes, I trust this folder'))) {
+        await s.write('\r');
+        return;
+      }
+      if (Date.now() - downAt >= 1000) {
+        await s.write('\x1b[B');
+        downAt = Date.now();
+      }
     }
   }
 

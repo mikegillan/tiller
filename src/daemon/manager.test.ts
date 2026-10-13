@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { launchArgs } from './launch.js';
 import { NodeManager, trustPolicy } from './manager.js';
 
@@ -18,6 +18,40 @@ describe('trustPolicy', () => {
     ['/work/repo', null, 'manual'],
   ])('%s -> %s', (cwd, cfg, want) => {
     expect(trustPolicy(cwd, cfg)).toBe(want);
+  });
+});
+
+describe('trust dialog auto-answer', () => {
+  let home = '';
+  let m: NodeManager | undefined;
+  afterEach(() => { m?.shutdown(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }); });
+
+  it('confirms only once Yes is selected, so a lost Down key does not exit Claude through "No, exit"', async () => {
+    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    const bin = join(home, 'bin'), proj = join(home, 'proj');
+    mkdirSync(bin);
+    mkdirSync(proj);
+    vi.stubEnv('HOME', home); // trustPolicy reads ~/.claude.json
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [home]: { hasTrustDialogAccepted: true } } }));
+    // Fake claude: Claude's trust dialog, which drops the first key it gets because it draws before it listens.
+    // Enter on "No, exit" exits; on Yes it prints "trusted" and stays up.
+    writeFileSync(join(bin, 'claude'), `#!${process.execPath}
+const mark = String.fromCodePoint(0x276f);
+let yes = false, first = true;
+const draw = () => process.stdout.write((yes ? '  No, exit\\r\\n' + mark + ' Yes, I trust this folder' : mark + ' No, exit\\r\\n  Yes, I trust this folder') + '\\r\\nEnter to confirm\\r\\n');
+process.stdout.write('\\r\\n'.repeat(100)); // Claude draws at the bottom of the screen
+process.stdin.setRawMode(true);
+draw();
+process.stdin.on('data', (d) => {
+  if (first) { first = false; return; }
+  if (String(d).includes('\\x1b[B')) { yes = true; draw(); } else if (String(d).includes('\\r')) { if (!yes) process.exit(1); process.stdout.write('trusted\\r\\n'); }
+});
+`);
+    chmodSync(join(bin, 'claude'), 0o755);
+    m = new NodeManager({ home: join(home, 'o8'), shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
+    const { id } = m.spawn({ kind: 'claude', title: 'c', cwd: proj });
+    await expect.poll(() => m!.session(id)?.screenTail(30).join('\n') ?? 'exited', { timeout: 3000 }).toContain('trusted');
+    expect(m.view(id)!.status.exited).toBeFalsy();
   });
 });
 
