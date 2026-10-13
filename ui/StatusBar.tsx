@@ -1,4 +1,6 @@
 import { fmtAge, usageParts } from '../src/shared/format';
+import { fmtUsd, todaySpend } from '../src/shared/spend';
+import { useNow } from './hooks';
 import { useStore } from './store';
 import { needsYou } from './tree';
 
@@ -8,6 +10,8 @@ export function StatusBar() {
   const total = useStore((s) => Object.keys(s.nodes).length);
   const needs = useStore((s) => Object.values(s.nodes).filter(needsYou).length);
   const usage = useStore((s) => s.usage);
+  const now = useNow();
+  const today = useStore((s) => todaySpend(Object.values(s.nodes), now));
   return (
     <footer className="statusbar" role="status">
       <span className={`conn ${connected ? 'up' : 'down'}`}>
@@ -22,6 +26,7 @@ export function StatusBar() {
           ))}
         </span>
       )}
+      {today > 0 && <span title="spent today, all nodes">{fmtUsd(today)} today</span>}
       <span className="spacer" />
       <span className="keys"><kbd>⌘K</kbd> jump <kbd>⌘1–9</kbd> row <kbd>⌘0</kbd> sidebar</span>
     </footer>

@@ -13,9 +13,9 @@ const STALE_MS = 20 * 60 * 1000;
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 
-/** Same node, new state. Every call here is a real change, so changedAt moves. */
+/** Same node, new state. Every call here is a real change, so changedAt moves and a stall marker clears. */
 function next(prev: NodeStatus, patch: Partial<NodeStatus>, now: number): NodeStatus {
-  return { ...prev, ...patch, changedAt: now };
+  return { ...prev, stalled: undefined, ...patch, changedAt: now };
 }
 
 const toolInput = (event: HookEvent) => (event.tool_input ?? {}) as Record<string, unknown>;
@@ -136,6 +136,11 @@ function step(prev: NodeStatus, event: HookEvent, now: number): NodeStatus {
 /** Working with no state change for 20 minutes is presumed finished. */
 export function sweep(prev: NodeStatus, now: number): NodeStatus {
   return prev.state === 'working' && now - prev.changedAt > STALE_MS ? done(prev, now, { stale: true, doneSource: 'sweep' }) : prev;
+}
+
+/** Working with no state change for `ms` is marked stalled. changedAt stays put, so it still says when activity stopped. */
+export function stall(prev: NodeStatus, now: number, ms: number): NodeStatus {
+  return prev.state === 'working' && !prev.stalled && now - prev.changedAt > ms ? { ...prev, stalled: true } : prev;
 }
 
 const active = (s: NodeStatus) => s.state === 'working' || s.state === 'waiting' || s.state === 'blocked';

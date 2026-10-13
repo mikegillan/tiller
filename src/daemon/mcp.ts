@@ -8,6 +8,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type NodeView } from '../shared/protocol.js';
+import { fmtUsd, subtreeSpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { loadConfig } from './config.js';
 import { ADMIN_TOKEN_FILE } from './home.js';
@@ -29,22 +30,25 @@ const outcomes = new Map<string, { outcome: 'succeeded' | 'failed'; note?: strin
 
 function flags(v: NodeView): string[] {
   const s = v.status;
-  return (['errored', 'interrupted', 'exited', 'stale'] as const).filter((f) => s[f]);
+  return (['errored', 'interrupted', 'exited', 'stale', 'stalled'] as const).filter((f) => s[f]);
 }
 
-function summarize(v: NodeView, now: number) {
+function summarize(v: NodeView, now: number, all: NodeView[]) {
   return {
     id: v.id, parentId: v.parentId, title: v.title, kind: v.kind, cwd: v.cwd, state: v.status.state, flags: flags(v), exited: !!v.status.exited, createdAt: v.createdAt,
     age: fmtAge(now - v.createdAt), activity: v.status.activity, lastAssistantMessage: v.status.lastAssistantMessage?.slice(0, PREVIEW_CHARS),
     outcome: outcomes.get(v.id),
     model: v.status.model, effort: v.status.effort, contextPct: v.status.contextPct, contextTokens: v.status.contextTokens, contextWindow: v.status.contextWindow, costUsd: v.status.costUsd,
+    spentUsd: v.spentUsd, subtreeSpentUsd: subtreeSpend(all, v.id),
     worktree: v.worktree && { path: v.worktree.path, branch: v.worktree.branch, base: v.worktree.base, missing: !!v.worktree.missing },
   };
 }
 
 function modelInfo(n: ReturnType<typeof summarize>): string {
   const me = [n.model && shortModel(n.model), n.effort && shortEffort(n.effort)].filter(Boolean).join(' ');
-  return [me, n.contextPct !== undefined && `ctx ${Math.round(n.contextPct)}%`].filter(Boolean).map((p) => ` · ${p}`).join('');
+  const own = n.spentUsd ?? 0;
+  const spend = n.subtreeSpentUsd ? fmtUsd(own) + (n.subtreeSpentUsd > own ? ` (tree ${fmtUsd(n.subtreeSpentUsd)})` : '') : '';
+  return [me, n.contextPct !== undefined && `ctx ${Math.round(n.contextPct)}%`, spend].filter(Boolean).map((p) => ` · ${p}`).join('');
 }
 
 function tree(nodes: ReturnType<typeof summarize>[]): string {
@@ -110,10 +114,11 @@ const spawned = new Map<string, { args: string; result: unknown; at: number }>()
 
 const tools = {
   list_nodes: tool(
-    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. The text starts with one line of account-level Claude usage (5-hour and 7-day rate-limit windows, percent used and reset time), which every node draws on. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any, and for a node with its own git worktree, worktree { path, branch, base, missing }. Use it to find node ids before calling send, read or close.`,
+    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. The text starts with one line of account-level Claude usage (5-hour and 7-day rate-limit windows, percent used and reset time), which every node draws on. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale, stalled: working with no hook event for limits.stallMinutes), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any, spentUsd (its total spend across sessions) and subtreeSpentUsd (with all its descendants), and for a node with its own git worktree, worktree { path, branch, base, missing }. Use it to find node ids before calling send, read or close.`,
     {},
     async (c) => {
-      const nodes = c.manager.list().filter((v) => inScope(c.manager, c.caller, v.id)).map((v) => summarize(v, Date.now()));
+      const all = c.manager.list();
+      const nodes = all.filter((v) => inScope(c.manager, c.caller, v.id)).map((v) => summarize(v, Date.now(), all));
       return { text: `${usageLine(c.manager.usage)}\n${tree(nodes)}`, data: nodes };
     }),
 
@@ -137,7 +142,7 @@ const tools = {
       const caller = c.caller === HUMAN ? undefined : c.manager.view(c.caller);
       const inherited = caller?.status.permissionMode ?? caller?.permissionMode;
       const permissionMode = req.permissionMode ?? (inherited === 'bypassPermissions' ? undefined : inherited); // bypass stays human-only
-      const r = { ...req, permissionMode, parentId: c.caller === HUMAN ? null : c.caller };
+      const r = { ...req, permissionMode, parentId: c.caller === HUMAN ? null : c.caller, byHuman: c.caller === HUMAN };
       const view = c.manager.isolationFor(r) === 'worktree' ? await c.manager.spawnWorktree(r) : c.manager.spawn(r);
       const w = view.worktree;
       const result = w ? { nodeId: view.id, worktree: { path: w.path, branch: w.branch, base: w.base } } : { nodeId: view.id };

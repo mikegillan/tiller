@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { NodeStatus } from '../shared/protocol.js';
-import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, turnComplete, type HookEvent } from './status.js';
+import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
 
 const T0 = 1_000_000;
 const st = (p: Partial<NodeStatus> = {}): NodeStatus => ({ state: 'unknown', changedAt: T0, ...p });
@@ -145,6 +145,23 @@ describe('done holdoff', () => {
   });
   it('accepts tool events once 3 s have passed', () => {
     expect(reduce(done, ev('PostToolUse', { tool_name: 'Bash' }), T0 + 3000).state).toBe('working');
+  });
+});
+
+describe('stall', () => {
+  const MIN5 = 5 * 60_000;
+  it('marks a working node stalled after the limit, keeping changedAt; the next hook event clears it', () => {
+    const w = st({ state: 'working', activity: 'Bash: npm test' });
+    expect(stall(w, T0 + MIN5, MIN5)).toBe(w);
+    const s = stall(w, T0 + MIN5 + 1, MIN5);
+    expect(s).toEqual({ ...w, stalled: true });
+    expect(stall(s, T0 + 2 * MIN5, MIN5)).toBe(s);
+    expect(reduce(s, ev('PostToolUse'), T0 + 7 * 60_000)).toMatchObject({ state: 'working', stalled: undefined, changedAt: T0 + 7 * 60_000 });
+    expect(sweep(s, T0 + 21 * 60_000)).toMatchObject({ state: 'done', stale: true, stalled: undefined });
+  });
+  it('leaves non-working nodes alone', () => {
+    const d = st({ state: 'blocked' });
+    expect(stall(d, T0 + 60 * 60_000, MIN5)).toBe(d);
   });
 });
 

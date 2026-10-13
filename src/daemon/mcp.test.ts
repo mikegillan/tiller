@@ -60,6 +60,11 @@ describe('mcp api', () => {
     expect(list.text).toContain(`  - ${child} "kid"`);
     expect(list.text?.split('\n')[0]).toBe('usage: no report yet');
     expect(list.data.find((n: any) => n.id === child)).toMatchObject({ parentId: id, kind: 'terminal', flags: [] });
+    manager.registry.update(id, { spentUsd: 1 });
+    manager.registry.update(child, { spentUsd: 2 });
+    const spent = (await api('list_nodes', {})).body;
+    expect(spent.data.find((n: any) => n.id === id)).toMatchObject({ spentUsd: 1, subtreeSpentUsd: 3 });
+    expect(spent.text).toContain(`- ${id} "parent" [terminal] none now · $1.00 (tree $3.00)`);
   });
 
   it('refuses to close an orchestrator unless the human forces it; restart is human-only', async () => {

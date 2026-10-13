@@ -102,7 +102,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       case 'visibility': c.focused = m.focused; return;
       case 'select': c.selected = m.id; manager.select(m.id); return;
       case 'spawn': {
-        const req = { kind: m.kind, title: m.title, cwd: m.cwd, prompt: m.prompt, model: m.model, effort: m.effort, role: m.role, parentId: m.parentId, isolation: m.isolation };
+        const req = { kind: m.kind, title: m.title, cwd: m.cwd, prompt: m.prompt, model: m.model, effort: m.effort, role: m.role, parentId: m.parentId, isolation: m.isolation, byHuman: true };
         if (manager.isolationFor(req) === 'worktree') await manager.spawnWorktree(req);
         else manager.spawn(req);
         return;

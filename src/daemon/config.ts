@@ -17,11 +17,34 @@ const ConfigFile = z.object({
   }).strict().optional(),
   resumeOnStart: z.boolean().optional(),
   resumeMaxAgeDays: z.number().nonnegative().optional(),
+  limits: z.object({
+    maxDepth: z.number().int().nonnegative().optional(),
+    maxChildren: z.number().int().nonnegative().optional(),
+    maxLiveNodes: z.number().int().nonnegative().optional(),
+    stallMinutes: z.number().positive().optional(),
+    maxMessagesPer10Min: z.number().int().positive().optional(),
+  }).strict().optional(),
 });
 type ConfigFile = z.infer<typeof ConfigFile>;
 type RoleDefaults = z.infer<typeof RoleDefaults>;
 
-type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include'}` | 'resumeOnStart' | 'resumeMaxAgeDays';
+type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include'}` | 'resumeOnStart' | 'resumeMaxAgeDays' | `limits.${LimitKey}`;
+type LimitKey = keyof Limits;
+
+/** Guardrails for unattended agents; the human is exempt from the spawn caps. */
+export interface Limits {
+  /** Levels below the root a spawned node may sit at; a root is level 0. */
+  maxDepth: number;
+  /** Live children per node. */
+  maxChildren: number;
+  /** Live nodes in the whole daemon. */
+  maxLiveNodes: number;
+  /** A working node with no hook event this long gets a notice to its parent. */
+  stallMinutes: number;
+  /** Messages one sender may send one target in 10 minutes. */
+  maxMessagesPer10Min: number;
+}
+const LIMIT_DEFAULTS: Limits = { maxDepth: 3, maxChildren: 8, maxLiveNodes: 20, stallMinutes: 5, maxMessagesPer10Min: 20 };
 
 export interface Config {
   roles: { orchestrator: RoleDefaults; worker: RoleDefaults };
@@ -34,6 +57,7 @@ export interface Config {
   /** On start, resume the nodes that were live when the daemon last went away, unless idle for more than resumeMaxAgeDays. */
   resumeOnStart: boolean;
   resumeMaxAgeDays: number;
+  limits: Limits;
   /** Where each key came from: a file path, or 'default'. */
   sources: Record<Key, string>;
 }
@@ -78,5 +102,11 @@ export function loadConfig(cwd: string | null, home = homeDir()): Config {
   const [resumeOnStart, sr] = pick((c) => c.resumeOnStart, true);
   const [resumeMaxAgeDays, sa] = pick((c) => c.resumeMaxAgeDays, true);
   sources.resumeOnStart = sr; sources.resumeMaxAgeDays = sa;
-  return { roles, closeWithoutConfirm: close ?? 'never', worktrees, resumeOnStart: resumeOnStart ?? true, resumeMaxAgeDays: resumeMaxAgeDays ?? 3, sources };
+  const limits = { ...LIMIT_DEFAULTS };
+  for (const k of Object.keys(LIMIT_DEFAULTS) as LimitKey[]) {
+    const [v, src] = pick((c) => c.limits?.[k]);
+    if (v !== undefined) limits[k] = v;
+    sources[`limits.${k}`] = src;
+  }
+  return { roles, closeWithoutConfirm: close ?? 'never', worktrees, resumeOnStart: resumeOnStart ?? true, resumeMaxAgeDays: resumeMaxAgeDays ?? 3, limits, sources };
 }

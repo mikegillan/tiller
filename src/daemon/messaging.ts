@@ -1,11 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fmtAge } from '../shared/format.js';
 import type { InboxMessage, NodeView, SendResult } from '../shared/protocol.js';
+import { loadConfig } from './config.js';
 import type { NodeManager } from './manager.js';
 import { logError } from './util.js';
 
 const RATE_MS = 10_000;
+/** Window for loop detection: limits.maxMessagesPer10Min per pair, and no identical body twice. */
+const LOOP_MS = 10 * 60_000;
+const RETRY_TEXT = 'Your last turn ended with an error. Continue where you left off.';
 const QUEUE_CAP = 16;
 const QUEUE_TTL_MS = 5 * 60_000;
 const RECEIPT_MS = 8000;
@@ -58,6 +63,9 @@ interface State {
   inboxFile?: string;
   saveTimer?: NodeJS.Timeout;
   last: Map<string, number>;
+  /** Per sender-target pair: messages accepted in the last LOOP_MS, and when the sender's parent was last told of a loop. */
+  sent: Map<string, { at: number; text: string }[]>;
+  loopNoticed: Map<string, number>;
   queues: Map<string, Entry[]>;
   locks: Map<string, Promise<unknown>>;
   /** Outcome of every message sent, for message_status. Pruned after STATUS_TTL_MS and when the sender is removed. */
@@ -72,7 +80,7 @@ const states = new WeakMap<object, State>();
 function stateOf(m: Mgr): State {
   let s = states.get(m);
   if (s) return s;
-  const st: State = { seen: new Map(), inbox: new Map(), last: new Map(), queues: new Map(), locks: new Map(), status: new Map(), retry: new Map() };
+  const st: State = { seen: new Map(), inbox: new Map(), last: new Map(), sent: new Map(), loopNoticed: new Map(), queues: new Map(), locks: new Map(), status: new Map(), retry: new Map() };
   states.set(m, st);
   const kick = (id: string) => { if (st.queues.get(id)?.length) drain(m, st, id).catch(logError); };
   if (m.home) loadInbox(st, join(m.home, 'inbox.json'));
@@ -313,9 +321,21 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
   const key = `${fromId}\0${toId}`;
   const wait = (s.last.get(key) ?? -Infinity) + RATE_MS - Date.now();
   if (fromId !== DAEMON && wait > 0) return refuse(`rate limited, retry in ${Math.ceil(wait / 1000)} s`, true);
+  const from = m.view(fromId);
+  if (fromId !== DAEMON && fromId !== HUMAN) {
+    const recent = (s.sent.get(key) ?? []).filter((x) => now - x.at < LOOP_MS);
+    s.sent.set(key, recent);
+    const max = loadConfig(from?.cwd ?? null, m.home).limits.maxMessagesPer10Min;
+    const why = recent.length >= max ? `${recent.length} messages to ${toId} in 10 min (limits.maxMessagesPer10Min)`
+      : recent.some((x) => x.text === text) ? `the same message to ${toId} twice in 10 min` : undefined;
+    if (why) {
+      loopNotice(m, s, from, key, why);
+      return refuse(`looks like a loop: ${why}; escalate to the human or change approach`);
+    }
+    recent.push({ at: now, text });
+  }
   s.last.set(key, Date.now());
 
-  const from = m.view(fromId);
   const label = opts.fromLabel ?? (from ? `${oneLine(from.title)} (${fromId})` : fromId);
   const entry: Entry = { id, from: fromId, to: toId, label: oneLine(label), replyTo: opts.replyTo === undefined ? fromId : opts.replyTo, text };
   if (modLive(s, toId)) return out(queueInbox(s, entry));
@@ -325,12 +345,27 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
   return out('wait' in a ? enqueue(m, s, entry, a.wait) : a.result);
 }
 
+/** Tell the looping sender's parent, at most once per pair per LOOP_MS. */
+function loopNotice(m: Mgr, s: State, from: NodeView | undefined, key: string, why: string): void {
+  const now = Date.now();
+  if (!from?.parentId || now - (s.loopNoticed.get(key) ?? -Infinity) < LOOP_MS) return;
+  s.loopNoticed.set(key, now);
+  deliver(m, DAEMON, from.parentId, `Refused a send: ${why}. It was told to escalate to the human or change approach.`,
+    { fromLabel: `orchestr8 (child ${from.id} "${from.title}" may be looping)`, replyTo: null }).catch(logError);
+}
+
 // ---- station notices (PLAN §7) ----
 
-/** Tell a parent when its child exits, errors, or sits on a question. Once per episode. Returns a disposer. */
+/**
+ * Tell a parent when its child exits, errors, sits on a question or stalls. Once per episode. A turn error first gets
+ * one "continue" message to the child; the parent hears of the next error in the episode. Returns a disposer.
+ */
 export function startNotices(m: Mgr): () => void {
   const notified = new Set<string>();
   const timers = new Map<string, NodeJS.Timeout>();
+  /** The changedAt of the errored turn the child was told to continue from. */
+  const retried = new Map<string, number>();
+  const stallNoticed = new Set<string>();
   const notice = (v: NodeView, reason: string) => {
     if (!v.parentId || notified.has(v.id)) return;
     notified.add(v.id);
@@ -352,8 +387,21 @@ export function startNotices(m: Mgr): () => void {
       t.unref();
       timers.set(v.id, t);
     }
+    if (!v.status.stalled) stallNoticed.delete(v.id);
+    else if (!stallNoticed.has(v.id)) {
+      stallNoticed.add(v.id);
+      const body = `No hook event for ${fmtAge(Date.now() - v.status.changedAt)} while working${v.status.activity ? `; last activity: ${v.status.activity}` : ''}.`;
+      deliver(m, DAEMON, v.parentId, body, { fromLabel: `orchestr8 (child ${v.id} "${v.title}" no activity)`, replyTo: null }).catch(logError);
+    }
     if (exited) notice(v, 'exited');
-    else if (state === 'done') { if (errored) notice(v, 'turn-errored'); else if (v.status.doneSource === 'stop') notified.delete(v.id); } // only a clean Stop re-arms
+    else if (state === 'done' && errored) {
+      const at = retried.get(v.id);
+      if (at === undefined) {
+        retried.set(v.id, v.status.changedAt);
+        deliver(m, DAEMON, v.id, RETRY_TEXT, { fromLabel: 'orchestr8 (your turn errored)', replyTo: null })
+          .then((r) => { if (r.outcome !== 'delivered' && r.outcome !== 'queued') notice(v, 'turn-errored'); }).catch(logError);
+      } else if (at !== v.status.changedAt) notice(v, 'turn-errored');
+    } else if (state === 'done' && v.status.doneSource === 'stop') { notified.delete(v.id); retried.delete(v.id); } // only a clean Stop re-arms
   };
   m.on('node', onNode);
   return () => { m.off('node', onNode); for (const t of timers.values()) clearTimeout(t); };
