@@ -145,6 +145,8 @@ describe('worktree nodes', () => {
     const v = await spawnW();
     await exited(v.id);
     rmSync(v.cwd, { recursive: true, force: true });
+    m.applyHook(v.id, { hook_event_name: 'Stop' }); // the git refresh notices the directory is gone
+    await expect.poll(() => m.view(v.id)!.worktree!.missing).toBe(true);
     expect(await m.resume(v.id)).toEqual({ ok: false, error: 'worktree missing' });
     expect(m.view(v.id)!.worktree!.missing).toBe(true);
     expect(m.restart(v.id)).toEqual({ ok: false, error: 'worktree missing' });

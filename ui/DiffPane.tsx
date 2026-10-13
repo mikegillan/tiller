@@ -93,7 +93,7 @@ export function DiffPane({ node }: { node: NodeView }) {
           <nav className="files" aria-label="Changed files">
             {files.map((f) => (
               <button key={f.path} className={`file${f === file ? ' sel' : ''}`} aria-current={f === file} title={f.path} onClick={() => setPath(f.path)}>
-                <span className={`st ${f.status}`}>{STATUS_MARK[f.status]}</span>
+                <span className={`fst ${f.status}`}>{STATUS_MARK[f.status]}</span>
                 <span className="path">{f.path}</span>
                 <Counts of={f} />
               </button>

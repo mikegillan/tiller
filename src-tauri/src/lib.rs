@@ -59,11 +59,18 @@ fn tray_menu(app: &AppHandle, items: &[(String, String)], dnd: bool) -> tauri::R
     Ok(menu)
 }
 
+const GREEN: [u8; 3] = [0x30, 0xa4, 0x6c];
+
+fn show_and_focus(w: &tauri::WebviewWindow) {
+    let _ = w.show();
+    let _ = w.set_focus();
+}
+
 // The UI calls this whenever what needs you changes (ui/hooks.ts useDocumentSync), as it sets the Dock badge.
 #[tauri::command]
 fn set_tray(app: AppHandle, color: String, items: Vec<(String, String)>, dnd: bool) -> Result<(), String> {
     let tray = app.tray_by_id("o8").ok_or("no tray icon")?;
-    let rgb = match color.as_str() { "red" => [0xe5, 0x48, 0x4d], "amber" => [0xf5, 0xa5, 0x24], _ => [0x30, 0xa4, 0x6c] };
+    let rgb = match color.as_str() { "red" => [0xe5, 0x48, 0x4d], "amber" => [0xf5, 0xa5, 0x24], _ => GREEN };
     tray.set_icon(Some(dot(rgb))).map_err(|e| e.to_string())?;
     tray.set_menu(Some(tray_menu(&app, &items, dnd).map_err(|e| e.to_string())?)).map_err(|e| e.to_string())
 }
@@ -72,8 +79,7 @@ fn set_tray(app: AppHandle, color: String, items: Vec<(String, String)>, dnd: bo
 fn on_tray_menu(app: &AppHandle, id: &str) {
     let Some(w) = app.get_webview_window("main") else { return };
     if id == "dnd" { let _ = w.eval("window.__o8tray?.('dnd')"); return; }
-    let _ = w.show();
-    let _ = w.set_focus();
+    show_and_focus(&w); // every other id, "open" included, brings the window up
     if let Some(node) = id.strip_prefix("node:").filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
         let _ = w.eval(format!("window.__o8tray?.('select', '{node}')"));
     }
@@ -84,8 +90,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![set_tray])
         .setup(|app| {
             TrayIconBuilder::with_id("o8")
-                .icon(dot([0x30, 0xa4, 0x6c]))
-                .icon_as_template(false)
+                .icon(dot(GREEN))
                 .tooltip("orchestr8")
                 .menu(&tray_menu(app.handle(), &[], false)?)
                 .on_menu_event(|app, e| on_tray_menu(app, e.id().as_ref()))
@@ -106,7 +111,7 @@ pub fn run() {
         .expect("error while building tauri application");
     app.run(|app, event| {
         if let RunEvent::Reopen { .. } = event {
-            if let Some(w) = app.get_webview_window("main") { let _ = w.show(); let _ = w.set_focus(); }
+            if let Some(w) = app.get_webview_window("main") { show_and_focus(&w); }
         }
     });
 }

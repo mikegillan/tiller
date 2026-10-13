@@ -1,8 +1,9 @@
 import type { NodeView } from '../src/shared/protocol';
-import { canMerge, DiffCounts, OutcomeDetails } from './Bits';
-import { send } from './conn';
+import { actionsFor } from './ActionButtons';
+import { DiffCounts, OutcomeDetails } from './Bits';
 import { Icon } from './icons';
-import { openDialog } from './store';
+
+const CARD = ['resume', 'merge', 'restart', 'remove'];
 
 /** Sits over the last screen of an exited node. */
 export function ExitedCard({ node }: { node: NodeView }) {
@@ -14,11 +15,11 @@ export function ExitedCard({ node }: { node: NodeView }) {
         {node.status.git && <p className="branchline">⎇ {node.status.git.branch} <DiffCounts git={node.status.git} /></p>}
         {node.outcome && <OutcomeDetails o={node.outcome} />}
         <div className="btns">
-          <button className="btn primary" autoFocus onClick={() => send({ t: 'resume', id: node.id })}><Icon name="play" size={14} />Resume</button>
-          {canMerge(node) && <button className="btn" onClick={() => send({ t: 'merge', id: node.id })}><Icon name="merge" size={14} />Merge into {node.status.git!.base}</button>}
-          {node.parentId === null
-            ? <button className="btn" onClick={() => openDialog({ kind: 'restart', id: node.id })}><Icon name="restart" size={14} />Restart</button>
-            : <button className="btn danger" onClick={() => node.worktree ? openDialog({ kind: 'kill', id: node.id }) : send({ t: 'close', id: node.id })}><Icon name="trash" size={14} />Remove</button>}
+          {actionsFor(node).filter((a) => CARD.includes(a.key)).map((a) => (
+            <button key={a.key} className={`btn${a.key === 'resume' ? ' primary' : a.danger ? ' danger' : ''}`} autoFocus={a.key === 'resume'} onClick={a.run}>
+              <Icon name={a.icon} size={14} />{a.label}
+            </button>
+          ))}
         </div>
       </div>
     </div>

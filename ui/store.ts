@@ -152,7 +152,7 @@ export function applyServer(m: ServerMessage) {
       return dropConfirm(m.confirmId);
     case 'diff': {
       const { t: _, id, ...data } = m;
-      return update((s) => (s.diff?.id === id ? { diff: { id, data } } : {}));
+      return update((s) => (s.diff?.id === id ? { diff: 'error' in data ? { id, error: data.error } : { id, data } } : {}));
     }
     case 'sent': {
       const title = state.nodes[m.id]?.title ?? m.id;
@@ -162,7 +162,6 @@ export function applyServer(m: ServerMessage) {
       return toast(outcome === 'queued' ? `Queued for ${title}; it arrives when the node is idle` : `Sent to ${title}`, m.id, 'ok');
     }
     case 'error':
-      if (state.diff && state.diff.id === m.id && !state.diff.data) update((s) => ({ diff: { id: m.id!, error: m.message } }));
       return toast(m.message, m.id, 'bad');
     case 'digest':
       return update(() => ({ digest: { since: m.since, items: m.items } }));

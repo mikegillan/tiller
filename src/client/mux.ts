@@ -132,7 +132,6 @@ export function mux(startId: string, { port, token }: { port: number; token: str
     else if (a.type === 'detach') finish('', 0);
     else if (a.type === 'switch') pick(a.target);
     else if (a.type === 'act') act(a.key);
-    else if (a.type === 'help') act('help');
     else if (a.type === 'picker') setNotice('jump to: ');
     else if (a.type === 'echo') setNotice((notice ?? '') + a.data);
   };

@@ -2,11 +2,11 @@
 
 const CHORD = '\x1c';
 
-export type ActKey = 'new' | 'resume' | 'kill' | 'restart' | 'rename' | 'orch' | 'sidebar' | 'clear';
+export type ActKey = 'new' | 'resume' | 'kill' | 'restart' | 'rename' | 'orch' | 'sidebar' | 'clear' | 'help';
 export type Target = 'next' | 'prev' | 'needs' | 'back' | 'cur' | number;
 export type Action =
   | { type: 'passthrough'; data: string } | { type: 'switch'; target: Target } | { type: 'echo'; data: string }
-  | { type: 'picker' } | { type: 'help' } | { type: 'detach' } | { type: 'act'; key: ActKey };
+  | { type: 'picker' } | { type: 'detach' } | { type: 'act'; key: ActKey };
 export interface ChordState { held: boolean; pick: string | null }
 export const initial: ChordState = { held: false, pick: null };
 
@@ -16,7 +16,7 @@ export const BINDINGS: Array<{ key: string; label: string; action: Action }> = [
   { key: 'x', label: 'kill', action: { type: 'act', key: 'kill' } }, { key: 'R', label: 'restart', action: { type: 'act', key: 'restart' } },
   { key: 'r', label: 'resume', action: { type: 'act', key: 'resume' } }, { key: 'c', label: 'clear exited', action: { type: 'act', key: 'clear' } },
   { key: 'o', label: 'new orchestrator here', action: { type: 'act', key: 'orch' } }, { key: 's', label: 'sidebar', action: { type: 'act', key: 'sidebar' } },
-  { key: '?', label: 'help', action: { type: 'help' } }, { key: 'd', label: 'detach', action: { type: 'detach' } },
+  { key: '?', label: 'help', action: { type: 'act', key: 'help' } }, { key: 'd', label: 'detach', action: { type: 'detach' } },
   { key: 'j', label: 'next', action: { type: 'switch', target: 'next' } }, { key: 'k', label: 'prev', action: { type: 'switch', target: 'prev' } },
   { key: '!', label: 'next needing you', action: { type: 'switch', target: 'needs' } }, { key: 'b', label: 'back', action: { type: 'switch', target: 'back' } },
   { key: 'l', label: 'jump by number', action: { type: 'picker' } },
