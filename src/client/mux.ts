@@ -3,7 +3,7 @@
 import { writeSync } from 'node:fs';
 import { basename } from 'node:path';
 import { WebSocket } from 'ws';
-import { needsYou, type ClientMessage, type NodeView, type ServerMessage } from '../shared/protocol.js';
+import { needsYou, type ClientMessage, type NodeView, type ServerMessage, type Usage } from '../shared/protocol.js';
 import { helpLines, initial, step, type Action, type Target } from './chords.js';
 import { encode, isLeftPress, isWheel, parseInput, type Mouse } from './mouse.js';
 import { NodeScreen, placeholder } from './screen.js';
@@ -19,7 +19,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
   let ws: WebSocket, cur = startId, prev: string | null = null, cs = initial;
   let appUp = false, hidden = false, scroll = 0, connected = false, started = false, finished = false, overlay = false, awaiting = false;
   let prompt: { label: string; text: string; confirm: boolean; done: (v: string) => void } | undefined;
-  let notice: string | undefined, noticeTimer: NodeJS.Timeout | undefined;
+  let notice: string | undefined, noticeTimer: NodeJS.Timeout | undefined, usage: Usage | undefined;
   let scr: NodeScreen, side: SideLayout | undefined, prevSide: string[] = [];
   let frameTimer: NodeJS.Timeout | undefined, sideTimer: NodeJS.Timeout | undefined;
 
@@ -39,7 +39,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
   function drawSide(force = false) {
     const { W, rows } = dims();
     if (!W) return side = undefined;
-    const i = list().findIndex((n) => n.id === cur), model = () => ({ nodes, cur, scroll, now: Date.now(), port, connected, prompt: prompt && prompt.label + prompt.text, notice });
+    const i = list().findIndex((n) => n.id === cur), model = () => ({ nodes, cur, scroll, now: Date.now(), port, connected, prompt: prompt && prompt.label + prompt.text, notice, usage });
     if (i >= 0) scroll = revealScroll(model(), W, rows, i);
     side = layoutSidebar(model(), W, rows);
     if (force) prevSide = [];
@@ -201,6 +201,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
       for (const n of m.nodes) nodes.set(n.id, n);
       connected = true;
       appUp = m.appConnected;
+      usage = m.usage ?? usage;
       if (!started) {
         if (!nodes.has(cur)) return finish(`no such node: ${cur}`, 1);
         started = true;
@@ -230,6 +231,7 @@ export function mux(startId: string, { port, token }: { port: number; token: str
       const next = list()[0];
       if (next) { cs = initial; show(next.id); } else finish('[node removed]', 0);
     } else if (m.t === 'clients') appUp = m.app;
+    else if (m.t === 'usage') { usage = m.usage; throttleSide(); }
     else if (m.t === 'focus') { if (m.from === cur && nodes.has(m.id)) switchTo(m.id); }
     else if (m.t === 'error') { if (m.id === cur && !nodes.has(cur)) finish(m.message, 1); else setNotice(m.message.slice(0, 60)); }
   }

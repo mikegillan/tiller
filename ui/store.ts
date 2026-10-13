@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { ServerMessage } from '../src/shared/protocol';
+import type { ServerMessage, Usage } from '../src/shared/protocol';
 import { pickInitial, rootOf } from './sessions';
 import { insertSorted, type Nodes } from './tree';
 import { wantedNode } from './url';
@@ -33,6 +33,8 @@ export interface State {
   renaming: string | null;
   /** A spawn was requested: select the next new node that arrives. */
   awaitSpawn: boolean;
+  /** Account-level rate limits, as the newest node report gave them. */
+  usage?: Usage;
 }
 
 const stored = (() => { try { return localStorage.getItem('o8.panel') === '1'; } catch { return false; } })();
@@ -99,8 +101,10 @@ export function applyServer(m: ServerMessage) {
         for (const n of fresh) order = insertSorted(order, nodes, n);
         const base = { ...s, order, opened: s.opened.filter((id) => nodes[id]) };
         const sel = s.selected && nodes[s.selected] ? s.selected : pickInitial(nodes, order, s.selected ? undefined : wantedNode);
-        return { order, opened: base.opened, ...choose(base, nodes, sel) };
+        return { order, opened: base.opened, usage: m.usage ?? s.usage, ...choose(base, nodes, sel) };
       });
+    case 'usage':
+      return update(() => ({ usage: m.usage }));
     case 'node':
       return update((s) => {
         const isNew = !s.order.includes(m.node.id);

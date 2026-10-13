@@ -58,6 +58,7 @@ describe('mcp api', () => {
     expect(manager.view(child)?.parentId).toBe(id);
     const list = (await api('list_nodes', {})).body;
     expect(list.text).toContain(`  - ${child} "kid"`);
+    expect(list.text?.split('\n')[0]).toBe('usage: no report yet');
     expect(list.data.find((n: any) => n.id === child)).toMatchObject({ parentId: id, kind: 'terminal', flags: [] });
   });
 

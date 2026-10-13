@@ -22,6 +22,7 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
   o8 new <title> [--cwd P] [--model M] [--effort E] [--prompt T] [--role R] [--worktree]  start a Claude node and attach to it in the terminal
   o8 ps | list                                        show nodes
+  o8 usage                                            show account-level Claude usage (5-hour and 7-day windows) as nodes last reported it
   o8 attach <id>                                      open the sidebar client on a node (Ctrl-\\ ? for keys)
   o8 select <id>                                      show a node in the app (opens the app if it is built)
   o8 resume <id>                                      relaunch an exited Claude node
@@ -45,7 +46,7 @@ const home = homeDir();
 const adminToken = () => readFileSync(join(home, ADMIN_TOKEN_FILE), 'utf8').trim();
 const daemonPort = () => portFor(home);
 
-async function call(tool: string, args: Record<string, unknown>, print = true, soft = false): Promise<{ data?: any; error?: string }> {
+async function call(tool: string, args: Record<string, unknown>, print = true, soft = false): Promise<{ text?: string; data?: any; error?: string }> {
   const env = process.env;
   const node = env.O8_NODE_ID && env.O8_TOKEN_FILE;
   let token: string;
@@ -84,6 +85,7 @@ const isolation = () => (f.worktree ? 'worktree' : undefined);
 
 switch (cmd) {
   case 'list': await call('list_nodes', {}); break;
+  case 'usage': console.log((await call('list_nodes', {}, false)).text?.split('\n')[0]); break; // list_nodes' first line
   case 'ps':
     for (const n of (await call('list_nodes', {}, false)).data ?? []) console.log([n.id, n.state, n.title, n.parentId ?? '-', n.age].join('\t'));
     break;

@@ -7,7 +7,7 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
-import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type ClientMessage, type ServerMessage } from '../shared/protocol.js';
+import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type ClientMessage, type ServerMessage, type Usage } from '../shared/protocol.js';
 import { DEFAULT_PORT } from './home.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
 import { mountMcp } from './mcp.js';
@@ -83,6 +83,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     for (const c of clients) if (c.authed && c.attached.has(rid)) sendTo(c, { t: 'data', id: rid, data });
   });
   manager.on('notify', (n: NotifyEvent) => broadcast({ t: 'notify', ...n }));
+  manager.on('usage', (usage: Usage) => broadcast({ t: 'usage', usage }));
 
   async function handle(c: Client, m: ClientMessage): Promise<void> {
     switch (m.t) {
@@ -147,7 +148,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
           c.authed = true;
           c.kind = msg.client;
           clearTimeout(authTimer);
-          sendTo(c, { t: 'snapshot', nodes: manager.list(), appConnected: appConnected() });
+          sendTo(c, { t: 'snapshot', nodes: manager.list(), appConnected: appConnected(), usage: manager.usage });
           if (c.kind === 'app') broadcast({ t: 'clients', app: true });
         } else {
           ws.close(4401, 'auth required');
