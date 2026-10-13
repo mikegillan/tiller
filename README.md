@@ -67,6 +67,16 @@ The default orchestrator prompt now tells the orchestrator to give parallel work
 
 The daemon hides `.claude/worktrees/` from `git status` through `.git/info/exclude`, which ripgrep also honours, but test runners, linters and other tools that glob the tree do not. Exclude `**/.claude/worktrees/**` in them; this repo does so in `vitest.config.ts`.
 
+## Session artifacts and the event log
+
+Each tree (a root and everything under it) gets a directory, `~/.orchestr8/sessions/<rootId>/`, created when the root launches. Every node in the tree has its path in `O8_SESSION_DIR`, a line in its system prompt telling it to keep notes that must outlive its context there with `handoff.md` as the current state of the work, and permission to write there without prompting. The directory is keyed by the root's id, not Claude's session id, so it survives restart, `o8 reload` and a reboot, unlike Claude's scratchpad under `/tmp`.
+
+`o8 restart <id> --prompt T` (also the app's Restart dialog) gives the restarted node a first prompt. Without one, if the tree has a `handoff.md`, the node is told to read it first.
+
+The daemon appends one JSON line per event to `events.jsonl` in that directory: spawn, close, state changes, report_outcome, send with its outcome, restart, resume, merge, and a cost snapshot at most once a minute per node. `o8 log [id] [--since 2h] [--follow]` prints it; a non-root id shows only that node's events. When the app or a browser tab regains focus after more than `digestAfterMinutes` (default 10) with no focused window, it gets a "While you were away" card built from the log: per node, what still needs you, what errored and what finished, with outcome notes; clicking a row selects the node.
+
+When a root is closed its `meta.json` gets `closedAt`; on daemon start and once a day, directories whose root closed more than `sessionsKeepDays` (default 14) ago, or whose root is gone and that nothing has written to for that long, are deleted. `o8 sessions` lists the directories with title, age, size and whether they are closed; `o8 sessions clean` runs that sweep now; `o8 sessions path [id]` prints a tree's directory. Both config keys live in the home file only.
+
 ## Browser UI (optional)
 
     npm run ui:build

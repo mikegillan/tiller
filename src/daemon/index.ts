@@ -42,6 +42,11 @@ manager.worktrees({ clean: 'startup' }).then((r) => {
   if (r.orphans.length || r.kept.length) console.log(`${r.orphans.length} orphaned worktree(s) and ${r.kept.length} kept branch(es): see o8 worktrees`);
 }).catch(logError).then(() => manager.resumeLive()).then(console.log, logError);
 
+// Delete expired session directories now and once a day.
+const sweepSessions = () => { try { for (const id of manager.sweepSessions()) console.log(`removed expired session directory ${id}`); } catch (err) { logError(err); } };
+sweepSessions();
+setInterval(sweepSessions, 86_400_000).unref();
+
 process.on('unhandledRejection', logError);
 
 function stop(): void {

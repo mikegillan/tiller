@@ -142,7 +142,11 @@ export type ServerMessage =
   | { t: 'confirmDone'; confirmId: string }  // that confirm was answered or timed out; close the modal
   | { t: 'error'; message: string; id?: string }
   | { t: 'focus'; from: string; id: string }   // a node's mod asked to view node `id`; an attach client showing `from` switches
+  | { t: 'digest'; since: number; items: DigestItem[] } // what happened while no client was focused; sent to the client that regained focus
   ;
+
+/** One node's line in the away digest: still needs you, errored or failed, or finished (with its outcome note). */
+export interface DigestItem { id: string; title: string; kind: 'needsYou' | 'errored' | 'finished'; text?: string; at: number }
 
 // UI -> Daemon.
 export type ClientMessage =
@@ -156,7 +160,7 @@ export type ClientMessage =
   | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation }
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
   | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.merge style
-  | { t: 'restart'; id: string }               // relaunch with a fresh session: clears context, keeps the node and its children
+  | { t: 'restart'; id: string; prompt?: string } // relaunch with a fresh session: clears context, keeps the node and its children; prompt is its first prompt
   | { t: 'resume'; id: string }
   | { t: 'prune' }                             // remove every exited node that has no live descendant
   | { t: 'rename'; id: string; title: string }

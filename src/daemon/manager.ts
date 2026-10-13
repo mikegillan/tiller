@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { NEEDS_YOU_STATES, type AgentState, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
+import { NEEDS_YOU_STATES, type AgentState, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { loadConfig, type Limits, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
 import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
@@ -15,6 +15,7 @@ import { NodeRegistry } from './nodes.js';
 import { buildChildEnv, PtySession } from './pty.js';
 import { logError, safeEqual } from './util.js';
 import * as wt from './worktree.js';
+import { appendEvent, buildDigest, ensureSession, flushEvents, handoffPrompt, listSessions, markClosed, readEvents, sessionDir, sweepSessions } from './sessions.js';
 import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
 
 const MAX_PREVIOUS_SESSIONS = 10;
@@ -34,6 +35,8 @@ const GIT_DEBOUNCE_MS = 3000;
 const GIT_EDIT_TOOLS = ['Edit', 'Write', 'Bash'];
 /** Limit for each worktree setup or teardown command. */
 const SETUP_TIMEOUT_MS = 10 * 60_000;
+/** At most one cost event per node in this long. */
+const COST_EVENT_MS = 60_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A node's state before any hook arrives: a Claude node is unknown until SessionStart; a terminal has no agent state. */
@@ -167,6 +170,7 @@ export class NodeManager extends EventEmitter {
   private pendingResume: Set<string>;
   /** Set by shutdown: the live set is then frozen, so the PTYs' exits do not empty it. */
   private stopped = false;
+  private lastCostEvent = new Map<string, number>();
 
   constructor(opts: ManagerOptions = {}) {
     super();
@@ -234,6 +238,27 @@ export class NodeManager extends EventEmitter {
     return this.sessions.get(id);
   }
 
+  /** The tree's session directory: keyed by the topmost ancestor still registered (the node itself for a root). */
+  sessionDirOf(id: string): string {
+    return sessionDir(this.home, (this.registry.lineage(id).at(-1) ?? this.registry.get(id))?.id ?? id);
+  }
+
+  /** Append an event to the node's tree's events.jsonl; never blocks. */
+  logEvent(id: string, type: string, data: Record<string, unknown> = {}): void {
+    appendEvent(this.sessionDirOf(id), { ts: Date.now(), type, id, title: this.registry.get(id)?.title, ...data });
+  }
+
+  /** The away digest: what every tree's event log says happened since `since`. */
+  async digest(since: number): Promise<DigestItem[]> {
+    await flushEvents();
+    return buildDigest(listSessions(this.home).filter((x) => x.newest >= since).flatMap((x) => readEvents(x.dir, since)));
+  }
+
+  /** Delete the session directories that sessionsKeepDays has expired; returns their root ids. */
+  sweepSessions(): string[] {
+    return sweepSessions(this.home, new Set(this.registry.list().map((n) => n.id)), loadConfig(null, this.home).sessionsKeepDays);
+  }
+
   // ---- lifecycle ----
 
   /** The request's isolation, else the config default for a claude node whose role is worker or none. */
@@ -279,6 +304,7 @@ export class NodeManager extends EventEmitter {
       this.discard(rec.id);
       throw err;
     }
+    this.logEvent(rec.id, 'spawn', { parentId, kind: req.kind });
     return this.emitNode(rec.id)!;
   }
 
@@ -324,6 +350,7 @@ export class NodeManager extends EventEmitter {
       throw err;
     }
     this.refreshGit(rec.id).catch(logError);
+    this.logEvent(rec.id, 'spawn', { parentId, kind: 'claude', branch: worktree.branch });
     return this.emitNode(rec.id)!;
   }
 
@@ -350,6 +377,7 @@ export class NodeManager extends EventEmitter {
       const subject = style === 'squash' ? `${rec.title} (squashed from ${w.branch})` : `Merge branch '${w.branch}': ${rec.title}`;
       const sha = await wt.mergeInto(w.repo, w.branch, w.base, style, subject);
       this.merged.set(id, { tip: await this.branchTip(w), at: Date.now() });
+      this.logEvent(id, 'merge', { branch: w.branch, base: w.base, sha: sha.slice(0, 7), style });
       return { base: w.base, sha, style };
     } finally {
       this.busy.delete(id);
@@ -391,15 +419,17 @@ export class NodeManager extends EventEmitter {
       this.statuses.set(id, { ...status, exited: true, changedAt: Date.now() });
       return { ok: false, error: (err as Error).message };
     }
+    this.logEvent(id, 'resume', { sessionId });
     this.emitNode(id);
     return { ok: true };
   }
 
   /**
    * Kill the node's process and relaunch it with the same record under a fresh session id, so a Claude node starts with
-   * an empty context. Children and parentId are untouched; the old session ids are kept in previousSessions.
+   * an empty context. Children and parentId are untouched; the old session ids are kept in previousSessions. `prompt` is
+   * the first prompt; without one, a node whose tree has a handoff.md is pointed at it.
    */
-  restart(id: string): { ok: true } | { ok: false; error: string } {
+  restart(id: string, prompt?: string): { ok: true } | { ok: false; error: string } {
     const rec = this.registry.get(id);
     if (!rec) return { ok: false, error: 'No such node' };
     if (rec.worktree && !existsSync(rec.worktree.path)) return { ok: false, error: 'worktree missing' }; // --worktree would make a fresh one
@@ -417,8 +447,10 @@ export class NodeManager extends EventEmitter {
     try {
       this.writeFiles(id);
       this.emit('data', id, '\x1bc'); // reset attached screens before the new process draws
-      if (rec.worktree && this.needsSetup.has(id)) this.setupThenLaunch(id, rec.worktree, this.worktreeCommands(rec.worktree.repo, 'setup'), this.needsSetup.get(id));
-      else this.launch(id, undefined, false);
+      const first = rec.kind === 'claude' ? prompt || handoffPrompt(this.sessionDirOf(id)) : undefined;
+      if (rec.worktree && this.needsSetup.has(id)) this.setupThenLaunch(id, rec.worktree, this.worktreeCommands(rec.worktree.repo, 'setup'), prompt || this.needsSetup.get(id));
+      else this.launch(id, first, false);
+      this.logEvent(id, 'restart', { sessionId, ...(first ? { prompt: first } : {}) });
     } catch (err) {
       this.setStatus(id, { ...this.statuses.get(id)!, state: initialState(rec.kind), exited: true, activity: undefined, changedAt: Date.now() }, false);
       return { ok: false, error: (err as Error).message };
@@ -440,8 +472,7 @@ export class NodeManager extends EventEmitter {
     if (rec?.worktree) return this.closeWorktreeNode(id, rec.title, rec.worktree, worktree);
     this.kill(id);
     if (!this.registry.get(id)) return undefined;
-    this.discard(id);
-    this.emit('removed', id);
+    this.closed(id);
     return undefined;
   }
 
@@ -464,12 +495,19 @@ export class NodeManager extends EventEmitter {
         this.setStatus(id, { ...this.statuses.get(id)!, exited: true, activity: (err as Error).message, changedAt: Date.now() }, false);
         throw err;
       }
-      this.discard(id);
-      this.emit('removed', id);
+      this.closed(id, note);
       return note;
     } finally {
       this.busy.delete(id);
     }
+  }
+
+  /** Log the close, record closedAt for a root's session directory, and forget the node. */
+  private closed(id: string, note?: string): void {
+    this.logEvent(id, 'close', note ? { note } : {});
+    if (this.registry.get(id)?.parentId === null) markClosed(this.home, id);
+    this.discard(id);
+    this.emit('removed', id);
   }
 
   /** Kill the node's process, if any, and forget it; returns the session it had. */
@@ -607,6 +645,10 @@ export class NodeManager extends EventEmitter {
         this.emit('usage', this.usage);
       }
       if (cost) this.addSpend(nodeId, cost.usd, prev.costUsd, now);
+      if (cost && now - (this.lastCostEvent.get(nodeId) ?? 0) >= COST_EVENT_MS) {
+        this.lastCostEvent.set(nodeId, now);
+        this.logEvent(nodeId, 'cost', { usd: cost.usd, ...(context ? { contextPct: context.percent } : {}) });
+      }
       this.setStatus(nodeId, { ...prev, contextPct: context?.percent ?? prev.contextPct, contextTokens: context?.tokens ?? prev.contextTokens, contextWindow: context?.window ?? prev.contextWindow, costUsd: cost?.usd ?? prev.costUsd });
     }
   }
@@ -670,7 +712,7 @@ export class NodeManager extends EventEmitter {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(join(dir, 'token'), token, { mode: 0o600 });
     writeFileSync(join(dir, 'hook-headers'), `Authorization: Bearer ${token}\nX-O8-Node: ${id}\n`, { mode: 0o600 }); // read by hook.sh via curl -H @file
-    writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token, worktree: !!this.registry.get(id)?.worktree });
+    writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token, worktree: !!this.registry.get(id)?.worktree, sessionDir: this.sessionDirOf(id) });
   }
 
   private async removeWorktree(id: string, title: string, w: Worktree, mode?: 'keep' | 'discard'): Promise<string | undefined> {
@@ -852,17 +894,19 @@ export class NodeManager extends EventEmitter {
     this.unread.delete(id);
     this.lastHookAt.delete(id);
     clearTimeout(this.gitTimers.get(id));
-    for (const m of [this.gits, this.gitTimers, this.merged, this.needsSetup]) m.delete(id);
+    for (const m of [this.gits, this.gitTimers, this.merged, this.needsSetup, this.lastCostEvent]) m.delete(id);
     rmSync(this.nodeDir(id), { recursive: true, force: true });
   }
 
   private launch(id: string, prompt: string | undefined, resume: boolean): void {
     const rec = this.registry.get(id)!;
     const owner = rec.worktree ? undefined : this.registry.list().find((n) => n.id !== id && n.worktree && this.sessions.has(n.id) && inside(rec.cwd, n.worktree.path));
+    const root = this.registry.lineage(id).at(-1) ?? rec;
+    const sessionDir = ensureSession(this.home, { rootId: root.id, title: root.title, cwd: root.cwd, createdAt: root.createdAt });
     const input: LaunchInput = {
       nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path,
       title: rec.title, parentId: rec.parentId, home: this.home, cwd: rec.cwd, role: rec.role, sessionId: this.statuses.get(id)?.sessionId ?? rec.sessionId ?? '',
-      resume, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id,
+      resume, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
     };
     const spec: LaunchSpec = rec.kind === 'claude' ? claudeLaunch(input) : terminalLaunch(input, this.shell);
     const cwd = rec.worktree?.repo ?? rec.cwd; // claude adopts the worktree itself through --worktree, or re-enters it on --resume
@@ -942,6 +986,10 @@ export class NodeManager extends EventEmitter {
     const prev = this.statuses.get(id);
     if (!prev || next === prev) return;
     this.statuses.set(id, next);
+    if (next.state !== prev.state || !!next.exited !== !!prev.exited) {
+      const message = next.lastAssistantMessage && next.lastAssistantMessage !== prev.lastAssistantMessage ? next.lastAssistantMessage.slice(0, 300) : undefined;
+      this.logEvent(id, 'state', { from: prev.state, to: next.state, ...(next.activity ? { activity: next.activity } : {}), ...(message ? { message } : {}), ...(next.errored ? { errored: true } : {}), ...(next.exited ? { exited: true } : {}) });
+    }
     let kind: NotifyEvent['kind'] | undefined;
     if (notify && next.state !== prev.state) {
       if (next.state === 'done') kind = next.errored ? 'errored' : 'done';

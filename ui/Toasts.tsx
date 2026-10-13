@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 import { send } from './conn';
 import { Modal } from './Modal';
-import { dismissToast, dropConfirm, selectNode, useStore, type Toast } from './store';
+import { fmtAge } from '../src/shared/format';
+import { dismissDigest, dismissToast, dropConfirm, selectNode, useStore, type Toast } from './store';
 
 function ToastItem({ t }: { t: Toast }) {
   useEffect(() => {
@@ -31,6 +32,30 @@ export function ConfirmModal() {
         <button className="btn danger" onClick={() => answer(false)}>Deny</button>
         <button className="btn primary" onClick={() => answer(true)}>Approve</button>
       </div>
+    </Modal>
+  );
+}
+
+const DIGEST_LABEL = { needsYou: 'Needs you', errored: 'Errored', finished: 'Finished' } as const;
+
+/** What happened while you were away, needs-you first. A row selects its node. Waits behind agent requests. */
+export function DigestCard() {
+  const digest = useStore((s) => s.digest);
+  const blocked = useStore((s) => s.confirms.length > 0);
+  if (!digest || blocked) return null;
+  return (
+    <Modal title={`While you were away (${fmtAge(Date.now() - digest.since)})`} onClose={dismissDigest}>
+      <ul className="digest">
+        {digest.items.map((i) => (
+          <li key={i.id}>
+            <button className={`row ${i.kind}`} onClick={() => { selectNode(i.id); dismissDigest(); }}>
+              <span className="kind">{DIGEST_LABEL[i.kind]}</span> <strong>{i.title}</strong>
+              {i.text && <span className="text">{i.text}</span>}
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="btns"><button className="btn primary" autoFocus onClick={dismissDigest}>Dismiss</button></div>
     </Modal>
   );
 }

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
 import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type ClientMessage, type ServerMessage, type Usage } from '../shared/protocol.js';
+import { loadConfig } from './config.js';
 import { DEFAULT_PORT } from './home.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
 import { mountMcp } from './mcp.js';
@@ -43,7 +44,7 @@ const clientMessage = z.discriminatedUnion('t', [
   }),
   z.object({ t: z.literal('close'), id, force: z.boolean().optional(), worktree: z.enum(['keep', 'discard']).optional() }),
   z.object({ t: z.literal('merge'), id }),
-  z.object({ t: z.literal('restart'), id }),
+  z.object({ t: z.literal('restart'), id, prompt: z.string().optional() }),
   z.object({ t: z.literal('resume'), id }),
   z.object({ t: z.literal('prune') }),
   z.object({ t: z.literal('rename'), id, title: z.string() }),
@@ -74,6 +75,10 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   const broadcast = (m: ServerMessage) => { for (const c of clients) if (c.authed) sendTo(c, m); };
   const appConnected = () => [...clients].some((c) => c.authed && c.kind === 'app');
   manager.isSelected = (id) => [...clients].some((c) => c.selected === id);
+  const anyFocused = () => [...clients].some((c) => c.authed && c.focused);
+  /** Since when no client has been focused; undefined while one is, or before any ever was. */
+  let awaySince: number | undefined;
+  const noteAway = () => { awaySince = anyFocused() ? undefined : awaySince ?? Date.now(); };
 
   manager.on('node', (node) => broadcast({ t: 'node', node }));
   manager.on('removed', (rid: string) => {
@@ -100,7 +105,20 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       case 'detach': c.attached.delete(m.id); return;
       case 'input': manager.input(m.id, m.data); return;
       case 'resize': manager.resize(m.id, m.cols, m.rows); return;
-      case 'visibility': c.focused = m.focused; return;
+      case 'visibility': {
+        const wasAway = !anyFocused();
+        const regained = m.focused && !c.focused;
+        c.focused = m.focused;
+        if (regained && wasAway && awaySince !== undefined && c.kind !== 'mux') {
+          const since = awaySince;
+          if (Date.now() - since > loadConfig(null, manager.home).digestAfterMinutes * 60_000) {
+            const items = await manager.digest(since);
+            if (items.length) sendTo(c, { t: 'digest', since, items });
+          }
+        }
+        noteAway();
+        return;
+      }
       case 'select': c.selected = m.id; manager.select(m.id); return;
       case 'spawn': {
         const req = { kind: m.kind, title: m.title, cwd: m.cwd, prompt: m.prompt, model: m.model, effort: m.effort, role: m.role, parentId: m.parentId, isolation: m.isolation, byHuman: true };
@@ -111,7 +129,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       case 'close': await manager.close(m.id, m.force, m.worktree); return;
       case 'merge': await manager.merge(m.id); return;
       case 'restart': {
-        const r = manager.restart(m.id);
+        const r = manager.restart(m.id, m.prompt);
         if (!r.ok) sendTo(c, { t: 'error', message: r.error, id: m.id });
         return;
       }
@@ -134,6 +152,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     ws.on('close', () => {
       clearTimeout(authTimer);
       clients.delete(c);
+      if (c.focused) noteAway();
       if (c.authed && c.kind === 'app' && !appConnected()) broadcast({ t: 'clients', app: false });
     });
     ws.on('message', (raw) => {

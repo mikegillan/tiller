@@ -164,7 +164,11 @@ const tools = {
   send: tool(
     'Send a message to another agent node (self excluded; scope is your parent, siblings, and descendants). The message reaches the target as a prompt inside a framed envelope that shows the target who sent it and where to reply. Delivery is normally queued and confirmed asynchronously: the reply has outcome "queued" and a messageId, and the target\'s plugin submits the message when the target is idle (up to 16 queued, for 5 minutes). Call message_status with the messageId to see when it becomes delivered. If the target has no plugin running, the message is instead pasted into its prompt when it is idle, and the reply may be delivered, stalled or queued. Other outcomes: delivered, stalled (pasted but not confirmed, do not resend blindly), expired, queueFull, gone, refused. Only one send per target per 10 seconds is accepted. Terminal nodes cannot receive messages; use write.',
     { nodeId: z.string().min(1), text: z.string().min(1) },
-    async (c, a) => ({ data: await deliver(c.manager, c.caller, a.nodeId, a.text) })),
+    async (c, a) => {
+      const r = await deliver(c.manager, c.caller, a.nodeId, a.text);
+      if (c.manager.registry.get(a.nodeId)) c.manager.logEvent(a.nodeId, 'send', { from: c.caller, outcome: r.outcome, ...(r.messageId ? { messageId: r.messageId } : {}) });
+      return { data: r };
+    }),
 
   message_status: tool(
     'Look up the current outcome of a message you sent, which is how you confirm a queued message was delivered: it returns the same result shape as send, with outcome queued until the message is delivered, stalled, expired or gone. Takes the messageId from the send reply.',
@@ -270,11 +274,11 @@ const tools = {
     }),
 
   restart: tool(
-    'Restart a node: kill its process and relaunch it with a fresh session, which clears its context. Its title, directory, model, effort and children are kept. Only the human may call this.',
-    { nodeId: z.string().min(1) },
+    'Restart a node: kill its process and relaunch it with a fresh session, which clears its context. Its title, directory, model, effort and children are kept. `prompt` is its first prompt; without one, a node whose tree has a handoff.md in its session directory is told to read it first. Only the human may call this.',
+    { nodeId: z.string().min(1), prompt: z.string().optional() },
     async (c, a) => {
       if (c.caller !== HUMAN) throw new Error('restart is only for the human');
-      const r = c.manager.restart(a.nodeId);
+      const r = c.manager.restart(a.nodeId, a.prompt);
       if (!r.ok) throw new Error(r.error);
       return { data: { ok: true } };
     }),
@@ -334,6 +338,7 @@ const tools = {
     async (c, a) => {
       if (c.caller === HUMAN) throw new Error('report_outcome is only for agent nodes');
       outcomes.set(c.caller, { ...a, at: Date.now() });
+      c.manager.logEvent(c.caller, 'outcome', a);
       return { data: { ok: true } };
     }),
 };
