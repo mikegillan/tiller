@@ -734,7 +734,7 @@ export class NodeManager extends EventEmitter {
     if (!existsSync(w.path)) return { dirty: [], unmerged: [], sharing }; // missing: close keeps an unmerged branch, so nothing is lost
     const [dirty, unmerged] = await Promise.all([wt.dirtyFiles(w.path), wt.unmergedCommits(w.repo, w.branch, w.base, w.baseSha)]);
     // A squash merge leaves the branch's own commits outside base; it still counts as merged until the branch moves.
-    return { dirty, unmerged: unmerged.length && (await this.mergedAt(id, w)) ? [] : unmerged, sharing };
+    return { dirty, unmerged: unmerged.length && (await this.mergedAt(w)) ? [] : unmerged, sharing };
   }
 
   /**
@@ -1004,7 +1004,7 @@ export class NodeManager extends EventEmitter {
     const [counts, dirty, mergedAt] = await Promise.all([
       wt.branchExists(w.repo, w.branch).then(async (b) => (b ? { ...(await wt.aheadBehind(w.repo, w.branch, w.base, w.baseSha)), ...(await wt.diffStat(w)) } : none)),
       missing ? [] : wt.dirtyFiles(w.path),
-      this.mergedAt(id, w),
+      this.mergedAt(w),
     ]);
     if (!this.registry.get(id)) return; // closed meanwhile
     const next: GitState = { branch: w.branch, base: w.base, ...counts, dirty: dirty.length, ...(missing ? { missing } : {}), ...(mergedAt ? { mergedAt } : {}) };
@@ -1022,13 +1022,9 @@ export class NodeManager extends EventEmitter {
 
   private branchTip = (w: Worktree) => wt.git(w.repo, ['rev-parse', '--verify', '-q', `refs/heads/${w.branch}`]).then((s) => s.trim(), () => '');
 
-  /** When the node's branch was last merged, if it has not moved since; a moved branch forgets the merge. */
-  private async mergedAt(id: string, w: Worktree): Promise<number | undefined> {
-    if (!w.merged) return undefined;
-    if ((await this.branchTip(w)) === w.merged.tip) return w.merged.at;
-    const cur = this.registry.get(id)?.worktree;
-    if (cur?.merged) this.registry.update(id, { worktree: { ...cur, merged: undefined } });
-    return undefined;
+  /** When the node's branch was last merged, if it has not moved since. */
+  private async mergedAt(w: Worktree): Promise<number | undefined> {
+    return w.merged && (await this.branchTip(w)) === w.merged.tip ? w.merged.at : undefined;
   }
 
   /** The configured setup or teardown commands for a repo, or none when Claude does not trust it (trustPolicy is not auto). */

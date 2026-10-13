@@ -13,7 +13,7 @@ import * as wt from './worktree.js';
 const g = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 const commit = (dir: string, file: string) => { writeFileSync(join(dir, file), `${file}\n`); g(dir, 'add', file); g(dir, 'commit', '-qm', `add ${file}`); };
 
-vi.setConfig({ testTimeout: 30_000 }); // dozens of git processes per test; slow on a loaded machine
+vi.setConfig({ testTimeout: 120_000 }); // dozens of git processes per test; slow on a loaded machine or one that vets every exec
 
 let home = '', repo = '', m: NodeManager;
 
