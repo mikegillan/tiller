@@ -1,4 +1,5 @@
 // Per-project settings: <cwd>/.orchestr8/config.json, then <home>/config.json, then built-in defaults. Read fresh on every call.
+// Daemon settings (resumeOnStart, resumeMaxAgeDays) come from the home file only.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -14,11 +15,13 @@ const ConfigFile = z.object({
     branchPrefix: z.string().min(1).optional(),
     include: z.array(z.string().min(1)).optional(),
   }).strict().optional(),
+  resumeOnStart: z.boolean().optional(),
+  resumeMaxAgeDays: z.number().nonnegative().optional(),
 });
 type ConfigFile = z.infer<typeof ConfigFile>;
 type RoleDefaults = z.infer<typeof RoleDefaults>;
 
-type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include'}`;
+type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include'}` | 'resumeOnStart' | 'resumeMaxAgeDays';
 
 export interface Config {
   roles: { orchestrator: RoleDefaults; worker: RoleDefaults };
@@ -28,12 +31,15 @@ export interface Config {
    * branchPrefix: a worktree's branch is <prefix><nodeId>. include: gitignored files to copy in; absent means .worktreeinclude.
    */
   worktrees: { isolation: Isolation; branchPrefix: string; include?: string[] };
+  /** On start, resume the nodes that were live when the daemon last went away, unless idle for more than resumeMaxAgeDays. */
+  resumeOnStart: boolean;
+  resumeMaxAgeDays: number;
   /** Where each key came from: a file path, or 'default'. */
   sources: Record<Key, string>;
 }
 
-/** The project file for `cwd`, then the home file; earlier wins. */
-export const configPaths = (cwd: string, home = homeDir()): string[] => [join(cwd, '.orchestr8', 'config.json'), join(home, 'config.json')];
+/** The project file for `cwd` (none when null), then the home file; earlier wins. */
+export const configPaths = (cwd: string | null, home = homeDir()): string[] => [...(cwd === null ? [] : [join(cwd, '.orchestr8', 'config.json')]), join(home, 'config.json')];
 
 const warned = new Set<string>();
 
@@ -47,10 +53,11 @@ function readLayer(path: string): ConfigFile | undefined {
   }
 }
 
-export function loadConfig(cwd: string, home = homeDir()): Config {
+export function loadConfig(cwd: string | null, home = homeDir()): Config {
   const layers = configPaths(cwd, home).flatMap((path) => { const c = readLayer(path); return c ? [{ path, c }] : []; });
-  const pick = <T>(get: (c: ConfigFile) => T | undefined): [T | undefined, string] => {
-    for (const { path, c } of layers) { const v = get(c); if (v !== undefined) return [v, path]; }
+  const homeFile = join(home, 'config.json');
+  const pick = <T>(get: (c: ConfigFile) => T | undefined, homeOnly = false): [T | undefined, string] => {
+    for (const { path, c } of layers) { const v = homeOnly && path !== homeFile ? undefined : get(c); if (v !== undefined) return [v, path]; }
     return [undefined, 'default'];
   };
   const sources = {} as Record<Key, string>;
@@ -68,5 +75,8 @@ export function loadConfig(cwd: string, home = homeDir()): Config {
   const [include, sinc] = pick((c) => c.worktrees?.include);
   sources['worktrees.isolation'] = si; sources['worktrees.branchPrefix'] = sb; sources['worktrees.include'] = sinc;
   const worktrees = { isolation: isolation ?? 'none', branchPrefix: branchPrefix ?? 'o8/', ...(include ? { include } : {}) };
-  return { roles, closeWithoutConfirm: close ?? 'never', worktrees, sources };
+  const [resumeOnStart, sr] = pick((c) => c.resumeOnStart, true);
+  const [resumeMaxAgeDays, sa] = pick((c) => c.resumeMaxAgeDays, true);
+  sources.resumeOnStart = sr; sources.resumeMaxAgeDays = sa;
+  return { roles, closeWithoutConfirm: close ?? 'never', worktrees, resumeOnStart: resumeOnStart ?? true, resumeMaxAgeDays: resumeMaxAgeDays ?? 3, sources };
 }

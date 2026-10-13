@@ -11,7 +11,13 @@ import { logError } from './util.js';
 
 const path = await loginShellPath();
 const manager = new NodeManager({ path });
-const server = await startServer(manager, { port: daemonPort(manager.home) });
+const server = await startServer(manager, { port: daemonPort(manager.home) }).catch((err: NodeJS.ErrnoException) => {
+  if (err.code !== 'EADDRINUSE') throw err;
+  // Another daemon has the port, such as when `o8 autostart on` loads the agent beside a running one. Exit 0 so
+  // launchd's KeepAlive (relaunch only on failure) leaves it at that.
+  console.log(`port ${daemonPort(manager.home)} is in use: another daemon is running; exiting`);
+  process.exit(0);
+});
 const o8 = fileURLToPath(new URL('../../bin/o8', import.meta.url));
 const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 manager.on('notify', createNotifier({
@@ -30,11 +36,11 @@ writeFileSync(join(manager.home, REPO_FILE), fileURLToPath(new URL('../..', impo
 if (process.env.O8_DEBUG) manager.on('hook', (id, ev) => console.log(`${new Date().toISOString().slice(11, 23)} hook ${id.slice(0, 6)} ${JSON.stringify({ e: ev.hook_event_name, err: ev.error, tool: ev.tool_name, type: ev.notification_type, prompt: (ev.prompt_id as string | undefined)?.slice(0, 6), msg: ev.message, mode: ev.permission_mode })}`));
 console.log(`orchestr8 daemon listening. Open ${manager.endpoint}/?k=${readFileSync(join(manager.home, ADMIN_TOKEN_FILE), 'utf8')}\nhome: ${manager.home}`);
 
-// Clear worktrees a crash left with no work in them; report the rest.
+// Clear worktrees a crash left with no work in them and report the rest; then resume the nodes that were live.
 manager.worktrees({ clean: 'startup' }).then((r) => {
   for (const x of r.removed) console.log(`removed orphaned ${x.what}`);
   if (r.orphans.length || r.kept.length) console.log(`${r.orphans.length} orphaned worktree(s) and ${r.kept.length} kept branch(es): see o8 worktrees`);
-}).catch(logError);
+}).catch(logError).then(() => manager.resumeLive()).then(console.log, logError);
 
 process.on('unhandledRejection', logError);
 

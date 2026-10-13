@@ -8,6 +8,7 @@ import { loadConfig } from './config.js';
 import { homeDir } from './home.js';
 import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { pruneIds } from '../shared/prune.js';
+import { treeOrder } from '../shared/tree.js';
 import { flushInbox } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
 import { PtySession } from './pty.js';
@@ -140,6 +141,10 @@ export class NodeManager extends EventEmitter {
   private sweepTimer: NodeJS.Timeout;
   private interruptTimers = new Map<string, NodeJS.Timeout>();
   private closing = new Set<string>();
+  /** Ids that were live when the daemon last went away, until resumeLive has dealt with them. */
+  private pendingResume: Set<string>;
+  /** Set by shutdown: the live set is then frozen, so the PTYs' exits do not empty it. */
+  private stopped = false;
 
   constructor(opts: ManagerOptions = {}) {
     super();
@@ -152,6 +157,7 @@ export class NodeManager extends EventEmitter {
     this.secret = this.loadSecret();
     this.registry = new NodeRegistry(join(this.home, 'state.json'));
     this.registry.load();
+    this.pendingResume = new Set(this.registry.live);
     // Nodes from a previous run have no process; they can be resumed.
     for (const n of this.registry.list()) {
       this.statuses.set(n.id, { state: initialState(n.kind), exited: true, sessionId: n.sessionId, transcriptPath: n.transcriptPath, changedAt: Date.now() });
@@ -323,6 +329,7 @@ export class NodeManager extends EventEmitter {
     clearTimeout(this.interruptTimers.get(id));
     const s = this.sessions.get(id);
     this.sessions.delete(id); // first, so the exit callback ignores it
+    this.liveChanged();
     s?.kill();
     this.lastHookAt.delete(id);
     const sessionId = rec.kind === 'claude' ? randomUUID() : undefined;
@@ -386,6 +393,7 @@ export class NodeManager extends EventEmitter {
     const s = this.sessions.get(id);
     clearTimeout(this.interruptTimers.get(id));
     this.sessions.delete(id); // first, so the exit callback ignores it
+    this.liveChanged();
     s?.kill();
     return s;
   }
@@ -480,6 +488,7 @@ export class NodeManager extends EventEmitter {
     this.lastHookAt.set(nodeId, now);
     this.emit('hook', nodeId, event);
     const next = reduce(prev, event, now);
+    if (next.state !== prev.state) this.registry.update(nodeId, { lastActiveAt: now });
     if (event.hook_event_name === 'SessionStart' && next.sessionId && next.sessionId !== rec.sessionId) {
       this.registry.update(nodeId, { sessionId: next.sessionId });
     }
@@ -508,8 +517,41 @@ export class NodeManager extends EventEmitter {
     }
   }
 
-  /** Flush the registry and the message inbox, and kill every PTY. */
-  shutdown(): void {
+  /**
+   * Resume the nodes that were live when the daemon last went away, parents first. Skips nodes that no longer exist, have
+   * lost their worktree or have been idle longer than resumeMaxAgeDays; then forgets the set, so it holds only nodes that
+   * come up again. Returns a one-line summary.
+   */
+  async resumeLive(): Promise<string> {
+    const ids = this.pendingResume;
+    const { resumeOnStart, resumeMaxAgeDays } = loadConfig(null, this.home);
+    let summary = 'nothing to resume';
+    if (ids.size && !resumeOnStart) summary = `resumeOnStart is off; not resuming ${count(ids.size, 'node')}`;
+    else if (ids.size) {
+      const cutoff = Date.now() - resumeMaxAgeDays * 86_400_000;
+      const skipped = [...ids].filter((id) => !this.registry.get(id)).map((id) => `${id} (no such node)`);
+      let resumed = 0;
+      for (const { node: n } of treeOrder(this.registry.list())) {
+        if (!ids.has(n.id)) continue;
+        if ((n.lastActiveAt ?? n.createdAt) < cutoff) { skipped.push(`${n.id} (idle over ${resumeMaxAgeDays} days)`); continue; }
+        const r = await this.resume(n.id);
+        if (r.ok) resumed++;
+        else skipped.push(`${n.id} (${r.error})`);
+      }
+      summary = `resumed ${resumed}, skipped ${skipped.length}${skipped.length ? `: ${skipped.join(', ')}` : ''}`;
+    }
+    this.pendingResume = new Set();
+    this.liveChanged();
+    return `resume on start: ${summary}`;
+  }
+
+  /**
+   * Flush the registry and the message inbox, and kill every PTY. The live set is kept for resume on next start, unless
+   * `clearLive` (an explicit stop: do not come back).
+   */
+  shutdown(opts: { clearLive?: boolean } = {}): void {
+    this.stopped = true;
+    if (opts.clearLive) this.registry.setLive([]);
     clearInterval(this.sweepTimer);
     for (const t of this.interruptTimers.values()) clearTimeout(t);
     for (const s of this.sessions.values()) s.kill();
@@ -520,6 +562,11 @@ export class NodeManager extends EventEmitter {
   // ---- internals ----
 
   private nodeDir(id: string): string { return join(this.home, 'nodes', id); }
+
+  /** Save the ids with a live process (plus any not yet resumed) with the registry. Call after every change to sessions. */
+  private liveChanged(): void {
+    if (!this.stopped) this.registry.setLive([...new Set([...this.pendingResume, ...this.sessions.keys()])]);
+  }
 
   /** Token, hook-headers, settings.json and mcp.json for a node; mcp.json embeds the current endpoint. */
   private writeFiles(id: string): void {
@@ -643,10 +690,13 @@ export class NodeManager extends EventEmitter {
     const cwd = rec.worktree?.repo ?? rec.cwd; // claude adopts the worktree itself through --worktree, or re-enters it on --resume
     const s = PtySession.spawn({ ...spec, cwd, ...DEFAULT_SIZE });
     this.sessions.set(id, s);
+    this.registry.update(id, { lastActiveAt: Date.now() });
+    this.liveChanged();
     s.onData((d) => this.emit('data', id, d));
     s.onExit(() => {
       if (this.sessions.get(id) !== s) return;
       this.sessions.delete(id);
+      this.liveChanged();
       const prev = this.statuses.get(id)!;
       this.markUnread(id);
       this.setStatus(id, ptyExited(prev, Date.now()), false);

@@ -21,11 +21,15 @@ This puts `o8` (client), `o8d` (daemon), `o8-mux` (terminal multiplexer) and `o8
 
 That one command starts the daemon if it is not running (detached, logging to `~/.orchestr8/daemon.log`), finds or creates (or resumes, if it exited) the orchestrator for the current directory, and opens the native app on it. If the app is already running it switches to that session. If the app has not been built it says so and opens the browser UI instead (see App below). `o8 --new` always starts a fresh orchestrator, and `--title T` and `--prompt P` set its title and first prompt. `o8 status` shows the daemon and node count, and `o8 stop` shuts the daemon down and closes all nodes.
 
+The daemon remembers which nodes were live (in `state.json`), and when it starts it resumes them, parents first, after a crash, a kill, a reboot or `o8 reload`. It skips nodes that no longer exist, nodes whose worktree is missing and nodes idle for more than `resumeMaxAgeDays` (default 3), and logs one summary line. `o8 stop` is the "do not come back" switch: it clears that set, so the next start resumes nothing. Set `resumeOnStart` to false or change `resumeMaxAgeDays` in `~/.orchestr8/config.json` (the home file only; `o8 config` shows both).
+
+`o8 autostart on` installs a launchd user agent (`~/Library/LaunchAgents/com.orchestr8.daemon.plist`) that starts the daemon at login, so the nodes come back after a reboot without opening the app, and starts it again if it crashes; `o8 stop` exits cleanly and launchd leaves it stopped. `o8 autostart off` removes it (stopping the daemon if launchd started it), and `o8 autostart status` says whether it is installed and loaded. Turning it on while a daemon is running leaves that daemon alone: the agent's first launch finds the port taken and exits, and the next `o8 reload` or login hands the daemon to launchd.
+
 For the terminal version, run `o8-mux` (or `o8 mux`) in the directory instead; it does the same setup and attaches the multiplexer described below. `o8 attach <id>` opens the multiplexer on a specific node.
 
 `o8d` is the same daemon in the foreground, for when you want its log in a terminal.
 
-`o8 reload` restarts the daemon on the current code and resumes the nodes that were live; run it after pulling or editing daemon code. It works from inside a node's terminal too: a detached helper stops the daemon, starts a new one, resumes the nodes parents first and logs each step to `daemon.log` with an `o8 reload:` prefix. If no daemon is running it just starts one.
+`o8 reload` restarts the daemon on the current code and resumes the nodes that were live; run it after pulling or editing daemon code. It works from inside a node's terminal too: a detached helper stops the daemon (keeping its live set), starts a new one (through launchd when autostart is on), which resumes the nodes itself, and logs each step to `daemon.log` with an `o8 reload:` prefix. If no daemon is running it just starts one.
 
 `o8-mux` is a small terminal multiplexer. A rounded sidebar on the left shows the whole tree (connectors, a colored state glyph per node, an unread dot, age, the current activity, and `model · effort · ctx %` with token counts and cost when known); the rest of the terminal is the selected node's live screen, and what you type goes to it. Click a node in the sidebar to swap its screen in; the mouse wheel and clicks in the main area are forwarded to the node when it has asked for mouse reports. The sidebar footer shows the daemon status (red and reconnecting if the connection drops). The sidebar hides below 90 columns.
 
@@ -81,5 +85,6 @@ Everything lives in `~/.orchestr8` (override with `O8_HOME`): the node registry,
 - Anthropic can disable mods remotely, and `--bare` or `--safe-mode` drop them. The daemon and CLI still work then; messages fall back to pasting into the terminal.
 - Claude shows its trust dialog the first time it opens a new folder; attach and accept it.
 - One daemon per user.
+- With autostart on, a daemon started by `o8` or the app (when none was running) runs outside launchd, so a crash does not bring it back, until the next `o8 reload` or login.
 
 Tests: `npm test`, `npm run typecheck`, `claude plugin validate mod`.

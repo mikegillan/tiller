@@ -274,11 +274,11 @@ const tools = {
     }),
 
   shutdown: tool(
-    'Stop the daemon: flush the registry, kill every node process and exit. Only the human may call this.',
+    'Stop the daemon: flush the registry, kill every node process and exit. The nodes are not resumed on the next start. Only the human may call this.',
     {},
     async (c) => {
       if (c.caller !== HUMAN) throw new Error('shutdown is only for the human');
-      c.manager.shutdown();
+      c.manager.shutdown({ clearLive: true });
       setTimeout(() => process.exit(0), 100); // after the reply is flushed
       return { text: 'daemon stopping', data: { ok: true, pid: process.pid } };
     }),

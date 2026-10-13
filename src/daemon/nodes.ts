@@ -5,6 +5,8 @@ import type { NodeRecord } from '../shared/protocol.js';
 export class NodeRegistry {
   private nodes = new Map<string, NodeRecord>();
   private timer: NodeJS.Timeout | undefined;
+  /** Ids of the nodes with a live process, saved with the nodes so a crash or kill still leaves them for resume on start. */
+  private liveIds: string[] = [];
 
   constructor(private file: string) {}
 
@@ -19,6 +21,7 @@ export class NodeRegistry {
       const data = JSON.parse(raw);
       if (data?.version !== 1 || !Array.isArray(data.nodes)) throw new Error('bad shape');
       this.nodes = new Map((data.nodes as NodeRecord[]).map((n) => [n.id, n]));
+      this.liveIds = Array.isArray(data.live) ? data.live.filter((x: unknown): x is string => typeof x === 'string') : [];
     } catch {
       try { renameSync(this.file, `${this.file}.corrupt-${Date.now()}`); } catch { /* best effort */ }
       this.nodes = new Map();
@@ -58,6 +61,13 @@ export class NodeRegistry {
     return n;
   }
 
+  get live(): string[] { return this.liveIds; }
+
+  setLive(ids: string[]): void {
+    this.liveIds = ids;
+    this.save();
+  }
+
   remove(id: string): boolean {
     const had = this.nodes.delete(id);
     if (had) this.save();
@@ -70,7 +80,7 @@ export class NodeRegistry {
     clearTimeout(this.timer);
     this.timer = undefined;
     const tmp = `${this.file}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ version: 1, nodes: this.list() }, null, 2));
+    writeFileSync(tmp, JSON.stringify({ version: 1, nodes: this.list(), live: this.liveIds }, null, 2));
     renameSync(tmp, this.file);
   }
 

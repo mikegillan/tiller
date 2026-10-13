@@ -85,6 +85,8 @@ export interface NodeRecord {
   /** Set on a node that owns a git worktree (spawned with isolation "worktree"); its cwd is the worktree path. */
   worktree?: Worktree;
   createdAt: number;
+  /** When the node last launched or changed state on a hook; resume on start skips nodes idle longer than resumeMaxAgeDays. */
+  lastActiveAt?: number;
   /** Persisted so a restarted daemon can offer Resume. */
   sessionId?: string;
   /** Claude's transcript file, from SessionStart. Persisted so Resume can find it. */

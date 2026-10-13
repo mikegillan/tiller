@@ -151,3 +151,55 @@ describe('NodeManager model and effort defaults', () => {
     await expect.poll(() => { try { return readFileSync(argvFile, 'utf8'); } catch { return ''; } }).toContain('--effort low');
   });
 });
+
+describe('NodeManager live set and resume on start', () => {
+  let home = '';
+  let m: NodeManager;
+  afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
+  const saved = () => JSON.parse(readFileSync(join(home, 'state.json'), 'utf8')).live;
+
+  it('saves the live ids as processes start and exit, keeps them on shutdown and clears them on an explicit stop', async () => {
+    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    m = new NodeManager({ home, shell: '/bin/sh' });
+    const a = m.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir() });
+    const b = m.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir(), parentId: a.id });
+    await expect.poll(saved).toEqual([a.id, b.id]);
+    process.kill(m.session(b.id)!.pid, 'SIGKILL');
+    await expect.poll(saved).toEqual([a.id]);
+    m.shutdown(); // like SIGTERM: the set survives the PTYs' exits
+    await new Promise((r) => setTimeout(r, 200));
+    expect(saved()).toEqual([a.id]);
+    m = new NodeManager({ home, shell: '/bin/sh' });
+    m.shutdown({ clearLive: true }); // o8 stop
+    expect(saved()).toEqual([]);
+  });
+
+  it('resumes live Claude nodes parents first, skipping missing, idle and worktree-less ones, then forgets the set', async () => {
+    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    const bin = join(home, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'claude'), '#!/bin/sh\nsleep 5\n'); // stands in for claude
+    chmodSync(join(bin, 'claude'), 0o755);
+    const transcript = join(home, 't.jsonl');
+    writeFileSync(transcript, '');
+    const now = Date.now(), day = 86_400_000;
+    const rec = (id: string, parentId: string | null, extra = {}) => ({ id, parentId, kind: 'claude', title: id, cwd: home, createdAt: now - 30 * day, lastActiveAt: now, sessionId: `s-${id}`, transcriptPath: transcript, ...extra });
+    const nodes = [
+      rec('kid', 'root'), rec('root', null), rec('idle', 'root', { lastActiveAt: now - 4 * day }),
+      rec('nowt', 'root', { worktree: { repo: home, path: join(home, 'gone'), branch: 'o8/nowt', base: 'main', baseSha: 'x' } }),
+      rec('exited', 'root'), // not in the live set
+    ];
+    writeFileSync(join(home, 'state.json'), JSON.stringify({ version: 1, nodes, live: ['kid', 'root', 'idle', 'nowt', 'deleted'] }));
+    m = new NodeManager({ home, shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
+    const order: string[] = [];
+    const resume = m.resume.bind(m);
+    m.resume = (id) => { order.push(id); return resume(id); };
+    expect(await m.resumeLive()).toBe('resume on start: resumed 2, skipped 3: deleted (no such node), idle (idle over 3 days), nowt (worktree missing)');
+    expect(order).toEqual(['root', 'kid', 'nowt']);
+    expect(m.view('root')!.status.exited).toBeFalsy();
+    expect(m.view('kid')!.status).toMatchObject({ sessionId: 's-kid' });
+    expect(m.view('idle')!.status.exited).toBe(true);
+    await expect.poll(saved).toEqual(['root', 'kid']); // only what came back up
+    expect(await m.resumeLive()).toBe('resume on start: nothing to resume');
+  });
+});

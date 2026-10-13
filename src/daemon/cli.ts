@@ -8,14 +8,18 @@ import { parseArgs } from 'node:util';
 import { loadConfig } from './config.js';
 import { promptPath } from './launch.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
-import { findDaemon, humanEnv, liveIds, pickOrchestrator, spawnReload, startDaemon } from './up.js';
+import { agentStatus, install, kickstart, LABEL, O8D, plistPath, uninstall } from './autostart.js';
+import { loginShellPath } from './pty.js';
+import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, waitForDaemon } from './up.js';
 
 const usage = () => `o8: control orchestr8. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
 
   o8 [up|app] [--new] [--title T] [--prompt P]        start daemon if needed; open the app on (or create) this directory's orchestrator
   o8 mux [--new] [--title T] [--prompt P]             the same, in the terminal multiplexer (also: o8-mux)
-  o8 status | stop                                    show or stop the daemon (o8d runs it in the foreground)
+  o8 status | stop                                    show or stop the daemon (o8d runs it in the foreground); stop also means
+                                                      the nodes are not resumed on the next start
   o8 reload                                           restart the daemon on the current code and resume the nodes that were live
+  o8 autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
   o8 new <title> [--cwd P] [--model M] [--effort E] [--prompt T] [--role R] [--worktree]  start a Claude node and attach to it in the terminal
   o8 ps | list                                        show nodes
   o8 attach <id>                                      open the sidebar client on a node (Ctrl-\\ ? for keys)
@@ -72,7 +76,7 @@ const { values: f, positionals: pos } = parseArgs({
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
     'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
-    worktree: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, 'resume-ids': { type: 'string' },
+    worktree: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' },
   },
 });
 
@@ -106,6 +110,7 @@ switch (cmd) {
       'roles.orchestrator.model': o.model, 'roles.orchestrator.effort': o.effort, 'roles.worker.model': w.model, 'roles.worker.effort': w.effort,
       closeWithoutConfirm: c.closeWithoutConfirm,
       'worktrees.isolation': c.worktrees.isolation, 'worktrees.branchPrefix': c.worktrees.branchPrefix, 'worktrees.include': c.worktrees.include?.join(', ') ?? '(.worktreeinclude)',
+      resumeOnStart: c.resumeOnStart, resumeMaxAgeDays: c.resumeMaxAgeDays,
     };
     for (const [k, v] of Object.entries(values)) console.log(`${k}: ${v ?? '(claude default)'}  [${c.sources[k as keyof typeof values]}]`);
     break;
@@ -198,32 +203,43 @@ switch (cmd) {
   case 'reload': {
     process.env = humanEnv(process.env); // run from a node's terminal, still restart as the human
     const port = daemonPort();
-    if (f['resume-ids'] === undefined) {
+    if (!f.detached) {
       if (!(await findDaemon(port))) { await startDaemon(home, port).catch((e: Error) => fail(e.message)); console.log('no daemon was running; started it'); break; }
-      const ids = liveIds((await call('list_nodes', {}, false)).data ?? []);
-      const log = spawnReload(home, port, ids);
-      console.log(`reloading daemon; ${ids.length} node${ids.length === 1 ? '' : 's'} will be resumed; log in ${log}`);
+      console.log(`reloading daemon; the new one resumes the nodes that were live; log in ${spawnReload(home, port)}`);
       break;
     }
-    // The detached helper: stdout is daemon.log.
+    // The detached helper: stdout is daemon.log. SIGTERM, unlike `o8 stop`, keeps the live set for the new daemon to resume.
     const say = (s: string) => console.log(`o8 reload: ${s}`);
-    const ids = f['resume-ids'].split(',').filter(Boolean);
     const old = await findDaemon(port);
     if (old) {
       say(`stopping daemon pid ${old.pid}`);
-      await call('shutdown', {}, false, true);
+      process.kill(old.pid, 'SIGTERM');
       for (const end = Date.now() + 10_000; await findDaemon(port); await new Promise((r) => setTimeout(r, 200)))
-        if (Date.now() > end) fail(`o8 reload: daemon pid ${old.pid} did not stop; nothing resumed`);
+        if (Date.now() > end) fail(`o8 reload: daemon pid ${old.pid} did not stop`);
     }
-    await startDaemon(home, port).catch((e: Error) => fail(`o8 reload: ${e.message}`));
-    const known = new Set(((await call('list_nodes', {}, false)).data ?? []).map((n: { id: string }) => n.id));
-    let resumed = 0;
-    for (const id of ids) {
-      const r = known.has(id) ? await call('resume', { nodeId: id }, false, true) : { error: 'no such node' };
-      if (r.error) say(`skipped ${id}: ${r.error}`);
-      else { say(`resumed ${id}`); resumed++; }
-    }
-    say(`resumed ${resumed}, skipped ${ids.length - resumed}`);
+    const agent = agentStatus().loaded;
+    if (agent) kickstart(); // keep the daemon under launchd when autostart is on
+    const h = await (agent ? waitForDaemon(port, join(home, 'daemon.log')) : startDaemon(home, port)).catch((e: Error) => fail(`o8 reload: ${e.message}`));
+    say(`started daemon pid ${h.pid}${agent ? ' through launchd' : ''}; it resumes the nodes that were live`);
+    break;
+  }
+  case 'autostart': {
+    const st = agentStatus();
+    if (pos[0] === 'status') {
+      console.log(`${LABEL}: ${st.installed ? `installed (${plistPath()})` : 'not installed'}, ${st.loaded ? `loaded${st.pid ? `, daemon pid ${st.pid}` : ', not running'}` : 'not loaded'}`);
+    } else if (pos[0] === 'on') {
+      if (st.loaded) { console.log(`autostart is already on; run o8 autostart off, then on, to rewrite ${plistPath()}`); break; }
+      const running = await findDaemon(daemonPort());
+      const env: Record<string, string> = { O8_HOME: home, PATH: await loginShellPath(), ...(process.env.SHELL ? { SHELL: process.env.SHELL } : {}) };
+      if (process.env.O8_PORT) env.O8_PORT = process.env.O8_PORT;
+      install({ label: LABEL, program: O8D, env, log: join(home, 'daemon.log') });
+      console.log(`autostart on: ${plistPath()} loaded; the daemon starts at login and after a crash, not after o8 stop`);
+      // The agent's first launch finds the port busy and exits 0, so the running daemon stays as it is.
+      if (running) console.log(`daemon pid ${running.pid} keeps running outside launchd; o8 reload hands it to launchd`);
+    } else if (pos[0] === 'off') {
+      uninstall();
+      console.log(`autostart off${st.pid ? `; stopped daemon pid ${st.pid} (its nodes resume on the next start)` : ''}`);
+    } else fail(usage());
     break;
   }
   case 'help': console.log(usage()); break;

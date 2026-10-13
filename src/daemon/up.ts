@@ -3,7 +3,6 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { treeOrder } from '../shared/tree.js';
 
 export interface Health { ok: true; pid: number; home: string; version: string }
 
@@ -29,8 +28,10 @@ function detach(name: string, args: string[], home: string, port: number, env: N
 }
 
 /** Start bin/o8d detached, then wait for /health. Throws with the log tail on failure. */
-export async function startDaemon(home: string, port: number, waitMs = 15_000): Promise<Health> {
-  const log = detach('o8d', [], home, port);
+export const startDaemon = (home: string, port: number, waitMs = 15_000): Promise<Health> => waitForDaemon(port, detach('o8d', [], home, port), waitMs);
+
+/** Wait for a daemon that is starting, with its output in `log`, to answer /health. Throws with the log tail on failure. */
+export async function waitForDaemon(port: number, log: string, waitMs = 15_000): Promise<Health> {
   for (const end = Date.now() + waitMs; Date.now() < end; await sleep(200)) {
     const h = await findDaemon(port);
     if (h) { console.log(`started daemon (pid ${h.pid}), log ${log}`); return h; }
@@ -48,16 +49,11 @@ export function pickOrchestrator<T extends OrchestratorCandidate>(nodes: T[], cw
     .sort((a, b) => b.createdAt - a.createdAt)[0];
 }
 
-/** Ids of the nodes that are not exited, parents before children: what `o8 reload` resumes after the restart. */
-export const liveIds = (nodes: { id: string; parentId: string | null; exited?: boolean }[]): string[] =>
-  treeOrder(nodes).filter((t) => !t.node.exited).map((t) => t.node.id);
-
 /** `env` without a node's identity, so the CLI acts as the human and finds the daemon by O8_HOME and O8_PORT. */
 export function humanEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const { O8_NODE_ID, O8_TOKEN_FILE, O8_ENDPOINT, ...rest } = env;
   return rest;
 }
 
-/** Hand `o8 reload` to a detached `o8 reload --resume-ids`, which outlives the terminal of the node that ran it. */
-export const spawnReload = (home: string, port: number, ids: string[]): string =>
-  detach('o8', ['reload', `--resume-ids=${ids.join(',')}`], home, port, humanEnv(process.env));
+/** Hand `o8 reload` to a detached `o8 reload --detached`, which outlives the terminal of the node that ran it. */
+export const spawnReload = (home: string, port: number): string => detach('o8', ['reload', '--detached'], home, port, humanEnv(process.env));
