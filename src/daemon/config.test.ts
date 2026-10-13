@@ -28,7 +28,7 @@ describe('loadConfig', () => {
       worktrees: { isolation: 'worktree', branchPrefix: 'o8/', include: ['.env'], merge: 'squash', mergeWithoutConfirm: false, setup: ['npm ci'], teardown: [] }, // include replaces the home list whole
       gate: { command: 'npm test', retries: 5, timeoutMinutes: 10 }, // each gate key resolves on its own
       resumeOnStart: true, resumeMaxAgeDays: 7, sessionsKeepDays: 14, digestAfterMinutes: 30, // daemon settings ignore the project file
-      limits: { maxDepth: 3, maxChildren: 2, maxLiveNodes: 20, stallMinutes: 2, maxMessagesPer10Min: 20 },
+      limits: { maxDepth: 3, maxChildren: 2, maxLiveNodes: 20, stallMinutes: 2, maxMessagesPer10Min: 20, maxWorking: 0 },
       notifications: { kinds: { needsYou: 'sound', errored: 'sound', done: 'silent', exited: 'silent' }, failuresOnly: false, treeDoneSummary: false, quietHours: '22:00-07:00' },
       sources: {
         'roles.orchestrator.model': home, 'roles.orchestrator.effort': 'default',
@@ -37,7 +37,7 @@ describe('loadConfig', () => {
         'worktrees.merge': proj, 'worktrees.mergeWithoutConfirm': 'default', 'worktrees.setup': home, 'worktrees.teardown': 'default',
         'gate.command': proj, 'gate.retries': home, 'gate.timeoutMinutes': 'default',
         resumeOnStart: 'default', resumeMaxAgeDays: home, sessionsKeepDays: 'default', digestAfterMinutes: home,
-        'limits.maxDepth': 'default', 'limits.maxChildren': proj, 'limits.maxLiveNodes': 'default', 'limits.stallMinutes': home, 'limits.maxMessagesPer10Min': 'default',
+        'limits.maxDepth': 'default', 'limits.maxChildren': proj, 'limits.maxLiveNodes': 'default', 'limits.stallMinutes': home, 'limits.maxMessagesPer10Min': 'default', 'limits.maxWorking': 'default',
         'notifications.kinds.needsYou': 'default', 'notifications.kinds.done': proj, 'notifications.kinds.errored': 'default', 'notifications.kinds.exited': home,
         'notifications.failuresOnly': 'default', 'notifications.treeDoneSummary': 'default', 'notifications.quietHours': home,
       },

@@ -3,14 +3,15 @@ import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { NEEDS_YOU_STATES, type AgentState, type Diff, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
+import { NEEDS_YOU_STATES, type AgentState, type Diff, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Pending, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { loadConfig, type Config, type Limits, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
 import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
-import { flushInbox } from './messaging.js';
+import { checkDeps } from './deps.js';
+import { DAEMON, deliver, flushInbox, HUMAN, inScope } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
 import { buildChildEnv, PtySession } from './pty.js';
 import { logError, safeEqual } from './util.js';
@@ -118,6 +119,12 @@ export interface SpawnRequest {
   isolation?: Isolation;
   /** Set for the human's spawns (web UI, app, mux, admin token), which skip the spawn caps. */
   byHuman?: boolean;
+  /** Arm the node: launch it once each of these has finished a turn begun after this spawn, or has exited. */
+  after?: string[];
+  /** Arm the node: launch it once each of these reported succeeded. A failed report blocks it. */
+  afterSuccess?: string[];
+  /** Launch past limits.maxWorking instead of queueing (the human's o8 spawn --now). */
+  now?: boolean;
 }
 
 export interface ManagerOptions {
@@ -176,6 +183,13 @@ export class NodeManager extends EventEmitter {
   /** Set by shutdown: the live set is then frozen, so the PTYs' exits do not empty it. */
   private stopped = false;
   private lastCostEvent = new Map<string, number>();
+  /** When each node's latest turn began (UserPromptSubmit), for after dependencies and notify_when. Not persisted. */
+  private turnStarts = new Map<string, number>();
+  /** Claude nodes launched with a prompt whose first turn has not begun: they count against limits.maxWorking. */
+  private starting = new Set<string>();
+  /** Armed nodes loaded from the record; they wait for resumeLive, which runs once the daemon has its endpoint. */
+  private restored = new Set<string>();
+  private scheduled = false;
 
   constructor(opts: ManagerOptions = {}) {
     super();
@@ -191,11 +205,18 @@ export class NodeManager extends EventEmitter {
     this.pendingResume = new Set(this.registry.live);
     // Nodes from a previous run have no process; they can be resumed.
     for (const n of this.registry.list()) {
+      if (n.pending) {
+        this.restored.add(n.id);
+        this.statuses.set(n.id, { state: 'armed', sessionId: n.sessionId, changedAt: Date.now() });
+        continue;
+      }
       this.statuses.set(n.id, { state: initialState(n.kind), exited: true, sessionId: n.sessionId, transcriptPath: n.transcriptPath, changedAt: Date.now() });
       this.refreshGit(n.id).catch(logError);
     }
     this.sweepTimer = setInterval(() => this.sweepStale(), SWEEP_MS);
     this.sweepTimer.unref();
+    this.on('node', () => this.scheduleSoon());
+    this.on('removed', () => this.scheduleSoon());
   }
 
   private loadSecret(): Buffer {
@@ -237,6 +258,11 @@ export class NodeManager extends EventEmitter {
 
   list(): NodeView[] {
     return this.registry.list().flatMap((n) => this.view(n.id) ?? []);
+  }
+
+  /** When the node's latest turn began, if one has since this daemon started. */
+  turnStartedAt(id: string): number | undefined {
+    return this.turnStarts.get(id);
   }
 
   /** The live PTY, for readers such as the MCP layer. Undefined once the process is gone or the node closed. */
@@ -293,6 +319,7 @@ export class NodeManager extends EventEmitter {
   spawn(req: SpawnRequest): NodeView {
     if (this.isolationFor(req) === 'worktree') throw new Error('a worktree spawn is asynchronous: call spawnWorktree');
     this.checkLimits(req);
+    this.checkDependencies(req);
     const parentId = req.parentId ?? null;
     // Unset model or effort: the config's value for the node's role (role none counts as worker), recorded so restart keeps it.
     const defaults = req.kind === 'claude' ? loadConfig(req.cwd, this.home).roles[roleFor(req.role, parentId) === 'orchestrator' ? 'orchestrator' : 'worker'] : {};
@@ -302,6 +329,7 @@ export class NodeManager extends EventEmitter {
       model, effort, permissionMode: req.permissionMode, role: req.role,
       sessionId: req.kind === 'claude' ? randomUUID() : undefined,
     });
+    if (this.arm(rec.id, req, 'none')) return this.emitNode(rec.id)!;
     try {
       this.writeFiles(rec.id);
       this.statuses.set(rec.id, { state: initialState(req.kind), sessionId: rec.sessionId, changedAt: Date.now() });
@@ -322,8 +350,9 @@ export class NodeManager extends EventEmitter {
   async spawnWorktree(req: SpawnRequest): Promise<NodeView> {
     if (req.kind !== 'claude') throw new Error('isolation "worktree" is for claude nodes only');
     this.checkLimits(req);
+    this.checkDependencies(req);
     const repo = await wt.mainCheckout(req.cwd);
-    const { base, baseSha } = await wt.headInfo(req.cwd);
+    const head = await wt.headInfo(req.cwd);
     if (!trustedForWorktree(repo, readClaudeJson())) throw new Error(`refusing isolation "worktree": Claude does not trust ${repo} yet; run claude once in ${repo} to trust it`);
     const config = loadConfig(repo, this.home); // the main checkout's file, whichever branch req.cwd has checked out
     const parentId = req.parentId ?? null;
@@ -333,31 +362,154 @@ export class NodeManager extends EventEmitter {
       model: req.model ?? defaults.model, effort: req.effort ?? defaults.effort, permissionMode: req.permissionMode, role: req.role,
       sessionId: randomUUID(),
     });
-    const path = join(repo, wt.WORKTREES_DIR, rec.id);
-    const worktree: Worktree = { repo, path, branch: config.worktrees.branchPrefix + rec.id, base, baseSha };
-    this.registry.update(rec.id, { cwd: path, worktree });
+    if (this.arm(rec.id, req, 'worktree')) return this.emitNode(rec.id)!;
+    try {
+      await this.addWorktree(rec.id, req.prompt, head);
+    } catch (err) {
+      this.discard(rec.id);
+      throw err;
+    }
+    this.logEvent(rec.id, 'spawn', { parentId, kind: 'claude', branch: this.registry.get(rec.id)!.worktree!.branch });
+    return this.emitNode(rec.id)!;
+  }
+
+  /**
+   * Give a node its worktree, branched from the HEAD of the checkout its cwd is in (or `head`), and launch it, after the
+   * setup commands when configured. A failure removes the worktree and branch and throws; the caller deals with the record.
+   */
+  private async addWorktree(id: string, prompt: string | undefined, head?: { base: string; baseSha: string }): Promise<void> {
+    const rec = this.registry.get(id)!;
+    const repo = await wt.mainCheckout(rec.cwd);
+    const { base, baseSha } = head ?? await wt.headInfo(rec.cwd);
+    const config = loadConfig(repo, this.home); // the main checkout's file, whichever branch rec.cwd has checked out
+    const path = join(repo, wt.WORKTREES_DIR, id);
+    const worktree: Worktree = { repo, path, branch: config.worktrees.branchPrefix + id, base, baseSha };
+    this.registry.update(id, { cwd: path, worktree });
     let added = false;
     try {
       this.rememberRepo(repo); // first, so startup reconciliation looks here even if a crash loses the record
       await wt.add(repo, path, worktree.branch, baseSha);
       added = true;
-      await wt.writeMarker(path, { home: this.home, nodeId: rec.id, base, baseSha });
+      await wt.writeMarker(path, { home: this.home, nodeId: id, base, baseSha });
       await wt.ensureExcluded(repo);
       this.registry.flush(); // a crash from here on leaves a record, not an orphan
       await wt.copyIncluded(repo, path, config.worktrees.include);
-      this.writeFiles(rec.id);
-      this.statuses.set(rec.id, { state: initialState('claude'), sessionId: rec.sessionId, changedAt: Date.now() });
+      this.writeFiles(id);
+      this.statuses.set(id, { state: initialState('claude'), sessionId: rec.sessionId, changedAt: Date.now() });
       const setup = this.worktreeCommands(repo, 'setup');
-      if (setup.length) this.setupThenLaunch(rec.id, worktree, setup, req.prompt); // in the background: it may take minutes
-      else this.launch(rec.id, req.prompt, false);
+      if (setup.length) this.setupThenLaunch(id, worktree, setup, prompt); // in the background: it may take minutes
+      else this.launch(id, prompt, false);
     } catch (err) {
-      if (added) await this.teardown(rec.id, worktree).then(() => wt.remove(repo, path, true)).then(() => wt.deleteBranch(repo, worktree.branch)).catch(logError);
-      this.discard(rec.id);
+      if (added) await this.teardown(id, worktree).then(() => wt.remove(repo, path, true)).then(() => wt.deleteBranch(repo, worktree.branch)).catch(logError);
       throw err;
     }
-    this.refreshGit(rec.id).catch(logError);
-    this.logEvent(rec.id, 'spawn', { parentId, kind: 'claude', branch: worktree.branch });
-    return this.emitNode(rec.id)!;
+    this.refreshGit(id).catch(logError);
+  }
+
+  /** Throw unless every after / afterSuccess id is a node in the caller's scope. No cycle can form: a dependency must already exist. */
+  private checkDependencies(req: SpawnRequest): void {
+    const caller = req.byHuman ? HUMAN : req.parentId ?? HUMAN;
+    for (const id of [...(req.after ?? []), ...(req.afterSuccess ?? [])]) {
+      if (!this.registry.get(id)) throw new Error(`refused: no such node ${id} to wait for`);
+      if (!inScope(this, caller, id)) throw new Error(`refused: ${id} is outside your lineage (self, ancestors, siblings, descendants)`);
+    }
+  }
+
+  /** Claude nodes working now, or launched with a prompt whose first turn has not begun. */
+  private workingCount(): number {
+    return this.registry.list().filter((n) => n.kind === 'claude' && (this.starting.has(n.id) || (this.sessions.has(n.id) && this.statuses.get(n.id)?.state === 'working'))).length;
+  }
+
+  /**
+   * Hold a new node back, with no process, when it has dependencies or must queue for limits.maxWorking (a claude node,
+   * unless `now`, while the cap is reached or others already queue). Returns whether it was held.
+   */
+  private arm(id: string, req: SpawnRequest, isolation: Isolation): boolean {
+    const after = req.after ?? [], afterSuccess = req.afterSuccess ?? [];
+    const max = loadConfig(req.cwd, this.home).limits.maxWorking;
+    const queue = req.kind === 'claude' && !req.now && max > 0 && (this.workingCount() >= max || this.list().some((v) => v.status.state === 'queued'));
+    if (!after.length && !afterSuccess.length && !queue) return false;
+    const rec = this.registry.update(id, { pending: { after, afterSuccess, met: [], prompt: req.prompt, isolation, ...(req.now ? { now: true } : {}) } })!;
+    this.statuses.set(id, { state: 'armed', sessionId: rec.sessionId, changedAt: Date.now() });
+    if (after.length || afterSuccess.length) this.logEvent(id, 'arm', { parentId: rec.parentId, after, afterSuccess });
+    this.schedule();
+    return true;
+  }
+
+  private scheduleSoon(): void {
+    if (this.scheduled) return;
+    this.scheduled = true;
+    queueMicrotask(() => { this.scheduled = false; this.schedule(); });
+  }
+
+  /**
+   * Walk the armed and queued nodes in creation order: show what each waits on, tell the parent once when a failed
+   * dependency blocks one, and launch each whose dependencies are met while limits.maxWorking has room.
+   */
+  private schedule(): void {
+    if (this.stopped) return;
+    let working = this.workingCount();
+    for (const rec of this.registry.list()) {
+      const p = rec.pending;
+      if (!p || this.restored.has(rec.id)) continue;
+      const { met, unmet, blocked } = checkDeps(this, p, rec.createdAt);
+      if (met.length !== p.met.length || blocked !== p.blocked) {
+        this.registry.update(rec.id, { pending: { ...p, met, blocked } });
+        if (!unmet.length) this.logEvent(rec.id, 'release', { after: p.after, afterSuccess: p.afterSuccess });
+        if (blocked) this.blockedNotice(rec.id, blocked);
+      }
+      const max = loadConfig(rec.cwd, this.home).limits.maxWorking;
+      let state: AgentState = 'armed', activity: string;
+      if (unmet.length) activity = blocked ? `blocked by ${blocked}` : `after ${unmet.join(', ')}`;
+      else if (rec.kind === 'claude' && !p.now && max > 0 && working >= max) {
+        state = 'queued';
+        activity = `queued: ${working} working, limits.maxWorking ${max}`;
+      } else {
+        this.release(rec.id);
+        if (rec.kind === 'claude') working++;
+        continue;
+      }
+      const cur = this.statuses.get(rec.id)!;
+      if (cur.state === state && cur.activity === activity) continue;
+      if (state === 'queued' && cur.state !== 'queued') this.logEvent(rec.id, 'queue', { working, maxWorking: max });
+      this.setStatus(rec.id, { ...cur, state, activity, changedAt: Date.now() }, false);
+    }
+  }
+
+  private blockedNotice(id: string, blocked: string): void {
+    const rec = this.registry.get(id)!;
+    this.logEvent(id, 'block', { by: blocked });
+    if (!rec.parentId) return;
+    const text = `${id} "${rec.title}" will not launch: blocked by ${blocked}. It launches if that node later reports succeeded; close it to drop it.`;
+    deliver(this, DAEMON, rec.parentId, text, { fromLabel: `orchestr8 (armed ${id} blocked)`, replyTo: null }).catch(logError);
+  }
+
+  /** Launch a held node as its spawn would have. A failure drops it and tells its parent. */
+  private release(id: string): void {
+    const rec = this.registry.get(id)!, p = rec.pending as Pending;
+    this.registry.update(id, { pending: undefined });
+    this.logEvent(id, 'launch', p.isolation === 'worktree' ? { isolation: 'worktree' } : {});
+    const fail = (err: Error) => {
+      if (!this.registry.get(id)) return;
+      this.logEvent(id, 'launch-failed', { error: err.message });
+      if (rec.parentId) deliver(this, DAEMON, rec.parentId, `${id} "${rec.title}" failed to launch and was removed: ${err.message}`, { fromLabel: `orchestr8 (armed ${id} failed)`, replyTo: null }).catch(logError);
+      this.discard(id);
+      this.emit('removed', id);
+    };
+    try {
+      if (p.isolation === 'worktree') {
+        if (p.prompt) this.starting.add(id); // the worktree takes a while; hold its maxWorking slot meanwhile
+        this.setStatus(id, { ...this.statuses.get(id)!, state: 'unknown', activity: 'creating worktree', changedAt: Date.now() }, false);
+        this.addWorktree(id, p.prompt).then(() => this.emitNode(id), fail);
+        return;
+      }
+      this.writeFiles(id);
+      this.statuses.set(id, { state: initialState(rec.kind), sessionId: rec.sessionId, changedAt: Date.now() });
+      this.launch(id, p.prompt, false);
+      this.emitNode(id);
+    } catch (err) {
+      fail(err as Error);
+    }
   }
 
   /**
@@ -446,6 +598,7 @@ export class NodeManager extends EventEmitter {
   restart(id: string, prompt?: string): { ok: true } | { ok: false; error: string } {
     const rec = this.registry.get(id);
     if (!rec) return { ok: false, error: 'No such node' };
+    if (rec.pending) return { ok: false, error: 'node is armed or queued: it launches by itself; close it to drop it' };
     if (rec.worktree && !existsSync(rec.worktree.path)) return { ok: false, error: 'worktree missing' }; // --worktree would make a fresh one
     if (this.setups.has(id)) return { ok: false, error: 'worktree setup is running' };
     const old = this.statuses.get(id)?.sessionId ?? rec.sessionId;
@@ -623,6 +776,10 @@ export class NodeManager extends EventEmitter {
     if (!rec || !prev) return;
     const now = Date.now();
     this.lastHookAt.set(nodeId, now);
+    if (event.hook_event_name === 'UserPromptSubmit') {
+      this.turnStarts.set(nodeId, now);
+      this.starting.delete(nodeId);
+    }
     this.emit('hook', nodeId, event);
     const next = reduce(prev, event, now);
     if (next.state !== prev.state) this.registry.update(nodeId, { lastActiveAt: now });
@@ -692,6 +849,8 @@ export class NodeManager extends EventEmitter {
     }
     this.pendingResume = new Set();
     this.liveChanged();
+    this.restored.clear(); // re-arm the nodes the record held back
+    this.scheduleSoon();
     return `resume on start: ${summary}`;
   }
 
@@ -948,7 +1107,9 @@ export class NodeManager extends EventEmitter {
     this.unread.delete(id);
     this.lastHookAt.delete(id);
     clearTimeout(this.gitTimers.get(id));
-    for (const m of [this.gits, this.gitTimers, this.merged, this.needsSetup, this.lastCostEvent, this.outcomes, this.gates]) m.delete(id);
+    for (const m of [this.gits, this.gitTimers, this.merged, this.needsSetup, this.lastCostEvent, this.outcomes, this.gates, this.turnStarts]) m.delete(id);
+    this.starting.delete(id);
+    this.restored.delete(id);
     rmSync(this.nodeDir(id), { recursive: true, force: true });
   }
 
@@ -966,12 +1127,14 @@ export class NodeManager extends EventEmitter {
     const cwd = rec.worktree?.repo ?? rec.cwd; // claude adopts the worktree itself through --worktree, or re-enters it on --resume
     const s = PtySession.spawn({ ...spec, cwd, ...DEFAULT_SIZE });
     this.sessions.set(id, s);
+    if (rec.kind === 'claude' && prompt) this.starting.add(id);
     this.registry.update(id, { lastActiveAt: Date.now() });
     this.liveChanged();
     s.onData((d) => this.emit('data', id, d));
     s.onExit(() => {
       if (this.sessions.get(id) !== s) return;
       this.sessions.delete(id);
+      this.starting.delete(id);
       this.liveChanged();
       const prev = this.statuses.get(id)!;
       this.markUnread(id);

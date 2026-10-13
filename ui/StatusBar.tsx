@@ -10,6 +10,7 @@ export function StatusBar() {
   const retry = useStore((s) => s.retry);
   const total = useStore((s) => Object.keys(s.nodes).length);
   const needs = useStore((s) => Object.values(s.nodes).filter(needsYou).length);
+  const queued = useStore((s) => Object.values(s.nodes).filter((n) => n.status.state === 'queued').length);
   const usage = useStore((s) => s.usage);
   const now = useNow();
   const today = useStore((s) => todaySpend(Object.values(s.nodes), now));
@@ -21,7 +22,7 @@ export function StatusBar() {
         <i className="dot" />
         {connected ? `daemon connected · ${location.host}` : `reconnecting to ${location.host}${retry > 1 ? ` (attempt ${retry})` : ''}…`}
       </span>
-      <span>{total} nodes{needs > 0 && <b className="warn"> · {needs} need you</b>}</span>
+      <span>{total} nodes{needs > 0 && <b className="warn"> · {needs} need you</b>}{queued > 0 && ` · ${queued} queued`}</span>
       {usage && (
         <span title={`Claude usage for the account, reported by ${usage.nodeId} ${fmtAge(Date.now() - usage.at)} ago`}>
           {usageParts(usage.rateLimits).map((p, i) => (

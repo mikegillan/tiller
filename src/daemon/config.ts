@@ -50,6 +50,7 @@ const ConfigFile = z.object({
     maxLiveNodes: z.number().int().nonnegative().optional(),
     stallMinutes: z.number().positive().optional(),
     maxMessagesPer10Min: z.number().int().positive().optional(),
+    maxWorking: z.number().int().nonnegative().optional(),
   }).strict().optional(),
 });
 type ConfigFile = z.infer<typeof ConfigFile>;
@@ -71,6 +72,8 @@ export interface Limits {
   stallMinutes: number;
   /** Messages one sender may send one target in 10 minutes. */
   maxMessagesPer10Min: number;
+  /** Claude nodes working at once; past it a spawn is queued and launched in creation order as nodes stop. 0 is unlimited. */
+  maxWorking: number;
 }
 /**
  * kinds: how each notify kind is shown; sound means a banner with a sound. failuresOnly: only needsYou and errored notify.
@@ -80,7 +83,7 @@ export interface Limits {
 export interface Notifications { kinds: Record<NotifyKind, NotifyLevel>; failuresOnly: boolean; treeDoneSummary: boolean; quietHours?: string }
 const KIND_DEFAULTS: Notifications['kinds'] = { needsYou: 'sound', errored: 'sound', done: 'banner', exited: 'banner' };
 
-const LIMIT_DEFAULTS: Limits = { maxDepth: 3, maxChildren: 8, maxLiveNodes: 20, stallMinutes: 5, maxMessagesPer10Min: 20 };
+const LIMIT_DEFAULTS: Limits = { maxDepth: 3, maxChildren: 8, maxLiveNodes: 20, stallMinutes: 5, maxMessagesPer10Min: 20, maxWorking: 0 };
 
 export interface Config {
   roles: { orchestrator: RoleDefaults; worker: RoleDefaults };

@@ -40,7 +40,7 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({
     t: z.literal('spawn'), kind: z.enum(NODE_KINDS), title: z.string().min(1), cwd: z.string().min(1),
     prompt: z.string().optional(), model: z.string().optional(), effort: z.enum(EFFORTS).optional(), role: z.enum(ROLES).optional(), parentId: z.string().nullable().optional(),
-    isolation: z.enum(ISOLATIONS).optional(),
+    isolation: z.enum(ISOLATIONS).optional(), after: z.array(id).optional(), afterSuccess: z.array(id).optional(), now: z.boolean().optional(),
   }),
   z.object({ t: z.literal('close'), id, force: z.boolean().optional(), worktree: z.enum(['keep', 'discard']).optional() }),
   z.object({ t: z.literal('merge'), id }),
@@ -128,7 +128,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       }
       case 'select': c.selected = m.id; manager.select(m.id); return;
       case 'spawn': {
-        const req = { kind: m.kind, title: m.title, cwd: m.cwd, prompt: m.prompt, model: m.model, effort: m.effort, role: m.role, parentId: m.parentId, isolation: m.isolation, byHuman: true };
+        const req = { kind: m.kind, title: m.title, cwd: m.cwd, prompt: m.prompt, model: m.model, effort: m.effort, role: m.role, parentId: m.parentId, isolation: m.isolation, after: m.after, afterSuccess: m.afterSuccess, now: m.now, byHuman: true };
         if (manager.isolationFor(req) === 'worktree') await manager.spawnWorktree(req);
         else manager.spawn(req);
         return;

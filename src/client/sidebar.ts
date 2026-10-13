@@ -54,7 +54,7 @@ const lr = (left: Seg[], right: string, w: number): Seg[] => {
 
 const glyph = (n: NodeView): Seg =>
   n.status.exited ? ['2', '○'] : n.status.errored ? ['31', '✗'] :
-  ({ working: ['36', '●'], blocked: ['33', '!'], waiting: ['33', '!'], done: ['32', '✓'] } as Record<string, Seg>)[n.status.state] ?? ['2', '·'];
+  ({ working: ['36', '●'], blocked: ['33', '!'], waiting: ['33', '!'], done: ['32', '✓'], armed: ['36', '◇'], queued: ['36', '…'] } as Record<string, Seg>)[n.status.state] ?? ['2', '·'];
 
 
 /**
@@ -132,7 +132,8 @@ export function layoutSidebar(m: SideModel, W: number, H: number): SideLayout {
     acts.push({ row: actRows.length - 1, x0, x1: Math.min(w + 1, x0 + text.length - 1), act: a.act });
   }
   const today = todaySpend(m.nodes.values(), m.now);
-  const status: Seg[] = m.connected ? [['32', '●'], ['', ` daemon ${m.port}`], ['2', today > 0 ? ` · ${fmtUsd(today)} today` : '']] : [['31', '●'], ['', ' reconnecting…']];
+  const queued = [...m.nodes.values()].filter((n) => n.status.state === 'queued').length;
+  const status: Seg[] = m.connected ? [['32', '●'], ['', ` daemon ${m.port}`], ['2', today > 0 ? ` · ${fmtUsd(today)} today` : ''], ['2', queued ? ` · ${queued} queued` : '']] : [['31', '●'], ['', ' reconnecting…']];
   for (const p of usageParts(m.usage?.rateLimits ?? [], true)) status.push(['2', ' · '], [{ ok: '', warn: '33', bad: '31' }[p.level], p.text]);
   const footer: Seg[] = m.prompt !== undefined ? [['36', m.prompt + '▏']] : [['2', m.notice ?? '^\\ n new · d detach · ? help']];
   const bottom = [rule('├', '┤'), ...actRows.map((r) => frame(paint(r, w))), rule('├', '┤'), frame(paint(status, w)), frame(paint(footer, w)), rule('╰', '╯')];

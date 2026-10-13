@@ -47,6 +47,9 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 withdraw <messageId>                             take back a queued message that has not been delivered yet
   o8 read <id> [summary|transcript|terminal] [--lines N]
   o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--request-id ID]
+           [--after ID,ID] [--after-success ID,ID] [--now]
+                                                      --after / --after-success arm the node until those finish a turn or report
+                                                      succeeded; --now launches past limits.maxWorking instead of queueing
   o8 prompts                                          show the role prompt files and any override for this directory
   o8 config [--cwd P]                                 show the effective config for a directory and which file each key came from
   o8 gate [--cwd P]                                   run the configured completion gate command once in a directory and print the result
@@ -113,9 +116,12 @@ const { values: f, positionals: pos } = parseArgs({
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
     'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
-    worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' }, now: { type: 'boolean' },
+    worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' },
+    after: { type: 'string', multiple: true }, 'after-success': { type: 'string', multiple: true }, now: { type: 'boolean' },
   },
 });
+/** `--after a,b --after c` as [a, b, c]; undefined when absent. */
+const ids = (v: string[] | undefined) => v?.flatMap((x) => x.split(',')).map((x) => x.trim()).filter(Boolean);
 
 const isolation = () => (f.worktree ? 'worktree' : undefined);
 
@@ -223,7 +229,8 @@ switch (cmd) {
     break;
   }
   case 'spawn':
-    await call('spawn', { kind: f.kind, title: f.title, cwd: f.cwd ?? process.cwd(), prompt: f.prompt, model: f.model, effort: f.effort, permissionMode: f['permission-mode'], role: f.role, isolation: isolation(), requestId: f['request-id'] });
+    await call('spawn', { kind: f.kind, title: f.title, cwd: f.cwd ?? process.cwd(), prompt: f.prompt, model: f.model, effort: f.effort, permissionMode: f['permission-mode'], role: f.role, isolation: isolation(), requestId: f['request-id'],
+      after: ids(f.after), afterSuccess: ids(f['after-success']), now: f.now });
     break;
   case 'diff':
     if (!pos[0]) fail(usage());
