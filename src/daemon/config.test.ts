@@ -19,19 +19,20 @@ describe('loadConfig', () => {
 
   it('resolves each key from the project file, then the home file, then the default', () => {
     const { cwd, homeDir } = setup(
-      JSON.stringify({ roles: { worker: { model: 'haiku' } }, worktrees: { include: ['.env'] }, resumeOnStart: false, resumeMaxAgeDays: 1, limits: { maxChildren: 2 } }),
-      JSON.stringify({ roles: { worker: { model: 'sonnet', effort: 'high' }, orchestrator: { model: 'opus' } }, closeWithoutConfirm: 'done', worktrees: { isolation: 'worktree', include: ['x'] }, resumeMaxAgeDays: 7, limits: { maxChildren: 5, stallMinutes: 2 } }),
+      JSON.stringify({ roles: { worker: { model: 'haiku' } }, worktrees: { include: ['.env'], merge: 'squash' }, resumeOnStart: false, resumeMaxAgeDays: 1, limits: { maxChildren: 2 } }),
+      JSON.stringify({ roles: { worker: { model: 'sonnet', effort: 'high' }, orchestrator: { model: 'opus' } }, closeWithoutConfirm: 'done', worktrees: { isolation: 'worktree', include: ['x'], setup: ['npm ci'] }, resumeMaxAgeDays: 7, limits: { maxChildren: 5, stallMinutes: 2 } }),
     );
     const proj = join(cwd, '.orchestr8', 'config.json'), home = join(homeDir, 'config.json');
     expect(loadConfig(cwd, homeDir)).toEqual({
       roles: { orchestrator: { model: 'opus' }, worker: { model: 'haiku', effort: 'high' } }, closeWithoutConfirm: 'done',
-      worktrees: { isolation: 'worktree', branchPrefix: 'o8/', include: ['.env'] }, // include replaces the home list whole
+      worktrees: { isolation: 'worktree', branchPrefix: 'o8/', include: ['.env'], merge: 'squash', mergeWithoutConfirm: false, setup: ['npm ci'], teardown: [] }, // include replaces the home list whole
       resumeOnStart: true, resumeMaxAgeDays: 7, // daemon settings ignore the project file
       limits: { maxDepth: 3, maxChildren: 2, maxLiveNodes: 20, stallMinutes: 2, maxMessagesPer10Min: 20 },
       sources: {
         'roles.orchestrator.model': home, 'roles.orchestrator.effort': 'default',
         'roles.worker.model': proj, 'roles.worker.effort': home, closeWithoutConfirm: home,
         'worktrees.isolation': home, 'worktrees.branchPrefix': 'default', 'worktrees.include': proj,
+        'worktrees.merge': proj, 'worktrees.mergeWithoutConfirm': 'default', 'worktrees.setup': home, 'worktrees.teardown': 'default',
         resumeOnStart: 'default', resumeMaxAgeDays: home,
         'limits.maxDepth': 'default', 'limits.maxChildren': proj, 'limits.maxLiveNodes': 'default', 'limits.stallMinutes': home, 'limits.maxMessagesPer10Min': 'default',
       },

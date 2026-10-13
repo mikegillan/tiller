@@ -1,5 +1,5 @@
 import { ActionButtons } from './ActionButtons';
-import { NodeMeta, StateDot } from './Bits';
+import { hasChanges, NodeMeta, StateDot } from './Bits';
 import { fmtAge } from '../src/shared/format';
 import { subtreeSpend } from '../src/shared/spend';
 import { useNow } from './hooks';
@@ -31,6 +31,7 @@ export function NodeRow({ row }: { row: Row }) {
           <StateDot kind={statusKind(node)} />
           {renaming ? <RenameInput id={node.id} title={node.title} /> : <span className={`title${s.exited ? ' dim' : ''}`}>{node.title}</span>}
           {node.unread && <i className="unread" title="unread" />}
+          {hasChanges(node) && <span className="count" title={`unmerged work on ${node.status.git!.branch}: merge or close it`}>changes</span>}
           {collapsed && <span className="count" title={`${descendants.length} hidden`}>+{descendants.length}</span>}
           {collapsed && needs > 0 && <span className="count warn">{needs} needs you</span>}
           {s.stalled && !s.exited && <span className="count warn" title="working with no hook event">no activity {fmtAge(now - s.changedAt)}</span>}

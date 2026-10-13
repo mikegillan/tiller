@@ -14,13 +14,28 @@ export function CtxBar({ pct }: { pct: number }) {
   );
 }
 
-/** `⎇ o8/n-3f2a · opus 5.5 · high · [bar] 42% · $0.42 · Σ$3.10`; null when the node reports none of it. `subtree`: spend with descendants. */
+/** A worktree node with commits or files its base does not have yet, once its work has stopped: someone should merge or close it. */
+export const hasChanges = (node: NodeView): boolean => {
+  const g = node.status.git;
+  return !!g && !g.mergedAt && g.ahead + g.dirty > 0 && (!!node.status.exited || node.status.state === 'done');
+};
+
+/** A worktree node whose branch has commits for its base and that is not working. */
+export const canMerge = (node: NodeView): boolean => {
+  const g = node.status.git;
+  return !!g && !g.mergedAt && g.ahead > 0 && (!!node.status.exited || node.status.state !== 'working');
+};
+
+/** `⎇ o8/n-3f2a · ↑2 · 1 dirty · opus 5.5 · high · [bar] 42% · $0.42 · Σ$3.10`; null when the node reports none of it. `subtree`: spend with descendants. */
 export function NodeMeta({ node, detail, subtree }: { node: NodeView; detail?: boolean; subtree?: number }) {
-  const s = node.status, wt = node.worktree;
+  const s = node.status, wt = node.worktree, g = s.git;
   const model = shortModel(s.model ?? node.model);
   const parts = [
     wt && <span className="branch" title={`branch ${wt.branch} from ${wt.base}`}>⎇ {wt.branch}</span>,
-    wt?.missing && <span className="warn" title="the worktree directory is gone; resume is refused">missing</span>,
+    g && g.ahead > 0 && <span title={`${g.ahead} commit(s) not in ${g.base}${g.behind ? `; ${g.base} has ${g.behind} not on the branch` : ''}`}>↑{g.ahead}</span>,
+    g && g.dirty > 0 && <span title="uncommitted files in the worktree">{g.dirty} dirty</span>,
+    g?.mergedAt && <span title={`merged into ${g.base}`}>merged</span>,
+    (wt?.missing || g?.missing) && <span className="warn" title="the worktree directory is gone; resume is refused">missing</span>,
     model && <span>{model}</span>,
     s.effort && <span>{shortEffort(s.effort)}</span>,
     s.contextPct !== undefined && <CtxBar pct={s.contextPct} />,

@@ -1,11 +1,13 @@
 // Git helpers for per-node worktrees: <repo>/.claude/worktrees/<nodeId> on branch <prefix><nodeId>.
-// Every call goes through execFile with an argument array and a timeout; nothing is run through a shell.
-import { execFile } from 'node:child_process';
+// Every git call goes through execFile with an argument array and a timeout. Only the setup and teardown commands from
+// the config run through a shell (runCommands), by design.
+import { execFile, spawn } from 'node:child_process';
 import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { closeSync, existsSync, openSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import type { MergeStyle } from './config.js';
 
 const run = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
@@ -93,10 +95,92 @@ export async function dirtyFiles(path: string): Promise<string[]> {
  * A base that no longer resolves falls back to baseSha.
  */
 export async function unmergedCommits(repo: string, branch: string, base: string, baseSha: string): Promise<string[]> {
-  const target = await git(repo, ['rev-parse', '--verify', '-q', `${base}^{commit}`]).then((s) => s.trim(), () => baseSha);
-  if (await git(repo, ['merge-base', '--is-ancestor', branch, target]).then(() => true, () => false)) return [];
+  const target = await resolveBase(repo, base, baseSha);
+  if (await isAncestor(repo, branch, target)) return [];
   if (!(await hasCommits(repo, branch, baseSha))) return [];
   return (await git(repo, ['cherry', '-v', target, branch])).split('\n').filter((l) => l.startsWith('+ ')).map((l) => l.slice(2));
+}
+
+const resolveBase = (repo: string, base: string, baseSha: string) =>
+  git(repo, ['rev-parse', '--verify', '-q', `${base}^{commit}`]).then((s) => s.trim(), () => baseSha);
+
+const isAncestor = (repo: string, a: string, b: string) => git(repo, ['merge-base', '--is-ancestor', a, b]).then(() => true, () => false);
+
+/** Commits on the branch that are not in base (baseSha when base no longer resolves), and the reverse. */
+export async function aheadBehind(repo: string, branch: string, base: string, baseSha: string): Promise<{ ahead: number; behind: number }> {
+  const out = await git(repo, ['rev-list', '--left-right', '--count', `${await resolveBase(repo, base, baseSha)}...${branch}`]);
+  const [behind, ahead] = out.trim().split(/\s+/).map(Number);
+  return { ahead: ahead!, behind: behind! };
+}
+
+/** Merge `ours` and `theirs` in memory (no working tree, index or ref is touched): the merged tree, or the conflicting paths. */
+export async function mergeTree(repo: string, ours: string, theirs: string): Promise<{ tree: string; conflicts: string[] }> {
+  try {
+    const { stdout } = await run('git', ['-C', repo, 'merge-tree', '--write-tree', '--name-only', '--no-messages', ours, theirs], { timeout: SLOW_TIMEOUT_MS, maxBuffer: 64 << 20 });
+    return { tree: stdout.trim(), conflicts: [] };
+  } catch (err) {
+    const e = err as Error & { code?: unknown; stdout?: string; stderr?: string };
+    if (e.code !== 1 || !e.stdout) throw new Error(`git merge-tree failed: ${e.stderr?.trim() || e.message}`);
+    const [tree, ...conflicts] = e.stdout.split('\n').filter(Boolean); // exit 1: conflicts, listed after the tree
+    return { tree: tree!, conflicts };
+  }
+}
+
+/**
+ * Bring `branch` into the local branch `base`, refusing before anything changes when they conflict. merge makes a merge
+ * commit even when a fast-forward would do; squash makes one commit on base with the branch's changes; ff-only moves
+ * base only when it has not moved since the branch left it. Where base is checked out, that checkout must have no
+ * uncommitted changes to tracked files and is fast-forwarded to the result; elsewhere the ref moves atomically, and
+ * only if base is still where it was. Returns base's new sha.
+ */
+export async function mergeInto(repo: string, branch: string, base: string, style: MergeStyle, subject: string): Promise<string> {
+  const ref = `refs/heads/${base}`;
+  const baseTip = await git(repo, ['rev-parse', '--verify', '-q', `${ref}^{commit}`]).then((s) => s.trim(), () => { throw new Error(`base ${base} is not a local branch; merge ${branch} by hand`); });
+  const tip = (await git(repo, ['rev-parse', '--verify', '-q', `refs/heads/${branch}^{commit}`])).trim();
+  if (await isAncestor(repo, tip, baseTip)) throw new Error(`nothing to merge: ${branch} is already in ${base}`);
+  let next = tip;
+  if (style === 'ff-only') {
+    if (!(await isAncestor(repo, baseTip, tip))) throw new Error(`cannot fast-forward ${base}: it has moved on since ${branch} left it; rebase the branch or use merge style "merge"`);
+  } else {
+    const { tree, conflicts } = await mergeTree(repo, baseTip, tip);
+    if (conflicts.length) throw new Error(`merge refused, nothing changed: ${branch} conflicts with ${base} in ${conflicts.join(', ')}`);
+    const log = style === 'squash' ? await git(repo, ['log', '--reverse', '--format=* %s', `${baseTip}..${tip}`]) : '';
+    const parents = style === 'merge' ? ['-p', baseTip, '-p', tip] : ['-p', baseTip];
+    next = (await git(repo, ['commit-tree', tree, ...parents, '-m', subject, ...(log ? ['-m', log.trim()] : [])])).trim();
+  }
+  const checkout = (await listWorktrees(repo)).find((e) => e.branch === base);
+  if (checkout) {
+    if ((await git(checkout.path, ['status', '--porcelain', '--untracked-files=no'])).trim()) {
+      throw new Error(`merge refused, nothing changed: ${base} is checked out at ${checkout.path} with uncommitted changes; commit or stash them first`);
+    }
+    await git(checkout.path, ['merge', '--ff-only', '-q', next]);
+  } else {
+    await git(repo, ['update-ref', '-m', `orchestr8: merge ${branch}`, ref, next, baseTip]);
+  }
+  return next;
+}
+
+/**
+ * Run each command with `sh -c` in `cwd`, in order, appending its output to `log` (discarded when absent). Rejects on
+ * the first that exits non-zero, runs past `timeout` or is aborted through `signal`.
+ */
+export async function runCommands(cmds: string[], o: { cwd: string; env: Record<string, string>; log?: string; timeout: number; signal?: AbortSignal; onStart?: (cmd: string) => void }): Promise<void> {
+  const fd = o.log ? openSync(o.log, 'a', 0o600) : undefined;
+  try {
+    for (const cmd of cmds) {
+      o.onStart?.(cmd);
+      if (fd !== undefined) writeSync(fd, `$ ${cmd}\n`);
+      const out = fd ?? 'ignore';
+      const end = await new Promise<number | string>((done, fail) => {
+        const p = spawn('sh', ['-c', cmd], { cwd: o.cwd, env: o.env, stdio: ['ignore', out, out], timeout: o.timeout, signal: o.signal });
+        p.on('error', fail);
+        p.on('close', (code, sig) => done(code ?? sig ?? 'unknown'));
+      });
+      if (end !== 0) throw new Error(`${cmd}: ${typeof end === 'number' ? `exited with ${end}` : `stopped by ${end} (time limit ${o.timeout / 60_000} minutes)`}`);
+    }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 /** Whether the branch has commits beyond baseSha. */

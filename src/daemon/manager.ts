@@ -3,8 +3,8 @@ import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { NEEDS_YOU_STATES, type AgentState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
-import { loadConfig, type Limits } from './config.js';
+import { NEEDS_YOU_STATES, type AgentState, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
+import { loadConfig, type Limits, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
 import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { pruneIds } from '../shared/prune.js';
@@ -12,7 +12,7 @@ import { dayKey } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { flushInbox } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
-import { PtySession } from './pty.js';
+import { buildChildEnv, PtySession } from './pty.js';
 import { logError, safeEqual } from './util.js';
 import * as wt from './worktree.js';
 import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
@@ -27,6 +27,11 @@ const DEFAULT_SIZE = { cols: 120, rows: 40 };
 const REPOS_FILE = 'worktree-repos.json';
 /** How long close waits for a killed worktree node to exit, so Claude's lock on the worktree belongs to a dead pid. */
 const EXIT_WAIT_MS = 3000;
+/** After an edit, wait this long for more before recomputing a worktree's git state. */
+const GIT_DEBOUNCE_MS = 3000;
+const GIT_EDIT_TOOLS = ['Edit', 'Write', 'Bash'];
+/** Limit for each worktree setup or teardown command. */
+const SETUP_TIMEOUT_MS = 10 * 60_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A node's state before any hook arrives: a Claude node is unknown until SessionStart; a terminal has no agent state. */
@@ -146,7 +151,16 @@ export class NodeManager extends EventEmitter {
   private lastHookAt = new Map<string, number>();
   private sweepTimer: NodeJS.Timeout;
   private interruptTimers = new Map<string, NodeJS.Timeout>();
-  private closing = new Set<string>();
+  /** Worktree nodes being closed or merged; the two exclude each other. */
+  private busy = new Map<string, 'closing' | 'merging'>();
+  private gits = new Map<string, GitState>();
+  private gitTimers = new Map<string, NodeJS.Timeout>();
+  /** The branch tip and time of each node's last merge: a squashed branch counts as merged until it moves. */
+  private merged = new Map<string, { tip: string; at: number }>();
+  /** Worktree setups in progress, so close can stop one. */
+  private setups = new Map<string, { abort: AbortController; done: Promise<void> }>();
+  /** Nodes whose setup has not succeeded yet, with the prompt to launch them with once it does; restart retries it. */
+  private needsSetup = new Map<string, string | undefined>();
   /** Ids that were live when the daemon last went away, until resumeLive has dealt with them. */
   private pendingResume: Set<string>;
   /** Set by shutdown: the live set is then frozen, so the PTYs' exits do not empty it. */
@@ -167,6 +181,7 @@ export class NodeManager extends EventEmitter {
     // Nodes from a previous run have no process; they can be resumed.
     for (const n of this.registry.list()) {
       this.statuses.set(n.id, { state: initialState(n.kind), exited: true, sessionId: n.sessionId, transcriptPath: n.transcriptPath, changedAt: Date.now() });
+      this.refreshGit(n.id).catch(logError);
     }
     this.sweepTimer = setInterval(() => this.sweepStale(), SWEEP_MS);
     this.sweepTimer.unref();
@@ -202,7 +217,10 @@ export class NodeManager extends EventEmitter {
   view(id: string): NodeView | undefined {
     const rec = this.registry.get(id);
     const status = this.statuses.get(id);
-    return rec && status ? { ...rec, status: status.model || !rec.model ? status : { ...status, model: rec.model }, unread: this.unread.has(id) } : undefined;
+    if (!rec || !status) return undefined;
+    const s = status.model || !rec.model ? status : { ...status, model: rec.model };
+    const git = this.gits.get(id);
+    return { ...rec, status: git ? { ...s, git } : s, unread: this.unread.has(id) };
   }
 
   list(): NodeView[] {
@@ -295,13 +313,45 @@ export class NodeManager extends EventEmitter {
       await wt.copyIncluded(repo, path, config.worktrees.include);
       this.writeFiles(rec.id);
       this.statuses.set(rec.id, { state: initialState('claude'), sessionId: rec.sessionId, changedAt: Date.now() });
-      this.launch(rec.id, req.prompt, false);
+      const setup = this.worktreeCommands(repo, 'setup');
+      if (setup.length) this.setupThenLaunch(rec.id, worktree, setup, req.prompt); // in the background: it may take minutes
+      else this.launch(rec.id, req.prompt, false);
     } catch (err) {
-      if (added) await wt.remove(repo, path, true).then(() => wt.deleteBranch(repo, worktree.branch)).catch(logError);
+      if (added) await this.teardown(rec.id, worktree).then(() => wt.remove(repo, path, true)).then(() => wt.deleteBranch(repo, worktree.branch)).catch(logError);
       this.discard(rec.id);
       throw err;
     }
+    this.refreshGit(rec.id).catch(logError);
     return this.emitNode(rec.id)!;
+  }
+
+  /**
+   * Merge a worktree node's branch into its base in the project's style (worktrees.merge). Refused, with nothing changed,
+   * while the node is working, closing or setting up, when its tree has uncommitted files, or when the branch conflicts
+   * with base (the error names the paths).
+   */
+  async merge(id: string): Promise<{ base: string; sha: string; style: MergeStyle }> {
+    const rec = this.registry.get(id);
+    if (!rec) throw new Error(`no such node: ${id}`);
+    const w = rec.worktree;
+    if (!w) throw new Error(`${id} has no worktree of its own to merge`);
+    const s = this.statuses.get(id)!;
+    if (s.state === 'working' && !s.exited) throw new Error(`refusing to merge while ${id} is working; wait until its turn ends`);
+    if (this.busy.has(id)) throw new Error(`${id} is already ${this.busy.get(id)}`);
+    this.busy.set(id, 'merging');
+    try {
+      await this.refreshGit(id).catch(logError);
+      const dirty = existsSync(w.path) ? await wt.dirtyFiles(w.path) : [];
+      if (dirty.length) throw new Error(`merge refused, nothing changed: ${count(dirty.length, 'uncommitted file')} in the worktree; commit them first`);
+      const style = loadConfig(w.repo, this.home).worktrees.merge;
+      const subject = style === 'squash' ? `${rec.title} (squashed from ${w.branch})` : `Merge branch '${w.branch}': ${rec.title}`;
+      const sha = await wt.mergeInto(w.repo, w.branch, w.base, style, subject);
+      this.merged.set(id, { tip: await this.branchTip(w), at: Date.now() });
+      return { base: w.base, sha, style };
+    } finally {
+      this.busy.delete(id);
+      await this.refreshGit(id).catch(logError);
+    }
   }
 
   /** Relaunch an exited Claude node with `claude --resume`. Fails if the transcript or the node's worktree is gone. */
@@ -310,6 +360,8 @@ export class NodeManager extends EventEmitter {
     if (!rec) return { ok: false, error: 'No such node' };
     if (rec.kind !== 'claude') return { ok: false, error: 'Only Claude nodes can be resumed' };
     if (this.sessions.get(id)) return { ok: false, error: 'Node is still running' };
+    if (this.setups.has(id)) return { ok: false, error: 'worktree setup is running' };
+    if (this.needsSetup.has(id)) return { ok: false, error: 'worktree setup has not succeeded; restart runs it again' };
     if (rec.worktree) {
       // Without its worktree, claude --resume carries on in the main checkout with no isolation.
       const w = rec.worktree;
@@ -348,6 +400,7 @@ export class NodeManager extends EventEmitter {
     const rec = this.registry.get(id);
     if (!rec) return { ok: false, error: 'No such node' };
     if (rec.worktree && !existsSync(rec.worktree.path)) return { ok: false, error: 'worktree missing' }; // --worktree would make a fresh one
+    if (this.setups.has(id)) return { ok: false, error: 'worktree setup is running' };
     const old = this.statuses.get(id)?.sessionId ?? rec.sessionId;
     clearTimeout(this.interruptTimers.get(id));
     const s = this.sessions.get(id);
@@ -361,7 +414,8 @@ export class NodeManager extends EventEmitter {
     try {
       this.writeFiles(id);
       this.emit('data', id, '\x1bc'); // reset attached screens before the new process draws
-      this.launch(id, undefined, false);
+      if (rec.worktree && this.needsSetup.has(id)) this.setupThenLaunch(id, rec.worktree, this.worktreeCommands(rec.worktree.repo, 'setup'), this.needsSetup.get(id));
+      else this.launch(id, undefined, false);
     } catch (err) {
       this.setStatus(id, { ...this.statuses.get(id)!, state: initialState(rec.kind), exited: true, activity: undefined, changedAt: Date.now() }, false);
       return { ok: false, error: (err as Error).message };
@@ -389,11 +443,15 @@ export class NodeManager extends EventEmitter {
   }
 
   private async closeWorktreeNode(id: string, title: string, w: Worktree, mode?: 'keep' | 'discard'): Promise<string | undefined> {
-    if (this.closing.has(id)) throw new Error(`${id} is already closing`);
-    this.closing.add(id);
+    if (this.busy.has(id)) throw new Error(`${id} is already ${this.busy.get(id)}`);
+    this.busy.set(id, 'closing');
     try {
+      await this.refreshGit(id).catch(logError);
       const refusal = closeRefusal((await this.worktreeCheck(id))!, mode);
       if (refusal) throw new Error(refusal);
+      const setup = this.setups.get(id);
+      setup?.abort.abort();
+      await setup?.done;
       const s = this.kill(id);
       if (s && !s.exited) await new Promise<void>((done) => { s.onExit(() => done()); setTimeout(done, EXIT_WAIT_MS).unref(); });
       let note: string | undefined;
@@ -407,7 +465,7 @@ export class NodeManager extends EventEmitter {
       this.emit('removed', id);
       return note;
     } finally {
-      this.closing.delete(id);
+      this.busy.delete(id);
     }
   }
 
@@ -442,7 +500,8 @@ export class NodeManager extends EventEmitter {
     const sharing = this.registry.list().filter((n) => n.id !== id && this.sessions.has(n.id) && inside(n.cwd, w.path)).map((n) => n.id);
     if (!existsSync(w.path)) return { dirty: [], unmerged: [], sharing }; // missing: close keeps an unmerged branch, so nothing is lost
     const [dirty, unmerged] = await Promise.all([wt.dirtyFiles(w.path), wt.unmergedCommits(w.repo, w.branch, w.base, w.baseSha)]);
-    return { dirty, unmerged, sharing };
+    // A squash merge leaves the branch's own commits outside base; it still counts as merged until the branch moves.
+    return { dirty, unmerged: unmerged.length && (await this.mergedAt(id, w)) ? [] : unmerged, sharing };
   }
 
   /**
@@ -522,6 +581,9 @@ export class NodeManager extends EventEmitter {
       this.registry.update(nodeId, { permissionMode: next.permissionMode });
     }
     this.setStatus(nodeId, next);
+    const e = event.hook_event_name;
+    if (e === 'Stop' || e === 'StopFailure') this.refreshGit(nodeId).catch(logError);
+    else if (e === 'PostToolUse' && GIT_EDIT_TOOLS.includes(String(event.tool_name)) && rec.worktree) this.refreshGitSoon(nodeId);
   }
 
   /** Apply an event from the node's mod. turn.start carries nothing we need. */
@@ -534,6 +596,7 @@ export class NodeManager extends EventEmitter {
       const model = ev.payload.usage?.model;
       const base = typeof model === 'string' && model !== prev.model ? { ...prev, model } : prev;
       this.setStatus(nodeId, turnComplete(base, now, ev.payload));
+      this.refreshGit(nodeId).catch(logError);
     } else if (ev.event === 'session.measure') {
       const { context, cost, rateLimits } = ev.payload;
       if (rateLimits?.length) { // empty off a subscription or before the first reading: keep the last report
@@ -581,7 +644,8 @@ export class NodeManager extends EventEmitter {
     this.stopped = true;
     if (opts.clearLive) this.registry.setLive([]);
     clearInterval(this.sweepTimer);
-    for (const t of this.interruptTimers.values()) clearTimeout(t);
+    for (const t of [...this.interruptTimers.values(), ...this.gitTimers.values()]) clearTimeout(t);
+    for (const s of this.setups.values()) s.abort.abort();
     for (const s of this.sessions.values()) s.kill();
     this.registry.flush();
     flushInbox(this);
@@ -624,6 +688,7 @@ export class NodeManager extends EventEmitter {
       if (c.dirty.length || c.unmerged.length) throw new Error(`worktree kept: changed during close (${c.dirty.length} uncommitted file(s), ${c.unmerged.length} unmerged commit(s))`);
     }
     await wt.unlockForRemoval(w.repo, w.path, id);
+    await this.teardown(id, w);
     await wt.remove(w.repo, w.path, mode === 'discard');
     if (mode === 'keep') return `kept branch ${w.branch}`;
     await wt.deleteBranch(w.repo, w.branch); // merged (checked above) or discarded
@@ -645,6 +710,7 @@ export class NodeManager extends EventEmitter {
       if (clean && (clean === 'force' || safe) && !live(e.path)) {
         try {
           await wt.unlockForRemoval(repo, e.path, marker.nodeId);
+          await this.teardown(marker.nodeId, { repo, path: e.path, base: marker.base });
           await wt.remove(repo, e.path, clean === 'force');
           if (e.branch) await wt.deleteBranch(repo, e.branch);
           r.removed.push({ what: `worktree ${e.path}${e.branch ? ` and branch ${e.branch}` : ''}`, commits: unmerged, files: dirty });
@@ -686,6 +752,85 @@ export class NodeManager extends EventEmitter {
     this.emitNode(id);
   }
 
+  /** Recompute a worktree node's git state and re-emit the node when it changed. */
+  private async refreshGit(id: string): Promise<void> {
+    const w = this.registry.get(id)?.worktree;
+    if (!w) return;
+    const missing = !existsSync(w.path);
+    const [counts, dirty, mergedAt] = await Promise.all([
+      wt.branchExists(w.repo, w.branch).then((b) => (b ? wt.aheadBehind(w.repo, w.branch, w.base, w.baseSha) : { ahead: 0, behind: 0 })),
+      missing ? [] : wt.dirtyFiles(w.path),
+      this.mergedAt(id, w),
+    ]);
+    if (!this.registry.get(id)) return; // closed meanwhile
+    const next: GitState = { branch: w.branch, base: w.base, ...counts, dirty: dirty.length, ...(missing ? { missing } : {}), ...(mergedAt ? { mergedAt } : {}) };
+    if (JSON.stringify(next) === JSON.stringify(this.gits.get(id))) return;
+    this.gits.set(id, next);
+    this.emitNode(id);
+  }
+
+  private refreshGitSoon(id: string): void {
+    clearTimeout(this.gitTimers.get(id));
+    const t = setTimeout(() => { this.gitTimers.delete(id); this.refreshGit(id).catch(logError); }, GIT_DEBOUNCE_MS);
+    t.unref();
+    this.gitTimers.set(id, t);
+  }
+
+  private branchTip = (w: Worktree) => wt.git(w.repo, ['rev-parse', '--verify', '-q', `refs/heads/${w.branch}`]).then((s) => s.trim(), () => '');
+
+  /** When the node's branch was last merged, if it has not moved since; a moved branch forgets the merge. */
+  private async mergedAt(id: string, w: Worktree): Promise<number | undefined> {
+    const m = this.merged.get(id);
+    if (!m) return undefined;
+    if ((await this.branchTip(w)) === m.tip) return m.at;
+    this.merged.delete(id);
+    return undefined;
+  }
+
+  /** The configured setup or teardown commands for a repo, or none when Claude does not trust it (trustPolicy is not auto). */
+  private worktreeCommands(repo: string, kind: 'setup' | 'teardown'): string[] {
+    const cmds = loadConfig(repo, this.home).worktrees[kind];
+    return cmds.length && trustPolicy(repo, readClaudeJson()) === 'auto' ? cmds : [];
+  }
+
+  private worktreeEnv(id: string, w: Pick<Worktree, 'repo' | 'path' | 'base'>): Record<string, string> {
+    return buildChildEnv({ PATH: this.path, O8_NODE_ID: id, O8_WORKTREE: w.path, O8_REPO: w.repo, O8_BASE: w.base });
+  }
+
+  /**
+   * Run the worktree setup commands in the background, each shown as the node's activity, then launch with `prompt`. A
+   * failure leaves the node exited and errored, pointing at setup.log; restart runs the setup again.
+   */
+  private setupThenLaunch(id: string, w: Worktree, cmds: string[], prompt: string | undefined): void {
+    const abort = new AbortController();
+    const log = join(this.nodeDir(id), 'setup.log');
+    const show = (patch: Partial<NodeStatus>, notify = false) => this.setStatus(id, { ...this.statuses.get(id)!, ...patch, changedAt: Date.now() }, notify);
+    this.needsSetup.set(id, prompt);
+    const done = wt.runCommands(cmds, {
+      cwd: w.path, env: this.worktreeEnv(id, w), log, timeout: SETUP_TIMEOUT_MS, signal: abort.signal,
+      onStart: (cmd) => show({ state: 'working', activity: `setting up worktree: ${cmd}` }),
+    }).then(() => {
+      if (abort.signal.aborted || !this.registry.get(id)) return;
+      this.needsSetup.delete(id);
+      this.statuses.set(id, { state: initialState('claude'), sessionId: this.statuses.get(id)?.sessionId, changedAt: Date.now() });
+      this.launch(id, prompt, false);
+      this.emitNode(id);
+    }).catch((err: Error) => {
+      if (abort.signal.aborted || !this.registry.get(id)) return; // closed or shut down meanwhile
+      show({ state: 'done', errored: true, exited: true, activity: `worktree setup failed: ${err.message}; see ${log}` }, true);
+    }).finally(() => this.setups.delete(id));
+    this.setups.set(id, { abort, done });
+  }
+
+  /** Best effort: run the teardown commands in a worktree about to be removed. A failure is logged and never blocks removal. */
+  private async teardown(id: string, w: Pick<Worktree, 'repo' | 'path' | 'base'>): Promise<void> {
+    if (!existsSync(w.path)) return;
+    const dir = this.nodeDir(id);
+    for (const cmd of this.worktreeCommands(w.repo, 'teardown')) {
+      await wt.runCommands([cmd], { cwd: w.path, env: this.worktreeEnv(id, w), log: existsSync(dir) ? join(dir, 'setup.log') : undefined, timeout: SETUP_TIMEOUT_MS }).catch(logError);
+    }
+  }
+
   private knownRepos(): string[] {
     try {
       const v: unknown = JSON.parse(readFileSync(join(this.home, REPOS_FILE), 'utf8'));
@@ -703,6 +848,8 @@ export class NodeManager extends EventEmitter {
     this.statuses.delete(id);
     this.unread.delete(id);
     this.lastHookAt.delete(id);
+    clearTimeout(this.gitTimers.get(id));
+    for (const m of [this.gits, this.gitTimers, this.merged, this.needsSetup]) m.delete(id);
     rmSync(this.nodeDir(id), { recursive: true, force: true });
   }
 
@@ -729,6 +876,7 @@ export class NodeManager extends EventEmitter {
       this.markUnread(id);
       this.setStatus(id, ptyExited(prev, Date.now()), false);
       this.emit('notify', { id, kind: 'exited', title: rec.title } satisfies NotifyEvent);
+      this.refreshGit(id).catch(logError);
     });
     if (rec.kind === 'claude') this.watchTrust(id, s, cwd).catch(logError);
   }

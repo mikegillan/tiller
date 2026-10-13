@@ -46,6 +46,8 @@ export interface NodeStatus {
   effort?: string;
   /** Spend of the current session only; NodeRecord.spentUsd is the node's total. */
   costUsd?: number;
+  /** Live git state of the node's worktree; absent when it owns none. Not persisted: recomputed on daemon start. */
+  git?: GitState;
   /** Wall-clock ms of the last event that changed state. */
   changedAt: number;
 }
@@ -72,6 +74,21 @@ export interface Worktree {
   baseSha: string;
   /** True when the directory is gone from disk or from `git worktree list`; resume is refused until it is recreated. */
   missing?: boolean;
+}
+
+/** A worktree node's branch against its base, refreshed when its turn ends, after edits, on exit, merge and close. */
+export interface GitState {
+  branch: string;
+  base: string;
+  /** Commits on the branch that are not in base, and in base that are not on the branch. */
+  ahead: number;
+  behind: number;
+  /** Uncommitted files in the worktree (modified, staged or untracked). */
+  dirty: number;
+  /** The worktree directory is gone. */
+  missing?: boolean;
+  /** When orchestr8 last merged the branch into base; cleared once the branch moves past what was merged. */
+  mergedAt?: number;
 }
 
 export interface NodeRecord {
@@ -138,6 +155,7 @@ export type ClientMessage =
   | { t: 'select'; id: string }                // clears unread
   | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation }
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
+  | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.merge style
   | { t: 'restart'; id: string }               // relaunch with a fresh session: clears context, keeps the node and its children
   | { t: 'resume'; id: string }
   | { t: 'prune' }                             // remove every exited node that has no live descendant
@@ -169,4 +187,5 @@ export interface ChildView {
   parentId?: string | null;
   errored?: boolean; interrupted?: boolean; exited?: boolean;
   activity?: string; ageSec: number; lastMessage?: string; unread: boolean; contextPct?: number;
+  git?: GitState;
 }
