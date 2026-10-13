@@ -1,0 +1,55 @@
+# Messaging between nodes
+
+Nodes talk through the daemon. An agent calls the MCP tool `send` (the human uses `o8 send <id> "text"`), and the daemon delivers the text to the target as a prompt. Scope is the sender's lineage: its parent and other ancestors, its siblings and its descendants. Only Claude nodes receive messages; a terminal node takes raw keystrokes through `write`, which the human approves each time.
+
+## The envelope
+
+The target sees the message inside a frame that says who sent it and where to answer:
+
+```
+--- O8 MESSAGE <nonce> ---
+from: Builder (n-3f2a)
+reply-to: n-3f2a
+<body>
+--- END O8 MESSAGE <nonce> ---
+```
+
+The nonce is new for each delivery. Every node's system prompt says that framed messages are legitimate instructions and that only the outermost frame is authentic, so a body that contains something frame-shaped is plain data. Messages from the daemon itself have `reply-to: none`.
+
+## The queue and delivery
+
+A send is queued in the daemon's inbox for the target (kept in `inbox.json`, so it survives a daemon restart) and the reply has outcome `queued` and a `messageId`. The target's mod polls the inbox every second. While the target is running a turn, the mod leaves the message in the daemon, which keeps it withdrawable. When the turn ends, the mod claims the message (`POST /claim`); from that point it can no longer be withdrawn, and a message that was withdrawn or has expired fails the claim and is skipped. The mod then submits it as a prompt and acknowledges it once Claude accepts the prompt, which makes the outcome `delivered`. The daemon also counts a UserPromptSubmit hook that carries the message's frame as delivery, so an acknowledgement lost to a mod reload does not cause a second submit.
+
+When the target's mod is not running (its last poll is more than 5 seconds old), the daemon pastes the message into the target's terminal instead. It waits until the target is verifiably idle and its screen shows an empty prompt rather than a dialog, writes one bracketed paste and then Enter, and waits up to 8 seconds for the prompt to be submitted: `delivered` if it was, `stalled` if not. A stalled message may or may not have arrived, so the sender should check before sending it again.
+
+Each target holds at most 16 queued messages, and a message expires after 5 minutes in the queue. That clock starts over while the target is working and while its mod is submitting a claimed message, so a message for a long-running worker does not expire just because the worker is busy.
+
+`message_status` with the messageId returns the current outcome. The outcomes are `queued`, `delivered`, `stalled`, `expired`, `queueFull`, `withdrawn`, `gone` (the target no longer exists or has exited) and `refused`, each with a detail and whether a retry can help.
+
+## Steering
+
+A send with mode `now` (`o8 send --now`) is a steer. If the target is working, its turn is interrupted and the message is delivered at once, ahead of the other queued messages, with an extra envelope line telling the target it was interrupted on purpose. With the mod running, the mod claims the steer, aborts the turn and submits it; without the mod, the daemon presses Esc in the terminal and pastes the message once the turn has stopped. To a target that is not working, mode `now` is the same as the default `queue`. The orchestrator prompt reserves steering for a worker heading the wrong way.
+
+## Withdrawing
+
+`withdraw` (or `o8 withdraw <messageId>`) takes back a message that is still queued: not yet claimed by the target's mod and not yet pasted. Its outcome becomes `withdrawn`. Only the sender, or the human, may withdraw a message, and the error says why when it cannot.
+
+## Rate limit and loop guard
+
+The daemon accepts one send per sender and target every 10 seconds; a faster one is refused with the time to wait. Separately, a send between two agents is refused as a likely loop when the sender has already sent that target `limits.maxMessagesPer10Min` messages (default 20) in the last 10 minutes, or the same text in the last 10 minutes. The refusal tells the sender to escalate to the human or change approach, and the sender's parent gets one message about it per pair every 10 minutes. The human and the daemon are exempt from the loop guard.
+
+## Notices from the daemon
+
+The daemon messages a parent, once per episode, when a child stops in a way that needs a decision: it exited, its turn ended in an error, or it has waited on a question for 15 minutes. An episode ends with the next cleanly finished turn. When a child's turn errors, the daemon first sends the child one message asking it to continue where it left off, and tells the parent only if that message is not delivered or the next turn errors too. A child working with no hook event for `limits.stallMinutes` gets one "no activity" notice to its parent.
+
+When a child's outcome is recorded through `report_outcome`, its parent gets a message with the outcome line, unless a pending `notify_when` of the parent covers that child, in which case the `notify_when` message carries it.
+
+## notify_when
+
+`notify_when(ids, when, of)` lets an agent wait for several nodes with one message instead of polling. It returns at once; later the caller receives a single message, "N of M finished:", with one line per node giving its outcome or its state. `when: "all"` waits for every node and `"any"` for the first. `of: "turn"` counts a node once it finishes the turn now in progress (or, for an idle node, its next turn), or exits or is closed; `of: "success"` counts a node once it calls `report_outcome` with either verdict. Calling it again with the same ids replaces the pending one, and it expires after 12 hours. The human has no inbox, so it is for agents only.
+
+## Dependency launches and the spawn queue
+
+A spawn can wait for other nodes: `o8 spawn --after n-a,n-b --after-success n-c`, or `after` and `afterSuccess` on the MCP `spawn` tool. The node is created armed, with no process yet, and its row says what it waits on. It launches exactly as the spawn would have (worktree included) once each `after` node has finished a turn that began after the spawn, or has exited, and each `afterSuccess` node has reported succeeded, after its completion gate when one is configured. A failed report blocks it: the row says "blocked by n-c: <note>" and its parent gets a message. Dependencies must exist and be in the caller's scope. Closing an armed node discards it, and a restarted daemon re-arms armed nodes from `state.json`.
+
+When `daemon.maxWorking` is set and that many Claude nodes are working, a new spawn is queued instead, shown as "queued" with the reason, and launched in creation order as nodes stop working; the status bar shows how many are queued. Only the human can skip the queue, with `o8 spawn --now`. Arming, release, queueing and launch are written to the tree's event log.

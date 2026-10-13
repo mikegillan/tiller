@@ -9,6 +9,9 @@ Written 2026-10-09 after reading the nodeterm source (v0.4.3) with four targeted
 agent control surface, inter-node messaging, PTY/status layer, and UI/notifications. Where a
 nodeterm lesson is quoted below it is tagged with their issue number.
 
+Sections 1 to 9 are the original design rationale, corrected where the code has since moved on. How
+each feature behaves today is in [docs/](docs/); later designs are in [docs/design/](docs/design/).
+
 ## 1. What we keep, what we drop
 
 Keep (this is what made nodeterm good):
@@ -35,8 +38,9 @@ worktree frames, browser-driving verbs, sticky notes, media nodes, multi-account
 One long-lived Node process (the daemon) owns everything native: PTYs, hooks, MCP, messaging
 and OS notifications. It listens on TCP 127.0.0.1 (port 7788 by default) and keeps its files
 in `~/.orchestr8/` (or `O8_HOME`): `state.json` (node registry), `inbox.json` (queued mod
-messages), `secret`, `admin-token`, `port`, `prompts/`, and per node `nodes/<id>/` with a
-0600 `token`, `settings.json` (hooks and tool allowlist) and a 0600 `mcp.json`.
+messages), `secret`, `admin-token`, `port`, `repo`, `config.json`, `daemon.log`, `prompts/`
+(optional overrides), `agents/` (presets), `sessions/<rootId>/` (one per tree), and per node
+`nodes/<id>/` with a 0600 `token`, `settings.json` (hooks and tool allowlist) and a 0600 `mcp.json`.
 
 Daemon responsibilities:
 
@@ -68,16 +72,11 @@ CLI for humans. Cost: a handful of tool descriptions in each child's context, wh
 
 ## 3. Launching a Claude node
 
-```
-claude --session-id <uuid we mint> \
-       --name <title> \
-       [--model <model>] [--permission-mode <mode>] \
-       --plugin-dir <repo>/mod \
-       --settings ~/.orchestr8/nodes/<id>/settings.json \
-       --mcp-config ~/.orchestr8/nodes/<id>/mcp.json --strict-mcp-config \
-       --append-system-prompt "<identity + rules + role prompt, generated>" \
-       -- "<prompt>"
-```
+The command line is built by `launchArgs` in `src/daemon/launch.ts`: `claude --session-id <uuid we
+mint>` (or `--resume`), the title, model, effort and permission mode, `--plugin-dir` for the mod,
+the node's `--settings` and `--mcp-config` files with `--strict-mcp-config`, and the generated
+`--append-system-prompt`, followed by `-- <prompt>`. Worktree nodes, session directories and presets
+add `--worktree`, `--add-dir` and `--agents`/`--agent`.
 
 - Env: `O8_NODE_ID`, `O8_PARENT_ID` (children only), `O8_ENDPOINT`, `O8_TOKEN_FILE`, the
   `TERM`/`COLORTERM` pair, a UTF-8 `LANG` if unset (#78), and `PATH` from the login shell.
@@ -143,18 +142,12 @@ so there is no token table to lose and a node can only present its own file. Aut
 the handler; a refusal means nothing happened. The CLI outside a node uses the admin token
 and acts as `human`.
 
-| Tool | Args | Returns |
-|---|---|---|
-| `list_nodes` | — | tree: id, parentId, title, kind, cwd, state, flags, age, contextPct |
-| `spawn` | kind (claude\|terminal), title, cwd, prompt?, model?, permissionMode?, role?, requestId? | `{nodeId}` |
-| `send` | nodeId, text | outcome (below) |
-| `message_status` | messageId | the send outcome, final or still `queued` |
-| `read` | nodeId, what (summary\|transcript\|terminal), lines? | text |
-| `write` | nodeId, text | raw keystrokes; UI confirm dialog |
-| `close` | nodeIds[], force? | UI confirm, one dialog for the batch; any unknown id refuses the whole batch; agents cannot close a root |
-| `rename` | nodeId, title | — |
-| `report_outcome` | outcome (succeeded\|failed), note? | — (about yourself only) |
-| `resume`, `restart`, `prune`, `select`, `shutdown` | | human only |
+The tools, their arguments and their descriptions are defined in `src/daemon/mcp.ts`; that file is
+the reference, since the schema is what agents read. The core set is `list_nodes`, `spawn`, `send`,
+`message_status`, `read`, `write` (raw keystrokes, confirmed by the human), `close` (one confirm for
+the batch; any id outside scope refuses the whole batch; agents cannot close a root), `rename` and
+`report_outcome`; later features added `withdraw`, `notify_when`, `merge` and `diff`, and the
+human-only verbs (`resume`, `restart`, `prune`, `select`, `shutdown` and others) are not listed to agents.
 
 - Scope is the caller's lineage: itself, its ancestors, its siblings and its descendants
   (`send` excludes itself). `close` reaches only descendants, `rename` itself and its descendants. That is the entire
@@ -162,18 +155,22 @@ and acts as `human`.
 - `spawn` with `requestId`: a repeat with the same id returns the first reply, marked
   `replayed`. Tool-call timeouts are real and a lost reply otherwise opens a node twice.
 - Spawning never changes what the user is looking at (#665, #702).
-- Rate limit: one `send` per sender→target pair per 10 s, enough to stop an LLM retry loop.
+- Rate limit: one `send` per sender→target pair per 10 s, enough to stop an LLM retry loop, plus
+  a loop guard (`limits.maxMessagesPer10Min` per pair, and no identical text twice in 10 min) for
+  two agents bouncing messages between them.
 - Every process of the same OS user can read the token files, so scope, confirms and the
   human-only `bypassPermissions` guard against agent mistakes, not a hostile local process.
 
 ## 6. Message delivery
 
 Delivery is mod-first. The daemon keeps a per-node inbox (persisted in `inbox.json`); the
-node's mod polls it every second, submits each message with `$.prompt.submit`, and acks when
-the turn starts. The daemon also counts a UserPromptSubmit hook carrying the message's frame
-header as delivery, because a mod hot reload right after the submit drops the ack (see below).
-Claude Code does the idle gating, so no screen check is needed on this path.
-A node counts as mod-live while its last poll is under 5 s old.
+node's mod polls it every second. While a turn runs the mod leaves a message in the daemon, so
+its sender can still withdraw it; when the turn ends the mod claims it (`POST /claim`), submits
+it with `$.prompt.submit`, and acks once the prompt is accepted. A steer (send with mode "now")
+is claimed at once and the mod aborts the running turn before submitting it. The daemon also
+counts a UserPromptSubmit hook carrying the message's frame header as delivery, because a mod
+hot reload right after the submit drops the ack. Claude Code does the idle gating, so no screen
+check is needed on this path. A node counts as mod-live while its last poll is under 5 s old.
 
 For a node whose mod is not live, the daemon pastes into the PTY, and queues instead unless
 the target is verified idle (last verified event was Stop, not an `idle_prompt` inference,
@@ -200,10 +197,11 @@ message as untrusted and asked before obeying). Station notices use
 `from: orchestr8 (child n-7b1c stopped: turn-errored)` and `reply-to: none`. A human's typing
 into a node is never framed.
 
-Queues: per target, cap 16 (`queueFull` refuses rather than dropping), TTL 5 min. The paste
-queue is in memory and retried when the target goes idle. Outcomes are exactly `delivered`,
-`queued`, `stalled`, `expired`, `queueFull`, `gone`, `refused`, and each reply says
-`retryable: true|false`. nodeterm has 18 outcome kinds; seven is enough.
+Queues: per target, cap 16 (`queueFull` refuses rather than dropping), TTL 5 min, restarted
+while the target works. The paste queue is in memory and retried when the target goes idle.
+Outcomes are exactly `delivered`, `queued`, `stalled`, `expired`, `queueFull`, `withdrawn`,
+`gone`, `refused`, and each reply says `retryable: true|false`. nodeterm has 18 outcome kinds;
+eight is enough.
 
 ## 7. Station notices (child → parent)
 
@@ -214,7 +212,8 @@ The daemon tells the parent when a child it opened stops in a way that needs a d
 - `question-unanswered`: waiting for more than 15 min with nobody answering.
 
 Delivered through the normal send path, once per episode: re-arm only after a clean turn, or
-a rate-limited child re-notifies all night. A permission prompt is never a notice, because an
+a rate-limited child re-notifies all night. Later additions (a retry message before
+`turn-errored`, a stall notice, and a notice for each recorded outcome) are in docs/messaging.md. A permission prompt is never a notice, because an
 approval fires nothing until the tool finishes, so "blocked for 20 min" looks the same as
 "approved, long build"; the UI shows NEEDS YOU instead.
 
@@ -224,8 +223,8 @@ approval fires nothing until the tool finishes, so "blocked for 20 min" looks th
 has finished a turn that started after the armed node was created (or has exited). nodeterm's sharpest lesson:
 idle means the turn ended, not the job. So also `after_success`, released only by
 `report_outcome succeeded`, and blocked by `failed` with the note shown on the waiting node.
-Built in src/daemon/deps.ts and the manager's schedule(), with limits.maxWorking queueing and
-notify_when. Not built: the 24 h deadline, EXPIRED and a manual Run.
+Built in src/daemon/deps.ts and the manager's schedule(), together with notify_when and the
+daemon.maxWorking spawn queue.
 
 ## 9. Front ends
 
@@ -242,30 +241,12 @@ a click selects the node): on needs-you, done, errored and exited, throttled per
 suppressed while a focused client is showing that node. Unread clears on select and is independent of
 agent state.
 
-## 10. Phases
+## 10. Not built
 
-Phase 0 (spike), phase 1 (daemon core), phase 2 (UI) and phase 3 (agent control: MCP, system
-prompt, read, send with gate, queue and receipt, station notices, write/close confirms) are
-built and verified. Phase 4 (`after` / `after_success`) and phase 5 (kanban, chat-style
-transcript view, Codex support) are not started. For Codex, MCP works; status needs
-`~/.codex/hooks.json` plus a trust hash in config.toml, which nodeterm ports and calls
-brittle, so start with Codex's `notify` setting for turn-complete only.
-
-Still unverified: behaviour when the user has other mods installed (they load in every node
-too). Hot reload of the mod: Claude Code applies a pending reload when the turn ends, which is
-the moment a queued `$.prompt.submit` enters. The reload drops the submit's ack callback and the
-module-scope in-flight set in `mod/hooks/register.tsx`, so the reloaded mod used to submit the
-still-unacked message a second time (seen twice on 2026-10-13 and reproduced by editing the
-mod's plugin.json mid-turn). The daemon now resolves the message from the UserPromptSubmit hook.
-
-## 11. History
-
-The Phase 0 spike (1db9c47, findings recorded in 384ccfb) confirmed that hooks passed via
-`--settings` fire, MCP over HTTP with `permissions.allow` connects without prompts, a
-bracketed paste plus `\r` submits a multi-line message, and `/clear` is reported as SessionEnd
-then SessionStart with a new session id. It also showed `idle_prompt` arrives about 60 s after
-Stop. The mod spike (a083e01, decision in a341102) made delivery mod-first (664dc72). A
-per-session mod pane was tried and then removed (9dae5e9) in favour of the `o8` multiplexer,
-and the front-end direction moved to the Tauri-wrapped web UI (4bcd75f, e5cb379, 87ef40e). OS
-notifications moved into the daemon (774ed15), and the mod goes quiet while a client is
-attached (585e300).
+- Phase 5 of the original plan: a kanban view, a chat-style transcript view, and Codex support.
+  For Codex, MCP works; status needs `~/.codex/hooks.json` plus a trust hash in config.toml,
+  which nodeterm ports and calls brittle, so start with Codex's `notify` setting for turn-complete only.
+- For dependency launches: a 24 h deadline with an EXPIRED state, and a manual Run.
+- From the worktree design's phase 3: `o8 pr <id>`, recreating a missing worktree from its kept
+  branch, an explicit `base` ref on spawn, and isolation for terminal nodes.
+- Unverified: behaviour when the user has other mods installed (they load in every node too).

@@ -1,0 +1,35 @@
+# Worktrees
+
+A git worktree is a second checkout of the same repository, on its own branch, in its own directory. A Claude worker can run in one, so parallel workers never edit the same files. The design and its reasoning are in [design/worktrees-plan.md](design/worktrees-plan.md).
+
+## Isolation
+
+Spawn with isolation `worktree`: `o8 spawn --worktree`, `o8 new --worktree`, or `isolation: "worktree"` on the MCP `spawn` tool. A Claude worker spawned without saying gets `worktrees.isolation` from the config (default `none`). The daemon creates `<main checkout>/.claude/worktrees/<nodeId>` on branch `o8/<nodeId>` (the prefix is `worktrees.branchPrefix`) from the HEAD of the checkout the spawn's `cwd` is in, so a worker that spawns from its own worktree branches from its own work, and that branch becomes the new node's base. It copies the gitignored files listed in `.worktreeinclude` (such as `.env` or `node_modules/`), or those matched by `worktrees.include` when set, and starts `claude --worktree <nodeId>` from the main checkout, which makes Claude keep the agent inside the worktree. The repo needs at least one commit, and Claude must already trust it (run `claude` in it once). A node spawned without isolation into a path inside a worktree shares that worktree, and its system prompt says so.
+
+## Row markers
+
+Each worktree node's row shows its branch, how many commits it is ahead of its base (↑), how many files are uncommitted, a "changes" marker once it is done or exited with work not yet in its base, and "merged" after orchestr8 merged it. The daemon recomputes this when the node's turn ends, a few seconds after it edits a file or runs a command, when it exits, before a merge or close, and on start. `list_nodes` and `o8 list` carry the same counts in each node's `worktree` field. `o8 diff <id> [--stat]`, the MCP `diff` tool and the app's Diff tab show what the node changed since it branched, committed or not.
+
+## Merging
+
+The Merge button on the row or the exited card, `o8 merge <id> [--close]` and the MCP `merge` tool bring a node's branch into its base. An agent may merge only its descendants, and the human approves each merge unless `approvals.merge` is true.
+
+A merge is refused, with nothing changed, while the node is working, when its worktree has uncommitted files, when the base branch is checked out somewhere with uncommitted changes, when the branch conflicts with the base, or when there is nothing to merge. The conflict check uses `git merge-tree`, which names the conflicting paths without touching any file; the MCP tool then replies `{ok: false, conflicts: [paths]}`, and the orchestrator prompt tells the orchestrator to send the worker a rebase instruction rather than resolve it. For the merge and squash styles the result is written with `git commit-tree`; then the base's checkout, if it has one, is fast-forwarded to the new commit, and a base checked out nowhere has its ref moved atomically.
+
+`worktrees.mergeStyle` picks the style: `merge` (the default) always makes a merge commit, `squash` makes one commit on the base, and `ff-only` only fast-forwards and is refused once the base has moved on. You can also merge with git yourself; orchestr8 notices the branch is merged.
+
+## Close and kill
+
+Closing a worktree node removes the worktree and deletes the branch, but only when the tree is clean, the branch is merged and no other live node works in it; otherwise the close is refused, with the counts, and nothing is closed. Two options decide instead: `o8 kill <id> --keep-branch` (or `worktree: "keep"` on the MCP `close` tool) commits any changes as a WIP commit, removes the directory and keeps the branch, and `--discard` (`worktree: "discard"`) deletes both, unmerged work included; an agent's discard always needs the human's approval, whatever `approvals.close` says. `o8 prune` keeps worktree nodes with unmerged work and lists them.
+
+## o8 worktrees
+
+`o8 worktrees [--cwd P]` lists node worktrees, orphans (worktrees left without a node, for example by a crash) and kept branches. `o8 worktrees clean` removes the orphans and kept branches that are clean and merged; `--force` removes them all and prints the commits and files that went. On start the daemon removes orphans that hold no work and reports the rest.
+
+## Setup and teardown
+
+`worktrees.setup` commands run one by one with `sh -c` in a new worktree, after the include copy and before Claude starts, for example `{"worktrees": {"setup": ["npm ci"]}}`. Their environment has `O8_NODE_ID`, `O8_WORKTREE`, `O8_REPO`, `O8_BASE` and the daemon's login PATH. The node shows "setting up worktree: <command>" meanwhile. Output goes to `~/.orchestr8/nodes/<id>/setup.log`, and each command has 10 minutes. If one fails, the node is left exited and errored with the log's path in its activity; restarting it runs the setup again and then starts the agent with its original prompt. `worktrees.teardown` commands run the same way, best effort, before orchestr8 removes any worktree. Neither runs unless Claude already trusts the repo.
+
+## Tools that glob the tree
+
+The daemon hides `.claude/worktrees/` from `git status` through `.git/info/exclude`, which ripgrep also honours, but test runners, linters and other tools that walk the directory tree do not, and they would find every worker's copy of the code. Exclude `**/.claude/worktrees/**` in them; this repo does so in `vitest.config.ts`.
