@@ -10,7 +10,7 @@ export function actionsFor(node: NodeView): Act[] {
   const last: Act = node.parentId === null // an orchestrator is restarted, never closed
     ? { key: 'restart', label: 'Restart', icon: 'restart', run: () => openDialog({ kind: 'restart', id: node.id }) }
     : exited
-      ? { key: 'remove', label: 'Remove', icon: 'trash', danger: true, run: () => send({ t: 'close', id: node.id }) }
+      ? { key: 'remove', label: 'Remove', icon: 'trash', danger: true, run: () => node.worktree ? openDialog({ kind: 'kill', id: node.id }) : send({ t: 'close', id: node.id }) }
       : { key: 'kill', label: 'Kill', icon: 'x', danger: true, run: () => openDialog({ kind: 'kill', id: node.id }) };
   return [
     ...(!exited ? [{ key: 'child', label: 'New child', icon: 'subnode' as const, run: () => openDialog({ kind: 'spawn', parentId: node.id, cwd: node.cwd }) }] : []),

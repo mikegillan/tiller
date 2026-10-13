@@ -30,6 +30,7 @@
 .l2.warn { color: var(--needs); }
 .meta { display: flex; align-items: center; flex-wrap: wrap; }
 .meta .part + .part::before { content: '·'; margin: 0 6px; }
+.meta .branch { display: block; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .titlebar .meta { padding: 0; font-size: 12px; }
 
 /* Tree connectors: each ancestor level is a 20px cell; the vertical line sits under the parent's chevron. */

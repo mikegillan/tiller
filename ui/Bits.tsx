@@ -13,11 +13,13 @@ export function CtxBar({ pct }: { pct: number }) {
   );
 }
 
-/** `opus 5.5 · high · [bar] 42% · $0.42`; null when the node reports none of it. */
+/** `⎇ o8/n-3f2a · opus 5.5 · high · [bar] 42% · $0.42`; null when the node reports none of it. */
 export function NodeMeta({ node, detail }: { node: NodeView; detail?: boolean }) {
-  const s = node.status;
+  const s = node.status, wt = node.worktree;
   const model = shortModel(s.model ?? node.model);
   const parts = [
+    wt && <span className="branch" title={`branch ${wt.branch} from ${wt.base}`}>⎇ {wt.branch}</span>,
+    wt?.missing && <span className="warn" title="the worktree directory is gone; resume is refused">missing</span>,
     model && <span>{model}</span>,
     s.effort && <span>{shortEffort(s.effort)}</span>,
     s.contextPct !== undefined && <CtxBar pct={s.contextPct} />,

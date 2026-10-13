@@ -51,6 +51,26 @@ export interface NodeStatus {
 export const ROLES = ['orchestrator', 'worker', 'none'] as const;
 export type Role = (typeof ROLES)[number];
 
+/** Values for claude's `--effort`. */
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type Effort = (typeof EFFORTS)[number];
+
+export const ISOLATIONS = ['none', 'worktree'] as const;
+export type Isolation = (typeof ISOLATIONS)[number];
+
+/** A worker's own git worktree: <repo>/.claude/worktrees/<nodeId> on branch o8/<nodeId>, branched from base at baseSha. */
+export interface Worktree {
+  /** The main checkout root; the PTY starts here with `claude --worktree <nodeId>`. */
+  repo: string;
+  path: string;
+  branch: string;
+  /** Symbolic base ref at spawn time (for example main), or the sha when HEAD was detached. */
+  base: string;
+  baseSha: string;
+  /** True when the directory is gone from disk or from `git worktree list`; resume is refused until it is recreated. */
+  missing?: boolean;
+}
+
 export interface NodeRecord {
   id: string;
   parentId: string | null;
@@ -58,9 +78,12 @@ export interface NodeRecord {
   title: string;
   cwd: string;
   model?: string;
+  effort?: Effort;
   permissionMode?: string;
   /** Explicit role override; absent means derive from parentId at each launch. */
   role?: Role;
+  /** Set on a node that owns a git worktree (spawned with isolation "worktree"); its cwd is the worktree path. */
+  worktree?: Worktree;
   createdAt: number;
   /** Persisted so a restarted daemon can offer Resume. */
   sessionId?: string;
@@ -98,8 +121,8 @@ export type ClientMessage =
   | { t: 'input'; id: string; data: string }
   | { t: 'resize'; id: string; cols: number; rows: number }
   | { t: 'select'; id: string }                // clears unread
-  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; role?: Role; parentId?: string | null }
-  | { t: 'close'; id: string; force?: boolean }  // a root (orchestrator) is refused without force
+  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation }
+  | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
   | { t: 'restart'; id: string }               // relaunch with a fresh session: clears context, keeps the node and its children
   | { t: 'resume'; id: string }
   | { t: 'prune' }                             // remove every exited node that has no live descendant

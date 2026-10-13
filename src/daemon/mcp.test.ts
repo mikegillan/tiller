@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -93,6 +93,32 @@ describe('mcp api', () => {
     answer = true;
   });
 
+  it('closeWithoutConfirm in the caller\'s project config skips the confirm only as configured', async () => {
+    const proj = join(home, 'proj');
+    mkdirSync(join(proj, '.orchestr8'), { recursive: true });
+    const setMode = (mode: string) => writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ closeWithoutConfirm: mode }));
+    const p = (await spawnT('cfg', 'human', admin, { cwd: proj })).body.data.nodeId as string;
+    const tok = manager.tokenFor(p);
+    const kids = async (n: number) => Promise.all(Array.from({ length: n }, async () => (await spawnT('k', p, tok)).body.data.nodeId as string));
+    const close = async (ids: string[]) => { confirms.length = 0; await api('close', { nodeIds: ids }, p, tok); return confirms.length; };
+    setMode('done');
+    const [a, b] = await kids(2);
+    for (const id of [a, b]) manager.applyHook(id, { hook_event_name: 'Stop' });
+    expect(await close([a, b])).toBe(0);
+    expect(manager.view(a)).toBeUndefined();
+    const [c, d] = await kids(2);
+    manager.applyHook(c, { hook_event_name: 'Stop' });
+    manager.applyHook(d, { hook_event_name: 'UserPromptSubmit' }); // working
+    expect(await close([c, d])).toBe(1);
+    setMode('never');
+    const [e] = await kids(1);
+    manager.applyHook(e, { hook_event_name: 'Stop' });
+    expect(await close([e])).toBe(1);
+    setMode('always');
+    const [g] = await kids(1);
+    expect(await close([g])).toBe(0);
+  });
+
   it('only the human may spawn with bypassPermissions; the mode is validated', async () => {
     const p = (await spawnT('bp')).body.data.nodeId as string;
     const args = { kind: 'terminal', title: 'k', cwd: tmpdir(), permissionMode: 'bypassPermissions' };
@@ -144,7 +170,7 @@ describe('mcp api', () => {
     const client = new Client({ name: 't', version: '0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${manager.tokenFor(id)}`, 'X-O8-Node': id } } }));
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'list_nodes', 'message_status', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'shutdown', 'spawn', 'write']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'list_nodes', 'message_status', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'shutdown', 'spawn', 'worktrees', 'write']);
     expect(tools.find((t) => t.name === 'spawn')!.inputSchema.required).toEqual(['kind', 'title', 'cwd']);
     const r = (await client.callTool({ name: 'report_outcome', arguments: { outcome: 'succeeded' } })) as { content: Array<{ text: string }> };
     expect(r.content[0].text).toBe('{"ok":true}');

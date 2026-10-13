@@ -1,0 +1,26 @@
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it, vi } from 'vitest';
+import { NodeMeta } from './Bits';
+import { worktreeCloses } from './Dialogs';
+import { mk } from './fixtures';
+
+vi.mock('./conn', () => ({ send: vi.fn() }));
+
+const wt = { repo: '/r', path: '/r/.claude/worktrees/n-3f2a9c1d', branch: 'o8/n-3f2a9c1d', base: 'main', baseSha: 'abc' };
+
+describe('worktree', () => {
+  it('the meta line leads with the branch, base in its title, and marks a missing tree', () => {
+    const html = renderToStaticMarkup(<NodeMeta node={{ ...mk('a', null, 0, { model: 'claude-opus-5-5' }), worktree: wt }} />);
+    expect(html).toMatch(/^<div class="meta"><span class="part"><span class="branch" title="branch o8\/n-3f2a9c1d from main">⎇ o8\/n-3f2a9c1d<\/span>/);
+    expect(html).not.toContain('missing');
+    expect(renderToStaticMarkup(<NodeMeta node={{ ...mk('a', null, 0), worktree: { ...wt, missing: true } }} />)).toContain('<span class="warn"');
+  });
+
+  it('the close dialog sends no worktree option for Close, keep for Keep branch, discard for Discard', () => {
+    expect(worktreeCloses('n1').map((c) => [c.label, c.msg])).toEqual([
+      ['Close', { t: 'close', id: 'n1' }],
+      ['Keep branch', { t: 'close', id: 'n1', worktree: 'keep' }],
+      ['Discard', { t: 'close', id: 'n1', worktree: 'discard' }],
+    ]);
+  });
+});

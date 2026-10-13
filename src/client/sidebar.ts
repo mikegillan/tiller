@@ -56,14 +56,16 @@ const glyph = (n: NodeView): Seg =>
   ({ working: ['36', '●'], blocked: ['33', '!'], waiting: ['33', '!'], done: ['32', '✓'] } as Record<string, Seg>)[n.status.state] ?? ['2', '·'];
 
 
-/** `opus 5.5 · high · ctx 42% (84k/200k) $0.42`; as the width shrinks, effort, token counts and cost go first. */
+/** `⎇ n-3f2a · opus 5.5 · high · ctx 42% (84k/200k) $0.42`; as the width shrinks, the branch goes first, then effort, token counts and cost. */
 export function meta(n: NodeView, w: number): Seg[] {
   const s = n.status, pct = s.contextPct;
   const model = shortModel(s.model ?? n.model), effort = s.effort ? shortEffort(s.effort) : '';
   const ctxColor = pct === undefined ? '' : { ok: '32', warn: '33', bad: '31' }[ctxLevel(pct)];
-  const build = (full: boolean, withEffort: boolean): Seg[] => {
+  const wt = n.worktree, branch = wt && `⎇ ${wt.branch.split('/').pop()!.slice(0, 6)}`;
+  const build = (full: boolean, withEffort: boolean, withBranch = false): Seg[] => {
     const segs: Seg[] = [];
     const add = (x: Seg) => { if (segs.length) segs.push(['2', ' · ']); segs.push(x); };
+    if (withBranch && branch) add([wt?.missing ? '33' : '2', branch]);
     if (model) add(['2', model]);
     if (withEffort && effort) add(['2', effort]);
     if (pct !== undefined) {
@@ -72,8 +74,8 @@ export function meta(n: NodeView, w: number): Seg[] {
     }
     return segs;
   };
-  const tries = [build(true, true), build(false, true), build(false, false)];
-  return tries.find((t) => len(t) <= w) ?? tries[2]!;
+  const tries = [build(true, true, true), build(true, true), build(false, true), build(false, false)];
+  return tries.find((t) => len(t) <= w) ?? tries[3]!;
 }
 
 const ACTIONS = BINDINGS.filter((b) => b.action.type === 'act' || b.action.type === 'help')

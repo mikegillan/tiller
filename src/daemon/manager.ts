@@ -2,15 +2,17 @@ import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { NEEDS_YOU_STATES, type AgentState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Role } from '../shared/protocol.js';
+import { dirname, join, resolve, sep } from 'node:path';
+import { NEEDS_YOU_STATES, type AgentState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Effort, type Isolation, type Role, type Worktree } from '../shared/protocol.js';
+import { loadConfig } from './config.js';
 import { homeDir } from './home.js';
-import { claudeLaunch, ensurePrompts, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
+import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { pruneIds } from '../shared/prune.js';
 import { flushInbox } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
 import { PtySession } from './pty.js';
 import { logError, safeEqual } from './util.js';
+import * as wt from './worktree.js';
 import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, turnComplete, type HookEvent } from './status.js';
 
 const MAX_PREVIOUS_SESSIONS = 10;
@@ -19,10 +21,43 @@ const SWEEP_MS = 60_000;
 const TRUST_WATCH_MS = 20_000;
 const TRUST_BLOCKED_ACTIVITY = 'Trust dialog: answer it in the terminal';
 const DEFAULT_SIZE = { cols: 120, rows: 40 };
+/** Main checkouts in which this daemon has created worktrees, so reconciliation finds them after a lost record. */
+const REPOS_FILE = 'worktree-repos.json';
+/** How long close waits for a killed worktree node to exit, so Claude's lock on the worktree belongs to a dead pid. */
+const EXIT_WAIT_MS = 3000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A node's state before any hook arrives: a Claude node is unknown until SessionStart; a terminal has no agent state. */
 const initialState = (kind: NodeKind): AgentState => (kind === 'claude' ? 'unknown' : 'none');
+const inside = (path: string, dir: string) => path === dir || path.startsWith(dir + sep);
+
+/** What stands between a node's worktree and its removal. */
+export interface WorktreeCheck { dirty: string[]; unmerged: string[]; sharing: string[] }
+
+const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+
+/**
+ * Why closing a worktree node must not go ahead, or undefined. Another live node working inside the tree always
+ * refuses; uncommitted files or unmerged commits refuse unless the close says keep or discard. Short and action first:
+ * the mux cuts it to 60 characters.
+ */
+export function closeRefusal(c: WorktreeCheck, mode?: 'keep' | 'discard'): string | undefined {
+  const unsafe = !mode && (c.dirty.length > 0 || c.unmerged.length > 0);
+  const sharing = c.sharing.length ? `in use by ${c.sharing.join(', ')}` : '';
+  if (!unsafe) return sharing ? `worktree ${sharing}; close those nodes first` : undefined;
+  const msg = `worktree kept: ${count(c.dirty.length, 'dirty file')}, ${count(c.unmerged.length, 'unmerged commit')}; close with keep or discard`;
+  return sharing ? `${msg}; ${sharing}` : msg;
+}
+
+export interface WorktreeReport {
+  nodes: { nodeId: string; title: string; repo: string; path: string; branch: string; base: string; missing?: boolean }[];
+  /** Worktrees with this daemon's marker but no node, left by a crash between creating the worktree and saving the record. */
+  orphans: { nodeId: string; repo: string; path: string; branch?: string; base: string; dirty: string[]; unmerged: string[]; error?: string }[];
+  /** <prefix>n-<hex> branches with neither a worktree nor a node, such as those kept by close with keep. */
+  kept: { repo: string; branch: string; unmerged: string[] }[];
+  /** What a clean removed, with the commits and uncommitted files that went with it. */
+  removed: { what: string; commits: string[]; files: string[] }[];
+}
 
 /**
  * Whether we may answer Claude's folder-trust dialog for `cwd`. Only when ~/.claude.json already
@@ -35,6 +70,14 @@ export function trustPolicy(cwd: string, claudeJson: unknown): 'auto' | 'manual'
     if (projects[dir]?.hasTrustDialogAccepted === true) return 'auto';
     if (dirname(dir) === dir) return 'manual';
   }
+}
+
+/**
+ * Whether `claude --worktree` will start in `repo`. Interactively it exits with "Workspace trust not yet accepted" unless
+ * trust is recorded for the repo itself: with 2.1.296 a trusted ancestor did not count when the repo had its own entry.
+ */
+export function trustedForWorktree(repo: string, claudeJson: unknown): boolean {
+  return (claudeJson as { projects?: Record<string, { hasTrustDialogAccepted?: unknown }> } | null)?.projects?.[repo]?.hasTrustDialogAccepted === true;
 }
 
 function readClaudeJson(): unknown {
@@ -54,9 +97,11 @@ export interface SpawnRequest {
   cwd: string;
   prompt?: string;
   model?: string;
+  effort?: Effort;
   permissionMode?: string;
   role?: Role;
   parentId?: string | null;
+  isolation?: Isolation;
 }
 
 export interface ManagerOptions {
@@ -94,6 +139,7 @@ export class NodeManager extends EventEmitter {
   private lastHookAt = new Map<string, number>();
   private sweepTimer: NodeJS.Timeout;
   private interruptTimers = new Map<string, NodeJS.Timeout>();
+  private closing = new Set<string>();
 
   constructor(opts: ManagerOptions = {}) {
     super();
@@ -158,10 +204,23 @@ export class NodeManager extends EventEmitter {
 
   // ---- lifecycle ----
 
+  /** The request's isolation, else the config default for a claude node whose role is worker or none. */
+  isolationFor(req: SpawnRequest): Isolation {
+    if (req.isolation) return req.isolation;
+    if (req.kind !== 'claude' || roleFor(req.role, req.parentId ?? null) === 'orchestrator') return 'none';
+    return loadConfig(req.cwd, this.home).worktrees.isolation;
+  }
+
+  /** Spawn a node without a worktree. A spawn that resolves to isolation "worktree" goes through spawnWorktree. */
   spawn(req: SpawnRequest): NodeView {
+    if (this.isolationFor(req) === 'worktree') throw new Error('a worktree spawn is asynchronous: call spawnWorktree');
+    const parentId = req.parentId ?? null;
+    // Unset model or effort: the config's value for the node's role (role none counts as worker), recorded so restart keeps it.
+    const defaults = req.kind === 'claude' ? loadConfig(req.cwd, this.home).roles[roleFor(req.role, parentId) === 'orchestrator' ? 'orchestrator' : 'worker'] : {};
+    const model = req.model ?? defaults.model, effort = req.effort ?? defaults.effort;
     const rec = this.registry.create({
-      parentId: req.parentId ?? null, kind: req.kind, title: req.title, cwd: req.cwd,
-      model: req.model, permissionMode: req.permissionMode, role: req.role,
+      parentId, kind: req.kind, title: req.title, cwd: req.cwd,
+      model, effort, permissionMode: req.permissionMode, role: req.role,
       sessionId: req.kind === 'claude' ? randomUUID() : undefined,
     });
     try {
@@ -175,12 +234,61 @@ export class NodeManager extends EventEmitter {
     return this.emitNode(rec.id)!;
   }
 
-  /** Relaunch an exited Claude node with `claude --resume`. Fails if the transcript is gone. */
-  resume(id: string): { ok: true } | { ok: false; error: string } {
+  /**
+   * Spawn a Claude node in its own worktree, <main checkout>/.claude/worktrees/<id> on branch <prefix><id>, branched
+   * from the HEAD of the checkout req.cwd is in. The repo must have a commit and be trusted by Claude. Any failure
+   * removes the worktree and branch and discards the record.
+   */
+  async spawnWorktree(req: SpawnRequest): Promise<NodeView> {
+    if (req.kind !== 'claude') throw new Error('isolation "worktree" is for claude nodes only');
+    const repo = await wt.mainCheckout(req.cwd);
+    const { base, baseSha } = await wt.headInfo(req.cwd);
+    if (!trustedForWorktree(repo, readClaudeJson())) throw new Error(`refusing isolation "worktree": Claude does not trust ${repo} yet; run claude once in ${repo} to trust it`);
+    const config = loadConfig(repo, this.home); // the main checkout's file, whichever branch req.cwd has checked out
+    const parentId = req.parentId ?? null;
+    const defaults = config.roles[roleFor(req.role, parentId) === 'orchestrator' ? 'orchestrator' : 'worker'];
+    const rec = this.registry.create({
+      parentId, kind: 'claude', title: req.title, cwd: req.cwd,
+      model: req.model ?? defaults.model, effort: req.effort ?? defaults.effort, permissionMode: req.permissionMode, role: req.role,
+      sessionId: randomUUID(),
+    });
+    const path = join(repo, wt.WORKTREES_DIR, rec.id);
+    const worktree: Worktree = { repo, path, branch: config.worktrees.branchPrefix + rec.id, base, baseSha };
+    this.registry.update(rec.id, { cwd: path, worktree });
+    let added = false;
+    try {
+      this.rememberRepo(repo); // first, so startup reconciliation looks here even if a crash loses the record
+      await wt.add(repo, path, worktree.branch, baseSha);
+      added = true;
+      await wt.writeMarker(path, { home: this.home, nodeId: rec.id, base, baseSha });
+      await wt.ensureExcluded(repo);
+      this.registry.flush(); // a crash from here on leaves a record, not an orphan
+      await wt.copyIncluded(repo, path, config.worktrees.include);
+      this.writeFiles(rec.id);
+      this.statuses.set(rec.id, { state: initialState('claude'), sessionId: rec.sessionId, changedAt: Date.now() });
+      this.launch(rec.id, req.prompt, false);
+    } catch (err) {
+      if (added) await wt.remove(repo, path, true).then(() => wt.deleteBranch(repo, worktree.branch)).catch(logError);
+      this.discard(rec.id);
+      throw err;
+    }
+    return this.emitNode(rec.id)!;
+  }
+
+  /** Relaunch an exited Claude node with `claude --resume`. Fails if the transcript or the node's worktree is gone. */
+  async resume(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
     const rec = this.registry.get(id);
     if (!rec) return { ok: false, error: 'No such node' };
     if (rec.kind !== 'claude') return { ok: false, error: 'Only Claude nodes can be resumed' };
     if (this.sessions.get(id)) return { ok: false, error: 'Node is still running' };
+    if (rec.worktree) {
+      // Without its worktree, claude --resume carries on in the main checkout with no isolation.
+      const w = rec.worktree;
+      const listed = existsSync(w.path) && (await wt.listWorktrees(w.repo).catch(() => [])).some((e) => e.path === w.path);
+      this.setMissing(id, !listed);
+      if (!listed) return { ok: false, error: 'worktree missing' };
+      if (this.sessions.get(id)) return { ok: false, error: 'Node is still running' };
+    }
     const status = this.statuses.get(id)!;
     const sessionId = status.sessionId ?? rec.sessionId;
     if (!sessionId) return { ok: false, error: 'No session to resume' };
@@ -210,6 +318,7 @@ export class NodeManager extends EventEmitter {
   restart(id: string): { ok: true } | { ok: false; error: string } {
     const rec = this.registry.get(id);
     if (!rec) return { ok: false, error: 'No such node' };
+    if (rec.worktree && !existsSync(rec.worktree.path)) return { ok: false, error: 'worktree missing' }; // --worktree would make a fresh one
     const old = this.statuses.get(id)?.sessionId ?? rec.sessionId;
     clearTimeout(this.interruptTimers.get(id));
     const s = this.sessions.get(id);
@@ -231,23 +340,95 @@ export class NodeManager extends EventEmitter {
     return { ok: true };
   }
 
-  /** Close and delete a node. A root (orchestrator) is refused unless `force`; use restart to clear one instead. */
-  close(id: string, force = false): void {
-    if (!force && this.registry.get(id)?.parentId === null) throw new Error('refusing to close an orchestrator: restart it instead, or force the close');
+  /**
+   * Close and delete a node. A root (orchestrator) is refused unless `force`; use restart to clear one instead.
+   * For a node that owns a worktree, `worktree` picks what happens to it: by default the close is refused, with the node
+   * left running, unless the tree is clean and its branch merged; "keep" commits any changes as WIP and keeps the branch;
+   * "discard" deletes both. Either way it is refused while another live node works inside the tree. Returns a note
+   * when a branch is kept.
+   */
+  async close(id: string, force = false, worktree?: 'keep' | 'discard'): Promise<string | undefined> {
+    const rec = this.registry.get(id);
+    if (!force && rec?.parentId === null) throw new Error('refusing to close an orchestrator: restart it instead, or force the close');
+    if (rec?.worktree) return this.closeWorktreeNode(id, rec.title, rec.worktree, worktree);
+    this.kill(id);
+    if (!this.registry.get(id)) return undefined;
+    this.discard(id);
+    this.emit('removed', id);
+    return undefined;
+  }
+
+  private async closeWorktreeNode(id: string, title: string, w: Worktree, mode?: 'keep' | 'discard'): Promise<string | undefined> {
+    if (this.closing.has(id)) throw new Error(`${id} is already closing`);
+    this.closing.add(id);
+    try {
+      const refusal = closeRefusal((await this.worktreeCheck(id))!, mode);
+      if (refusal) throw new Error(refusal);
+      const s = this.kill(id);
+      if (s && !s.exited) await new Promise<void>((done) => { s.onExit(() => done()); setTimeout(done, EXIT_WAIT_MS).unref(); });
+      let note: string | undefined;
+      try {
+        note = await this.removeWorktree(id, title, w, mode);
+      } catch (err) {
+        this.setStatus(id, { ...this.statuses.get(id)!, exited: true, activity: (err as Error).message, changedAt: Date.now() }, false);
+        throw err;
+      }
+      this.discard(id);
+      this.emit('removed', id);
+      return note;
+    } finally {
+      this.closing.delete(id);
+    }
+  }
+
+  /** Kill the node's process, if any, and forget it; returns the session it had. */
+  private kill(id: string): PtySession | undefined {
     const s = this.sessions.get(id);
     clearTimeout(this.interruptTimers.get(id));
     this.sessions.delete(id); // first, so the exit callback ignores it
     s?.kill();
-    if (!this.registry.get(id)) return;
-    this.discard(id);
-    this.emit('removed', id);
+    return s;
   }
 
-  /** Close every exited node with no live descendant; returns the removed ids. */
-  prune(): string[] {
-    const ids = pruneIds(this.list());
-    for (const id of ids) this.close(id, true); // exited only, so never a live orchestrator
-    return ids;
+  /** Close every exited node with no live descendant. A node whose worktree is not safe to remove is kept, with the reason. */
+  async prune(): Promise<{ removed: string[]; kept: { id: string; reason: string }[] }> {
+    const removed: string[] = [], kept: { id: string; reason: string }[] = [];
+    for (const id of pruneIds(this.list())) {
+      try {
+        await this.close(id, true); // exited only, so never a live orchestrator
+        removed.push(id);
+      } catch (err) {
+        kept.push({ id, reason: (err as Error).message });
+      }
+    }
+    return { removed, kept };
+  }
+
+  /** Uncommitted files, unmerged commits and other live nodes inside the node's worktree; undefined when it owns none. */
+  async worktreeCheck(id: string): Promise<WorktreeCheck | undefined> {
+    const w = this.registry.get(id)?.worktree;
+    if (!w) return undefined;
+    const sharing = this.registry.list().filter((n) => n.id !== id && this.sessions.has(n.id) && inside(n.cwd, w.path)).map((n) => n.id);
+    if (!existsSync(w.path)) return { dirty: [], unmerged: [], sharing }; // missing: close keeps an unmerged branch, so nothing is lost
+    const [dirty, unmerged] = await Promise.all([wt.dirtyFiles(w.path), wt.unmergedCommits(w.repo, w.branch, w.base, w.baseSha)]);
+    return { dirty, unmerged, sharing };
+  }
+
+  /**
+   * Reconcile worktrees with the registry, for every repo this daemon has used (or only the one `cwd` is in): drop git's
+   * entries for deleted directories, mark nodes whose worktree is missing, and list orphans and kept branches.
+   * clean "startup" removes orphans that are clean and have no commits; "safe" removes orphans and kept branches that are
+   * clean and merged; "force" removes them all. Nothing inside a live node's cwd is removed.
+   */
+  async worktrees(opts: { cwd?: string; clean?: 'startup' | 'safe' | 'force' } = {}): Promise<WorktreeReport> {
+    const repos = opts.cwd ? [await wt.mainCheckout(opts.cwd)]
+      : [...new Set([...this.knownRepos(), ...this.registry.list().flatMap((n) => (n.worktree ? [n.worktree.repo] : []))])];
+    const report: WorktreeReport = { nodes: [], orphans: [], kept: [], removed: [] };
+    for (const repo of repos) {
+      if (!existsSync(repo)) continue;
+      try { await this.reconcileRepo(repo, opts.clean, report); } catch (err) { if (opts.cwd) throw err; logError(err); }
+    }
+    return report;
   }
 
   rename(id: string, title: string): void {
@@ -347,7 +528,99 @@ export class NodeManager extends EventEmitter {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(join(dir, 'token'), token, { mode: 0o600 });
     writeFileSync(join(dir, 'hook-headers'), `Authorization: Bearer ${token}\nX-O8-Node: ${id}\n`, { mode: 0o600 }); // read by hook.sh via curl -H @file
-    writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token });
+    writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token, worktree: !!this.registry.get(id)?.worktree });
+  }
+
+  private async removeWorktree(id: string, title: string, w: Worktree, mode?: 'keep' | 'discard'): Promise<string | undefined> {
+    if (!existsSync(w.path)) {
+      await wt.prune(w.repo);
+      if (!(await wt.branchExists(w.repo, w.branch))) return undefined;
+      if (mode === 'discard' || (!mode && !(await wt.unmergedCommits(w.repo, w.branch, w.base, w.baseSha)).length)) {
+        await wt.deleteBranch(w.repo, w.branch);
+        return undefined;
+      }
+      return `worktree was missing; kept branch ${w.branch}`;
+    }
+    if (mode === 'keep' && (await wt.dirtyFiles(w.path)).length) {
+      await wt.git(w.path, ['add', '-A']);
+      await wt.git(w.path, ['commit', '-q', '--no-verify', '-m', `WIP: orchestr8 node "${title}" (${id})`]);
+    } else if (!mode) {
+      const c = (await this.worktreeCheck(id))!; // again: the agent may have written something before it died
+      if (c.dirty.length || c.unmerged.length) throw new Error(`worktree kept: changed during close (${c.dirty.length} uncommitted file(s), ${c.unmerged.length} unmerged commit(s))`);
+    }
+    await wt.unlockForRemoval(w.repo, w.path, id);
+    await wt.remove(w.repo, w.path, mode === 'discard');
+    if (mode === 'keep') return `kept branch ${w.branch}`;
+    await wt.deleteBranch(w.repo, w.branch); // merged (checked above) or discarded
+    return undefined;
+  }
+
+  private async reconcileRepo(repo: string, clean: 'startup' | 'safe' | 'force' | undefined, r: WorktreeReport): Promise<void> {
+    await wt.prune(repo);
+    const entries = await wt.listWorktrees(repo);
+    const live = (path: string) => this.registry.list().some((n) => this.sessions.has(n.id) && inside(n.cwd, path));
+    for (const e of entries.filter((x) => x.path.startsWith(join(repo, wt.WORKTREES_DIR) + sep))) {
+      const marker = await wt.readMarker(e.path);
+      if (!marker || marker.home !== this.home || this.registry.get(marker.nodeId)?.worktree) continue; // not ours, or a node's
+      const dirty = await wt.dirtyFiles(e.path);
+      // A detached orphan has no branch to compare; only force removes it.
+      const unmerged = e.branch ? await wt.unmergedCommits(repo, e.branch, marker.base, marker.baseSha) : ['(detached HEAD)'];
+      const safe = !dirty.length && !!e.branch && (clean === 'startup' ? !(await wt.hasCommits(repo, e.branch, marker.baseSha)) : !unmerged.length);
+      const orphan = { nodeId: marker.nodeId, repo, path: e.path, branch: e.branch, base: marker.base, dirty, unmerged };
+      if (clean && (clean === 'force' || safe) && !live(e.path)) {
+        try {
+          await wt.unlockForRemoval(repo, e.path, marker.nodeId);
+          await wt.remove(repo, e.path, clean === 'force');
+          if (e.branch) await wt.deleteBranch(repo, e.branch);
+          r.removed.push({ what: `worktree ${e.path}${e.branch ? ` and branch ${e.branch}` : ''}`, commits: unmerged, files: dirty });
+          continue;
+        } catch (err) {
+          r.orphans.push({ ...orphan, error: (err as Error).message });
+          continue;
+        }
+      }
+      r.orphans.push(orphan);
+    }
+    for (const n of this.registry.list()) {
+      if (n.worktree?.repo !== repo) continue;
+      this.setMissing(n.id, !entries.some((e) => e.path === n.worktree!.path));
+      const w = this.registry.get(n.id)!.worktree!;
+      r.nodes.push({ nodeId: n.id, title: n.title, repo, path: w.path, branch: w.branch, base: w.base, missing: w.missing });
+    }
+    const prefix = loadConfig(repo, this.home).worktrees.branchPrefix;
+    const used = new Set([...entries.flatMap((e) => (e.branch ? [e.branch] : [])), ...this.registry.list().flatMap((n) => (n.worktree ? [n.worktree.branch] : []))]);
+    const head = await wt.headInfo(repo);
+    for (const branch of await wt.branches(repo, prefix)) {
+      if (used.has(branch) || !/^n-[0-9a-f]{8}$/.test(branch.slice(prefix.length))) continue;
+      // The node and its recorded base are gone, so judge against the main checkout's HEAD.
+      const unmerged = await wt.unmergedCommits(repo, branch, 'HEAD', head.baseSha);
+      if (clean === 'force' || (clean === 'safe' && !unmerged.length)) {
+        await wt.deleteBranch(repo, branch);
+        r.removed.push({ what: `branch ${branch} in ${repo}`, commits: unmerged, files: [] });
+      } else {
+        r.kept.push({ repo, branch, unmerged });
+      }
+    }
+  }
+
+  private setMissing(id: string, missing: boolean): void {
+    const w = this.registry.get(id)?.worktree;
+    if (!w || !!w.missing === missing) return;
+    const { missing: _, ...rest } = w;
+    this.registry.update(id, { worktree: missing ? { ...rest, missing } : rest });
+    this.emitNode(id);
+  }
+
+  private knownRepos(): string[] {
+    try {
+      const v: unknown = JSON.parse(readFileSync(join(this.home, REPOS_FILE), 'utf8'));
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    } catch { return []; }
+  }
+
+  private rememberRepo(repo: string): void {
+    const repos = this.knownRepos();
+    if (!repos.includes(repo)) writeFileSync(join(this.home, REPOS_FILE), JSON.stringify([...repos, repo], null, 2));
   }
 
   private discard(id: string): void {
@@ -360,13 +633,15 @@ export class NodeManager extends EventEmitter {
 
   private launch(id: string, prompt: string | undefined, resume: boolean): void {
     const rec = this.registry.get(id)!;
+    const owner = rec.worktree ? undefined : this.registry.list().find((n) => n.id !== id && n.worktree && this.sessions.has(n.id) && inside(rec.cwd, n.worktree.path));
     const input: LaunchInput = {
       nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path,
       title: rec.title, parentId: rec.parentId, home: this.home, cwd: rec.cwd, role: rec.role, sessionId: this.statuses.get(id)?.sessionId ?? rec.sessionId ?? '',
-      resume, prompt, model: rec.model, permissionMode: rec.permissionMode,
+      resume, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id,
     };
     const spec: LaunchSpec = rec.kind === 'claude' ? claudeLaunch(input) : terminalLaunch(input, this.shell);
-    const s = PtySession.spawn({ ...spec, cwd: rec.cwd, ...DEFAULT_SIZE });
+    const cwd = rec.worktree?.repo ?? rec.cwd; // claude adopts the worktree itself through --worktree, or re-enters it on --resume
+    const s = PtySession.spawn({ ...spec, cwd, ...DEFAULT_SIZE });
     this.sessions.set(id, s);
     s.onData((d) => this.emit('data', id, d));
     s.onExit(() => {
@@ -377,7 +652,7 @@ export class NodeManager extends EventEmitter {
       this.setStatus(id, ptyExited(prev, Date.now()), false);
       this.emit('notify', { id, kind: 'exited', title: rec.title } satisfies NotifyEvent);
     });
-    if (rec.kind === 'claude') this.watchTrust(id, s, rec.cwd).catch(logError);
+    if (rec.kind === 'claude') this.watchTrust(id, s, cwd).catch(logError);
   }
 
   /**

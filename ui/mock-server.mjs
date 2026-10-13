@@ -1,6 +1,7 @@
 // Fake daemon for developing the UI without the real one. Token: "mock".
 //   node ui/mock-server.mjs            ws on :7789; also serves ui/dist at http://127.0.0.1:7789/?k=mock when it has been built
 // Mutations (spawn, close, restart, rename, resume, prune, select) work in memory; a confirm request arrives 15 s after connecting.
+// spawn with isolation "worktree" fakes a worktree; a plain close of a worktree node whose title contains "dirty" is refused, as the daemon would.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
@@ -30,6 +31,7 @@ add('o8-css', 'o8-ui', 'css review', '/Users/scott/workspace/orchestr8/ui', 'cla
 add('o8-sh', 'o8-ui', 'shell', '/Users/scott/workspace/orchestr8/ui', 'terminal', { ago: 40 * MIN });
 add('o8-test', 'o8', 'tests', '/Users/scott/workspace/orchestr8', 'claude', { ...SONNET, state: 'blocked', ago: 90_000, activity: 'needs approval: Bash: rm -rf node_modules && npm ci && npm test -- --run ui', contextPct: 23, contextTokens: 46_000, contextWindow: 200_000, costUsd: 0.31 }, { unread: true });
 add('o8-d', 'o8', 'daemon', '/Users/scott/workspace/orchestr8', 'claude', { ...OPUS, state: 'done', ago: 25 * MIN, contextPct: 86, contextTokens: 172_000, contextWindow: 200_000, costUsd: 6.9, lastAssistantMessage: 'The daemon now serves ui/dist and reports /health. All 214 tests pass.' });
+add('o8-wt', 'o8', 'worktree gone', '/Users/scott/workspace/orchestr8/.claude/worktrees/o8-wt', 'claude', { ...SONNET, state: 'done', exited: true, ago: 50 * MIN }, { worktree: { repo: '/Users/scott/workspace/orchestr8', path: '/Users/scott/workspace/orchestr8/.claude/worktrees/o8-wt', branch: 'o8/o8-wt', base: 'main', baseSha: '6977f01', missing: true } });
 add('o8-spike', 'o8', 'spike: tauri', '/Users/scott/workspace/orchestr8', 'claude', { ...SONNET, state: 'done', exited: true, ago: 5 * 3600_000, contextPct: 55, contextTokens: 110_000, contextWindow: 200_000, costUsd: 2.05, lastAssistantMessage: 'Tauri wraps the same ui/dist; WKWebView needs the DOM renderer.' });
 
 // Session 2: another project.
@@ -87,11 +89,13 @@ wss.on('connection', (ws) => {
       case 'rename': if (n) { n.title = m.title; broadcast({ t: 'node', node: n }); } break;
       case 'resume': if (n) touch(n, { exited: false, state: n.kind === 'terminal' ? 'none' : 'working' }); break;
       case 'restart': if (n) touch(n, { exited: false, state: n.kind === 'terminal' ? 'none' : 'unknown', activity: 'restarting', contextPct: 0, contextTokens: 0, costUsd: 0, lastAssistantMessage: undefined }); break;
-      case 'close': if (n) { nodes.delete(m.id); broadcast({ t: 'removed', id: m.id }); } break;
+      case 'close': if (n?.worktree && !m.worktree && n.title.includes('dirty')) send({ t: 'error', id: m.id, message: 'worktree has 2 uncommitted files and 1 unmerged commit; close with keep or discard' });
+        else if (n) { nodes.delete(m.id); broadcast({ t: 'removed', id: m.id }); } break;
       case 'prune': for (const x of [...nodes.values()]) if (x.status.exited && ![...nodes.values()].some((c) => c.parentId === x.id)) { nodes.delete(x.id); broadcast({ t: 'removed', id: x.id }); } break;
       case 'spawn': {
         const id = `n${nodes.size + 1}${Date.now() % 1000}`;
-        add(id, m.parentId ?? null, m.title, m.cwd, m.kind, { model: m.model ?? 'claude-sonnet-5-5' }, m.role ? { role: m.role } : {});
+        const worktree = m.isolation === 'worktree' && { repo: m.cwd, path: `${m.cwd}/.claude/worktrees/${id}`, branch: `o8/${id}`, base: 'main', baseSha: '6977f01' };
+        add(id, m.parentId ?? null, m.title, worktree ? worktree.path : m.cwd, m.kind, { model: m.model ?? 'claude-sonnet-5-5' }, { ...(m.role && { role: m.role }), ...(worktree && { worktree }) });
         broadcast({ t: 'node', node: nodes.get(id) });
         break;
       }

@@ -7,10 +7,11 @@ import { join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { NODE_KINDS, ROLES, type NodeView } from '../shared/protocol.js';
+import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type NodeView } from '../shared/protocol.js';
 import { treeOrder } from '../shared/tree.js';
+import { loadConfig } from './config.js';
 import { ADMIN_TOKEN_FILE } from './home.js';
-import type { NodeManager } from './manager.js';
+import { closeRefusal, type NodeManager, type WorktreeReport } from './manager.js';
 import { deliver, HUMAN, inScope, isDescendant, messageStatus, startNotices } from './messaging.js';
 import { logError, PREVIEW_CHARS, readBody, safeEqual } from './util.js';
 
@@ -37,6 +38,7 @@ function summarize(v: NodeView, now: number) {
     age: fmtAge(now - v.createdAt), activity: v.status.activity, lastAssistantMessage: v.status.lastAssistantMessage?.slice(0, PREVIEW_CHARS),
     outcome: outcomes.get(v.id),
     model: v.status.model, effort: v.status.effort, contextPct: v.status.contextPct, contextTokens: v.status.contextTokens, contextWindow: v.status.contextWindow, costUsd: v.status.costUsd,
+    worktree: v.worktree && { path: v.worktree.path, branch: v.worktree.branch, base: v.worktree.base, missing: !!v.worktree.missing },
   };
 }
 
@@ -48,11 +50,24 @@ function modelInfo(n: ReturnType<typeof summarize>): string {
 function tree(nodes: ReturnType<typeof summarize>[]): string {
   return treeOrder(nodes).map(({ node: n, depth }) => {
     const extra = [...n.flags, n.activity].filter(Boolean).join(', ');
-    return `${'  '.repeat(depth)}- ${n.id} "${n.title}" [${n.kind}] ${n.state}${extra ? ` (${extra})` : ''} ${n.age}${modelInfo(n)}`;
+    const branch = n.worktree ? ` ⎇ ${n.worktree.branch}${n.worktree.missing ? ' (worktree missing)' : ''}` : '';
+    return `${'  '.repeat(depth)}- ${n.id} "${n.title}" [${n.kind}] ${n.state}${extra ? ` (${extra})` : ''} ${n.age}${modelInfo(n)}${branch}`;
   }).join('\n') || '(no nodes)';
 }
 
 /** One user/assistant transcript entry as text; tool calls become a one-line marker, tool results vanish. */
+/** `o8 worktrees` output: one section per kind, with the commits and files a clean removed. */
+function worktreeText(r: WorktreeReport): string {
+  const unmerged = (n: number) => (n ? `, ${n} unmerged commit(s)` : '');
+  const out = [
+    ...r.nodes.map((n) => `node ${n.nodeId} "${n.title}" ${n.branch} from ${n.base} at ${n.path}${n.missing ? ' (missing)' : ''}`),
+    ...r.orphans.map((o) => `orphan ${o.path} ${o.branch ?? '(detached)'} from ${o.base}${o.dirty.length ? `, ${o.dirty.length} uncommitted file(s)` : ''}${unmerged(o.unmerged.length)}${o.error ? ` (not removed: ${o.error})` : ''}`),
+    ...r.kept.map((k) => `kept branch ${k.branch} in ${k.repo}${unmerged(k.unmerged.length)}`),
+    ...r.removed.flatMap((x) => [`removed ${x.what}`, ...x.commits.map((c) => `  commit ${c}`), ...x.files.map((f) => `  file ${f}`)]),
+  ];
+  return out.join('\n') || '(no orchestr8 worktrees)';
+}
+
 function renderEntry(line: string): string | undefined {
   let e: { type?: string; message?: { content?: unknown } };
   try { e = JSON.parse(line); } catch { return undefined; }
@@ -95,7 +110,7 @@ const spawned = new Map<string, { args: string; result: unknown; at: number }>()
 
 const tools = {
   list_nodes: tool(
-    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, and the outcome it reported through report_outcome, if any. Use it to find node ids before calling send, read or close.`,
+    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any, and for a node with its own git worktree, worktree { path, branch, base, missing }. Use it to find node ids before calling send, read or close.`,
     {},
     async (c) => {
       const nodes = c.manager.list().filter((v) => inScope(c.manager, c.caller, v.id)).map((v) => summarize(v, Date.now()));
@@ -103,10 +118,10 @@ const tools = {
     }),
 
   spawn: tool(
-    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error.',
+    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `model` and `effort` to use the defaults for the role from the project config, if any. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. isolation "worktree" (claude nodes only) gives the child its own git worktree at <main checkout>/.claude/worktrees/<id> on a new branch from the HEAD of the checkout `cwd` is in, which needs a repo with a commit that Claude already trusts, and the reply then carries worktree { path, branch, base }. Omitting isolation uses the project config (default "none"), so a child whose cwd is inside an existing worktree shares that tree. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error.',
     {
       kind: z.enum(NODE_KINDS), title: z.string().min(1), cwd: z.string().min(1), prompt: z.string().optional(),
-      model: z.string().optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), role: z.enum(ROLES).optional(), requestId: z.string().optional(),
+      model: z.string().optional(), effort: z.enum(EFFORTS).optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), role: z.enum(ROLES).optional(), isolation: z.enum(ISOLATIONS).optional(), requestId: z.string().optional(),
     },
     async (c, { requestId, ...req }) => {
       if (req.permissionMode === 'bypassPermissions' && c.caller !== HUMAN) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
@@ -122,8 +137,10 @@ const tools = {
       const caller = c.caller === HUMAN ? undefined : c.manager.view(c.caller);
       const inherited = caller?.status.permissionMode ?? caller?.permissionMode;
       const permissionMode = req.permissionMode ?? (inherited === 'bypassPermissions' ? undefined : inherited); // bypass stays human-only
-      const view = c.manager.spawn({ ...req, permissionMode, parentId: c.caller === HUMAN ? null : c.caller });
-      const result = { nodeId: view.id };
+      const r = { ...req, permissionMode, parentId: c.caller === HUMAN ? null : c.caller };
+      const view = c.manager.isolationFor(r) === 'worktree' ? await c.manager.spawnWorktree(r) : c.manager.spawn(r);
+      const w = view.worktree;
+      const result = w ? { nodeId: view.id, worktree: { path: w.path, branch: w.branch, base: w.base } } : { nodeId: view.id };
       if (requestId) spawned.set(key, { args, result, at: now });
       return { data: result };
     }),
@@ -174,20 +191,36 @@ const tools = {
     }),
 
   close: tool(
-    'Close and delete nodes. Every id must exist and be a descendant of yours, otherwise the whole batch is refused and nothing is closed. Orchestrators (root nodes) cannot be closed by agents. The human approves the batch once in the UI; if they decline you get {ok:false, reason:"denied"}.',
-    { nodeIds: z.array(z.string().min(1)).min(1), force: z.boolean().optional() },
+    'Close and delete nodes. Every id must exist and be a descendant of yours, otherwise the whole batch is refused and nothing is closed. Orchestrators (root nodes) cannot be closed by agents. The human approves the batch once in the UI; if they decline you get {ok:false, reason:"denied"}. The project config (closeWithoutConfirm in .orchestr8/config.json) can skip that approval: "always" skips it, "done" skips it when every node in the batch is done or has exited, and the default "never" always asks. A node with its own git worktree closes only when the tree is clean, its branch is merged and no other live node works in it; otherwise the batch is refused, nothing is closed, and the error says why. `worktree` decides instead for the whole batch: "keep" commits uncommitted changes as a WIP commit and keeps the branch, "discard" deletes the worktree and branch with any unmerged work, and always needs the human\'s approval.',
+    { nodeIds: z.array(z.string().min(1)).min(1), force: z.boolean().optional(), worktree: z.enum(['keep', 'discard']).optional() },
     async (c, a) => {
       const views = a.nodeIds.map((id) => requireOwned(c, id, false));
       for (const v of views) {
         if (v.parentId !== null) continue; // only the human gets here with a root: requireOwned refuses agents
         if (!a.force) throw new Error(`refusing to close an orchestrator; use o8 kill --force ${v.id}`);
       }
+      // Refusals come before the confirm and before closeWithoutConfirm: no setting turns a refused close into a close.
+      const destroys: string[] = [];
+      for (const v of views) {
+        const check = await c.manager.worktreeCheck(v.id);
+        if (!check) continue;
+        const refusal = closeRefusal(check, a.worktree);
+        if (refusal) throw new Error(views.length > 1 ? `${v.id}: ${refusal}` : refusal);
+        if (a.worktree === 'discard') destroys.push(`${v.title}: discards ${check.unmerged.length} commit(s) and ${check.dirty.length} changed file(s) on ${v.worktree!.branch}`);
+      }
       const list = views.map((v) => `${v.title} (${v.id})`).join(', ');
-      if (c.caller !== HUMAN && !(await c.confirm(`${who(c)} wants to close ${views.length} node(s): ${list}`))) {
+      const mode = c.caller === HUMAN ? undefined : loadConfig(c.manager.view(c.caller)!.cwd, c.manager.home).closeWithoutConfirm;
+      const preapproved = a.worktree !== 'discard' && (mode === 'always' || (mode === 'done' && views.every((v) => v.status.exited || v.status.state === 'done')));
+      const text = `${who(c)} wants to close ${views.length} node(s): ${list}${destroys.length ? `. This deletes their worktrees: ${destroys.join('; ')}` : ''}`;
+      if (c.caller !== HUMAN && !preapproved && !(await c.confirm(text))) {
         return { data: { ok: false, reason: 'denied' } };
       }
-      for (const id of a.nodeIds) c.manager.close(id, true); // roots were vetted above
-      return { data: { ok: true, closed: a.nodeIds } };
+      const notes: string[] = [];
+      for (const id of a.nodeIds) {
+        const note = await c.manager.close(id, true, a.worktree); // roots were vetted above
+        if (note) notes.push(`${id}: ${note}`);
+      }
+      return { data: { ok: true, closed: a.nodeIds, ...(notes.length ? { notes } : {}) } };
     }),
 
   resume: tool(
@@ -195,13 +228,13 @@ const tools = {
     { nodeId: z.string().min(1) },
     async (c, a) => {
       if (c.caller !== HUMAN) throw new Error('resume is only for the human');
-      const r = c.manager.resume(a.nodeId);
+      const r = await c.manager.resume(a.nodeId);
       if (!r.ok) throw new Error(r.error);
       return { data: { ok: true } };
     }),
 
   restart: tool(
-    'Restart a node: kill its process and relaunch it with a fresh session, which clears its context. Its title, directory, model and children are kept. Only the human may call this.',
+    'Restart a node: kill its process and relaunch it with a fresh session, which clears its context. Its title, directory, model, effort and children are kept. Only the human may call this.',
     { nodeId: z.string().min(1) },
     async (c, a) => {
       if (c.caller !== HUMAN) throw new Error('restart is only for the human');
@@ -211,12 +244,22 @@ const tools = {
     }),
 
   prune: tool(
-    'Remove every exited node that has no live descendant (files and records). Only the human may call this.',
+    'Remove every exited node that has no live descendant (files and records). A node whose git worktree has uncommitted or unmerged work is kept and listed. Only the human may call this.',
     {},
     async (c) => {
       if (c.caller !== HUMAN) throw new Error('prune is only for the human');
-      const removed = c.manager.prune();
-      return { text: `removed ${removed.length} exited node(s)`, data: { ok: true, removed } };
+      const { removed, kept } = await c.manager.prune();
+      const keptText = kept.length ? `; kept ${kept.length} node(s) with worktree work:\n${kept.map((k) => `  ${k.id}: ${k.reason}`).join('\n')}` : '';
+      return { text: `removed ${removed.length} exited node(s)${keptText}`, data: { ok: true, removed, kept } };
+    }),
+
+  worktrees: tool(
+    'List orchestr8 git worktrees for the repo `cwd` is in (all known repos when omitted): node worktrees, orphans (a worktree with no node) and kept branches. clean "safe" removes the orphans and kept branches that are clean and merged; "force" removes all of them and reports the commits and files that went. Only the human may call this.',
+    { cwd: z.string().min(1).optional(), clean: z.enum(['safe', 'force']).optional() },
+    async (c, a) => {
+      if (c.caller !== HUMAN) throw new Error('worktrees is only for the human');
+      const r = await c.manager.worktrees(a);
+      return { text: worktreeText(r), data: r };
     }),
 
   select: tool(

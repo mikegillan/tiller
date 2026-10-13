@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { loadConfig } from './config.js';
 import { promptPath } from './launch.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
 import { findDaemon, pickOrchestrator, startDaemon } from './up.js';
@@ -14,18 +15,23 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 [up|app] [--new] [--title T] [--prompt P]        start daemon if needed; open the app on (or create) this directory's orchestrator
   o8 mux [--new] [--title T] [--prompt P]             the same, in the terminal multiplexer (also: o8-mux)
   o8 status | stop                                    show or stop the daemon (o8d runs it in the foreground)
-  o8 new <title> [--cwd P] [--model M] [--prompt T] [--role R]  start a Claude node and attach to it in the terminal
+  o8 new <title> [--cwd P] [--model M] [--effort E] [--prompt T] [--role R] [--worktree]  start a Claude node and attach to it in the terminal
   o8 ps | list                                        show nodes
   o8 attach <id>                                      open the sidebar client on a node (Ctrl-\\ ? for keys)
   o8 select <id>                                      show a node in the app (opens the app if it is built)
   o8 resume <id>                                      relaunch an exited Claude node
   o8 prune                                            remove every exited node that has no live descendant
   o8 restart <id>                                     relaunch a node with a fresh session (clears its context; children are kept)
-  o8 kill [--force] <id...> | close <id...>           close and delete nodes (an orchestrator needs --force)
+  o8 kill [--force] [--keep-branch|--discard] <id...> | close <id...>  close and delete nodes (an orchestrator needs --force);
+                                                      a node's worktree must be clean and merged unless --keep-branch
+                                                      (commit as WIP, keep the branch) or --discard (delete both)
   o8 send <id> "text"
   o8 read <id> [summary|transcript|terminal] [--lines N]
-  o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--permission-mode M] [--role orchestrator|worker|none] [--request-id ID]
+  o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--request-id ID]
   o8 prompts                                          show the role prompt files and any override for this directory
+  o8 config [--cwd P]                                 show the effective config for a directory and which file each key came from
+  o8 worktrees [--cwd P]                              list node worktrees, orphans and kept branches for this repo
+  o8 worktrees clean [--force] [--cwd P]              remove orphans and kept branches that are clean and merged; --force removes all
   o8 help`;
 
 const fail = (msg: string): never => { console.error(msg); process.exit(1); };
@@ -63,10 +69,13 @@ const [cmd, ...rest] = argv[0]?.startsWith('-') ? ['up', ...argv] : argv; // `o8
 const { values: f, positionals: pos } = parseArgs({
   args: rest, allowPositionals: true,
   options: {
-    kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' },
+    kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
     'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
+    worktree: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' },
   },
 });
+
+const isolation = () => (f.worktree ? 'worktree' : undefined);
 
 switch (cmd) {
   case 'list': await call('list_nodes', {}); break;
@@ -79,7 +88,7 @@ switch (cmd) {
     break;
   case 'new': {
     if (!pos[0]) fail(usage());
-    const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, role: f.role }, false);
+    const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, effort: f.effort, role: f.role, isolation: isolation() }, false);
     process.exit(await mux(data.nodeId, { port: daemonPort(), token: adminToken() }));
     break;
   }
@@ -89,6 +98,17 @@ switch (cmd) {
       console.log(`${r}: ${path}${override ? ' (repo override)' : ''}`);
     }
     break;
+  case 'config': {
+    const c = loadConfig(realpathSync(resolve(f.cwd ?? process.cwd())), home);
+    const { orchestrator: o, worker: w } = c.roles;
+    const values = {
+      'roles.orchestrator.model': o.model, 'roles.orchestrator.effort': o.effort, 'roles.worker.model': w.model, 'roles.worker.effort': w.effort,
+      closeWithoutConfirm: c.closeWithoutConfirm,
+      'worktrees.isolation': c.worktrees.isolation, 'worktrees.branchPrefix': c.worktrees.branchPrefix, 'worktrees.include': c.worktrees.include?.join(', ') ?? '(.worktreeinclude)',
+    };
+    for (const [k, v] of Object.entries(values)) console.log(`${k}: ${v ?? '(claude default)'}  [${c.sources[k as keyof typeof values]}]`);
+    break;
+  }
   case 'select':
     if (!pos[0]) fail(usage());
     await call('select', { nodeId: pos[0] }, false);
@@ -108,7 +128,7 @@ switch (cmd) {
     break;
   }
   case 'spawn':
-    await call('spawn', { kind: f.kind, title: f.title, cwd: f.cwd ?? process.cwd(), prompt: f.prompt, model: f.model, permissionMode: f['permission-mode'], role: f.role, requestId: f['request-id'] });
+    await call('spawn', { kind: f.kind, title: f.title, cwd: f.cwd ?? process.cwd(), prompt: f.prompt, model: f.model, effort: f.effort, permissionMode: f['permission-mode'], role: f.role, isolation: isolation(), requestId: f['request-id'] });
     break;
   case 'send':
     if (pos.length < 2) fail(usage());
@@ -121,7 +141,12 @@ switch (cmd) {
   case 'close':
   case 'kill':
     if (!pos.length) fail(usage());
-    await call('close', { nodeIds: pos, force: f.force });
+    if (f['keep-branch'] && f.discard) fail('--keep-branch and --discard exclude each other');
+    await call('close', { nodeIds: pos, force: f.force, worktree: f['keep-branch'] ? 'keep' : f.discard ? 'discard' : undefined });
+    break;
+  case 'worktrees':
+    if (pos[0] && pos[0] !== 'clean') fail(usage());
+    await call('worktrees', { cwd: realpathSync(resolve(f.cwd ?? process.cwd())), clean: pos[0] ? (f.force ? 'force' : 'safe') : undefined });
     break;
   case undefined:
   case 'up':

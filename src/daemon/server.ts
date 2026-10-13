@@ -7,7 +7,7 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
-import { NODE_KINDS, ROLES, type ClientMessage, type ServerMessage } from '../shared/protocol.js';
+import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type ClientMessage, type ServerMessage } from '../shared/protocol.js';
 import { DEFAULT_PORT } from './home.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
 import { mountMcp } from './mcp.js';
@@ -38,9 +38,10 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('select'), id }),
   z.object({
     t: z.literal('spawn'), kind: z.enum(NODE_KINDS), title: z.string().min(1), cwd: z.string().min(1),
-    prompt: z.string().optional(), model: z.string().optional(), role: z.enum(ROLES).optional(), parentId: z.string().nullable().optional(),
+    prompt: z.string().optional(), model: z.string().optional(), effort: z.enum(EFFORTS).optional(), role: z.enum(ROLES).optional(), parentId: z.string().nullable().optional(),
+    isolation: z.enum(ISOLATIONS).optional(),
   }),
-  z.object({ t: z.literal('close'), id, force: z.boolean().optional() }),
+  z.object({ t: z.literal('close'), id, force: z.boolean().optional(), worktree: z.enum(['keep', 'discard']).optional() }),
   z.object({ t: z.literal('restart'), id }),
   z.object({ t: z.literal('resume'), id }),
   z.object({ t: z.literal('prune') }),
@@ -99,19 +100,24 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       case 'resize': manager.resize(m.id, m.cols, m.rows); return;
       case 'visibility': c.focused = m.focused; return;
       case 'select': c.selected = m.id; manager.select(m.id); return;
-      case 'spawn': manager.spawn({ kind: m.kind, title: m.title, cwd: m.cwd, prompt: m.prompt, model: m.model, role: m.role, parentId: m.parentId }); return;
-      case 'close': manager.close(m.id, m.force); return;
+      case 'spawn': {
+        const req = { kind: m.kind, title: m.title, cwd: m.cwd, prompt: m.prompt, model: m.model, effort: m.effort, role: m.role, parentId: m.parentId, isolation: m.isolation };
+        if (manager.isolationFor(req) === 'worktree') await manager.spawnWorktree(req);
+        else manager.spawn(req);
+        return;
+      }
+      case 'close': await manager.close(m.id, m.force, m.worktree); return;
       case 'restart': {
         const r = manager.restart(m.id);
         if (!r.ok) sendTo(c, { t: 'error', message: r.error, id: m.id });
         return;
       }
       case 'resume': {
-        const r = manager.resume(m.id);
+        const r = await manager.resume(m.id);
         if (!r.ok) sendTo(c, { t: 'error', message: r.error, id: m.id });
         return;
       }
-      case 'prune': manager.prune(); return;
+      case 'prune': await manager.prune(); return;
       case 'rename': manager.rename(m.id, m.title); return;
       case 'confirm': pendingConfirms.get(m.confirmId)?.(m.ok); return;
     }
