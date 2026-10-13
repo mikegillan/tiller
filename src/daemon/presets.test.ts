@@ -49,7 +49,7 @@ describe('presets', () => {
     const home = tmp();
     ensurePresets(home);
     expect(readFileSync(join(home, 'agents', 'reviewer.md'), 'utf8')).toBe(DEFAULT_PRESETS.reviewer);
-    expect(loadPreset('reviewer', home, home)).toMatchObject({ permissionMode: 'plan', disallowedTools: ['Edit', 'Write', 'NotebookEdit'], isolation: 'none', effort: 'medium' });
+    expect(loadPreset('reviewer', home, home)).toMatchObject({ permissionMode: 'default', disallowedTools: ['Edit', 'Write', 'NotebookEdit'], isolation: 'none', effort: 'medium' });
     expect(loadPreset('researcher', home, home).tools).toEqual(['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch']);
     writeFileSync(join(home, 'agents', 'reviewer.md'), 'mine');
     ensurePresets(home);

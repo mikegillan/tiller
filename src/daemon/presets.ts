@@ -78,11 +78,13 @@ export function listPresets(cwd: string, home: string): (Preset | { name: string
   return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// The reviewer is not in plan mode: plan mode asks the human before every orchestr8 MCP call, report_outcome included,
+// even when settings or --allowedTools allow it. Without Edit and Write, default mode still asks before any shell write.
 export const DEFAULT_PRESETS = {
   reviewer: `---
 name: reviewer
 description: Reviews a worker's branch or diff against its brief, runs the checks and reports findings without fixing anything.
-permissionMode: plan
+permissionMode: default
 disallowedTools: Edit, Write, NotebookEdit
 isolation: none
 effort: medium
