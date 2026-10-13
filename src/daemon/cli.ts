@@ -162,7 +162,7 @@ switch (cmd) {
   case 'prompts':
     for (const r of ['orchestrator', 'worker'] as const) {
       const { path, override } = promptPath(home, realpathSync(process.cwd()), r);
-      console.log(`${r}: ${path}${override ? ' (repo override)' : ''}`);
+      console.log(`${r}: ${path ?? 'built-in'}${override ? ' (repo override)' : ''}`);
     }
     break;
   case 'presets':
