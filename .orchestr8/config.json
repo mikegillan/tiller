@@ -1,7 +1,18 @@
 {
   "roles": {
-    "orchestrator": { "model": "claude-mythos-5-1", "effort": "high" },
-    "worker": { "model": "claude-opus-5-5", "effort": "medium" }
+    "orchestrator": {
+      "model": "claude-mythos-5-1",
+      "effort": "high"
+    },
+    "worker": {
+      "model": "claude-opus-5-5",
+      "effort": "medium"
+    }
   },
-  "closeWithoutConfirm": "done"
+  "closeWithoutConfirm": "done",
+  "gate": {
+    "command": "node_modules/.bin/tsc --noEmit && node_modules/.bin/tsc --noEmit -p ui/tsconfig.json && node_modules/.bin/vitest run",
+    "retries": 2,
+    "timeoutMinutes": 10
+  }
 }
