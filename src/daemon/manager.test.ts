@@ -120,8 +120,9 @@ describe('NodeManager runtime state', () => {
     m.applyHook(id, { hook_event_name: 'UserPromptSubmit' });
     m.applyHook(id, { hook_event_name: 'Stop' }); // done: unread
     m.setOutcome(id, { outcome: 'succeeded', at: Date.now() });
-    m.input(id, '\x1b'); // arms the interrupt timer
-    expect(m.runtimes.get(id)).toMatchObject({ unread: true, outcome: { outcome: 'succeeded' } });
+    m.applyHook(id, { hook_event_name: 'UserPromptSubmit' });
+    m.input(id, '\x1b'); // Esc while working arms the interrupt timer
+    expect(m.runtimes.get(id)).toMatchObject({ unread: true, outcome: { outcome: 'succeeded' }, interruptTimer: expect.anything() });
     await m.close(id, true);
     expect([...m.runtimes.keys()]).toEqual([]);
   });

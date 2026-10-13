@@ -38,7 +38,7 @@ export function checkDeps(m: Mgr, p: Pending, since: number): { met: string[]; u
 // ---- arming, the queue and release ----
 
 /** Claude nodes working now, or launched with a prompt whose first turn has not begun. */
-export function workingCount(m: NodeManager): number {
+function workingCount(m: NodeManager): number {
   const working = (rt?: NodeRuntime) => !!rt && (!!rt.starting || (!!rt.session && rt.status?.state === 'working'));
   return m.registry.list().filter((n) => n.kind === 'claude' && working(m.runtimes.get(n.id))).length;
 }
@@ -72,7 +72,7 @@ export function scheduleSoon(m: NodeManager): void {
  * Walk the armed and queued nodes in creation order: show what each waits on, tell the parent once when a failed
  * dependency blocks one, and launch each whose dependencies are met while daemon.maxWorking has room.
  */
-export function schedule(m: NodeManager): void {
+function schedule(m: NodeManager): void {
   if (m.stopped) return;
   let working = workingCount(m);
   for (const rec of m.registry.list()) {

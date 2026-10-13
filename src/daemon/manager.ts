@@ -142,7 +142,7 @@ export class NodeManager extends EventEmitter {
   /** PATH handed to children. */
   readonly path: string;
   /** Set by shutdown: the live set is then frozen, so the PTYs' exits do not empty it. */
-  stopped = false;
+  private shutDown = false;
   private shell: string;
   private secret: Buffer;
   private sweepTimer: NodeJS.Timeout;
@@ -642,7 +642,7 @@ export class NodeManager extends EventEmitter {
    * `clearLive` (an explicit stop: do not come back).
    */
   shutdown(opts: { clearLive?: boolean } = {}): void {
-    this.stopped = true;
+    this.shutDown = true;
     if (opts.clearLive) this.registry.setLive([]);
     clearInterval(this.sweepTimer);
     for (const rt of this.runtimes.values()) {
@@ -657,6 +657,9 @@ export class NodeManager extends EventEmitter {
 
   // ---- internals; worktree-lifecycle.ts and deps.ts call the ones not marked private ----
 
+  /** Whether shutdown has run. */
+  get stopped(): boolean { return this.shutDown; }
+
   nodeDir(id: string): string { return join(this.home, 'nodes', id); }
 
   /** Ids of the nodes with a live process. */
@@ -666,7 +669,7 @@ export class NodeManager extends EventEmitter {
 
   /** Save the ids with a live process (plus any not yet resumed) with the registry. Call after every change to a session. */
   private liveChanged(): void {
-    if (!this.stopped) this.registry.setLive([...new Set([...this.pendingResume, ...this.liveIds()])]);
+    if (!this.shutDown) this.registry.setLive([...new Set([...this.pendingResume, ...this.liveIds()])]);
   }
 
   /** Token, hook-headers, settings.json and mcp.json for a node; mcp.json embeds the current endpoint. */
