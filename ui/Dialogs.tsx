@@ -86,14 +86,23 @@ function KillDialog({ id }: { id: string }) {
 
 function RestartDialog({ id }: { id: string }) {
   const node = useStore((s) => s.nodes[id]);
+  const [prompt, setPrompt] = useState('');
   if (!node) return null;
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    send({ t: 'restart', id, ...(node.kind === 'claude' && prompt.trim() ? { prompt } : {}) });
+    close();
+  };
   return (
     <Modal title={`Restart ${node.title}?`} onClose={close}>
-      <p>Its context is cleared; children are kept.</p>
-      <div className="btns">
-        <button className="btn" autoFocus onClick={close}>Cancel</button>
-        <button className="btn primary" onClick={() => { send({ t: 'restart', id }); close(); }}>Restart</button>
-      </div>
+      <form className="form" onSubmit={submit}>
+        <p>Its context is cleared; children are kept.</p>
+        {node.kind === 'claude' && <label>First prompt<textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional: by default it is pointed at its handoff.md, if there is one" /></label>}
+        <div className="btns">
+          <button type="button" className="btn" autoFocus onClick={close}>Cancel</button>
+          <button type="submit" className="btn primary">Restart</button>
+        </div>
+      </form>
     </Modal>
   );
 }

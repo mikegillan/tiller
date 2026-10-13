@@ -8,7 +8,7 @@ import { Sidebar, useRows } from './Sidebar';
 import { StatusBar } from './StatusBar';
 import { TerminalPane } from './TerminalPane';
 import { TitleBar } from './TitleBar';
-import { ConfirmModal, Toasts } from './Toasts';
+import { ConfirmModal, DigestCard, Toasts } from './Toasts';
 import { getState, openDialog, selectNode, useStore } from './store';
 import { IN_APP } from './url';
 
@@ -58,6 +58,7 @@ export function App() {
       <StatusBar />
       <Toasts />
       <ConfirmModal />
+      <DigestCard />
       <Dialogs />
       {palette && <Palette />}
     </div>

@@ -10,7 +10,9 @@ import { promptPath } from './launch.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
 import { agentStatus, install, kickstart, LABEL, O8D, plistPath, uninstall } from './autostart.js';
 import { loginShellPath } from './pty.js';
-import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, waitForDaemon } from './up.js';
+import { formatEvent, listSessions, parseSince, readEvents, sessionDir, sweepSessions, type SessionEvent } from './sessions.js';
+import { fmtAge } from '../shared/format.js';
+import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, waitForDaemon, type OrchestratorCandidate } from './up.js';
 
 const usage = () => `o8: control orchestr8. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
 
@@ -27,7 +29,8 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 select <id>                                      show a node in the app (opens the app if it is built)
   o8 resume <id>                                      relaunch an exited Claude node
   o8 prune                                            remove every exited node that has no live descendant
-  o8 restart <id>                                     relaunch a node with a fresh session (clears its context; children are kept)
+  o8 restart <id> [--prompt T]                        relaunch a node with a fresh session (clears its context; children are kept);
+                                                      T is its first prompt, else it is pointed at the tree's handoff.md if any
   o8 kill [--force] [--keep-branch|--discard] <id...> | close <id...>  close and delete nodes (an orchestrator needs --force);
                                                       a node's worktree must be clean and merged unless --keep-branch
                                                       (commit as WIP, keep the branch) or --discard (delete both)
@@ -40,6 +43,10 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 config [--cwd P]                                 show the effective config for a directory and which file each key came from
   o8 worktrees [--cwd P]                              list node worktrees, orphans and kept branches for this repo
   o8 worktrees clean [--force] [--cwd P]              remove orphans and kept branches that are clean and merged; --force removes all
+  o8 sessions                                         list session directories (<home>/sessions/<rootId>) with title, age, size and closedAt
+  o8 sessions clean                                   delete the ones sessionsKeepDays has expired now
+  o8 sessions path [id]                               print the session directory of a node's tree (default: this node's, or this directory's orchestrator's)
+  o8 log [id] [--since 2h] [--follow]                 print a tree's event log (for a non-root id, only that node's events)
   o8 help`;
 
 const fail = (msg: string): never => { console.error(msg); process.exit(1); };
@@ -79,11 +86,27 @@ const { values: f, positionals: pos } = parseArgs({
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
     'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
-    worktree: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' },
+    worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' },
   },
 });
 
 const isolation = () => (f.worktree ? 'worktree' : undefined);
+
+/**
+ * The session directory for `id` (a root, or any node of a tree; a non-root id also filters `o8 log` to that node);
+ * without one, this node's own ($O8_SESSION_DIR), else the orchestrator of the current directory.
+ */
+async function sessionTarget(id: string | undefined): Promise<{ dir: string; only?: string }> {
+  if (!id && process.env.O8_SESSION_DIR) return { dir: process.env.O8_SESSION_DIR };
+  if (id && existsSync(sessionDir(home, id))) return { dir: sessionDir(home, id) }; // a root, even a closed one
+  const all = ((await call('list_nodes', {}, false)).data ?? []) as OrchestratorCandidate[];
+  const cwd = realpathSync(process.cwd());
+  const start = id ? all.find((n) => n.id === id) : pickOrchestrator(all, cwd) ?? pickOrchestrator(all, cwd, true);
+  if (!start) return fail(id ? `no such node or session: ${id}` : `no orchestrator for ${cwd}; name a node id`);
+  let root = start;
+  for (let p = all.find((n) => n.id === root.parentId); p; p = all.find((n) => n.id === root.parentId)) root = p;
+  return { dir: sessionDir(home, root.id), only: id && id !== root.id ? id : undefined };
+}
 
 switch (cmd) {
   case 'list': await call('list_nodes', {}); break;
@@ -116,7 +139,7 @@ switch (cmd) {
       'worktrees.isolation': c.worktrees.isolation, 'worktrees.branchPrefix': c.worktrees.branchPrefix, 'worktrees.include': c.worktrees.include?.join(', ') ?? '(.worktreeinclude)',
       'worktrees.merge': c.worktrees.merge, 'worktrees.mergeWithoutConfirm': c.worktrees.mergeWithoutConfirm,
       'worktrees.setup': JSON.stringify(c.worktrees.setup), 'worktrees.teardown': JSON.stringify(c.worktrees.teardown),
-      resumeOnStart: c.resumeOnStart, resumeMaxAgeDays: c.resumeMaxAgeDays,
+      resumeOnStart: c.resumeOnStart, resumeMaxAgeDays: c.resumeMaxAgeDays, sessionsKeepDays: c.sessionsKeepDays, digestAfterMinutes: c.digestAfterMinutes,
       ...Object.fromEntries(Object.entries(c.limits).map(([k, v]) => [`limits.${k}`, v])),
     };
     for (const [k, v] of Object.entries(values)) console.log(`${k}: ${v ?? '(claude default)'}  [${c.sources[k as keyof typeof values]}]`);
@@ -133,7 +156,7 @@ switch (cmd) {
     break;
   case 'restart':
     if (!pos[0]) fail(usage());
-    await call('restart', { nodeId: pos[0] });
+    await call('restart', { nodeId: pos[0], prompt: f.prompt });
     break;
   case 'prune': {
     const { data } = await call('prune', {}, false);
@@ -254,6 +277,33 @@ switch (cmd) {
       uninstall();
       console.log(`autostart off${st.pid ? `; stopped daemon pid ${st.pid} (its nodes resume on the next start)` : ''}`);
     } else fail(usage());
+    break;
+  }
+  case 'sessions': {
+    if (pos[0] === 'path') { console.log((await sessionTarget(pos[1])).dir); break; }
+    if (pos[0] === 'clean') {
+      const ids = new Set<string>(((await call('list_nodes', {}, false)).data ?? []).map((n: { id: string }) => n.id));
+      const removed = sweepSessions(home, ids, loadConfig(null, home).sessionsKeepDays);
+      console.log(`removed ${removed.length} expired session director${removed.length === 1 ? 'y' : 'ies'}${removed.length ? `: ${removed.join(', ')}` : ''}`);
+      break;
+    }
+    if (pos[0]) fail(usage());
+    const now = Date.now();
+    for (const x of listSessions(home).sort((a, b) => b.newest - a.newest)) {
+      const closed = x.closedAt ? `closed ${new Date(x.closedAt).toLocaleString('sv-SE').slice(0, 16)}` : 'open';
+      console.log([x.rootId, (x.title ?? '?').slice(0, 30), fmtAge(now - (x.createdAt ?? x.newest)), `${(x.bytes / 1024).toFixed(1)} KB`, closed].join('\t'));
+    }
+    break;
+  }
+  case 'log': {
+    const since = f.since ? parseSince(f.since) : 0;
+    if (since === undefined) fail('--since takes a number and s, m, h or d, for example 2h');
+    const { dir, only } = await sessionTarget(pos[0]);
+    const show = (evs: SessionEvent[]) => { for (const e of evs) if (!only || e.id === only) console.log(formatEvent(e)); };
+    let seen = 0;
+    const tick = () => { const evs = readEvents(dir); show(evs.slice(seen).filter((e) => !since || e.ts >= Date.now() - since)); seen = evs.length; };
+    tick();
+    if (f.follow) setInterval(tick, 1000);
     break;
   }
   case 'help': console.log(usage()); break;

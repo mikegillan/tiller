@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { ServerMessage, Usage } from '../src/shared/protocol';
+import type { DigestItem, ServerMessage, Usage } from '../src/shared/protocol';
 import { pickInitial, rootOf } from './sessions';
 import { insertSorted, type Nodes } from './tree';
 import { wantedNode } from './url';
@@ -35,6 +35,8 @@ export interface State {
   awaitSpawn: boolean;
   /** Account-level rate limits, as the newest node report gave them. */
   usage?: Usage;
+  /** What happened while no client was focused, until dismissed. */
+  digest?: { since: number; items: DigestItem[] };
 }
 
 const stored = (() => { try { return localStorage.getItem('o8.panel') === '1'; } catch { return false; } })();
@@ -64,6 +66,7 @@ export const dismissToast = (id: number) => update((s) => ({ toasts: s.toasts.fi
 export const dropConfirm = (confirmId: string) => update((s) => ({ confirms: s.confirms.filter((c) => c.confirmId !== confirmId) }));
 export const setConnected = (connected: boolean, retry = 0) => update(() => ({ connected, retry }));
 export const openDialog = (dialog: Dialog | null) => update(() => ({ dialog }));
+export const dismissDigest = () => update(() => ({ digest: undefined }));
 export const setRenaming = (renaming: string | null) => update(() => ({ renaming }));
 export const expectSpawn = () => update(() => ({ awaitSpawn: true }));
 export const toggleCollapsed = (id: string) =>
@@ -131,5 +134,7 @@ export function applyServer(m: ServerMessage) {
       return dropConfirm(m.confirmId);
     case 'error':
       return toast(m.message, m.id, 'bad');
+    case 'digest':
+      return update(() => ({ digest: { since: m.since, items: m.items } }));
   }
 }

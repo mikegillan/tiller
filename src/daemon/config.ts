@@ -1,5 +1,5 @@
 // Per-project settings: <cwd>/.orchestr8/config.json, then <home>/config.json, then built-in defaults. Read fresh on every call.
-// Daemon settings (resumeOnStart, resumeMaxAgeDays) come from the home file only.
+// Daemon settings (resumeOnStart, resumeMaxAgeDays, sessionsKeepDays, digestAfterMinutes) come from the home file only.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -24,6 +24,8 @@ const ConfigFile = z.object({
   }).strict().optional(),
   resumeOnStart: z.boolean().optional(),
   resumeMaxAgeDays: z.number().nonnegative().optional(),
+  sessionsKeepDays: z.number().nonnegative().optional(),
+  digestAfterMinutes: z.number().nonnegative().optional(),
   limits: z.object({
     maxDepth: z.number().int().nonnegative().optional(),
     maxChildren: z.number().int().nonnegative().optional(),
@@ -35,7 +37,7 @@ const ConfigFile = z.object({
 type ConfigFile = z.infer<typeof ConfigFile>;
 type RoleDefaults = z.infer<typeof RoleDefaults>;
 
-type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include' | 'merge' | 'mergeWithoutConfirm' | 'setup' | 'teardown'}` | 'resumeOnStart' | 'resumeMaxAgeDays' | `limits.${LimitKey}`;
+type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include' | 'merge' | 'mergeWithoutConfirm' | 'setup' | 'teardown'}` | 'resumeOnStart' | 'resumeMaxAgeDays' | 'sessionsKeepDays' | 'digestAfterMinutes' | `limits.${LimitKey}`;
 type LimitKey = keyof Limits;
 
 /** Guardrails for unattended agents; the human is exempt from the spawn caps. */
@@ -66,6 +68,10 @@ export interface Config {
   /** On start, resume the nodes that were live when the daemon last went away, unless idle for more than resumeMaxAgeDays. */
   resumeOnStart: boolean;
   resumeMaxAgeDays: number;
+  /** A session directory is deleted this long after its root closed (or, with the root gone, after its last write). */
+  sessionsKeepDays: number;
+  /** A client regaining focus after this long with no focused client gets an away digest. */
+  digestAfterMinutes: number;
   limits: Limits;
   /** Where each key came from: a file path, or 'default'. */
   sources: Record<Key, string>;
@@ -119,11 +125,15 @@ export function loadConfig(cwd: string | null, home = homeDir()): Config {
   const [resumeOnStart, sr] = pick((c) => c.resumeOnStart, true);
   const [resumeMaxAgeDays, sa] = pick((c) => c.resumeMaxAgeDays, true);
   sources.resumeOnStart = sr; sources.resumeMaxAgeDays = sa;
+  const [sessionsKeepDays, sk] = pick((c) => c.sessionsKeepDays, true);
+  const [digestAfterMinutes, sd] = pick((c) => c.digestAfterMinutes, true);
+  sources.sessionsKeepDays = sk; sources.digestAfterMinutes = sd;
   const limits = { ...LIMIT_DEFAULTS };
   for (const k of Object.keys(LIMIT_DEFAULTS) as LimitKey[]) {
     const [v, src] = pick((c) => c.limits?.[k]);
     if (v !== undefined) limits[k] = v;
     sources[`limits.${k}`] = src;
   }
-  return { roles, closeWithoutConfirm: close ?? 'never', worktrees, resumeOnStart: resumeOnStart ?? true, resumeMaxAgeDays: resumeMaxAgeDays ?? 3, limits, sources };
+  return { roles, closeWithoutConfirm: close ?? 'never', worktrees, resumeOnStart: resumeOnStart ?? true, resumeMaxAgeDays: resumeMaxAgeDays ?? 3,
+    sessionsKeepDays: sessionsKeepDays ?? 14, digestAfterMinutes: digestAfterMinutes ?? 10, limits, sources };
 }

@@ -39,6 +39,14 @@
 .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .btns .btn { height: 32px; padding: 0 16px; }
 .ask { margin: 0; padding: 8px 16px; max-height: 40vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.digest { margin: 0 0 16px; padding: 0; max-height: 50vh; overflow: auto; list-style: none; }
+.digest .row { display: block; width: 100%; padding: 8px 10px; border: 0; border-left: 3px solid var(--line); border-radius: 4px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.digest .row:hover { background: var(--bg); }
+.digest .row.needsYou { border-left-color: var(--needs); }
+.digest .row.errored { border-left-color: var(--bad); }
+.digest .row.finished { border-left-color: var(--done); }
+.digest .kind { color: var(--dim); font-size: 12px; }
+.digest .text { display: block; margin-top: 2px; overflow: hidden; color: var(--dim); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 
 .form { display: grid; gap: 16px; }
 .form label { display: grid; gap: 4px; font-size: 12px; color: var(--dim); }
