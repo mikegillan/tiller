@@ -214,6 +214,15 @@ describe('mod inbox', () => {
     expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'delivered' });
   });
 
+  it('a UserPromptSubmit carrying the message delivers it, so a mod that reloads before acking does not resubmit it', async () => {
+    const r = await deliver(m.mgr, 'a', 'b', 'hello');
+    const [msg] = inbox(m.mgr, 'b');
+    m.emit('hook', 'b', { hook_event_name: 'UserPromptSubmit', prompt: msg.text }); // submitted; the reload then drops the ack
+    expect(inbox(m.mgr, 'b')).toEqual([]); // the reloaded mod's next poll finds nothing to submit again
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'delivered' });
+    expect(ack(m.mgr, 'b', r.messageId!)).toBe(false); // a late ack is harmless
+  });
+
   it('expires unacked messages after 5 minutes and removes them from the inbox', async () => {
     const r = await deliver(m.mgr, 'a', 'b', 'hi');
     await vi.advanceTimersByTimeAsync(5 * 60_000);

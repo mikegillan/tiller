@@ -170,7 +170,9 @@ and acts as `human`.
 
 Delivery is mod-first. The daemon keeps a per-node inbox (persisted in `inbox.json`); the
 node's mod polls it every second, submits each message with `$.prompt.submit`, and acks when
-the turn starts. Claude Code does the idle gating, so no screen check is needed on this path.
+the turn starts. The daemon also counts a UserPromptSubmit hook carrying the message's frame
+header as delivery, because a mod hot reload right after the submit drops the ack (see below).
+Claude Code does the idle gating, so no screen check is needed on this path.
 A node counts as mod-live while its last poll is under 5 s old.
 
 For a node whose mod is not live, the daemon pastes into the PTY, and queues instead unless
@@ -249,9 +251,11 @@ transcript view, Codex support) are not started. For Codex, MCP works; status ne
 brittle, so start with Codex's `notify` setting for turn-complete only.
 
 Still unverified: behaviour when the user has other mods installed (they load in every node
-too), and hot reload of the mod. The mod's in-flight message ids and last-seen tree live in
-module scope in `mod/hooks/register.tsx`, not in `$.state`, so a reload while a message is
-submitted but not yet acked could submit it twice.
+too). Hot reload of the mod: Claude Code applies a pending reload when the turn ends, which is
+the moment a queued `$.prompt.submit` enters. The reload drops the submit's ack callback and the
+module-scope in-flight set in `mod/hooks/register.tsx`, so the reloaded mod used to submit the
+still-unacked message a second time (seen twice on 2026-10-13 and reproduced by editing the
+mod's plugin.json mid-turn). The daemon now resolves the message from the UserPromptSubmit hook.
 
 ## 11. History
 
