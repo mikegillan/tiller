@@ -111,10 +111,10 @@ export const tools = {
     }),
 
   spawn: tool(
-    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error.',
+    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error.',
     {
       kind: z.enum(['claude', 'terminal']), title: z.string().min(1), cwd: z.string().min(1), prompt: z.string().optional(),
-      model: z.string().optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), requestId: z.string().optional(),
+      model: z.string().optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), role: z.enum(['orchestrator', 'worker', 'none']).optional(), requestId: z.string().optional(),
     },
     async (c, { requestId, ...req }) => {
       if (req.permissionMode === 'bypassPermissions' && c.caller !== HUMAN) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');

@@ -7,6 +7,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { promptPath } from './launch.js';
 import { daemonPort as portFor, findDaemon, pickOrchestrator, startDaemon } from './up.js';
 
 const usage = () => `o8: control orchestr8. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
@@ -14,7 +15,7 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 [up|app] [--new] [--title T] [--prompt P]        start daemon if needed; open the app on (or create) this directory's orchestrator
   o8 mux [--new] [--title T] [--prompt P]             the same, in the terminal multiplexer (also: o8-mux)
   o8 status | stop                                    show or stop the daemon (o8d runs it in the foreground)
-  o8 new <title> [--cwd P] [--model M] [--prompt T]   start a Claude node and attach to it in the terminal
+  o8 new <title> [--cwd P] [--model M] [--prompt T] [--role R]  start a Claude node and attach to it in the terminal
   o8 ps | list                                        show nodes
   o8 attach <id> [--plain]                            open the sidebar client on a node (Ctrl-\\ ? for keys; --plain is the old single-pane view)
   o8 select <id>                                      show a node in the app (opens the app if it is built)
@@ -23,7 +24,8 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 kill <id...> | close <id...>                     close and delete nodes
   o8 send <id> "text"
   o8 read <id> [summary|transcript|terminal] [--lines N]
-  o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--permission-mode M] [--request-id ID]
+  o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--permission-mode M] [--role orchestrator|worker|none] [--request-id ID]
+  o8 prompts                                          show the role prompt files and any override for this directory
   o8 help`;
 
 const fail = (msg: string): never => { console.error(msg); process.exit(1); };
@@ -62,7 +64,7 @@ const { values: f, positionals: pos } = parseArgs({
   args: rest, allowPositionals: true,
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' },
-    'permission-mode': { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, plain: { type: 'boolean' }, lines: { type: 'string' },
+    'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, plain: { type: 'boolean' }, lines: { type: 'string' },
   },
 });
 
@@ -77,10 +79,16 @@ switch (cmd) {
     break;
   case 'new': {
     if (!pos[0]) fail(usage());
-    const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model }, false);
+    const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, role: f.role }, false);
     process.exit(await mux(data.nodeId, { port: daemonPort(), token: readHome('admin-token') }));
     break;
   }
+  case 'prompts':
+    for (const r of ['orchestrator', 'worker'] as const) {
+      const { path, override } = promptPath(home, realpathSync(process.cwd()), r);
+      console.log(`${r}: ${path}${override ? ' (repo override)' : ''}`);
+    }
+    break;
   case 'select':
     if (!pos[0]) fail(usage());
     await call('select', { nodeId: pos[0] }, false);
@@ -96,7 +104,7 @@ switch (cmd) {
     break;
   }
   case 'spawn':
-    await call('spawn', { kind: f.kind, title: f.title, cwd: f.cwd ?? process.cwd(), prompt: f.prompt, model: f.model, permissionMode: f['permission-mode'], requestId: f['request-id'] });
+    await call('spawn', { kind: f.kind, title: f.title, cwd: f.cwd ?? process.cwd(), prompt: f.prompt, model: f.model, permissionMode: f['permission-mode'], role: f.role, requestId: f['request-id'] });
     break;
   case 'send':
     if (pos.length < 2) fail(usage());

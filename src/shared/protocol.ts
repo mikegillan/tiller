@@ -41,6 +41,9 @@ export interface NodeStatus {
   changedAt: number;
 }
 
+/** Which role prompt a Claude node gets; 'none' means no role section. Default: root = orchestrator, child = worker. */
+export type Role = 'orchestrator' | 'worker' | 'none';
+
 export interface NodeRecord {
   id: string;
   parentId: string | null;
@@ -49,6 +52,8 @@ export interface NodeRecord {
   cwd: string;
   model?: string;
   permissionMode?: string;
+  /** Explicit role override; absent means derive from parentId at each launch. */
+  role?: Role;
   createdAt: number;
   /** Persisted so a restarted daemon can offer Resume. */
   sessionId?: string;

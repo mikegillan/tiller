@@ -138,7 +138,7 @@ describe('mcp api', () => {
 
 describe('systemPrompt', () => {
   it('states identity and framing rules', () => {
-    const p = systemPrompt({ nodeId: 'n-1', title: 'Builder', parentId: null });
+    const p = systemPrompt({ nodeId: 'n-1', title: 'Builder', parentId: null, home: '/nonexistent', cwd: '/nonexistent' });
     expect(p).toContain('node n-1');
     expect(p).toContain('parent node is none');
     expect(p).toContain('--- O8 MESSAGE <nonce> ---');

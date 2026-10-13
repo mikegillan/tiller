@@ -35,6 +35,10 @@ Other commands: `o8 ps` lists nodes, `o8 attach <id>` opens the sidebar client o
 
 Messages between nodes are queued in the daemon and submitted as prompts by the receiving node's mod when it is idle, then confirmed. If a node's mod is not running, the daemon pastes the message into its terminal instead. When a child needs you or finishes, the orchestrator shows an in-session toast.
 
+## Role prompts
+
+Every Claude node gets a role section appended to its system prompt, so it survives `/clear`. A root node (no parent) is an orchestrator and a node with a parent is a worker. The text comes from `~/.orchestr8/prompts/orchestrator.md` and `worker.md`, which the daemon writes on first start and never overwrites, so edit them freely. A file at `<repo>/.orchestr8/orchestrator.md` or `worker.md` wins for nodes whose directory is that repo. Files are read at each launch or resume, so edits apply to the next node you start. `--role orchestrator|worker|none` on `o8 new` and `o8 spawn` (and `role` on the MCP spawn tool) overrides the default; `none` omits the section. `o8 prompts` prints the paths in effect for the current directory.
+
 ## Browser UI (optional)
 
     npm run ui:build

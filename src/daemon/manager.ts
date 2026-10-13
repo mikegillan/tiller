@@ -3,8 +3,8 @@ import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import type { ModEvent, NodeKind, NodeStatus, NodeView } from '../shared/protocol.js';
-import { claudeLaunch, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
+import type { ModEvent, NodeKind, NodeStatus, NodeView, Role } from '../shared/protocol.js';
+import { claudeLaunch, ensurePrompts, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { pruneIds } from '../shared/prune.js';
 import { NodeRegistry } from './nodes.js';
 import { PtySession } from './pty.js';
@@ -50,6 +50,7 @@ export interface SpawnRequest {
   prompt?: string;
   model?: string;
   permissionMode?: string;
+  role?: Role;
   parentId?: string | null;
 }
 
@@ -95,6 +96,7 @@ export class NodeManager extends EventEmitter {
     this.path = opts.path ?? process.env.PATH ?? '';
     mkdirSync(join(this.home, 'nodes'), { recursive: true, mode: 0o700 });
     chmodSync(this.home, 0o700); // mkdir's mode does not apply to a directory that already existed
+    ensurePrompts(this.home);
     this.secret = this.loadSecret();
     this.registry = new NodeRegistry(join(this.home, 'state.json'));
     this.registry.load();
@@ -153,7 +155,7 @@ export class NodeManager extends EventEmitter {
   spawn(req: SpawnRequest): NodeView {
     const rec = this.registry.create({
       parentId: req.parentId ?? null, kind: req.kind, title: req.title, cwd: req.cwd,
-      model: req.model, permissionMode: req.permissionMode,
+      model: req.model, permissionMode: req.permissionMode, role: req.role,
       sessionId: req.kind === 'claude' ? randomUUID() : undefined,
     });
     try {
@@ -327,7 +329,7 @@ export class NodeManager extends EventEmitter {
     const rec = this.registry.get(id)!;
     const input: LaunchInput = {
       nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path,
-      title: rec.title, parentId: rec.parentId, sessionId: this.statuses.get(id)?.sessionId ?? rec.sessionId ?? '',
+      title: rec.title, parentId: rec.parentId, home: this.home, cwd: rec.cwd, role: rec.role, sessionId: this.statuses.get(id)?.sessionId ?? rec.sessionId ?? '',
       resume, prompt, model: rec.model, permissionMode: rec.permissionMode,
     };
     const spec: LaunchSpec = rec.kind === 'claude' ? claudeLaunch(input) : terminalLaunch(input, this.shell);
