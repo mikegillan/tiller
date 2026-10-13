@@ -1,4 +1,4 @@
-import type { NodeView } from '../src/shared/protocol';
+import type { GitState, NodeView } from '../src/shared/protocol';
 import { ctxLevel, fmtTokens, shortEffort, shortModel } from '../src/shared/format';
 import { fmtUsd } from '../src/shared/spend';
 import { KIND_LABEL, type StatusKind } from './tree';
@@ -26,12 +26,22 @@ export const canMerge = (node: NodeView): boolean => {
   return !!g && !g.mergedAt && g.ahead > 0 && (!!node.status.exited || node.status.state !== 'working');
 };
 
-/** `⎇ o8/n-3f2a · ↑2 · ●1 · opus 5.5 · high · [bar] 42% · $0.42 · Σ$3.10`; null when the node reports none of it. `subtree`: spend with descendants. */
+/** `+42 −18`: lines added and removed. */
+export const Counts = ({ of: x, title }: { of: { additions: number; deletions: number }; title?: string }) => (
+  <span className="counts" title={title}><span className="add">+{x.additions}</span> <span className="del">−{x.deletions}</span></span>
+);
+
+/** A worktree node's Counts, committed or not. */
+export const DiffCounts = ({ git: g }: { git: GitState }) =>
+  <Counts of={g} title={`${g.additions} line(s) added and ${g.deletions} removed since the branch left ${g.base}, committed or not`} />;
+
+/** `⎇ o8/n-3f2a · +42 −18 · ↑2 · ●1 · opus 5.5 · high · [bar] 42% · $0.42 · Σ$3.10`; null when the node reports none of it. `subtree`: spend with descendants. */
 export function NodeMeta({ node, detail, subtree }: { node: NodeView; detail?: boolean; subtree?: number }) {
   const s = node.status, wt = node.worktree, g = s.git;
   const model = shortModel(s.model ?? node.model);
   const parts = [
     wt && <span className="branch" title={`branch ${wt.branch} from ${wt.base}`}>⎇ {wt.branch}</span>,
+    g && g.additions + g.deletions > 0 && <DiffCounts git={g} />,
     g && g.ahead > 0 && <span title={`${g.ahead} commit(s) not in ${g.base}${g.behind ? `; ${g.base} has ${g.behind} not on the branch` : ''}`}>↑{g.ahead}</span>,
     g && g.dirty > 0 && <span title={`${g.dirty} uncommitted file(s) in the worktree`}>●{g.dirty}</span>,
     g?.mergedAt && <span title={`merged into ${g.base}`}>merged</span>,

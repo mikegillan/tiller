@@ -85,11 +85,28 @@ export interface GitState {
   behind: number;
   /** Uncommitted files in the worktree (modified, staged or untracked). */
   dirty: number;
+  /** Lines added and removed by the node's work so far: the same numbers as the diff view (see Diff). */
+  additions: number;
+  deletions: number;
   /** The worktree directory is gone. */
   missing?: boolean;
   /** When orchestr8 last merged the branch into base; cleared once the branch moves past what was merged. */
   mergedAt?: number;
 }
+
+/** One file of a worktree node's diff. Binary files have no patch; neither do files past the 2 MB patch cap (Diff.truncated). */
+export interface DiffFile {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  additions: number;
+  deletions: number;
+  binary?: boolean;
+  /** Unified diff of this file, from its `diff --git` header line. */
+  patch?: string;
+}
+
+/** Everything a worktree node changed since it branched: its commits and its uncommitted and untracked files, as one diff. */
+export interface Diff { base: string; branch: string; files: DiffFile[]; truncated?: boolean }
 
 export interface NodeRecord {
   id: string;
@@ -143,6 +160,8 @@ export type ServerMessage =
   | { t: 'error'; message: string; id?: string }
   | { t: 'focus'; from: string; id: string }   // a node's mod asked to view node `id`; an attach client showing `from` switches
   | { t: 'digest'; since: number; items: DigestItem[] } // what happened while no client was focused; sent to the client that regained focus
+  | ({ t: 'diff'; id: string } & Diff)         // reply to a diff request
+  | { t: 'sent'; id: string; result: SendResult } // reply to a send request
   ;
 
 /** One node's line in the away digest: still needs you, errored or failed, or finished (with its outcome note). */
@@ -165,6 +184,8 @@ export type ClientMessage =
   | { t: 'prune' }                             // remove every exited node that has no live descendant
   | { t: 'rename'; id: string; title: string }
   | { t: 'confirm'; confirmId: string; ok: boolean }
+  | { t: 'diff'; id: string }                  // a worktree node's diff; replies diff, or error for a node without a worktree
+  | { t: 'send'; id: string; text: string }    // a message from the human, as `o8 send` delivers it; replies sent
   ;
 
 // Outcome of delivering a message into an agent node (PLAN.md §6).

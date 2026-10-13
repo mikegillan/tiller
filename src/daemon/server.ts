@@ -14,7 +14,7 @@ import type { NodeManager, NotifyEvent } from './manager.js';
 import { mountMcp } from './mcp.js';
 import { modApi } from './modapi.js';
 import type { HookEvent } from './status.js';
-import { HUMAN } from './messaging.js';
+import { deliver, HUMAN } from './messaging.js';
 import { readBody } from './util.js';
 
 const UI_DIR = fileURLToPath(new URL('../../ui/dist', import.meta.url));
@@ -49,6 +49,8 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('prune') }),
   z.object({ t: z.literal('rename'), id, title: z.string() }),
   z.object({ t: z.literal('confirm'), confirmId: z.string(), ok: z.boolean() }),
+  z.object({ t: z.literal('diff'), id }),
+  z.object({ t: z.literal('send'), id, text: z.string().min(1) }),
 ]) satisfies z.ZodType<ClientMessage>;
 
 export interface DaemonServer {
@@ -141,6 +143,8 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       case 'prune': await manager.prune(); return;
       case 'rename': manager.rename(m.id, m.title); return;
       case 'confirm': pendingConfirms.get(m.confirmId)?.(m.ok); return;
+      case 'diff': sendTo(c, { t: 'diff', id: m.id, ...(await manager.diff(m.id)) }); return;
+      case 'send': sendTo(c, { t: 'sent', id: m.id, result: await deliver(manager, HUMAN, m.id, m.text) }); return;
     }
   }
 

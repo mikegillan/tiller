@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { NEEDS_YOU_STATES, type AgentState, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
+import { NEEDS_YOU_STATES, type AgentState, type Diff, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { loadConfig, type Limits, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
 import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
@@ -359,6 +359,14 @@ export class NodeManager extends EventEmitter {
    * while the node is working, closing or setting up, when its tree has uncommitted files, or when the branch conflicts
    * with base (the error names the paths).
    */
+  /** A worktree node's changes since it branched, committed or not. */
+  async diff(id: string): Promise<Diff> {
+    const rec = this.registry.get(id);
+    if (!rec) throw new Error(`no such node: ${id}`);
+    if (!rec.worktree) throw new Error(`${id} has no worktree of its own to diff`);
+    return wt.diff(rec.worktree);
+  }
+
   async merge(id: string): Promise<{ base: string; sha: string; style: MergeStyle }> {
     const rec = this.registry.get(id);
     if (!rec) throw new Error(`no such node: ${id}`);
@@ -802,8 +810,9 @@ export class NodeManager extends EventEmitter {
     const w = this.registry.get(id)?.worktree;
     if (!w) return;
     const missing = !existsSync(w.path);
+    const none = { ahead: 0, behind: 0, additions: 0, deletions: 0 };
     const [counts, dirty, mergedAt] = await Promise.all([
-      wt.branchExists(w.repo, w.branch).then((b) => (b ? wt.aheadBehind(w.repo, w.branch, w.base, w.baseSha) : { ahead: 0, behind: 0 })),
+      wt.branchExists(w.repo, w.branch).then(async (b) => (b ? { ...(await wt.aheadBehind(w.repo, w.branch, w.base, w.baseSha)), ...(await wt.diffStat(w)) } : none)),
       missing ? [] : wt.dirtyFiles(w.path),
       this.mergedAt(id, w),
     ]);

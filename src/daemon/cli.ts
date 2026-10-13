@@ -36,6 +36,7 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
                                                       (commit as WIP, keep the branch) or --discard (delete both)
   o8 merge <id> [--close]                             merge a worktree node's branch into its base (refused on conflict,
                                                       naming the paths); --close then closes the node
+  o8 diff <id> [--stat]                               what a worktree node changed since it branched, committed or not
   o8 send <id> "text"
   o8 read <id> [summary|transcript|terminal] [--lines N]
   o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--request-id ID]
@@ -86,7 +87,7 @@ const { values: f, positionals: pos } = parseArgs({
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
     'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
-    worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' },
+    worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' },
   },
 });
 
@@ -165,6 +166,10 @@ switch (cmd) {
   }
   case 'spawn':
     await call('spawn', { kind: f.kind, title: f.title, cwd: f.cwd ?? process.cwd(), prompt: f.prompt, model: f.model, effort: f.effort, permissionMode: f['permission-mode'], role: f.role, isolation: isolation(), requestId: f['request-id'] });
+    break;
+  case 'diff':
+    if (!pos[0]) fail(usage());
+    await call('diff', { nodeId: pos[0], stat: f.stat });
     break;
   case 'send':
     if (pos.length < 2) fail(usage());
