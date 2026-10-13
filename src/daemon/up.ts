@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 export interface Health { ok: true; pid: number; home: string; version: string }
@@ -14,8 +15,6 @@ export async function findDaemon(port: number, timeoutMs = 500): Promise<Health 
     return res.ok && body.ok ? body : undefined;
   } catch { return undefined; }
 }
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Run bin/<name> detached (survives this process and its terminal) with output appended to <home>/daemon.log; returns the log path. */
 function detach(name: string, args: string[], home: string, port: number, env: NodeJS.ProcessEnv = process.env): string {

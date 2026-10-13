@@ -34,6 +34,15 @@ function setup(): void {
 }
 
 const spawnW = (extra: Partial<SpawnRequest> = {}) => m.spawn({ kind: 'claude', title: 'w', cwd: repo, isolation: 'worktree', ...extra });
+/** A root and, armed behind its next turn, a worktree child; the root's turn then releases the child. */
+async function releasedChild(extra: Partial<SpawnRequest> = {}): Promise<string> {
+  const root = (await m.spawn({ kind: 'claude', title: 'root', cwd: repo, byHuman: true })).id;
+  const id = (await spawnW({ parentId: root, after: [root], ...extra })).id;
+  m.applyHook(root, { hook_event_name: 'UserPromptSubmit' });
+  m.applyHook(root, { hook_event_name: 'Stop' });
+  await null; // the scheduler's microtask, queued by the hooks, releases the child before this resumes
+  return id;
+}
 const exited = async (id: string) => { m.session(id)!.kill(); await expect.poll(() => m.view(id)!.status.exited).toBe(true); };
 
 afterEach(() => {
@@ -112,6 +121,19 @@ describe('worktree nodes', () => {
     expect(await m.close(v.id, true, 'discard')).toBeUndefined();
     expect(existsSync(v.cwd)).toBe(false);
     expect(g(repo, 'branch', '--list', `o8/${v.id}`)).toBe('');
+  });
+
+  it('close and restart are refused while the worktree is being created', async () => {
+    setup();
+    const id = await releasedChild();
+    expect(m.view(id)!.status.activity).toBe('creating worktree');
+    await expect(m.close(id, true, 'discard')).rejects.toThrow(`${id} is already creating`);
+    expect(m.restart(id)).toEqual({ ok: false, error: `${id} is creating` });
+    await expect.poll(() => m.session(id), { timeout: 10_000 }).toBeDefined();
+    const path = m.registry.get(id)!.worktree!.path;
+    await m.close(id, true, 'discard');
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(join(m.home, 'nodes', id))).toBe(false);
   });
 
   it('close succeeds on a clean tree whose branch is merged, and deletes the branch', async () => {
@@ -316,6 +338,19 @@ describe('git state and merge', () => {
     expect(g(repo, 'rev-parse', 'main')).toBe(g(repo, 'rev-parse', `o8/${f.id}`));
   });
 
+  it('a squash-merged branch still counts as merged after a daemon restart', async () => {
+    setup();
+    config({ merge: 'squash' });
+    const v = await spawnW();
+    commit(v.cwd, 'a.txt');
+    await m.merge(v.id);
+    m.shutdown();
+    m = new NodeManager({ home: m.home, shell: '/bin/sh', path: `${join(home, 'bin')}:/usr/bin:/bin` });
+    await expect.poll(() => m.view(v.id)!.status.git?.mergedAt, { timeout: 10_000 }).toEqual(expect.any(Number));
+    await m.close(v.id, true);
+    expect(existsSync(v.cwd)).toBe(false);
+  });
+
   it('moves a base that is not checked out by ref only, and refuses a base checked out with uncommitted changes', async () => {
     setup();
     const v = await spawnW();
@@ -355,6 +390,16 @@ describe('setup and teardown commands', () => {
     config({ setup: ['true'] });
     expect(m.restart(bad.id)).toEqual({ ok: true });
     await expect.poll(() => argvOf(bad.id), { timeout: 5000 }).toContain('-- brief');
+  });
+
+  it('a released node whose setup fails frees its limits.maxWorking slot', async () => {
+    setup();
+    writeFileSync(join(m.home, 'config.json'), JSON.stringify({ worktrees: { setup: ['exit 3'] }, limits: { maxWorking: 1 } }));
+    const failed = await releasedChild({ prompt: 'brief' });
+    await expect.poll(() => m.view(failed)!.status, { timeout: 10_000 }).toMatchObject({ exited: true, errored: true });
+    const next = await m.spawn({ kind: 'claude', title: 'next', cwd: repo, parentId: m.registry.get(failed)!.parentId, prompt: 'go', isolation: 'none' });
+    expect(next.status.state).not.toBe('queued');
+    expect(m.session(next.id)).toBeDefined();
   });
 
   it('teardown runs in the worktree before close removes it', async () => {
