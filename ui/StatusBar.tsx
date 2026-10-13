@@ -1,6 +1,7 @@
+import { dndActive } from '../src/shared/protocol';
 import { fmtAge, usageParts } from '../src/shared/format';
 import { fmtUsd, todaySpend } from '../src/shared/spend';
-import { useNow } from './hooks';
+import { toggleDnd, useNow } from './hooks';
 import { useStore } from './store';
 import { needsYou } from './tree';
 
@@ -12,6 +13,8 @@ export function StatusBar() {
   const usage = useStore((s) => s.usage);
   const now = useNow();
   const today = useStore((s) => todaySpend(Object.values(s.nodes), now));
+  const dnd = useStore((s) => s.dnd);
+  const quiet = dndActive(dnd, now);
   return (
     <footer className="statusbar" role="status">
       <span className={`conn ${connected ? 'up' : 'down'}`}>
@@ -28,6 +31,9 @@ export function StatusBar() {
       )}
       {today > 0 && <span title="spent today, all nodes">{fmtUsd(today)} today</span>}
       <span className="spacer" />
+      <button className={`dnd${quiet ? ' on' : ''}`} onClick={toggleDnd} title={quiet ? 'Turn off do not disturb' : 'No OS notifications for an hour'}>
+        {quiet ? `do not disturb${dnd!.until ? ` · ${Math.ceil((dnd!.until - now) / 60_000)} min left` : ''}` : 'do not disturb 1 h'}
+      </button>
       <span className="keys"><kbd>⌘K</kbd> jump <kbd>⌘1–9</kbd> row <kbd>⌘0</kbd> sidebar</span>
     </footer>
   );

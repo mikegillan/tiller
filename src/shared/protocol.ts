@@ -134,7 +134,13 @@ export interface NodeRecord {
   spentUsd?: number;
   /** Spend on one local day (YYYY-MM-DD); a later day starts over. */
   spentToday?: { day: string; usd: number };
+  /** Set by the human (o8 mute, the row's mute button): the node never sends an OS notification. */
+  muted?: boolean;
 }
+
+/** Do not disturb: while on (and before `until`, when set) the daemon sends no OS notifications. Not persisted. */
+export interface Dnd { on: boolean; until?: number }
+export const dndActive = (dnd: Dnd | undefined, now: number) => !!dnd?.on && (dnd.until === undefined || now < dnd.until);
 
 /** What a node reported through report_outcome. Not persisted: a restarted daemon forgets it. */
 export interface Outcome {
@@ -165,7 +171,8 @@ export interface Usage { rateLimits: RateLimit[]; nodeId: string; at: number }
 
 // Daemon -> UI (WebSocket, JSON). One message per line.
 export type ServerMessage =
-  | { t: 'snapshot'; nodes: NodeView[]; appConnected: boolean; usage?: Usage }
+  | { t: 'snapshot'; nodes: NodeView[]; appConnected: boolean; usage?: Usage; dnd?: Dnd }
+  | ({ t: 'dnd' } & Dnd)                     // do not disturb changed
   | { t: 'usage'; usage: Usage }             // a node reported new account-level rate limits
   | { t: 'clients'; app: boolean }           // the native app connected or disconnected; terminal clients then stop ringing the bell
   | { t: 'node'; node: NodeView }            // created or updated (full record)
@@ -203,6 +210,8 @@ export type ClientMessage =
   | { t: 'confirm'; confirmId: string; ok: boolean }
   | { t: 'diff'; id: string }                  // a worktree node's diff; replies diff, or error for a node without a worktree
   | { t: 'send'; id: string; text: string }    // a message from the human, as `o8 send` delivers it; replies sent
+  | { t: 'mute'; id: string; muted: boolean }  // the human mutes or unmutes a node's OS notifications
+  | { t: 'dnd'; on: boolean; minutes?: number } // do not disturb on (for minutes, else until turned off) or off
   ;
 
 // Outcome of delivering a message into an agent node (PLAN.md §6).

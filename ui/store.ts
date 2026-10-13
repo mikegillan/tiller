@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { Diff, DigestItem, ServerMessage, Usage } from '../src/shared/protocol';
+import type { Diff, DigestItem, Dnd, ServerMessage, Usage } from '../src/shared/protocol';
 import type { ReviewComment } from './diff';
 import { pickInitial, rootOf } from './sessions';
 import { insertSorted, type Nodes } from './tree';
@@ -34,6 +34,8 @@ export interface State {
   renaming: string | null;
   /** A spawn was requested: select the next new node that arrives. */
   awaitSpawn: boolean;
+  /** Do not disturb, as the daemon last reported it. */
+  dnd?: Dnd;
   /** Account-level rate limits, as the newest node report gave them. */
   usage?: Usage;
   /** What happened while no client was focused, until dismissed. */
@@ -118,8 +120,10 @@ export function applyServer(m: ServerMessage) {
         for (const n of fresh) order = insertSorted(order, nodes, n);
         const base = { ...s, order, opened: s.opened.filter((id) => nodes[id]) };
         const sel = s.selected && nodes[s.selected] ? s.selected : pickInitial(nodes, order, s.selected ? undefined : wantedNode);
-        return { order, opened: base.opened, usage: m.usage ?? s.usage, ...choose(base, nodes, sel) };
+        return { order, opened: base.opened, usage: m.usage ?? s.usage, dnd: m.dnd, ...choose(base, nodes, sel) };
       });
+    case 'dnd':
+      return update(() => ({ dnd: { on: m.on, until: m.until } }));
     case 'usage':
       return update(() => ({ usage: m.usage }));
     case 'node':
