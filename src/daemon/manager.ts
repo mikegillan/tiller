@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { NEEDS_YOU_STATES, type AgentState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Effort, type Isolation, type Role, type Worktree } from '../shared/protocol.js';
+import { NEEDS_YOU_STATES, type AgentState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
 import { homeDir } from './home.js';
 import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
@@ -123,10 +123,13 @@ export interface NotifyEvent { id: string; kind: 'done' | 'needsYou' | 'errored'
  *   'hook'    (id: string, event: HookEvent)  every accepted hook, before status is updated
  *   'data'    (id: string, data: string)  raw PTY output
  *   'notify'  (n: NotifyEvent)
+ *   'usage'   (u: Usage)                  a node reported account-level rate limits
  */
 export class NodeManager extends EventEmitter {
   readonly home: string;
   readonly registry: NodeRegistry;
+  /** Newest account-level rate limits from any node. Not persisted: the next measure after a restart refills it. */
+  usage?: Usage;
   /** Base URL of the daemon, set by the server once it knows its port. */
   endpoint = '';
   /** Whether any connected UI client has node `id` selected; set by the server. A selected node never turns unread. */
@@ -512,7 +515,11 @@ export class NodeManager extends EventEmitter {
       const base = typeof model === 'string' && model !== prev.model ? { ...prev, model } : prev;
       this.setStatus(nodeId, turnComplete(base, now, ev.payload));
     } else if (ev.event === 'session.measure') {
-      const { context, cost } = ev.payload;
+      const { context, cost, rateLimits } = ev.payload;
+      if (rateLimits?.length) { // empty off a subscription or before the first reading: keep the last report
+        this.usage = { rateLimits, nodeId, at: now };
+        this.emit('usage', this.usage);
+      }
       this.setStatus(nodeId, { ...prev, contextPct: context?.percent ?? prev.contextPct, contextTokens: context?.tokens ?? prev.contextTokens, contextWindow: context?.window ?? prev.contextWindow, costUsd: cost?.usd ?? prev.costUsd });
     }
   }

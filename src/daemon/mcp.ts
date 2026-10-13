@@ -1,4 +1,4 @@
-import { fmtAge, shortEffort, shortModel } from '../shared/format.js';
+import { fmtAge, shortEffort, shortModel, usageLine } from '../shared/format.js';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -110,11 +110,11 @@ const spawned = new Map<string, { args: string; result: unknown; at: number }>()
 
 const tools = {
   list_nodes: tool(
-    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any, and for a node with its own git worktree, worktree { path, branch, base, missing }. Use it to find node ids before calling send, read or close.`,
+    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. The text starts with one line of account-level Claude usage (5-hour and 7-day rate-limit windows, percent used and reset time), which every node draws on. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any, and for a node with its own git worktree, worktree { path, branch, base, missing }. Use it to find node ids before calling send, read or close.`,
     {},
     async (c) => {
       const nodes = c.manager.list().filter((v) => inScope(c.manager, c.caller, v.id)).map((v) => summarize(v, Date.now()));
-      return { text: tree(nodes), data: nodes };
+      return { text: `${usageLine(c.manager.usage)}\n${tree(nodes)}`, data: nodes };
     }),
 
   spawn: tool(

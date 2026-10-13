@@ -128,6 +128,37 @@ describe('POST /hook', () => {
     ]);
   });
 
+  it('mod-event rateLimits: keeps the newest report from any node, broadcasts it, drops a malformed one', async () => {
+    const a = manager.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir() });
+    const b = manager.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir() });
+    const post = (id: string, payload: unknown) => fetch(`http://127.0.0.1:${server.port}/mod-event`, {
+      method: 'POST', body: JSON.stringify({ event: 'session.measure', payload }),
+      headers: { Authorization: `Bearer ${manager.tokenFor(id)}`, 'X-O8-Node': id, 'Content-Type': 'application/json' },
+    });
+    await connect();
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    const first = [{ kind: 'five_hour', percentUsed: 10, resetsAt: '2026-10-13T14:30:00Z' }];
+    const newer = [{ kind: 'five_hour', percentUsed: 12 }, { kind: 'seven_day', percentUsed: 3 }];
+    expect((await post(a.id, { rateLimits: first })).status).toBe(204);
+    expect((await post(b.id, { rateLimits: newer })).status).toBe(204);
+    expect((await post(a.id, { rateLimits: [] })).status).toBe(204); // no reading: keeps b's
+    expect(manager.usage).toMatchObject({ rateLimits: newer, nodeId: b.id });
+    const sent = await until(() => { const u = seen.filter((m) => m.t === 'usage'); return u.length === 2 ? u : undefined; });
+    expect(sent.map((m) => m.t === 'usage' && m.usage.nodeId)).toEqual([a.id, b.id]);
+
+    // Malformed: rejected, but context and cost from the same report still land on the node.
+    expect((await post(a.id, { rateLimits: [{ kind: 'five_hour', percentUsed: 'lots' }], context: { tokens: 5, window: 10, percent: 50 }, cost: { usd: 1 } })).status).toBe(204);
+    expect((await post(a.id, { rateLimits: 'nope' })).status).toBe(204);
+    expect(manager.usage).toMatchObject({ rateLimits: newer, nodeId: b.id });
+    expect(manager.view(a.id)?.status).toMatchObject({ contextPct: 50, costUsd: 1 });
+
+    ws!.terminate();
+    seen = [];
+    await connect();
+    const snap = await until(() => seen.find((m) => m.t === 'snapshot'));
+    expect(snap).toMatchObject({ usage: { rateLimits: newer, nodeId: b.id } });
+  });
+
   it('GET /tree: the whole tree from the root, the caller marked self', async () => {
     const root = manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() });
     const a = manager.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir(), parentId: root.id });

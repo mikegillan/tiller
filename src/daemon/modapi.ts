@@ -7,6 +7,7 @@ import type { NodeManager } from './manager.js';
 import { PREVIEW_CHARS, readBody } from './util.js';
 
 const modEvent = z.object({ event: z.enum(['turn.start', 'turn.complete', 'session.measure']), payload: z.record(z.string(), z.unknown()).default({}) });
+const rateLimits = z.array(z.object({ kind: z.string().min(1).max(64), percentUsed: z.number().finite(), resetsAt: z.string().max(64).optional() })).max(16);
 
 /** `root` (or every root) and its descendants depth-first (a root is depth 0); the row for `selfId`, if any, is marked self. */
 function treeViews(manager: NodeManager, root?: NodeView, selfId?: string): ChildView[] {
@@ -58,6 +59,11 @@ export function modApi(manager: NodeManager, authenticate: (req: http.IncomingMe
         onFocus(caller, id);
       } else {
         const ev = modEvent.parse(body) as ModEvent;
+        if (ev.event === 'session.measure') {
+          // A malformed rateLimits is dropped; the node's context and cost still apply.
+          const rl = rateLimits.safeParse(ev.payload.rateLimits);
+          ev.payload.rateLimits = rl.success ? rl.data : undefined;
+        }
         if (caller !== HUMAN) {
           markModLive(manager, caller);
           manager.applyModEvent(caller, ev);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ctxLevel, fmtAge, fmtTokens, shortEffort, shortModel } from './format.js';
+import { ctxLevel, fmtAge, fmtTokens, shortEffort, shortModel, usageLine, usageParts } from './format.js';
 
 describe('format', () => {
   it('shortens model ids', () => {
@@ -23,5 +23,24 @@ describe('format', () => {
   });
   it('fmtTokens', () => {
     expect([999, 84_000, 1_500_000].map(fmtTokens)).toEqual(['999', '84k', '1.5M']);
+  });
+  it('usage: windows with reset times, amber above 80%, red above 95%', () => {
+    const now = new Date(2026, 9, 13, 12, 0).getTime(); // local time, so the printed reset times do not depend on the zone
+    const limits = [
+      { kind: 'five_hour', percentUsed: 42.4, resetsAt: new Date(2026, 9, 13, 14, 30).toISOString() },
+      { kind: 'seven_day', percentUsed: 80.5, resetsAt: new Date(2026, 9, 15, 9, 5).toISOString() },
+      { kind: 'spend_limit', percentUsed: 96 },
+    ];
+    const weekday = new Date(2026, 9, 15).toLocaleDateString([], { weekday: 'short' });
+    expect(usageParts(limits, false, now)).toEqual([
+      { text: '5h 42% · resets 14:30', level: 'ok' },
+      { text: `7d 81% · resets ${weekday} 09:05`, level: 'warn' },
+      { text: 'spend_limit 96%', level: 'bad' },
+    ]);
+    expect(usageParts(limits, true, now).map((p) => p.text)).toEqual(['5h 42%', '7d 81%', 'spend_limit 96%']);
+    expect(usageParts([{ kind: 'five_hour', percentUsed: 80 }, { kind: 'five_hour', percentUsed: 95 }]).map((p) => p.level)).toEqual(['ok', 'warn']);
+    expect(usageParts([{ kind: 'five_hour', percentUsed: 1, resetsAt: 'garbage' }])[0]!.text).toBe('5h 1%');
+    expect(usageLine(undefined)).toBe('usage: no report yet');
+    expect(usageLine({ rateLimits: limits.slice(0, 1), nodeId: 'n-1', at: now - 120_000 }, now)).toBe('usage: 5h 42% · resets 14:30 (from n-1, 2m ago)');
   });
 });

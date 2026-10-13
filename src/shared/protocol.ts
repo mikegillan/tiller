@@ -100,9 +100,15 @@ export interface NodeView extends NodeRecord {
   unread: boolean;
 }
 
+/** One rate-limit window as Claude Code's `session.measure` reports it; `kind` is five_hour, seven_day or a gateway's spend_limit. */
+export interface RateLimit { kind: string; percentUsed: number; resetsAt?: string }
+/** Account-level Claude usage: the newest non-empty rateLimits any node's mod reported. Limits are per account, so there is one. */
+export interface Usage { rateLimits: RateLimit[]; nodeId: string; at: number }
+
 // Daemon -> UI (WebSocket, JSON). One message per line.
 export type ServerMessage =
-  | { t: 'snapshot'; nodes: NodeView[]; appConnected: boolean }
+  | { t: 'snapshot'; nodes: NodeView[]; appConnected: boolean; usage?: Usage }
+  | { t: 'usage'; usage: Usage }             // a node reported new account-level rate limits
   | { t: 'clients'; app: boolean }           // the native app connected or disconnected; terminal clients then stop ringing the bell
   | { t: 'node'; node: NodeView }            // created or updated (full record)
   | { t: 'removed'; id: string }
@@ -146,7 +152,7 @@ export interface InboxMessage { id: string; from: string; text: string; enqueued
 export type ModEvent =
   | { event: 'turn.start'; payload: { text: string; turnId: string } }
   | { event: 'turn.complete'; payload: { answer?: string; durationMs: number; isAborted: boolean; turnId: string; reason: 'answer' | 'aborted' | 'refusal' | 'error'; usage?: Record<string, unknown> } }
-  | { event: 'session.measure'; payload: { context?: { tokens: number; window: number; percent: number }; cost?: { usd: number } } };
+  | { event: 'session.measure'; payload: { context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: RateLimit[] } };
 /** POST /focus { id } → 204; the daemon broadcasts `focus` to ws clients (PLAN §14). */
 /** GET /tree → ChildView[]: the calling node's whole tree from its root, depth-first. */
 export interface ChildView {

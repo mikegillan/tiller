@@ -1,7 +1,7 @@
 // The sidebar: a rounded frame holding the whole tree (3 lines per node), an action bar for the selected node, and daemon status.
 // Layout is pure: model in, styled lines and click targets out.
-import { needsYou, type NodeView } from '../shared/protocol.js';
-import { ctxLevel, fmtAge, fmtTokens, shortEffort, shortModel } from '../shared/format.js';
+import { needsYou, type NodeView, type Usage } from '../shared/protocol.js';
+import { ctxLevel, fmtAge, fmtTokens, shortEffort, shortModel, usageParts } from '../shared/format.js';
 import { treeOrder } from '../shared/tree.js';
 import { BINDINGS } from './chords.js';
 
@@ -91,6 +91,7 @@ export function revealScroll(m: SideModel, W: number, H: number, i: number): num
 export interface SideModel {
   nodes: Map<string, NodeView>; cur: string; scroll: number; now: number;
   port: number; connected: boolean; /** One-line input or confirmation shown in the footer. */ prompt?: string; notice?: string;
+  /** Account-level rate limits, shown compactly on the status row. */ usage?: Usage;
 }
 export interface SideLayout {
   lines: string[];
@@ -124,6 +125,7 @@ export function layoutSidebar(m: SideModel, W: number, H: number): SideLayout {
     acts.push({ row: actRows.length - 1, x0, x1: Math.min(w + 1, x0 + text.length - 1), act: a.act });
   }
   const status: Seg[] = m.connected ? [['32', '●'], ['', ` daemon ${m.port}`]] : [['31', '●'], ['', ' reconnecting…']];
+  for (const p of usageParts(m.usage?.rateLimits ?? [], true)) status.push(['2', ' · '], [{ ok: '', warn: '33', bad: '31' }[p.level], p.text]);
   const footer: Seg[] = m.prompt !== undefined ? [['36', m.prompt + '▏']] : [['2', m.notice ?? '^\\ n new · d detach · ? help']];
   const bottom = [rule('├', '┤'), ...actRows.map((r) => frame(paint(r, w))), rule('├', '┤'), frame(paint(status, w)), frame(paint(footer, w)), rule('╰', '╯')];
 
