@@ -314,6 +314,7 @@ export class NodeManager extends EventEmitter {
     if (!w) throw new Error(`${id} has no worktree of its own to merge`);
     const s = this.statuses.get(id)!;
     if (s.state === 'working' && !s.exited) throw new Error(`refusing to merge while ${id} is working; wait until its turn ends`);
+    if (this.setups.has(id)) throw new Error('worktree setup is running');
     if (this.busy.has(id)) throw new Error(`${id} is already ${this.busy.get(id)}`);
     this.busy.set(id, 'merging');
     try {
@@ -780,7 +781,7 @@ export class NodeManager extends EventEmitter {
     this.needsSetup.set(id, prompt);
     const done = wt.runCommands(cmds, {
       cwd: w.path, env: this.worktreeEnv(id, w), log, timeout: SETUP_TIMEOUT_MS, signal: abort.signal,
-      onStart: (cmd) => show({ state: 'working', activity: `setting up worktree: ${cmd}` }),
+      onStart: (cmd) => show({ state: 'unknown', activity: `setting up worktree: ${cmd}` }),
     }).then(() => {
       if (abort.signal.aborted || !this.registry.get(id)) return;
       this.needsSetup.delete(id);

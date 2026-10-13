@@ -25,14 +25,14 @@ export const canMerge = (node: NodeView): boolean => {
   return !!g && !g.mergedAt && g.ahead > 0 && (!!node.status.exited || node.status.state !== 'working');
 };
 
-/** `⎇ o8/n-3f2a · ↑2 · 1 dirty · opus 5.5 · high · [bar] 42% · $0.42`; null when the node reports none of it. */
+/** `⎇ o8/n-3f2a · ↑2 · ●1 · opus 5.5 · high · [bar] 42% · $0.42`; null when the node reports none of it. */
 export function NodeMeta({ node, detail }: { node: NodeView; detail?: boolean }) {
   const s = node.status, wt = node.worktree, g = s.git;
   const model = shortModel(s.model ?? node.model);
   const parts = [
     wt && <span className="branch" title={`branch ${wt.branch} from ${wt.base}`}>⎇ {wt.branch}</span>,
     g && g.ahead > 0 && <span title={`${g.ahead} commit(s) not in ${g.base}${g.behind ? `; ${g.base} has ${g.behind} not on the branch` : ''}`}>↑{g.ahead}</span>,
-    g && g.dirty > 0 && <span title="uncommitted files in the worktree">{g.dirty} dirty</span>,
+    g && g.dirty > 0 && <span title={`${g.dirty} uncommitted file(s) in the worktree`}>●{g.dirty}</span>,
     g?.mergedAt && <span title={`merged into ${g.base}`}>merged</span>,
     (wt?.missing || g?.missing) && <span className="warn" title="the worktree directory is gone; resume is refused">missing</span>,
     model && <span>{model}</span>,

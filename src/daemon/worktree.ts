@@ -126,6 +126,11 @@ export async function mergeTree(repo: string, ours: string, theirs: string): Pro
   }
 }
 
+/** A merge refused because the branch conflicts with its base; `conflicts` holds the paths. */
+export class MergeConflict extends Error {
+  constructor(message: string, readonly conflicts: string[]) { super(message); }
+}
+
 /**
  * Bring `branch` into the local branch `base`, refusing before anything changes when they conflict. merge makes a merge
  * commit even when a fast-forward would do; squash makes one commit on base with the branch's changes; ff-only moves
@@ -143,7 +148,7 @@ export async function mergeInto(repo: string, branch: string, base: string, styl
     if (!(await isAncestor(repo, baseTip, tip))) throw new Error(`cannot fast-forward ${base}: it has moved on since ${branch} left it; rebase the branch or use merge style "merge"`);
   } else {
     const { tree, conflicts } = await mergeTree(repo, baseTip, tip);
-    if (conflicts.length) throw new Error(`merge refused, nothing changed: ${branch} conflicts with ${base} in ${conflicts.join(', ')}`);
+    if (conflicts.length) throw new MergeConflict(`merge refused, nothing changed: ${branch} conflicts with ${base} in ${conflicts.join(', ')}`, conflicts);
     const log = style === 'squash' ? await git(repo, ['log', '--reverse', '--format=* %s', `${baseTip}..${tip}`]) : '';
     const parents = style === 'merge' ? ['-p', baseTip, '-p', tip] : ['-p', baseTip];
     next = (await git(repo, ['commit-tree', tree, ...parents, '-m', subject, ...(log ? ['-m', log.trim()] : [])])).trim();

@@ -174,5 +174,6 @@ export interface ChildView {
   parentId?: string | null;
   errored?: boolean; interrupted?: boolean; exited?: boolean;
   activity?: string; ageSec: number; lastMessage?: string; unread: boolean; contextPct?: number;
-  git?: GitState;
+  /** For a node with its own worktree: its branch, commits ahead of base and uncommitted files. */
+  branch?: string; ahead?: number; dirty?: number;
 }
