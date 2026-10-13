@@ -1,16 +1,23 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { NodeStatus, NodeView } from '../shared/protocol.js';
-import { content, createNotifier, notifyArgs, type NotifierDeps } from './notifier.js';
+import { dndActive, type Dnd, type NodeStatus, type NodeView } from '../shared/protocol.js';
+import type { Notifications } from './config.js';
+import { NodeRegistry } from './nodes.js';
+import { content, createNotifier, decide, inQuietHours, notifyArgs, type NotifierDeps } from './notifier.js';
 
-const node = (title: string, status: Partial<NodeStatus> = {}): NodeView => ({
+const node = (title: string, status: Partial<NodeStatus> = {}, more: Partial<NodeView> = {}): NodeView => ({
   id: 'n1', parentId: null, kind: 'claude', title, cwd: '/', createdAt: 0, unread: false,
-  status: { state: 'done', changedAt: 0, ...status },
+  status: { state: 'done', changedAt: 0, ...status }, ...more,
 });
+const DEFAULTS: Notifications = { kinds: { needsYou: 'sound', errored: 'sound', done: 'banner', exited: 'banner' }, failuresOnly: false, treeDoneSummary: false };
+const at = (hhmm: string) => new Date(`2026-10-13T${hhmm}:00`);
 
 describe('content', () => {
   it('blocked: needs approval with the tool', () => {
     const n = node('api', { state: 'blocked', activity: 'needs approval: Bash touch /tmp/x' });
-    expect(content(n, 'needsYou')).toEqual({ title: 'api', subtitle: undefined, body: 'Needs approval: Bash touch /tmp/x', sound: true });
+    expect(content(n, 'needsYou')).toEqual({ title: 'api', subtitle: undefined, body: 'Needs approval: Bash touch /tmp/x' });
   });
 
   it('waiting: the question, else the first line of the last message', () => {
@@ -18,17 +25,14 @@ describe('content', () => {
     expect(content(node('a', { state: 'waiting', lastAssistantMessage: '\nShall I proceed?\nmore' }), 'needsYou').body).toBe('Asks: Shall I proceed?');
   });
 
-  it('done and errored use the first line, 120 chars, and only errors make a sound', () => {
+  it('done and errored use the first line, 120 chars', () => {
     const msg = 'x'.repeat(200) + '\nsecond';
-    const done = content(node('a', { lastAssistantMessage: msg }), 'done');
-    expect(done.body).toBe(`Finished: ${'x'.repeat(120)}`);
-    expect(done.sound).toBe(false);
-    const bad = content(node('a', { errored: true, lastAssistantMessage: 'rate limited' }), 'errored');
-    expect(bad).toMatchObject({ body: 'Turn failed: rate limited', sound: true });
+    expect(content(node('a', { lastAssistantMessage: msg }), 'done').body).toBe(`Finished: ${'x'.repeat(120)}`);
+    expect(content(node('a', { errored: true, lastAssistantMessage: 'rate limited' }), 'errored').body).toBe('Turn failed: rate limited');
   });
 
   it('exited, and the session title as subtitle only when it differs', () => {
-    expect(content(node('child'), 'exited', 'session')).toEqual({ title: 'child', subtitle: 'session', body: 'Exited', sound: false });
+    expect(content(node('child'), 'exited', 'session')).toEqual({ title: 'child', subtitle: 'session', body: 'Exited' });
     expect(content(node('same'), 'exited', 'same').subtitle).toBeUndefined();
   });
 });
@@ -51,18 +55,56 @@ describe('notifyArgs', () => {
   });
 });
 
+describe('decide', () => {
+  it('defaults to today: sound for needs-you and errors, a plain banner for done and exited', () => {
+    expect((['needsYou', 'errored', 'done', 'exited'] as const).map((k) => decide(k, DEFAULTS, at('12:00')).level)).toEqual(['sound', 'sound', 'banner', 'banner']);
+  });
+
+  it('follows the kinds map, and failuresOnly silences done and exited only', () => {
+    const cfg: Notifications = { ...DEFAULTS, kinds: { ...DEFAULTS.kinds, needsYou: 'banner', errored: 'silent' } };
+    expect(decide('needsYou', cfg, at('12:00')).level).toBe('banner');
+    expect(decide('errored', cfg, at('12:00'))).toEqual({ level: 'silent', why: 'kinds.errored' });
+    const only = { ...DEFAULTS, failuresOnly: true };
+    expect((['needsYou', 'errored', 'done', 'exited'] as const).map((k) => decide(k, only, at('12:00')).level)).toEqual(['sound', 'sound', 'silent', 'silent']);
+  });
+
+  it('quiet hours across midnight: silent except needs-you, which loses its sound', () => {
+    const q = { ...DEFAULTS, quietHours: '22:00-07:00' };
+    for (const t of ['22:00', '23:59', '00:00', '06:59']) {
+      expect(decide('needsYou', q, at(t))).toEqual({ level: 'banner', why: 'quietHours' });
+      expect(decide('errored', q, at(t)).level).toBe('silent');
+      expect(decide('done', q, at(t)).level).toBe('silent');
+    }
+    for (const t of ['07:00', '12:00', '21:59']) expect(decide('needsYou', q, at(t)).level).toBe('sound');
+  });
+
+  it('quiet hours within one day', () => {
+    expect([at('12:59'), at('13:00'), at('13:59'), at('14:00')].map((d) => inQuietHours('13:00-14:00', d))).toEqual([false, true, true, false]);
+  });
+});
+
+describe('dndActive', () => {
+  it('is on until it expires, or until turned off when it has no end', () => {
+    expect(dndActive({ on: true, until: 1000 }, 999)).toBe(true);
+    expect(dndActive({ on: true, until: 1000 }, 1000)).toBe(false);
+    expect(dndActive({ on: true }, 1e15)).toBe(true);
+    expect(dndActive({ on: false }, 0)).toBe(false);
+  });
+});
+
 describe('createNotifier', () => {
-  const setup = (watchers = 0) => {
-    const calls: string[][] = [];
+  const setup = (watchers = 0, opts: { nodes?: NodeView[]; cfg?: Partial<Notifications>; dnd?: Dnd } = {}) => {
+    const calls: string[][] = [], logs: string[] = [];
     let t = 1000, w = watchers;
+    const nodes = opts.nodes ?? [node('api', { state: 'blocked', activity: 'needs approval: Bash ls' })];
     const notify = createNotifier({
-      view: () => node('api', { state: 'blocked', activity: 'needs approval: Bash ls' }), rootTitle: () => 'api',
+      view: (id) => nodes.find((n) => n.id === id), tree: () => nodes, config: () => ({ ...DEFAULTS, ...opts.cfg }), dnd: () => opts.dnd ?? { on: false },
       watchers: () => w, appConnected: () => false, terminalNotifier: '/bin/tn', onClick: (id) => id,
-      run: (_f, a) => calls.push(a), now: () => t,
+      run: (_f, a) => calls.push(a), now: () => t, log: (l) => logs.push(l),
     } satisfies NotifierDeps);
-    return { calls, notify, tick: (ms: number) => { t += ms; }, watch: (n: number) => { w = n; } };
+    return { calls, logs, notify, tick: (ms: number) => { t += ms; }, watch: (n: number) => { w = n; } };
   };
-  const ev = (kind: 'needsYou' | 'done') => ({ id: 'n1', kind, title: 'api' }) as const;
+  const ev = (kind: 'needsYou' | 'done' | 'errored' | 'exited', id = 'n1') => ({ id, kind, title: 'api' }) as const;
 
   it('is silent while a focused client has the node selected, and does not spend the throttle', () => {
     const s = setup(1);
@@ -81,5 +123,54 @@ describe('createNotifier', () => {
     expect(s.calls).toHaveLength(2);
     s.tick(1000); s.notify(ev('needsYou'));
     expect(s.calls).toHaveLength(3);
+  });
+
+  it('plays a sound only at level sound', () => {
+    const s = setup(0, { cfg: { kinds: { ...DEFAULTS.kinds, needsYou: 'banner' } } });
+    s.notify(ev('needsYou'));
+    expect(s.calls[0]).not.toContain('-sound');
+    expect(s.logs).toEqual(['notify n1 needsYou: sent banner (kinds.needsYou)']);
+  });
+
+  it('do not disturb sends nothing until it expires', () => {
+    const s = setup(0, { dnd: { on: true, until: 3000 } });
+    s.notify(ev('needsYou'));
+    expect(s.calls).toHaveLength(0);
+    expect(s.logs).toEqual(['notify n1 needsYou: suppressed (do not disturb)']);
+    s.tick(2000); s.notify(ev('needsYou'));
+    expect(s.calls).toHaveLength(1);
+  });
+
+  it('a muted node never notifies, and the mute survives a save and reload of the record', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'o8-mute-')), 'state.json');
+    const r = new NodeRegistry(file);
+    const rec = r.create({ parentId: null, kind: 'claude', title: 'api', cwd: '/' });
+    r.update(rec.id, { muted: true });
+    r.flush();
+    const r2 = new NodeRegistry(file);
+    r2.load();
+    const s = setup(0, { nodes: [{ ...r2.get(rec.id)!, unread: false, status: { state: 'blocked', changedAt: 0 } }] });
+    s.notify(ev('needsYou', rec.id));
+    expect(s.calls).toHaveLength(0);
+    expect(s.logs).toEqual([`notify ${rec.id} needsYou: suppressed (muted)`]);
+  });
+
+  it('tree summary: per-node done is suppressed, and one notification fires when the last node finishes, counting outcomes', () => {
+    const root = node('sess', { state: 'done' }, { id: 'r' });
+    const a = node('a', { state: 'done' }, { id: 'a', parentId: 'r', outcome: { outcome: 'succeeded', at: 0 } });
+    const b = node('b', { state: 'working' }, { id: 'b', parentId: 'r' });
+    const c = node('c', { state: 'done' }, { id: 'c', parentId: 'r', outcome: { outcome: 'failed', at: 0 } });
+    const sh = node('shell', { state: 'none' }, { id: 't', parentId: 'r', kind: 'terminal' });
+    const s = setup(0, { nodes: [root, a, b, c, sh], cfg: { treeDoneSummary: true } });
+    s.notify(ev('done', 'a'));
+    expect(s.calls).toHaveLength(0);
+    b.status = { state: 'done', errored: true, changedAt: 0 };
+    s.notify(ev('errored', 'b')); // a failure still notifies on its own, and finishes the tree
+    expect(s.calls.map((c) => c[c.indexOf('-message') + 1])).toEqual(['tree sess finished: 2 succeeded, 2 failed', 'Turn failed']);
+    b.status = { ...b.status, exited: true };
+    s.notify(ev('exited', 'b')); // an exit after the finish is not a new one
+    expect(s.calls).toHaveLength(2);
+    s.notify(ev('exited', 't')); // a plain terminal is outside the summary and notifies as before
+    expect(s.calls[2]).toContain('Exited');
   });
 });

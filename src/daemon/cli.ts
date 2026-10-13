@@ -5,6 +5,8 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { WebSocket } from 'ws';
+import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
 import { promptPath } from './launch.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
@@ -29,6 +31,9 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 attach <id>                                      open the sidebar client on a node (Ctrl-\\ ? for keys)
   o8 select <id>                                      show a node in the app (opens the app if it is built)
   o8 resume <id>                                      relaunch an exited Claude node
+  o8 mute <id> | unmute <id>                          stop or restart OS notifications for one node
+  o8 dnd [on|off|1h|30m]                              do not disturb: no OS notifications until off, or for the time given;
+                                                      with no argument, show whether it is on
   o8 prune                                            remove every exited node that has no live descendant
   o8 restart <id> [--prompt T]                        relaunch a node with a fresh session (clears its context; children are kept);
                                                       T is its first prompt, else it is pointed at the tree's handoff.md if any
@@ -75,6 +80,24 @@ async function call(tool: string, args: Record<string, unknown>, print = true, s
   if (!res.ok) return soft ? { error: body.error ?? `HTTP ${res.status}` } : fail(body.error ?? `HTTP ${res.status}`);
   if (print) console.log(body.text ?? JSON.stringify(body.data, null, 2));
   return body;
+}
+
+type Snapshot = Extract<ServerMessage, { t: 'snapshot' }>;
+/** As the human, over the UI's WebSocket: after the snapshot, send what `build` returns and resolve with the first reply `isReply` accepts; with nothing to send, with the snapshot. */
+function wsHuman(build: (s: Snapshot) => ClientMessage | undefined, isReply: (r: ServerMessage) => boolean = () => false): Promise<ServerMessage> {
+  const ws = new WebSocket(`ws://127.0.0.1:${daemonPort()}/ws`);
+  return new Promise<ServerMessage>((ok, no) => {
+    const end = (r: ServerMessage) => { ok(r); ws.close(); };
+    ws.on('open', () => ws.send(JSON.stringify({ t: 'auth', token: adminToken() } satisfies ClientMessage)));
+    ws.on('message', (raw) => {
+      const r = JSON.parse(raw.toString()) as ServerMessage;
+      if (r.t !== 'snapshot') { if (isReply(r)) end(r); return; }
+      const m = build(r);
+      if (m) ws.send(JSON.stringify(m)); else end(r);
+    });
+    ws.on('error', (e) => no(new Error(`cannot reach daemon: ${e.message}`)));
+    ws.on('close', (code) => no(new Error(code === 4401 ? 'unauthorized: bad admin token' : 'daemon closed the connection')));
+  }).catch((e: Error) => fail(e.message));
 }
 
 const APP = join(dirname(dirname(import.meta.dirname)), 'src-tauri/target/release/bundle/macos/orchestr8.app');
@@ -145,6 +168,9 @@ switch (cmd) {
       'gate.command': c.gate?.command ?? '(none)', 'gate.retries': c.gate?.retries, 'gate.timeoutMinutes': c.gate?.timeoutMinutes,
       resumeOnStart: c.resumeOnStart, resumeMaxAgeDays: c.resumeMaxAgeDays, sessionsKeepDays: c.sessionsKeepDays, digestAfterMinutes: c.digestAfterMinutes,
       ...Object.fromEntries(Object.entries(c.limits).map(([k, v]) => [`limits.${k}`, v])),
+      ...Object.fromEntries(Object.entries(c.notifications.kinds).map(([k, v]) => [`notifications.kinds.${k}`, v])),
+      'notifications.failuresOnly': c.notifications.failuresOnly, 'notifications.treeDoneSummary': c.notifications.treeDoneSummary,
+      'notifications.quietHours': c.notifications.quietHours ?? '(none)',
     };
     for (const [k, v] of Object.entries(values)) console.log(`${k}: ${v ?? '(claude default)'}  [${c.sources[k as keyof typeof values]}]`);
     break;
@@ -164,6 +190,24 @@ switch (cmd) {
     await call('select', { nodeId: pos[0] }, false);
     if (existsSync(APP)) openApp(daemonPort(), pos[0]!);
     break;
+  case 'mute':
+  case 'unmute': {
+    const id = pos[0] ?? fail(usage());
+    const r = await wsHuman((snap) => snap.nodes.some((n) => n.id === id) ? { t: 'mute', id, muted: cmd === 'mute' } : fail(`no such node: ${id}`),
+      (r) => r.t === 'error' || (r.t === 'node' && r.node.id === id));
+    if (r.t === 'error') fail(r.message);
+    console.log(`${cmd}d ${id}`);
+    break;
+  }
+  case 'dnd': {
+    const dur = pos[0]?.match(/^(\d+)(m|h)$/);
+    if (pos[0] && pos[0] !== 'on' && pos[0] !== 'off' && !dur) fail(usage());
+    const r = await wsHuman(() => pos[0] ? { t: 'dnd', on: pos[0] !== 'off', ...(dur ? { minutes: Number(dur[1]) * (dur[2] === 'h' ? 60 : 1) } : {}) } : undefined, (r) => r.t === 'dnd');
+    const dnd = r.t === 'dnd' ? r : r.t === 'snapshot' ? r.dnd : undefined;
+    const on = !!dnd?.on && (dnd.until === undefined || dnd.until > Date.now());
+    console.log(on ? `do not disturb is on${dnd!.until ? ` until ${new Date(dnd!.until).toLocaleTimeString()}` : ''}` : 'do not disturb is off');
+    break;
+  }
   case 'resume':
     if (!pos[0]) fail(usage());
     await call('resume', { nodeId: pos[0] });

@@ -7,7 +7,7 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
-import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type ClientMessage, type ServerMessage, type Usage } from '../shared/protocol.js';
+import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type ClientMessage, type Dnd, type ServerMessage, type Usage } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
 import { DEFAULT_PORT } from './home.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
@@ -51,6 +51,8 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('confirm'), confirmId: z.string(), ok: z.boolean() }),
   z.object({ t: z.literal('diff'), id }),
   z.object({ t: z.literal('send'), id, text: z.string().min(1) }),
+  z.object({ t: z.literal('mute'), id, muted: z.boolean() }),
+  z.object({ t: z.literal('dnd'), on: z.boolean(), minutes: z.number().positive().max(7 * 24 * 60).optional() }),
 ]) satisfies z.ZodType<ClientMessage>;
 
 export interface DaemonServer {
@@ -61,6 +63,8 @@ export interface DaemonServer {
   watchers(id: string): number;
   /** Whether the native app is connected. */
   appConnected(): boolean;
+  /** Do not disturb, as the human last set it; check dndActive for whether it has expired. */
+  dnd(): Dnd;
   close(): Promise<void>;
 }
 
@@ -80,6 +84,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   const anyFocused = () => [...clients].some((c) => c.authed && c.focused);
   /** Since when no client has been focused; undefined while one is, or before any ever was. */
   let awaySince: number | undefined;
+  let dnd: Dnd = { on: false };
   const noteAway = () => { awaySince = anyFocused() ? undefined : awaySince ?? Date.now(); };
 
   manager.on('node', (node) => broadcast({ t: 'node', node }));
@@ -145,6 +150,18 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       case 'confirm': pendingConfirms.get(m.confirmId)?.(m.ok); return;
       case 'diff': sendTo(c, { t: 'diff', id: m.id, ...(await manager.diff(m.id)) }); return;
       case 'send': sendTo(c, { t: 'sent', id: m.id, result: await deliver(manager, HUMAN, m.id, m.text) }); return;
+      case 'mute': {
+        if (!manager.registry.update(m.id, { muted: m.muted || undefined })) { sendTo(c, { t: 'error', message: `no such node: ${m.id}`, id: m.id }); return; }
+        console.log(`${m.muted ? 'muted' : 'unmuted'} ${m.id}`);
+        const v = manager.view(m.id);
+        if (v) manager.emit('node', v);
+        return;
+      }
+      case 'dnd':
+        dnd = m.on ? { on: true, ...(m.minutes ? { until: Date.now() + m.minutes * 60_000 } : {}) } : { on: false };
+        console.log(`do not disturb ${m.on ? `on${dnd.until ? ` until ${new Date(dnd.until).toLocaleTimeString()}` : ''}` : 'off'}`);
+        broadcast({ t: 'dnd', ...dnd });
+        return;
     }
   }
 
@@ -173,7 +190,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
           c.authed = true;
           c.kind = msg.client;
           clearTimeout(authTimer);
-          sendTo(c, { t: 'snapshot', nodes: manager.list(), appConnected: appConnected(), usage: manager.usage });
+          sendTo(c, { t: 'snapshot', nodes: manager.list(), appConnected: appConnected(), usage: manager.usage, dnd });
           if (c.kind === 'app') broadcast({ t: 'clients', app: true });
         } else {
           ws.close(4401, 'auth required');
@@ -259,6 +276,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     },
     watchers: (id) => [...clients].filter((c) => c.authed && c.focused && c.selected === id).length,
     appConnected,
+    dnd: () => dnd,
     async close() {
       for (const c of clients) c.ws.terminate();
       wss.close();

@@ -8,8 +8,15 @@ import { homeDir } from './home.js';
 
 export const MERGE_STYLES = ['merge', 'squash', 'ff-only'] as const;
 export type MergeStyle = (typeof MERGE_STYLES)[number];
+export const NOTIFY_KINDS = ['needsYou', 'done', 'errored', 'exited'] as const;
+export type NotifyKind = (typeof NOTIFY_KINDS)[number];
+export const NOTIFY_LEVELS = ['banner', 'sound', 'silent'] as const;
+export type NotifyLevel = (typeof NOTIFY_LEVELS)[number];
+/** "HH:MM-HH:MM", local time; the end may be earlier than the start (across midnight). */
+const QUIET_HOURS = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
 
 const RoleDefaults = z.object({ model: z.string().min(1).optional(), effort: z.enum(EFFORTS).optional() });
+const Level = z.enum(NOTIFY_LEVELS).optional();
 const ConfigFile = z.object({
   roles: z.object({ orchestrator: RoleDefaults.optional(), worker: RoleDefaults.optional() }).optional(),
   closeWithoutConfirm: z.enum(['never', 'done', 'always']).optional(),
@@ -31,6 +38,12 @@ const ConfigFile = z.object({
   resumeMaxAgeDays: z.number().nonnegative().optional(),
   sessionsKeepDays: z.number().nonnegative().optional(),
   digestAfterMinutes: z.number().nonnegative().optional(),
+  notifications: z.object({
+    kinds: z.object({ needsYou: Level, done: Level, errored: Level, exited: Level }).strict().optional(),
+    failuresOnly: z.boolean().optional(),
+    treeDoneSummary: z.boolean().optional(),
+    quietHours: z.string().regex(QUIET_HOURS, 'expected "HH:MM-HH:MM"').optional(),
+  }).strict().optional(),
   limits: z.object({
     maxDepth: z.number().int().nonnegative().optional(),
     maxChildren: z.number().int().nonnegative().optional(),
@@ -42,7 +55,8 @@ const ConfigFile = z.object({
 type ConfigFile = z.infer<typeof ConfigFile>;
 type RoleDefaults = z.infer<typeof RoleDefaults>;
 
-type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include' | 'merge' | 'mergeWithoutConfirm' | 'setup' | 'teardown'}` | `gate.${'command' | 'retries' | 'timeoutMinutes'}` | 'resumeOnStart' | 'resumeMaxAgeDays' | 'sessionsKeepDays' | 'digestAfterMinutes' | `limits.${LimitKey}`;
+type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include' | 'merge' | 'mergeWithoutConfirm' | 'setup' | 'teardown'}` | `gate.${'command' | 'retries' | 'timeoutMinutes'}` | 'resumeOnStart' | 'resumeMaxAgeDays' | 'sessionsKeepDays' | 'digestAfterMinutes' | `limits.${LimitKey}`
+  | `notifications.kinds.${NotifyKind}` | `notifications.${'failuresOnly' | 'treeDoneSummary' | 'quietHours'}`;
 type LimitKey = keyof Limits;
 
 /** Guardrails for unattended agents; the human is exempt from the spawn caps. */
@@ -58,6 +72,14 @@ export interface Limits {
   /** Messages one sender may send one target in 10 minutes. */
   maxMessagesPer10Min: number;
 }
+/**
+ * kinds: how each notify kind is shown; sound means a banner with a sound. failuresOnly: only needsYou and errored notify.
+ * treeDoneSummary: once every node of a tree is done or exited, one "tree <title> finished" notification replaces the
+ * per-node done and exited ones. quietHours: everything is silent then, except needsYou, which is a banner without sound.
+ */
+export interface Notifications { kinds: Record<NotifyKind, NotifyLevel>; failuresOnly: boolean; treeDoneSummary: boolean; quietHours?: string }
+const KIND_DEFAULTS: Notifications['kinds'] = { needsYou: 'sound', errored: 'sound', done: 'banner', exited: 'banner' };
+
 const LIMIT_DEFAULTS: Limits = { maxDepth: 3, maxChildren: 8, maxLiveNodes: 20, stallMinutes: 5, maxMessagesPer10Min: 20 };
 
 export interface Config {
@@ -83,6 +105,7 @@ export interface Config {
   /** A client regaining focus after this long with no focused client gets an away digest. */
   digestAfterMinutes: number;
   limits: Limits;
+  notifications: Notifications;
   /** Where each key came from: a file path, or 'default'. */
   sources: Record<Key, string>;
 }
@@ -149,6 +172,17 @@ export function loadConfig(cwd: string | null, home = homeDir()): Config {
     if (v !== undefined) limits[k] = v;
     sources[`limits.${k}`] = src;
   }
+  const kinds = { ...KIND_DEFAULTS };
+  for (const k of NOTIFY_KINDS) {
+    const [v, src] = pick((c) => c.notifications?.kinds?.[k]);
+    if (v !== undefined) kinds[k] = v;
+    sources[`notifications.kinds.${k}`] = src;
+  }
+  const [failuresOnly, snf] = pick((c) => c.notifications?.failuresOnly);
+  const [treeDoneSummary, snt] = pick((c) => c.notifications?.treeDoneSummary);
+  const [quietHours, snq] = pick((c) => c.notifications?.quietHours);
+  sources['notifications.failuresOnly'] = snf; sources['notifications.treeDoneSummary'] = snt; sources['notifications.quietHours'] = snq;
+  const notifications = { kinds, failuresOnly: failuresOnly ?? false, treeDoneSummary: treeDoneSummary ?? false, ...(quietHours ? { quietHours } : {}) };
   return { roles, closeWithoutConfirm: close ?? 'never', worktrees, ...(gate ? { gate } : {}), resumeOnStart: resumeOnStart ?? true, resumeMaxAgeDays: resumeMaxAgeDays ?? 3,
-    sessionsKeepDays: sessionsKeepDays ?? 14, digestAfterMinutes: digestAfterMinutes ?? 10, limits, sources };
+    sessionsKeepDays: sessionsKeepDays ?? 14, digestAfterMinutes: digestAfterMinutes ?? 10, limits, notifications, sources };
 }

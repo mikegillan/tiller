@@ -1,6 +1,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { treeOrder } from '../shared/tree.js';
+import { loadConfig } from './config.js';
 import { ADMIN_TOKEN_FILE, daemonPort, PORT_FILE, REPO_FILE } from './home.js';
 import { terminalBundleFor } from './launch.js';
 import { createNotifier, findBin, runDetached } from './notifier.js';
@@ -22,7 +24,12 @@ const o8 = fileURLToPath(new URL('../../bin/o8', import.meta.url));
 const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 manager.on('notify', createNotifier({
   view: (id) => manager.view(id),
-  rootTitle: (id) => (manager.registry.lineage(id).at(-1) ?? manager.registry.get(id))?.title,
+  tree: (id) => {
+    const root = manager.view(manager.registry.lineage(id).at(-1)?.id ?? id);
+    return root ? treeOrder(manager.list(), root).map((i) => i.node) : [];
+  },
+  config: (id) => loadConfig(manager.registry.get(id)?.cwd ?? null, manager.home).notifications,
+  dnd: server.dnd,
   watchers: server.watchers,
   appConnected: server.appConnected,
   terminalNotifier: process.env.O8_TERMINAL_NOTIFIER ?? findBin('terminal-notifier', `${path}:/opt/homebrew/bin:/usr/local/bin`),
