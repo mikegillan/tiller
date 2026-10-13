@@ -7,12 +7,12 @@ import { loadConfig } from './config.js';
 import type { NodeManager } from './manager.js';
 import { logError } from './util.js';
 
-const RATE_MS = 10_000;
+export const RATE_MS = 10_000;
 /** Window for loop detection: limits.maxMessagesPer10Min per pair, and no identical body twice. */
 const LOOP_MS = 10 * 60_000;
 const RETRY_TEXT = 'Your last turn ended with an error. Continue where you left off.';
-const QUEUE_CAP = 16;
-const QUEUE_TTL_MS = 5 * 60_000;
+export const QUEUE_CAP = 16;
+export const QUEUE_TTL_MS = 5 * 60_000;
 const RECEIPT_MS = 8000;
 const WAITING_NOTICE_MS = 15 * 60_000;
 const RETRY_MS = 1000;
@@ -24,7 +24,7 @@ const SAVE_MS = 50;
 export const HUMAN = 'human';
 export const DAEMON = 'orchestr8';
 
-export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input'> & Partial<Pick<NodeManager, 'home'>>;
+export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input' | 'logEvent'> & Partial<Pick<NodeManager, 'home'>>;
 interface DeliverOpts {
   /** "now" interrupts a working target and delivers at once; default "queue". */
   mode?: SendMode;
@@ -32,6 +32,8 @@ interface DeliverOpts {
   fromLabel?: string;
   /** Defaults to the sender's id; null prints `none`. */
   replyTo?: string | null;
+  /** Called once with the final outcome (anything but queued). */
+  onSettle?: (r: SendResult) => void;
 }
 
 // ---- scope (PLAN §5): self, ancestors, siblings, descendants ----
@@ -70,12 +72,12 @@ interface State {
   saveTimer?: NodeJS.Timeout;
   last: Map<string, number>;
   /** Per sender-target pair: messages accepted in the last LOOP_MS, and when the sender's parent was last told of a loop. */
-  sent: Map<string, { at: number; text: string }[]>;
+  sent: Map<string, { at: number; text: string; id: string }[]>;
   loopNoticed: Map<string, number>;
   queues: Map<string, Entry[]>;
   locks: Map<string, Promise<unknown>>;
   /** Outcome of every message sent, for message_status. Pruned after STATUS_TTL_MS and when the sender is removed. */
-  status: Map<string, { from: string; to: string; result: SendResult; at: number }>;
+  status: Map<string, { from: string; to: string; result: SendResult; at: number; onSettle?: (r: SendResult) => void }>;
   /** Per-target timer that re-checks a verified-idle target whose screen was not ready yet. */
   retry: Map<string, NodeJS.Timeout>;
 }
@@ -100,13 +102,9 @@ function stateOf(m: Mgr): State {
   });
   m.on('removed', (id: string) => {
     for (const [k, v] of st.status) if (v.from === id) st.status.delete(k);
-    for (const i of st.inbox.get(id) ?? []) {
-      clearTimeout(i.timer);
-      setResult(st, i.msg.id, { outcome: 'gone', retryable: false, detail: 'target was closed', messageId: i.msg.id });
-    }
+    for (const i of [...(st.inbox.get(id) ?? [])]) takeInbox(st, id, i.msg.id, { outcome: 'gone', retryable: false, detail: 'target was closed' });
     st.inbox.delete(id);
     st.seen.delete(id);
-    saveInbox(st);
     kick(id);
   });
   return st;
@@ -224,10 +222,27 @@ function enqueue(m: Mgr, s: State, e: Entry, detail: string): SendResult {
 
 const modLive = (s: State, id: string) => Date.now() - (s.seen.get(id) ?? -Infinity) <= MOD_LIVE_MS;
 
-/** Record a message's final outcome for message_status. */
+/** Record a message's outcome for message_status, and settle it once the outcome is final. */
 function setResult(s: State, messageId: string, result: SendResult): void {
   const st = s.status.get(messageId);
-  if (st) st.result = result;
+  if (!st) return;
+  st.result = result;
+  // A message that never reached the target does not count toward loop detection, so the retry it invites is accepted.
+  const key = `${st.from}\0${st.to}`;
+  if (s.sent.has(key) && ['queueFull', 'expired', 'withdrawn'].includes(result.outcome)) s.sent.set(key, s.sent.get(key)!.filter((x) => x.id !== messageId));
+  if (result.outcome !== 'queued') st.onSettle?.(result);
+}
+
+/** Remove a message from `to`'s inbox and record its final outcome. Undefined if it is not (or no longer) there. */
+function takeInbox(s: State, to: string, id: string, result: SendResult): InboxItem | undefined {
+  const q = s.inbox.get(to) ?? [];
+  const at = q.findIndex((i) => i.msg.id === id);
+  if (at < 0) return undefined;
+  const [i] = q.splice(at, 1);
+  clearTimeout(i.timer);
+  setResult(s, id, { ...result, messageId: id, ...(i.msg.steer ? { steer: true } : {}) });
+  saveInbox(s);
+  return i;
 }
 
 function writeInbox(s: State): void {
@@ -254,7 +269,8 @@ export function flushInbox(m: Mgr): void {
 
 /**
  * Put `i` in its target's inbox and arm its TTL (measured from enqueue, so a reloaded item keeps its remaining time).
- * The mod holds a message while a turn runs (so it can still be withdrawn), so the TTL starts over while the target works.
+ * The mod holds a message while a turn runs (so it can still be withdrawn), so the TTL starts over while the target works,
+ * and while the mod, still polling, is submitting the message it claimed.
  */
 function addInbox(m: Mgr, s: State, i: InboxItem): void {
   const q = s.inbox.get(i.to) ?? [];
@@ -262,12 +278,9 @@ function addInbox(m: Mgr, s: State, i: InboxItem): void {
   q.push(i);
   const arm = (ms: number) => {
     i.timer = setTimeout(() => {
-      const at = q.indexOf(i);
-      if (at < 0) return;
-      if (busy(m.view(i.to))) return arm(QUEUE_TTL_MS);
-      q.splice(at, 1);
-      setResult(s, i.msg.id, { outcome: 'expired', retryable: true, detail: 'not picked up by the target within 5 min', messageId: i.msg.id });
-      saveInbox(s);
+      if (!q.includes(i)) return;
+      if (busy(m.view(i.to)) || (i.claimed && modLive(s, i.to))) return arm(QUEUE_TTL_MS);
+      takeInbox(s, i.to, i.msg.id, { outcome: 'expired', retryable: true, detail: 'not picked up by the target within 5 min' });
     }, ms);
     i.timer.unref();
   };
@@ -299,15 +312,7 @@ export function inbox(m: Mgr, nodeId: string): InboxMessage[] {
 
 /** POST /ack: the mod submitted the message, so it is delivered. False if it is not (or no longer) in that node's inbox. */
 export function ack(m: Mgr, nodeId: string, id: string): boolean {
-  const s = stateOf(m);
-  const q = s.inbox.get(nodeId) ?? [];
-  const at = q.findIndex((i) => i.msg.id === id);
-  if (at < 0) return false;
-  const [i] = q.splice(at, 1);
-  clearTimeout(i.timer);
-  setResult(s, id, { outcome: 'delivered', retryable: false, messageId: id, ...(i.msg.steer ? { steer: true } : {}) });
-  saveInbox(s);
-  return true;
+  return !!takeInbox(stateOf(m), nodeId, id, { outcome: 'delivered', retryable: false });
 }
 
 /** POST /claim: the mod is about to submit the message, so it can no longer be withdrawn. False if it is not in that node's inbox. */
@@ -347,12 +352,12 @@ export function withdraw(m: Mgr, caller: string, messageId: string): Promise<{ t
     const q = s.queues.get(st.to) ?? [];
     const entry = q.find((e) => e.id === messageId);
     if (item?.claimed) throw refuse('the target\'s mod is already submitting it');
-    if (item) { inbox.splice(inbox.indexOf(item), 1); clearTimeout(item.timer); saveInbox(s); }
-    else if (entry) { q.splice(q.indexOf(entry), 1); clearTimeout(entry.timer); scheduleRetry(m, s, st.to); }
-    else throw refuse('it is no longer queued');
     const result: SendResult = { outcome: 'withdrawn', retryable: false, detail: 'withdrawn by the sender before delivery', messageId };
-    setResult(s, messageId, result);
-    return { to: st.to, result };
+    if (item) takeInbox(s, st.to, messageId, result);
+    else if (entry) { q.splice(q.indexOf(entry), 1); clearTimeout(entry.timer); scheduleRetry(m, s, st.to); setResult(s, messageId, result); }
+    else throw refuse('it is no longer queued');
+    if (m.view(st.to)) m.logEvent(st.to, 'withdraw', { from: caller, messageId });
+    return { to: st.to, result: st.result };
   });
 }
 
@@ -370,7 +375,9 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
   for (const [k, v] of s.status) if (now - v.at > STATUS_TTL_MS) s.status.delete(k);
   const out = (r: SendResult): SendResult => {
     const result = { ...r, messageId: id };
-    s.status.set(id, { from: fromId, to: toId, result, at: now });
+    s.status.set(id, { from: fromId, to: toId, result, at: now, onSettle: opts.onSettle });
+    setResult(s, id, result);
+    if (fromId !== DAEMON && m.view(toId)) m.logEvent(toId, 'send', { from: fromId, outcome: result.outcome, messageId: id, ...(result.steer ? { steer: true } : {}) });
     return result;
   };
   const refuse = (detail: string, retryable = false) => out({ outcome: 'refused', retryable, detail });
@@ -396,7 +403,7 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
       loopNotice(m, s, from, key, why);
       return refuse(`looks like a loop: ${why}; escalate to the human or change approach`);
     }
-    recent.push({ at: now, text });
+    recent.push({ at: now, text, id });
   }
   s.last.set(key, Date.now());
 
@@ -471,8 +478,8 @@ export function startNotices(m: Mgr): () => void {
       const at = retried.get(v.id);
       if (at === undefined) {
         retried.set(v.id, v.status.changedAt);
-        deliver(m, DAEMON, v.id, RETRY_TEXT, { fromLabel: 'orchestr8 (your turn errored)', replyTo: null })
-          .then((r) => { if (r.outcome !== 'delivered' && r.outcome !== 'queued') notice(v, 'turn-errored'); }).catch(logError);
+        deliver(m, DAEMON, v.id, RETRY_TEXT, { fromLabel: 'orchestr8 (your turn errored)', replyTo: null,
+          onSettle: (r) => { if (r.outcome !== 'delivered') notice(v, 'turn-errored'); } }).catch(logError);
       } else if (at !== v.status.changedAt) notice(v, 'turn-errored');
     } else if (state === 'done' && v.status.doneSource === 'stop') { notified.delete(v.id); retried.delete(v.id); } // only a clean Stop re-arms
   };

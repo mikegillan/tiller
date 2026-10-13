@@ -17,7 +17,7 @@ import { notifyWhen } from './deps.js';
 import { closeRefusal, type NodeManager, type WorktreeReport } from './manager.js';
 import { MAX_PATCH_BYTES, MergeConflict } from './worktree.js';
 import { loadPreset, PERMISSION_MODES } from './presets.js';
-import { DAEMON, deliver, HUMAN, inScope, isDescendant, messageStatus, startNotices, withdraw } from './messaging.js';
+import { DAEMON, deliver, HUMAN, inScope, isDescendant, messageStatus, QUEUE_CAP, QUEUE_TTL_MS, RATE_MS, startNotices, withdraw } from './messaging.js';
 import { logError, PREVIEW_CHARS, readBody, safeEqual } from './util.js';
 
 const MAX_WRITE_CHARS = 2000;
@@ -216,25 +216,17 @@ const tools = {
     }),
 
   send: tool(
-    'Send a message to another agent node (self excluded; scope is your parent, siblings, and descendants). The message reaches the target as a prompt inside a framed envelope that shows the target who sent it and where to reply. Delivery is normally queued and confirmed asynchronously: the reply has outcome "queued" and a messageId, and the target\'s plugin submits the message when the target is idle (up to 16 queued, for 5 minutes). Call message_status with the messageId to see when it becomes delivered. If the target has no plugin running, the message is instead pasted into its prompt when it is idle, and the reply may be delivered, stalled or queued. Other outcomes: delivered, stalled (pasted but not confirmed, do not resend blindly), expired, queueFull, gone, refused. Only one send per target per 10 seconds is accepted. Terminal nodes cannot receive messages; use write. mode "now" steers: if the target is working, its turn is interrupted and the message delivered at once, with an envelope line saying so (the reply and message_status carry steer: true); to an idle target it is the same as the default "queue". Use it only to stop a worker heading the wrong way. A queued message can be taken back with withdraw.',
+    `Send a message to another agent node (self excluded; scope is your parent, siblings, and descendants). The message reaches the target as a prompt inside a framed envelope that shows the target who sent it and where to reply. Delivery is normally queued and confirmed asynchronously: the reply has outcome "queued" and a messageId, and the target's plugin submits the message when the target is idle (up to ${QUEUE_CAP} queued, for ${QUEUE_TTL_MS / 60_000} minutes). Call message_status with the messageId to see when it becomes delivered. If the target has no plugin running, the message is instead pasted into its prompt when it is idle, and the reply may be delivered, stalled or queued. Outcomes: queued (still waiting), delivered, stalled (pasted but not confirmed, do not resend blindly), expired and queueFull (not delivered; resend later), withdrawn, gone, refused (the detail says why). Only one send per target per ${RATE_MS / 1000} seconds is accepted. Terminal nodes cannot receive messages; use write. mode "now" steers: if the target is working, its turn is interrupted and the message delivered at once, with an envelope line saying so (the reply and message_status carry steer: true); to an idle target it is the same as the default "queue". Use it only to stop a worker heading the wrong way. A queued message can be taken back with withdraw.`,
     { nodeId: z.string().min(1), text: z.string().min(1), mode: z.enum(['queue', 'now']).optional() },
-    async (c, a) => {
-      const r = await deliver(c.manager, c.caller, a.nodeId, a.text, { mode: a.mode });
-      if (c.manager.registry.get(a.nodeId)) c.manager.logEvent(a.nodeId, 'send', { from: c.caller, outcome: r.outcome, ...(r.messageId ? { messageId: r.messageId } : {}), ...(r.steer ? { steer: true } : {}) });
-      return { data: r };
-    }),
+    async (c, a) => ({ data: await deliver(c.manager, c.caller, a.nodeId, a.text, { mode: a.mode }) })),
 
   withdraw: tool(
-    'Take back a message you sent that is still queued (not yet submitted to or pasted into the target). Its outcome becomes "withdrawn" and it is never delivered. A message already delivered, stalled, expired or being submitted cannot be withdrawn, and the error says which. Takes the messageId from the send reply.',
+    'Take back a message you sent that is still queued (not yet submitted to or pasted into the target). Its outcome becomes "withdrawn" and it is never delivered. A message with any other outcome (see send), or one being submitted, cannot be withdrawn, and the error says why. Takes the messageId from the send reply.',
     { messageId: z.string().min(1) },
-    async (c, a) => {
-      const { to, result } = await withdraw(c.manager, c.caller, a.messageId);
-      if (c.manager.registry.get(to)) c.manager.logEvent(to, 'withdraw', { from: c.caller, messageId: a.messageId });
-      return { data: result };
-    }),
+    async (c, a) => ({ data: (await withdraw(c.manager, c.caller, a.messageId)).result })),
 
   message_status: tool(
-    'Look up the current outcome of a message you sent, which is how you confirm a queued message was delivered: it returns the same result shape as send, with outcome queued until the message is delivered, stalled, expired, withdrawn or gone. Takes the messageId from the send reply.',
+    'Look up the current outcome of a message you sent, which is how you confirm a queued message was delivered. It returns the same result as send (outcomes are listed there), with outcome queued until the message settles. Takes the messageId from the send reply.',
     { messageId: z.string().min(1) },
     async (c, a) => {
       const r = messageStatus(c.manager, c.caller, a.messageId);
