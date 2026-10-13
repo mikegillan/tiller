@@ -20,10 +20,10 @@ export const hasChanges = (node: NodeView): boolean => {
   return !!g && !g.mergedAt && g.ahead + g.dirty > 0 && finished(node.status);
 };
 
-/** A worktree node whose branch has commits for its base and that is not working. */
+/** A worktree node whose branch has commits for its base, with no uncommitted files and no turn running: what the daemon's merge accepts. */
 export const canMerge = (node: NodeView): boolean => {
   const g = node.status.git;
-  return !!g && !g.mergedAt && g.ahead > 0 && (!!node.status.exited || node.status.state !== 'working');
+  return !!g && !g.mergedAt && g.ahead > 0 && g.dirty === 0 && (!!node.status.exited || node.status.state !== 'working');
 };
 
 /** `+42 −18`: lines added and removed. */
@@ -45,7 +45,7 @@ export function NodeMeta({ node, detail, subtree }: { node: NodeView; detail?: b
     g && g.ahead > 0 && <span title={`${g.ahead} commit(s) not in ${g.base}${g.behind ? `; ${g.base} has ${g.behind} not on the branch` : ''}`}>↑{g.ahead}</span>,
     g && g.dirty > 0 && <span title={`${g.dirty} uncommitted file(s) in the worktree`}>●{g.dirty}</span>,
     g?.mergedAt && <span title={`merged into ${g.base}`}>merged</span>,
-    (wt?.missing || g?.missing) && <span className="warn" title="the worktree directory is gone; resume is refused">missing</span>,
+    wt?.missing && <span className="warn" title="the worktree directory is gone; resume is refused">missing</span>,
     model && <span>{model}</span>,
     s.effort && <span>{shortEffort(s.effort)}</span>,
     s.contextPct !== undefined && <CtxBar pct={s.contextPct} />,

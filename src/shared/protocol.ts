@@ -16,7 +16,7 @@ export const NEEDS_YOU_STATES: readonly AgentState[] = ['blocked', 'waiting'];
  * keeps its own copy (the mod cannot import src/shared).
  */
 export const needsYou = (s: NodeStatus) => !s.exited && NEEDS_YOU_STATES.includes(s.state);
-/** A node whose work has stopped: its process exited or its turn is done. */
+/** The node's work has stopped: it exited or finished its turn. */
 export const finished = (s: NodeStatus) => !!s.exited || s.state === 'done';
 
 export interface NodeStatus {
@@ -98,8 +98,6 @@ export interface GitState {
   /** Lines added and removed by the node's work so far: the same numbers as the diff view (see Diff). */
   additions: number;
   deletions: number;
-  /** The worktree directory is gone. */
-  missing?: boolean;
   /** When orchestr8 last merged the branch into base; cleared once the branch moves past what was merged. */
   mergedAt?: number;
 }
@@ -215,7 +213,7 @@ export type ServerMessage =
   | { t: 'error'; message: string; id?: string }
   | { t: 'focus'; from: string; id: string }   // a node's mod asked to view node `id`; an attach client showing `from` switches
   | { t: 'digest'; since: number; items: DigestItem[] } // what happened while no client was focused; sent to the client that regained focus
-  | ({ t: 'diff'; id: string } & Diff)         // reply to a diff request
+  | ({ t: 'diff'; id: string } & (Diff | { error: string })) // reply to a diff request: the diff, or why there is none
   | { t: 'sent'; id: string; result: SendResult } // reply to a send request
   ;
 
@@ -239,7 +237,7 @@ export type ClientMessage =
   | { t: 'prune' }                             // remove every exited node that has no live descendant
   | { t: 'rename'; id: string; title: string }
   | { t: 'confirm'; confirmId: string; ok: boolean }
-  | { t: 'diff'; id: string }                  // a worktree node's diff; replies diff, or error for a node without a worktree
+  | { t: 'diff'; id: string }                  // a worktree node's diff; replies diff, with error for a node without a worktree
   | { t: 'send'; id: string; text: string; mode?: SendMode } // a message from the human, as `o8 send` delivers it; replies sent
   | { t: 'mute'; id: string; muted: boolean }  // the human mutes or unmutes a node's OS notifications
   | { t: 'dnd'; on: boolean; minutes?: number } // do not disturb on (for minutes, else until turned off) or off
@@ -274,6 +272,4 @@ export interface ChildView {
   parentId?: string | null;
   errored?: boolean; interrupted?: boolean; exited?: boolean;
   activity?: string; ageSec: number; lastMessage?: string; unread: boolean; contextPct?: number;
-  /** For a node with its own worktree: its branch, commits ahead of base and uncommitted files. */
-  branch?: string; ahead?: number; dirty?: number;
 }

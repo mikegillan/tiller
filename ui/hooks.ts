@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useSyncExternalStore } from 'react';
-import { dndActive, needsYou } from '../src/shared/protocol';
+import { useEffect, useSyncExternalStore } from 'react';
+import { dndActive } from '../src/shared/protocol';
 import { send } from './conn';
 import { titleFor } from './format';
 import { getState, selectNode, useStore } from './store';
 import { trayState } from './tray';
-import { IN_APP, syncUrl } from './url';
+import { syncUrl } from './url';
 
 /** One shared clock so every age label updates together. */
 let now = Date.now();
@@ -29,19 +29,15 @@ export const toggleDnd = () => send(dndActive(getState().dnd, Date.now()) ? { t:
  * ?node= in step with the selection.
  */
 export function useDocumentSync() {
-  const needs = useStore((s) => Object.values(s.nodes).filter((n) => needsYou(n.status)).length);
   const selected = useStore((s) => s.selected);
-  const nodes = useStore((s) => s.nodes);
-  const order = useStore((s) => s.order);
   const now = useNow();
-  const quiet = useStore((s) => dndActive(s.dnd, now));
-  const tray = useMemo(() => JSON.stringify({ ...trayState(order.map((id) => nodes[id])), dnd: quiet }), [nodes, order, quiet]);
+  // A string, so the store re-renders only when the tray actually changes.
+  const tray = useStore((s) => JSON.stringify({ ...trayState(s.order.map((id) => s.nodes[id]!)), dnd: dndActive(s.dnd, now) }));
   useEffect(() => {
+    const t: ReturnType<typeof trayState> = JSON.parse(tray), needs = t.items.length, tauri = (window as TauriWindow).__TAURI_INTERNALS__;
     document.title = titleFor(needs);
-    if (IN_APP) (window as TauriWindow).__TAURI_INTERNALS__?.invoke('plugin:window|set_badge_count', { count: needs || null }).catch(() => {});
-  }, [needs]);
-  useEffect(() => {
-    if (IN_APP) (window as TauriWindow).__TAURI_INTERNALS__?.invoke('set_tray', JSON.parse(tray)).catch(() => {});
+    tauri?.invoke('plugin:window|set_badge_count', { count: needs || null }).catch(() => {});
+    tauri?.invoke('set_tray', t).catch(() => {});
   }, [tray]);
   useEffect(() => { syncUrl(selected); }, [selected]);
 }

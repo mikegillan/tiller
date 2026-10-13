@@ -51,7 +51,7 @@ function summarize(v: NodeView, now: number, all: NodeView[]) {
 
 function worktreeSummary(v: NodeView) {
   const w = v.worktree!, g = v.status.git;
-  return { path: w.path, branch: w.branch, base: w.base, ahead: g?.ahead, behind: g?.behind, dirty: g?.dirty, missing: !!(w.missing || g?.missing), merged: !!g?.mergedAt };
+  return { path: w.path, branch: w.branch, base: w.base, ahead: g?.ahead, behind: g?.behind, dirty: g?.dirty, missing: !!w.missing, merged: !!g?.mergedAt };
 }
 
 /** `⎇ o8/n-3f2a ↑3 ↓1 dirty merged` for the tree line. */

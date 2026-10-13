@@ -16,7 +16,7 @@ function treeViews(manager: NodeManager, root?: NodeView, selfId?: string): Chil
     return {
       id: n.id, title: n.title, depth, ...(n.id === selfId ? { self: true } : {}), parentId: n.parentId, state: s.state, errored: s.errored, interrupted: s.interrupted, exited: s.exited,
       activity: s.activity, ageSec: Math.round((Date.now() - s.changedAt) / 1000), lastMessage: s.lastAssistantMessage?.slice(0, PREVIEW_CHARS),
-      unread: n.unread, contextPct: s.contextPct, ...(s.git ? { branch: s.git.branch, ahead: s.git.ahead, dirty: s.git.dirty } : {}),
+      unread: n.unread, contextPct: s.contextPct,
     };
   });
 }

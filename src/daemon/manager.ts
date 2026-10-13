@@ -994,8 +994,9 @@ export class NodeManager extends EventEmitter {
       missing ? [] : wt.dirtyFiles(w.path),
       this.mergedAt(w),
     ]);
-    if (!this.registry.get(id)) return; // closed meanwhile
-    const next: GitState = { branch: w.branch, base: w.base, ...counts, dirty: dirty.length, ...(missing ? { missing } : {}), ...(mergedAt ? { mergedAt } : {}) };
+    if (!this.registry.get(id) || this.stopped) return; // closed or shut down meanwhile
+    if (missing) this.setMissing(id, true); // only resume and the worktree sweep clear it: they also check `git worktree list`
+    const next: GitState = { branch: w.branch, base: w.base, ...counts, dirty: dirty.length, ...(mergedAt ? { mergedAt } : {}) };
     if (JSON.stringify(next) === JSON.stringify(this.gits.get(id))) return;
     this.gits.set(id, next);
     this.emitNode(id);

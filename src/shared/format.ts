@@ -27,7 +27,7 @@ export const ctxLevel = (pct: number): CtxLevel => (pct < 50 ? 'ok' : pct <= 80 
 export const fmtTokens = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`);
 
 /** Rate-limit use: amber above 80%, red above 95%. */
-export const usageLevel = (pct: number): CtxLevel => (pct > 95 ? 'bad' : pct > 80 ? 'warn' : 'ok');
+const usageLevel = (pct: number): CtxLevel => (pct > 95 ? 'bad' : pct > 80 ? 'warn' : 'ok');
 
 const WINDOWS: Record<string, string> = { five_hour: '5h', seven_day: '7d' };
 

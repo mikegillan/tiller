@@ -59,7 +59,7 @@ const glyph = (n: NodeView): Seg =>
 
 /**
  * `⎇ n-3f2a ↑1●2 · opus 5.5 · high · ctx 42% (84k/200k) $0.42 Σ$3.10` (↑ commits ahead of base, ● uncommitted files, or
- * "merged"; Σ: spend with descendants, `subtree`); as the width shrinks, the branch goes first, then effort, token counts and cost.
+ * "merged"; Σ: spend with descendants, `subtree`); as the width shrinks, the branch goes first, then token counts and cost, then effort.
  */
 export function meta(n: NodeView, w: number, subtree = n.spentUsd ?? 0): Seg[] {
   const s = n.status, pct = s.contextPct, own = n.spentUsd ?? 0, g = s.git;
@@ -72,7 +72,7 @@ export function meta(n: NodeView, w: number, subtree = n.spentUsd ?? 0): Seg[] {
   const build = (full: boolean, withEffort: boolean, withBranch = false): Seg[] => {
     const segs: Seg[] = [];
     const add = (x: Seg) => { if (segs.length) segs.push(['2', ' · ']); segs.push(x); };
-    if (withBranch && branch) add([wt?.missing || g?.missing ? '33' : '2', branch]);
+    if (withBranch && branch) add([wt?.missing ? '33' : '2', branch]);
     if (model) add(['2', model]);
     if (withEffort && effort) add(['2', effort]);
     if (pct !== undefined) {
@@ -85,13 +85,13 @@ export function meta(n: NodeView, w: number, subtree = n.spentUsd ?? 0): Seg[] {
   return tries.find((t) => len(t) <= w) ?? tries[3]!;
 }
 
-const ACTIONS = BINDINGS.filter((b) => b.action.type === 'act' || b.action.type === 'help')
-  .map(({ key, label, action: a }) => ({ key, label, act: a.type === 'act' ? a.key : 'help' }));
+const ACTIONS = BINDINGS.flatMap(({ key, label, action: a }) => (a.type === 'act' ? [{ key, label, act: a.key }] : []));
 
 /** The first visible item index such that item `i` is fully on screen, starting from `scroll` and moving only as far as needed. */
 export function revealScroll(m: SideModel, W: number, H: number, i: number): number {
+  const id = tree(m.nodes)[i]!.n.id;
   let s = Math.min(m.scroll, i);
-  while (s < i && !layoutSidebar({ ...m, scroll: s }, W, H).nodeAt.includes(tree(m.nodes)[i]!.n.id)) s++;
+  while (s < i && !layoutSidebar({ ...m, scroll: s }, W, H).nodeAt.includes(id)) s++;
   return s;
 }
 

@@ -144,7 +144,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       case 'prune': await manager.prune(); return;
       case 'rename': manager.rename(m.id, m.title); return;
       case 'confirm': pendingConfirms.get(m.confirmId)?.(m.ok); return;
-      case 'diff': sendTo(c, { t: 'diff', id: m.id, ...(await manager.diff(m.id)) }); return;
+      case 'diff': sendTo(c, { t: 'diff', id: m.id, ...(await manager.diff(m.id).catch((err: Error) => ({ error: err.message }))) }); return;
       case 'send': sendTo(c, { t: 'sent', id: m.id, result: await deliver(manager, HUMAN, m.id, m.text, { mode: m.mode }) }); return;
       case 'mute': {
         if (!manager.registry.update(m.id, { muted: m.muted || undefined })) { sendTo(c, { t: 'error', message: `no such node: ${m.id}`, id: m.id }); return; }

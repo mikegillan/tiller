@@ -38,7 +38,7 @@
 .outcome .verdict.succeeded { color: var(--done); }
 .outcome .verdict.failed { color: var(--bad); }
 .outcome h3 { margin: 10px 0 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); }
-.outcome p, .exited-overlay .outcome p { margin: 6px 0 0; color: inherit; }
+.outcome p { margin: 6px 0 0; color: inherit; }
 .outcome ul { margin: 0; padding-left: 18px; }
 .exited-overlay .outcome { margin: 0 0 16px; border: 1px solid var(--line); border-radius: 8px; max-height: 240px; }
 
@@ -67,11 +67,11 @@
 .file:hover { background: var(--hover); }
 .file.sel { background: var(--sel); }
 .file .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
-.st { flex: none; width: 1.2em; font: 600 11px var(--mono); }
-.st.added { color: var(--done); }
-.st.deleted { color: var(--bad); }
-.st.modified { color: var(--needs); }
-.st.renamed { color: var(--accent); }
+.fst { flex: none; width: 1.2em; font: 600 11px var(--mono); }
+.fst.added { color: var(--done); }
+.fst.deleted { color: var(--bad); }
+.fst.modified { color: var(--needs); }
+.fst.renamed { color: var(--accent); }
 .patch { flex: 1; min-width: 0; overflow: auto; }
 .patch h2 { position: sticky; top: 0; left: 0; z-index: 1; margin: 0; padding: 8px 16px; font: 600 12px var(--mono); background: var(--surface); border-bottom: 1px solid var(--line); }
 .lines { min-width: max-content; padding-bottom: 16px; font: 12px/1.5 var(--mono); }
@@ -82,8 +82,8 @@
 .dl .code { padding: 0 16px 0 8px; }
 .dl.add { background: color-mix(in srgb, var(--done) 14%, transparent); }
 .dl.del { background: color-mix(in srgb, var(--bad) 14%, transparent); }
-.dl.add[role='button']:hover { background: color-mix(in srgb, var(--done) 26%, transparent); }
-.dl.del[role='button']:hover { background: color-mix(in srgb, var(--bad) 26%, transparent); }
+.dl.add:hover { background: color-mix(in srgb, var(--done) 26%, transparent); }
+.dl.del:hover { background: color-mix(in srgb, var(--bad) 26%, transparent); }
 .dl.hunk { color: var(--dim); background: var(--surface-2); }
 .dl.meta { color: var(--dim); }
 .note, .composer { max-width: 640px; margin: 4px 16px 8px calc(10ch + 24px); padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font: 13px/1.4 var(--ui); }

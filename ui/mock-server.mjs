@@ -1,7 +1,7 @@
 // Fake daemon for developing the UI without the real one. Token: "mock".
 //   node ui/mock-server.mjs            ws on :7789; also serves ui/dist at http://127.0.0.1:7789/?k=mock when it has been built
-// Mutations (spawn, close, restart, rename, resume, prune, select) work in memory; a confirm request arrives 15 s after connecting.
-// diff on a worktree node returns a made-up diff; send logs the text and replies queued.
+// Mutations (spawn, close, restart, rename, resume, prune, select, merge, mute, dnd) work in memory; a confirm request arrives
+// 15 s after connecting. diff on a worktree node returns a made-up diff; send logs the text and replies queued.
 // spawn with isolation "worktree" fakes a worktree; a plain close of a worktree node whose title contains "dirty" is refused, as the daemon would.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -16,9 +16,12 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
 const now = Date.now();
 const MIN = 60_000;
 const nodes = new Map();
+let dnd = { on: false };
+// A node's spend is its session cost, all of it today.
 const add = (id, parentId, title, cwd, kind, { ago = 0, ...st } = {}, extra = {}) =>
   nodes.set(id, {
     id, parentId, title, cwd, kind, createdAt: now - 3 * 3600_000, unread: false, ...extra,
+    ...(st.costUsd !== undefined && { spentUsd: st.costUsd, spentToday: { day: new Date(now).toLocaleDateString('en-CA'), usd: st.costUsd } }),
     status: { state: kind === 'terminal' ? 'none' : 'working', changedAt: now - ago, ...st },
   });
 const OPUS = { model: 'claude-opus-5-5', effort: 'high' };
@@ -94,7 +97,7 @@ wss.on('connection', (ws) => {
       if (m.t !== 'auth' || m.token !== 'mock') return ws.close();
       authed = true;
       clients.add(client);
-      send({ t: 'snapshot', nodes: [...nodes.values()] });
+      send({ t: 'snapshot', nodes: [...nodes.values()], appConnected: false, dnd });
       setTimeout(() => ws.readyState === 1 && send({ t: 'confirm', confirmId: 'c1', text: 'ui polish wants to close node "shell".\nIt has been idle for 40 minutes.' }), 15_000);
       return;
     }
@@ -118,8 +121,11 @@ wss.on('connection', (ws) => {
         break;
       }
       case 'confirm': broadcast({ t: 'confirmDone', confirmId: m.confirmId }); break;
-      case 'diff': if (n?.worktree) send({ t: 'diff', id: m.id, base: n.worktree.base, branch: n.worktree.branch, files: FAKE_DIFF });
-        else send({ t: 'error', id: m.id, message: `${m.id} has no worktree of its own to diff` }); break;
+      case 'diff': send({ t: 'diff', id: m.id, ...(n?.worktree ? { base: n.worktree.base, branch: n.worktree.branch, files: FAKE_DIFF } : { error: `${m.id} has no worktree of its own to diff` }) }); break;
+      case 'merge': if (n?.status.git?.dirty) send({ t: 'error', id: m.id, message: `merge refused, nothing changed: ${n.status.git.dirty} uncommitted file(s) in the worktree; commit them first` });
+        else if (n?.status.git) touch(n, { git: { ...n.status.git, ahead: 0, mergedAt: Date.now() } }); break;
+      case 'mute': if (n) { n.muted = m.muted || undefined; broadcast({ t: 'node', node: n }); } break;
+      case 'dnd': dnd = m.on ? { on: true, ...(m.minutes && { until: Date.now() + m.minutes * MIN }) } : { on: false }; broadcast({ t: 'dnd', ...dnd }); break;
       case 'send': console.log(`send to ${m.id}:\n${m.text}`); send({ t: 'sent', id: m.id, result: { outcome: 'queued', retryable: false, messageId: `m-${Date.now()}` } }); break;
     }
   });
