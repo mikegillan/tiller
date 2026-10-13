@@ -7,6 +7,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { loadConfig } from './config.js';
 import { promptPath } from './launch.js';
+import { listPresets } from './presets.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
 import { agentStatus, install, kickstart, LABEL, O8D, plistPath, uninstall } from './autostart.js';
 import { loginShellPath } from './pty.js';
@@ -23,7 +24,7 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
                                                       the nodes are not resumed on the next start
   o8 reload                                           restart the daemon on the current code and resume the nodes that were live
   o8 autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
-  o8 new <title> [--cwd P] [--model M] [--effort E] [--prompt T] [--role R] [--worktree]  start a Claude node and attach to it in the terminal
+  o8 new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--worktree]  start a Claude node and attach to it in the terminal
   o8 ps | list                                        show nodes
   o8 usage                                            show account-level Claude usage (5-hour and 7-day windows) as nodes last reported it
   o8 attach <id>                                      open the sidebar client on a node (Ctrl-\\ ? for keys)
@@ -40,8 +41,9 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 diff <id> [--stat]                               what a worktree node changed since it branched, committed or not
   o8 send <id> "text"
   o8 read <id> [summary|transcript|terminal] [--lines N]
-  o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--request-id ID]
+  o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--preset NAME] [--request-id ID]
   o8 prompts                                          show the role prompt files and any override for this directory
+  o8 presets [--cwd P]                                list the spawn presets in effect for a directory and the file each comes from
   o8 config [--cwd P]                                 show the effective config for a directory and which file each key came from
   o8 gate [--cwd P]                                   run the configured completion gate command once in a directory and print the result
   o8 worktrees [--cwd P]                            list node worktrees, orphans and kept branches for this repo
@@ -89,7 +91,7 @@ const { values: f, positionals: pos } = parseArgs({
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
     'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
-    worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' },
+    worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' }, preset: { type: 'string' },
   },
 });
 
@@ -123,7 +125,7 @@ switch (cmd) {
     break;
   case 'new': {
     if (!pos[0]) fail(usage());
-    const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, effort: f.effort, role: f.role, isolation: isolation() }, false);
+    const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, effort: f.effort, role: f.role, isolation: isolation(), preset: f.preset }, false);
     process.exit(await mux(data.nodeId, { port: daemonPort(), token: adminToken() }));
     break;
   }
@@ -131,6 +133,13 @@ switch (cmd) {
     for (const r of ['orchestrator', 'worker'] as const) {
       const { path, override } = promptPath(home, realpathSync(process.cwd()), r);
       console.log(`${r}: ${path}${override ? ' (repo override)' : ''}`);
+    }
+    break;
+  case 'presets':
+    for (const p of listPresets(realpathSync(resolve(f.cwd ?? process.cwd())), home)) {
+      const fields = 'error' in p ? `error: ${p.error}` : Object.entries({ model: p.model, effort: p.effort, permissionMode: p.permissionMode, isolation: p.isolation, role: p.role, tools: p.tools?.join(','), disallowedTools: p.disallowedTools?.join(','), maxTurns: p.maxTurns })
+        .flatMap(([k, v]) => (v === undefined ? [] : [`${k}=${v}`])).join(' ');
+      console.log([p.name, p.source, fields].join('\t'));
     }
     break;
   case 'config': {
@@ -178,7 +187,7 @@ switch (cmd) {
     break;
   }
   case 'spawn':
-    await call('spawn', { kind: f.kind, title: f.title, cwd: f.cwd ?? process.cwd(), prompt: f.prompt, model: f.model, effort: f.effort, permissionMode: f['permission-mode'], role: f.role, isolation: isolation(), requestId: f['request-id'] });
+    await call('spawn', { kind: f.kind, title: f.title, cwd: f.cwd ?? process.cwd(), prompt: f.prompt, model: f.model, effort: f.effort, permissionMode: f['permission-mode'], role: f.role, isolation: isolation(), preset: f.preset, requestId: f['request-id'] });
     break;
   case 'diff':
     if (!pos[0]) fail(usage());

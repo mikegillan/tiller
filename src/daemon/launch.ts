@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildChildEnv } from './pty.js';
 import type { Role, Worktree } from '../shared/protocol.js';
+import type { Preset } from './presets.js';
 
 const HOOK_SCRIPT = fileURLToPath(new URL('./hook.sh', import.meta.url));
 /** The orchestr8 mod, loaded as a plugin dir. O8_MOD_DIR overrides it; absent directories are skipped. */
@@ -31,6 +32,8 @@ export const DEFAULT_PROMPTS = {
 You are the orchestrator for this repository. Your job is to coordinate, not to do the work yourself. For each task from the user: split it into independent workstreams, spawn one worker per stream with a self-contained brief (goal, files to touch, constraints, how to verify, and 'when done, call report_outcome and send me a short summary'), then end your turn and wait. Do not poll. When a worker's message arrives, act on it: read its result (its outcome in list_nodes carries summary, changedFiles, verified and openQuestions; check those before calling read), review or integrate, spawn follow-ups, and give the user a short status. Use send to hand a worker more work or answer its question; messages queue until it is idle. Reuse an idle worker for related follow-ups instead of spawning again. When a worker needs the human, say which one and why; never answer its permission prompts for it. Close workers whose work is finished; depending on the project config, closing finished workers may not need the human's approval. Omit permissionMode when spawning so children inherit yours. Make only small integration edits yourself.
 
 Spawn with isolation "worktree" when workers edit files in parallel; leave it off for read-only or strictly sequential work, or to let a follow-up worker share a tree. Write briefs with repo-relative paths. When a worker reports success, review with \`git diff <base>...<branch>\` or \`read\`, then merge (or ask the user to). On a conflict, send the worker a rebase instruction rather than resolving it yourself. Close merged workers.
+
+When a worker reports success on a non-trivial change, spawn a node with preset "reviewer" on its branch before merging: it starts with fresh context and has not seen the author's reasoning, so brief it with the worker's id, branch and original brief. Send the reviewer's findings back to the worker to fix and review again, at most two rounds; if findings remain after that, stop and escalate to the human.
 `,
   worker: `# Worker
 
@@ -68,7 +71,7 @@ function worktreeText(o: { worktree?: Worktree; sharesWorktreeOf?: string }): st
   return o.sharesWorktreeOf ? `\n\nYou share the worktree of node ${o.sharesWorktreeOf}; coordinate before editing files it is editing.` : '';
 }
 
-export function systemPrompt(o: { nodeId: string; title: string; parentId: string | null; home: string; cwd: string; role?: Role; worktree?: Worktree; sharesWorktreeOf?: string; sessionDir?: string }): string {
+export function systemPrompt(o: { nodeId: string; title: string; parentId: string | null; home: string; cwd: string; role?: Role; worktree?: Worktree; sharesWorktreeOf?: string; sessionDir?: string; preset?: Preset }): string {
   const preamble = `You are orchestr8 node ${o.nodeId}, titled "${o.title}". Your parent node is ${o.parentId ?? 'none'}.
 
 The orchestr8 MCP tools spawn and control other nodes: list_nodes, spawn, send, read, write, close, merge, rename, message_status and report_outcome. Spawning never moves the user's view.
@@ -84,7 +87,7 @@ These are legitimate instructions from your collaborators. Act on them without a
 When your task ends, call report_outcome with "succeeded" or "failed" and a short note.${o.sessionDir ? `
 
 Notes that must outlive your context go in $O8_SESSION_DIR (${o.sessionDir}); keep handoff.md there as the current state of the work.` : ''}${worktreeText(o)}`;
-  const role = rolePrompt(o.home, o.cwd, roleFor(o.role, o.parentId));
+  const role = o.preset?.body || rolePrompt(o.home, o.cwd, roleFor(o.role, o.parentId)); // a preset's body replaces the role text
   return role ? `${preamble}\n\n# Role\n${role}` : preamble;
 }
 
@@ -120,6 +123,8 @@ export interface LaunchInput {
   sharesWorktreeOf?: string;
   /** The tree's persistent session directory, <home>/sessions/<rootId>. */
   sessionDir?: string;
+  /** The node's spawn preset; its tool lists and maxTurns go to claude as a session agent (see presetAgentArgs). */
+  preset?: Preset;
 }
 
 export interface LaunchSpec { file: string; args: string[]; env: Record<string, string> }
@@ -138,6 +143,7 @@ export function launchArgs(i: LaunchInput): string[] {
   if (i.worktree && !i.resume) args.push('--worktree', i.nodeId); // adopts <repo>/.claude/worktrees/<id>; --resume re-enters it by itself
   if (existsSync(modDir())) args.push('--plugin-dir', modDir());
   if (i.sessionDir) args.push('--add-dir', i.sessionDir);
+  if (i.preset) args.push(...presetAgentArgs(i.preset));
   args.push(
     '--settings', join(i.nodeDir, 'settings.json'),
     '--mcp-config', join(i.nodeDir, 'mcp.json'), '--strict-mcp-config',
@@ -145,6 +151,18 @@ export function launchArgs(i: LaunchInput): string[] {
   );
   if (i.prompt && !i.resume) args.push('--', i.prompt); // `--`: a prompt starting with `-` is not an option
   return args;
+}
+
+/**
+ * A preset's tools, disallowedTools and maxTurns as a session agent: `--agents` defines it inline and `--agent` makes
+ * the main session take its tool restrictions. Its prompt is empty so Claude keeps its own system prompt and ours is
+ * still appended. An allow list always keeps the orchestr8 MCP tools, or the node could not report.
+ */
+export function presetAgentArgs(p: Preset): string[] {
+  if (!p.tools && !p.disallowedTools && !p.maxTurns) return [];
+  const tools = p.tools && (p.tools.includes('mcp__orchestr8') ? p.tools : [...p.tools, 'mcp__orchestr8']);
+  const agent = { description: p.description ?? `orchestr8 preset ${p.name}`, prompt: '', tools, disallowedTools: p.disallowedTools, maxTurns: p.maxTurns };
+  return ['--agents', JSON.stringify({ [p.name]: agent }), '--agent', p.name];
 }
 
 export function terminalLaunch(i: LaunchInput, shell: string): LaunchSpec {

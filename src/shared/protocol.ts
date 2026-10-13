@@ -119,6 +119,8 @@ export interface NodeRecord {
   permissionMode?: string;
   /** Explicit role override; absent means derive from parentId at each launch. */
   role?: Role;
+  /** The spawn preset (.orchestr8/agents/<name>.md); its body and tool lists are re-read at each launch. */
+  preset?: string;
   /** Set on a node that owns a git worktree (spawned with isolation "worktree"); its cwd is the worktree path. */
   worktree?: Worktree;
   createdAt: number;
@@ -193,7 +195,7 @@ export type ClientMessage =
   | { t: 'input'; id: string; data: string }
   | { t: 'resize'; id: string; cols: number; rows: number }
   | { t: 'select'; id: string }                // clears unread
-  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation }
+  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; preset?: string }
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
   | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.merge style
   | { t: 'restart'; id: string; prompt?: string } // relaunch with a fresh session: clears context, keeps the node and its children; prompt is its first prompt
