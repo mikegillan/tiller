@@ -213,12 +213,51 @@ describe('git state and merge', () => {
   it('counts commits ahead and behind and dirty files, refreshed when a turn stops', async () => {
     setup();
     const v = await spawnW();
-    await expect.poll(() => m.view(v.id)!.status.git).toEqual({ branch: `o8/${v.id}`, base: 'main', ahead: 0, behind: 0, dirty: 0 });
+    await expect.poll(() => m.view(v.id)!.status.git).toEqual({ branch: `o8/${v.id}`, base: 'main', ahead: 0, behind: 0, dirty: 0, additions: 0, deletions: 0 });
     commit(v.cwd, 'a.txt');
     writeFileSync(join(v.cwd, 'b.txt'), 'b\n');
     commit(repo, 'c.txt');
     stop(v.id);
-    await expect.poll(() => m.view(v.id)!.status.git).toEqual({ branch: `o8/${v.id}`, base: 'main', ahead: 1, behind: 1, dirty: 1 });
+    await expect.poll(() => m.view(v.id)!.status.git).toEqual({ branch: `o8/${v.id}`, base: 'main', ahead: 1, behind: 1, dirty: 1, additions: 2, deletions: 0 });
+  });
+
+  it('diffs commits and uncommitted work as one, file by file, leaving the node\'s own index alone', async () => {
+    setup();
+    commit(repo, 'gone.txt');
+    const v = await spawnW();
+    writeFileSync(join(v.cwd, 'README'), 'README\nmore\n');
+    g(v.cwd, 'commit', '-qam', 'edit');
+    g(v.cwd, 'rm', '-q', 'gone.txt');
+    writeFileSync(join(v.cwd, 'new.txt'), 'one\ntwo\n');
+    const d = await m.diff(v.id);
+    expect({ ...d, files: d.files.map(({ patch, ...f }) => f) }).toEqual({
+      base: 'main', branch: `o8/${v.id}`, files: [
+        { path: 'README', status: 'modified', additions: 1, deletions: 0 },
+        { path: 'gone.txt', status: 'deleted', additions: 0, deletions: 1 },
+        { path: 'new.txt', status: 'added', additions: 2, deletions: 0 },
+      ],
+    });
+    expect(d.files[2]!.patch).toMatch(/^diff --git a\/new.txt b\/new.txt\n[^]*@@ -0,0 \+1,2 @@\n\+one\n\+two\n$/);
+    expect(g(v.cwd, 'status', '--porcelain')).toBe('D  gone.txt\n?? new.txt');
+  });
+
+  it('lists binary files and files past the patch cap without a patch', async () => {
+    setup();
+    const v = await spawnW();
+    writeFileSync(join(v.cwd, 'a.txt'), 'small\n');
+    writeFileSync(join(v.cwd, 'b.bin'), Buffer.from([0, 1, 2, 0]));
+    const lines = Math.ceil(wt.MAX_PATCH_BYTES / 100); // 100 bytes a line: the patch passes the cap
+    writeFileSync(join(v.cwd, 'c.txt'), `${'y'.repeat(99)}\n`.repeat(lines));
+    const d = await m.diff(v.id);
+    expect(d.files.map((f) => [f.path, !!f.patch, !!f.binary])).toEqual([['a.txt', true, false], ['b.bin', false, true], ['c.txt', false, false]]);
+    expect(d.truncated).toBe(true);
+    expect(d.files[2]!.additions).toBe(lines);
+  });
+
+  it('refuses a diff for a node without a worktree', async () => {
+    setup();
+    const t = m.spawn({ kind: 'terminal', title: 't', cwd: repo });
+    await expect(m.diff(t.id)).rejects.toThrow(`${t.id} has no worktree of its own to diff`);
   });
 
   it('refuses a conflicting merge, naming the paths and touching no file', async () => {

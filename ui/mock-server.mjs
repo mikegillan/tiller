@@ -1,6 +1,7 @@
 // Fake daemon for developing the UI without the real one. Token: "mock".
 //   node ui/mock-server.mjs            ws on :7789; also serves ui/dist at http://127.0.0.1:7789/?k=mock when it has been built
 // Mutations (spawn, close, restart, rename, resume, prune, select) work in memory; a confirm request arrives 15 s after connecting.
+// diff on a worktree node returns a made-up diff; send logs the text and replies queued.
 // spawn with isolation "worktree" fakes a worktree; a plain close of a worktree node whose title contains "dirty" is refused, as the daemon would.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -32,6 +33,7 @@ add('o8-sh', 'o8-ui', 'shell', '/Users/scott/workspace/orchestr8/ui', 'terminal'
 add('o8-test', 'o8', 'tests', '/Users/scott/workspace/orchestr8', 'claude', { ...SONNET, state: 'blocked', ago: 90_000, activity: 'needs approval: Bash: rm -rf node_modules && npm ci && npm test -- --run ui', contextPct: 23, contextTokens: 46_000, contextWindow: 200_000, costUsd: 0.31 }, { unread: true });
 add('o8-d', 'o8', 'daemon', '/Users/scott/workspace/orchestr8', 'claude', { ...OPUS, state: 'done', ago: 25 * MIN, contextPct: 86, contextTokens: 172_000, contextWindow: 200_000, costUsd: 6.9, lastAssistantMessage: 'The daemon now serves ui/dist and reports /health. All 214 tests pass.' });
 add('o8-wt', 'o8', 'worktree gone', '/Users/scott/workspace/orchestr8/.claude/worktrees/o8-wt', 'claude', { ...SONNET, state: 'done', exited: true, ago: 50 * MIN }, { worktree: { repo: '/Users/scott/workspace/orchestr8', path: '/Users/scott/workspace/orchestr8/.claude/worktrees/o8-wt', branch: 'o8/o8-wt', base: 'main', baseSha: '6977f01', missing: true } });
+add('o8-feat', 'o8', 'diff view', '/Users/scott/workspace/orchestr8/.claude/worktrees/o8-feat', 'claude', { ...SONNET, state: 'done', ago: 6 * MIN, contextPct: 37, contextTokens: 74_000, contextWindow: 200_000, costUsd: 0.88, lastAssistantMessage: 'Added the diff tab and its tests.', git: { branch: 'o8/o8-feat', base: 'main', ahead: 2, behind: 0, dirty: 1, additions: 14, deletions: 4 } }, { worktree: { repo: '/Users/scott/workspace/orchestr8', path: '/Users/scott/workspace/orchestr8/.claude/worktrees/o8-feat', branch: 'o8/o8-feat', base: 'main', baseSha: '6977f01' } });
 add('o8-spike', 'o8', 'spike: tauri', '/Users/scott/workspace/orchestr8', 'claude', { ...SONNET, state: 'done', exited: true, ago: 5 * 3600_000, contextPct: 55, contextTokens: 110_000, contextWindow: 200_000, costUsd: 2.05, lastAssistantMessage: 'Tauri wraps the same ui/dist; WKWebView needs the DOM renderer.' });
 
 // Session 2: another project.
@@ -46,6 +48,21 @@ const SCREENS = {
   claude: (n) => `\x1b[1;36m● ${n.title}\x1b[0m  \x1b[2m${n.cwd}\x1b[0m\r\n\r\n\x1b[2m> \x1b[0mplease keep going\r\n\r\n\x1b[32m✓\x1b[0m Read ui/store.ts\r\n\x1b[32m✓\x1b[0m Edit ui/NodeRow.tsx \x1b[2m(+24 -6)\x1b[0m\r\n\x1b[33m●\x1b[0m ${n.status.activity ?? 'Thinking…'}\r\n\r\n\x1b[2m╭────────────────────────────────────────────╮\r\n│\x1b[0m > \x1b[7m \x1b[0m                                         \x1b[2m│\r\n╰────────────────────────────────────────────╯\x1b[0m\r\n`,
   terminal: (n) => `\x1b[32m${n.cwd.split('/').pop()}\x1b[0m \x1b[34m$\x1b[0m `,
 };
+
+// What the daemon's diff might say for o8-feat (counts match its git state above); any worktree node gets the same.
+const FAKE_DIFF = [
+  { path: 'ui/DiffPane.tsx', status: 'added', additions: 6, deletions: 0, patch: [
+    'diff --git a/ui/DiffPane.tsx b/ui/DiffPane.tsx', 'new file mode 100644', '--- /dev/null', '+++ b/ui/DiffPane.tsx', '@@ -0,0 +1,6 @@',
+    "+import { useState } from 'react';", '+', '+export function DiffPane() {', '+  const [path, setPath] = useState<string>();', '+  return <div className="diffpane">{path}</div>;', '+}', ''].join('\n') },
+  { path: 'ui/store.ts', status: 'modified', additions: 8, deletions: 3, patch: [
+    'diff --git a/ui/store.ts b/ui/store.ts', '--- a/ui/store.ts', '+++ b/ui/store.ts', '@@ -40,6 +40,8 @@ export interface State {',
+    '   /** Account-level rate limits. */', '   usage?: Usage;', '-  panel: boolean;', '+  panel: boolean;', '+  /** The Diff tab is showing. */', '+  diffOpen: boolean;', ' }', ' ', ' const stored = 1;',
+    '@@ -120,5 +122,8 @@ export function applyServer(m: ServerMessage) {', "     case 'confirmDone':", '       return dropConfirm(m.confirmId);',
+    "-    case 'error':", "-      return toast(m.message, m.id, 'bad');", "+    case 'diff':", '+      return update(() => ({ diff: m }));', "+    case 'error':", "+      return toast(m.message, m.id, 'bad');", '+    // sent: below', '   }', ''].join('\n') },
+  { path: 'ui/old-panel.css', status: 'deleted', additions: 0, deletions: 1, patch: [
+    'diff --git a/ui/old-panel.css b/ui/old-panel.css', 'deleted file mode 100644', '--- a/ui/old-panel.css', '+++ /dev/null', '@@ -1 +0,0 @@', '-.panel { width: 300px; }', ''].join('\n') },
+  { path: 'ui/icon.png', status: 'added', additions: 0, deletions: 0, binary: true },
+];
 
 const clients = new Set();
 const broadcast = (m) => clients.forEach((c) => c.ws.send(JSON.stringify(m)));
@@ -95,11 +112,15 @@ wss.on('connection', (ws) => {
       case 'spawn': {
         const id = `n${nodes.size + 1}${Date.now() % 1000}`;
         const worktree = m.isolation === 'worktree' && { repo: m.cwd, path: `${m.cwd}/.claude/worktrees/${id}`, branch: `o8/${id}`, base: 'main', baseSha: '6977f01' };
-        add(id, m.parentId ?? null, m.title, worktree ? worktree.path : m.cwd, m.kind, { model: m.model ?? 'claude-sonnet-5-5' }, { ...(m.role && { role: m.role }), ...(worktree && { worktree }) });
+        const git = worktree && { git: { branch: worktree.branch, base: 'main', ahead: 0, behind: 0, dirty: 0, additions: 0, deletions: 0 } };
+        add(id, m.parentId ?? null, m.title, worktree ? worktree.path : m.cwd, m.kind, { model: m.model ?? 'claude-sonnet-5-5', ...git }, { ...(m.role && { role: m.role }), ...(worktree && { worktree }) });
         broadcast({ t: 'node', node: nodes.get(id) });
         break;
       }
       case 'confirm': broadcast({ t: 'confirmDone', confirmId: m.confirmId }); break;
+      case 'diff': if (n?.worktree) send({ t: 'diff', id: m.id, base: n.worktree.base, branch: n.worktree.branch, files: FAKE_DIFF });
+        else send({ t: 'error', id: m.id, message: `${m.id} has no worktree of its own to diff` }); break;
+      case 'send': console.log(`send to ${m.id}:\n${m.text}`); send({ t: 'sent', id: m.id, result: { outcome: 'queued', retryable: false, messageId: `m-${Date.now()}` } }); break;
     }
   });
   ws.on('close', () => clients.delete(client));

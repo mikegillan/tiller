@@ -17,7 +17,7 @@ describe('worktree', () => {
   });
 
   it('shows ahead, dirty and merged; marks changes only once the work stops, and offers Merge only with commits and no turn running', () => {
-    const git = { branch: wt.branch, base: 'main', ahead: 2, behind: 0, dirty: 1 };
+    const git = { branch: wt.branch, base: 'main', ahead: 2, behind: 0, dirty: 1, additions: 0, deletions: 0 };
     const node = (status: object) => ({ ...mk('a', null, 0, { state: 'done', git, ...status }), worktree: wt });
     const text = (n: ReturnType<typeof node>) => renderToStaticMarkup(<NodeMeta node={n} />).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
     expect(text(node({}))).toBe('⎇ o8/n-3f2a9c1d ↑2 ●1');

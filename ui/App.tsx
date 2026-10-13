@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { Dialogs } from './Dialogs';
+import { DiffPane } from './DiffPane';
 import { ExitedCard } from './ExitedCard';
 import { useDocumentSync } from './hooks';
 import { LastMessagePanel } from './LastMessagePanel';
@@ -19,6 +20,7 @@ export function App() {
   const node = useStore((s) => (s.selected ? s.nodes[s.selected] : undefined));
   const panel = useStore((s) => s.panel);
   const palette = useStore((s) => s.dialog?.kind === 'palette');
+  const diff = useStore((s) => s.diffOpen) && !!node?.worktree;
   useDocumentSync();
 
   useEffect(() => {
@@ -44,7 +46,7 @@ export function App() {
         <div className="work">
           <div className="stage">
             <TerminalPane />
-            {node?.status.exited && <ExitedCard node={node} />}
+            {diff ? <DiffPane node={node!} /> : node?.status.exited && <ExitedCard node={node} />}
             {!node && (
               <div className="empty">
                 <p>No sessions yet.</p>

@@ -7,13 +7,13 @@ import { join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type NodeView } from '../shared/protocol.js';
+import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type Diff, type NodeView } from '../shared/protocol.js';
 import { fmtUsd, subtreeSpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { loadConfig } from './config.js';
 import { ADMIN_TOKEN_FILE } from './home.js';
 import { closeRefusal, type NodeManager, type WorktreeReport } from './manager.js';
-import { MergeConflict } from './worktree.js';
+import { MAX_PATCH_BYTES, MergeConflict } from './worktree.js';
 import { deliver, HUMAN, inScope, isDescendant, messageStatus, startNotices } from './messaging.js';
 import { logError, PREVIEW_CHARS, readBody, safeEqual } from './util.js';
 
@@ -81,6 +81,19 @@ function worktreeText(r: WorktreeReport): string {
     ...r.removed.flatMap((x) => [`removed ${x.what}`, ...x.commits.map((c) => `  commit ${c}`), ...x.files.map((f) => `  file ${f}`)]),
   ];
   return out.join('\n') || '(no orchestr8 worktrees)';
+}
+
+/** `o8 diff` output: a summary line, then one line per file (stat) or each file's patch. */
+function diffText(d: Diff, stat: boolean): string {
+  const counts = (x: { additions: number; deletions: number }) => `+${x.additions} −${x.deletions}`;
+  const total = d.files.reduce((t, f) => ({ additions: t.additions + f.additions, deletions: t.deletions + f.deletions }), { additions: 0, deletions: 0 });
+  const head = `${d.branch} against ${d.base}: ${d.files.length} file(s), ${counts(total)}`;
+  const body = d.files.map((f) => {
+    const line = `${counts(f)}\t${f.path} (${f.status}${f.binary ? ', binary' : ''})`;
+    return stat || !f.patch ? line : f.patch.trimEnd();
+  });
+  const tail = d.truncated ? [`(patches stop after ${MAX_PATCH_BYTES >> 20} MB; later files show counts only)`] : [];
+  return [head, ...body, ...tail].join('\n');
 }
 
 function renderEntry(line: string): string | undefined {
@@ -287,6 +300,14 @@ const tools = {
       const { removed, kept } = await c.manager.prune();
       const keptText = kept.length ? `; kept ${kept.length} node(s) with worktree work:\n${kept.map((k) => `  ${k.id}: ${k.reason}`).join('\n')}` : '';
       return { text: `removed ${removed.length} exited node(s)${keptText}`, data: { ok: true, removed, kept } };
+    }),
+
+  diff: tool(
+    `Show what a node with its own git worktree (yourself or one of your descendants) changed since it branched from its base: its commits plus its uncommitted and untracked files, as one unified diff of the working tree against where the branch started. Patch text stops after ${MAX_PATCH_BYTES >> 20} MB; the remaining files are listed with their line counts only, as are binary files. stat true lists only the files and counts.`,
+    { nodeId: z.string().min(1), stat: z.boolean().optional() },
+    async (c, a) => {
+      requireOwned(c, a.nodeId, true);
+      return { text: diffText(await c.manager.diff(a.nodeId), !!a.stat) };
     }),
 
   worktrees: tool(

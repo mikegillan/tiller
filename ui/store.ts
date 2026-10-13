@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
-import type { ServerMessage, Usage } from '../src/shared/protocol';
+import type { Diff, ServerMessage, Usage } from '../src/shared/protocol';
+import type { ReviewComment } from './diff';
 import { pickInitial, rootOf } from './sessions';
 import { insertSorted, type Nodes } from './tree';
 import { wantedNode } from './url';
@@ -35,13 +36,19 @@ export interface State {
   awaitSpawn: boolean;
   /** Account-level rate limits, as the newest node report gave them. */
   usage?: Usage;
+  /** The Diff tab is showing instead of the terminal (for worktree nodes). */
+  diffOpen: boolean;
+  /** The last diff asked for; data stays while a refresh is out, so the view does not flicker. */
+  diff: { id: string; data?: Diff; error?: string } | null;
+  /** Review comments not sent yet, for any node. */
+  comments: ReviewComment[];
 }
 
 const stored = (() => { try { return localStorage.getItem('o8.panel') === '1'; } catch { return false; } })();
 
 let state: State = {
   nodes: {}, order: [], selected: null, session: null, opened: [], collapsed: [], toasts: [], confirms: [],
-  connected: false, retry: 0, panel: stored, dialog: null, renaming: null, awaitSpawn: false,
+  connected: false, retry: 0, panel: stored, dialog: null, renaming: null, awaitSpawn: false, diffOpen: false, diff: null, comments: [],
 };
 const subs = new Set<() => void>();
 let toastSeq = 0;
@@ -72,6 +79,13 @@ export const togglePanel = () => update((s) => {
   try { localStorage.setItem('o8.panel', s.panel ? '0' : '1'); } catch { /* per-viewer convenience only */ }
   return { panel: !s.panel };
 });
+
+export const toggleDiff = () => update((s) => ({ diffOpen: !s.diffOpen }));
+/** Note that a diff for `id` was asked for; conn.ts sends the request. */
+export const diffRequested = (id: string) => update((s) => ({ diff: s.diff?.id === id ? s.diff : { id } }));
+export const addComment = (c: ReviewComment) => update((s) => ({ comments: [...s.comments, c] }));
+export const removeComment = (c: ReviewComment) => update((s) => ({ comments: without(s.comments, c) }));
+export const clearComments = (nodeId: string) => update((s) => ({ comments: s.comments.filter((c) => c.nodeId !== nodeId) }));
 
 /** Selection patch: selects `id` (and so its session), mounts its terminal, and clears unread locally (the daemon clears it on `select`). */
 function choose(s: State, nodes: Nodes, id: string | null): Partial<State> {
@@ -129,7 +143,19 @@ export function applyServer(m: ServerMessage) {
       return update((s) => ({ confirms: [...s.confirms, { confirmId: m.confirmId, text: m.text }] }));
     case 'confirmDone':
       return dropConfirm(m.confirmId);
+    case 'diff': {
+      const { t: _, id, ...data } = m;
+      return update((s) => (s.diff?.id === id ? { diff: { id, data } } : {}));
+    }
+    case 'sent': {
+      const title = state.nodes[m.id]?.title ?? m.id;
+      const { outcome, detail } = m.result;
+      if (outcome !== 'delivered' && outcome !== 'queued') return toast(`Not sent to ${title}: ${outcome}${detail ? ` (${detail})` : ''}`, m.id, 'bad');
+      clearComments(m.id);
+      return toast(outcome === 'queued' ? `Queued for ${title}; it arrives when the node is idle` : `Sent to ${title}`, m.id, 'ok');
+    }
     case 'error':
+      if (state.diff && state.diff.id === m.id && !state.diff.data) update((s) => ({ diff: { id: m.id!, error: m.message } }));
       return toast(m.message, m.id, 'bad');
   }
 }

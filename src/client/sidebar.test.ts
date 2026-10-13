@@ -46,7 +46,7 @@ test('meta line drops detail as the width shrinks and colors ctx by usage', () =
   const w = { ...n, worktree: { repo: '/r', path: '/r/w', branch: 'o8/n-3f2a9c1d', base: 'main', baseSha: 'abc' } };
   expect(meta(w, 60).map((s) => s[1]).join('')).toBe('⎇ n-3f2a · opus 5.5 · high · ctx 42% (84k/200k) $0.42');
   expect(meta(w, 45).map((s) => s[1]).join('')).toBe('opus 5.5 · high · ctx 42% (84k/200k) $0.42'); // the branch goes first
-  const git = { branch: 'o8/n-3f2a9c1d', base: 'main', ahead: 1, behind: 0, dirty: 2 };
+  const git = { branch: 'o8/n-3f2a9c1d', base: 'main', ahead: 1, behind: 0, dirty: 2, additions: 0, deletions: 0 };
   expect(meta({ ...w, status: { ...w.status, git } }, 70).map((s) => s[1]).join('')).toBe('⎇ n-3f2a ↑1●2 · opus 5.5 · high · ctx 42% (84k/200k) $0.42');
   expect(meta({ ...w, status: { ...w.status, git: { ...git, ahead: 0, dirty: 0, mergedAt: 1, missing: true } } }, 70)[0]).toEqual(['33', '⎇ n-3f2a merged']);
 });
