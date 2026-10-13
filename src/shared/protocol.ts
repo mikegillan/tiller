@@ -202,18 +202,23 @@ export type ClientMessage =
   | { t: 'rename'; id: string; title: string }
   | { t: 'confirm'; confirmId: string; ok: boolean }
   | { t: 'diff'; id: string }                  // a worktree node's diff; replies diff, or error for a node without a worktree
-  | { t: 'send'; id: string; text: string }    // a message from the human, as `o8 send` delivers it; replies sent
+  | { t: 'send'; id: string; text: string; mode?: SendMode } // a message from the human, as `o8 send` delivers it; replies sent
   ;
 
 // Outcome of delivering a message into an agent node (PLAN.md §6).
-export type SendOutcome = 'delivered' | 'queued' | 'stalled' | 'expired' | 'queueFull' | 'gone' | 'refused';
-export interface SendResult { outcome: SendOutcome; retryable: boolean; detail?: string; messageId?: string }
+export type SendOutcome = 'delivered' | 'queued' | 'stalled' | 'expired' | 'queueFull' | 'gone' | 'refused' | 'withdrawn';
+/** "queue" waits for the target to be idle; "now" interrupts a working target first (a steer). */
+export type SendMode = 'queue' | 'now';
+/** `steer` is set when the message interrupts (or interrupted) the target's running turn. */
+export interface SendResult { outcome: SendOutcome; retryable: boolean; detail?: string; messageId?: string; steer?: true }
 
 // Mod-facing HTTP API (PLAN §14). All routes authenticate like /hook: Authorization bearer + X-O8-Node.
 // The per-node mod (mod/) polls these; the daemon treats a node as "mod-live" while polls keep arriving.
 
 /** GET /inbox → InboxMessage[] (unacked messages for the calling node, oldest first). */
-export interface InboxMessage { id: string; from: string; text: string; enqueuedAt: number }
+/** `steer`: abort the running turn and submit now; otherwise the mod holds it until no turn runs, so it can be withdrawn. */
+export interface InboxMessage { id: string; from: string; text: string; enqueuedAt: number; steer?: true }
+/** POST /claim { id } → 204, or 404 if it was withdrawn or expired. Sent just before $.prompt.submit; a claimed message can no longer be withdrawn. */
 /** POST /ack { id } → 204. Sent when $.prompt.submit resolved (the turn started). */
 /** POST /mod-event { event, payload } → 204. */
 export type ModEvent =

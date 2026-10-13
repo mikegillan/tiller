@@ -5,7 +5,7 @@ import { classify, composerTextOf } from './pty.js';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ack, deliver, flushInbox, inbox, messageStatus, startNotices, type Mgr } from './messaging.js';
+import { ack, claim, deliver, flushInbox, inbox, messageStatus, startNotices, withdraw, type Mgr } from './messaging.js';
 
 const PROMPT = ['some output', '────────────────── n-b', '❯ ', '──────────────────'];
 
@@ -30,6 +30,8 @@ class FakeManager extends EventEmitter {
   sessions = new Map<string, FakeSession>();
   view = (id: string) => this.nodes.get(id);
   session = (id: string) => this.sessions.get(id) as never;
+  typed: [string, string][] = [];
+  input = (id: string, data: string) => { this.typed.push([id, data]); };
   add(id: string, parentId: string | null, status: Partial<NodeStatus> = {}, kind: 'claude' | 'terminal' = 'claude') {
     this.nodes.set(id, { id, parentId, kind, title: `T-${id}`, cwd: '/', createdAt: 0, unread: false, status: { state: 'done', doneSource: 'stop', changedAt: 0, ...status } });
     this.sessions.set(id, new FakeSession(this, id));
@@ -268,6 +270,16 @@ describe('mod inbox', () => {
     expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'expired', retryable: true });
   });
 
+  it('does not expire while the target works (the mod holds messages until the turn ends)', async () => {
+    m.set('b', { state: 'working' });
+    const r = await deliver(m.mgr, 'a', 'b', 'hi');
+    await vi.advanceTimersByTimeAsync(12 * 60_000);
+    expect(inbox(m.mgr, 'b').map((x) => x.id)).toEqual([r.messageId]);
+    m.set('b', { state: 'done', doneSource: 'stop' });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'expired' });
+  });
+
   it('caps the inbox at 16', async () => {
     for (let i = 0; i < 16; i++) expect((await deliver(m.mgr, 'orchestr8', 'b', `m${i}`)).outcome).toBe('queued');
     expect(await deliver(m.mgr, 'orchestr8', 'b', 'overflow')).toMatchObject({ outcome: 'queueFull', retryable: true });
@@ -318,6 +330,89 @@ describe('mod inbox', () => {
       flushInbox(m1); // no timers advanced: the 50 ms debounce has not fired
       expect(JSON.parse(readFileSync(join(home, 'inbox.json'), 'utf8')).items.map((i: { msg: { id: string } }) => i.msg.id)).toEqual([sent.messageId]);
     } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+describe('steer (mode now)', () => {
+  it('to an idle target behaves like queue: pasted at once, no Esc, no steer line', async () => {
+    const r = await deliver(m.mgr, 'a', 'b', 'hi', { mode: 'now' });
+    expect(r).toMatchObject({ outcome: 'delivered' });
+    expect(r.steer).toBeUndefined();
+    expect(m.typed).toEqual([]);
+    expect(m.sessions.get('b')!.pasted[0]).not.toContain('steer:');
+  });
+
+  it('to a working target presses Esc once, jumps the queue, and delivers once after the interrupt', async () => {
+    m.set('b', { state: 'working' });
+    const queued = await deliver(m.mgr, 'p', 'b', 'normal');
+    const r = await deliver(m.mgr, 'a', 'b', 'stop that', { mode: 'now' });
+    expect(r).toMatchObject({ outcome: 'queued', steer: true });
+    expect(m.typed).toEqual([['b', '\x1b']]);
+    const b = m.sessions.get('b')!;
+    expect(b.pasted).toHaveLength(0);
+    m.set('b', { state: 'done', doneSource: 'interrupt', interrupted: true }); // what the manager does after Esc
+    await vi.advanceTimersByTimeAsync(0);
+    expect(b.pasted).toHaveLength(1);
+    expect(b.pasted[0]).toMatch(/\nreply-to: a\nsteer: the sender interrupted your turn on purpose to deliver this now\nstop that\n/);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'delivered', steer: true });
+    // Later events (a late Stop, the retry timer) do not paste it again, and the normal message waits for a real Stop.
+    m.set('b', { state: 'done', doneSource: 'interrupt' });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(b.pasted).toHaveLength(1);
+    expect(messageStatus(m.mgr, 'p', queued.messageId!)?.outcome).toBe('queued');
+    m.set('b', { state: 'done', doneSource: 'stop' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(b.pasted.map((t) => t.includes('stop that'))).toEqual([true, false]);
+    expect(m.typed).toHaveLength(1);
+  });
+
+  it('keeps the rate limit', async () => {
+    m.set('b', { state: 'working' });
+    await deliver(m.mgr, 'a', 'b', 'one');
+    expect(await deliver(m.mgr, 'a', 'b', 'two', { mode: 'now' })).toMatchObject({ outcome: 'refused', retryable: true });
+    expect(m.typed).toEqual([]);
+  });
+
+  it('to a mod-live working target flags the inbox message for the mod instead of pressing Esc', async () => {
+    inbox(m.mgr, 'b');
+    m.set('b', { state: 'working' });
+    const r = await deliver(m.mgr, 'a', 'b', 'stop that', { mode: 'now' });
+    expect(r).toMatchObject({ outcome: 'queued', steer: true });
+    expect(m.typed).toEqual([]);
+    const [msg] = inbox(m.mgr, 'b');
+    expect(msg.steer).toBe(true);
+    expect(msg.text).toContain('\nsteer: the sender interrupted your turn');
+  });
+});
+
+describe('withdraw', () => {
+  it('removes a queued paste-path message so it is never delivered', async () => {
+    m.set('b', { state: 'working' });
+    const r = await deliver(m.mgr, 'a', 'b', 'never mind');
+    await expect(withdraw(m.mgr, 'p', r.messageId!)).rejects.toThrow(/no message .* from you/); // not p's
+    expect(await withdraw(m.mgr, 'a', r.messageId!)).toMatchObject({ to: 'b', result: { outcome: 'withdrawn' } });
+    m.set('b', { state: 'done', doneSource: 'stop' });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(m.sessions.get('b')!.pasted).toHaveLength(0);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'withdrawn' });
+  });
+
+  it('removes a mod inbox message before the mod claims it; a claimed one is refused', async () => {
+    inbox(m.mgr, 'b');
+    m.set('b', { state: 'working' });
+    const r1 = await deliver(m.mgr, 'a', 'b', 'first');
+    const r2 = await deliver(m.mgr, 'p', 'b', 'second');
+    await withdraw(m.mgr, 'a', r1.messageId!);
+    expect(inbox(m.mgr, 'b').map((x) => x.id)).toEqual([r2.messageId]);
+    expect(claim(m.mgr, 'b', r1.messageId!)).toBe(false); // the mod must not submit it
+    expect(claim(m.mgr, 'b', r2.messageId!)).toBe(true);
+    await expect(withdraw(m.mgr, 'p', r2.messageId!)).rejects.toThrow(/already submitting/);
+  });
+
+  it('is refused after delivery, and the reply says so', async () => {
+    const r = await deliver(m.mgr, 'a', 'b', 'hi');
+    expect(r.outcome).toBe('delivered');
+    await expect(withdraw(m.mgr, 'a', r.messageId!)).rejects.toThrow(`cannot withdraw ${r.messageId}: it is already delivered`);
   });
 });
 

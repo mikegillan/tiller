@@ -14,6 +14,8 @@ const quietAtom = atom({ plugin: 'orchestr8', key: 'quiet' } as const, false)
 let quiet = false
 let ctx: Ctx | undefined
 let parent: string | undefined, busy = false
+// The running turn's id, from turn.start; unknown after a hot reload mid-turn, when messages are submitted as before.
+let turn: string | undefined
 let prev: Child[] | null = null
 const inflight = new Set<string>()
 const lastToast = new Map<string, number>()
@@ -62,7 +64,11 @@ async function poll($: any) {
     const msgs = (await call($, 'GET', '/inbox')).filter((m: any) => !inflight.has(m.id))
     await update($, pend, () => inflight.size + msgs.length)
     for (const m of msgs) {
+      // While a turn runs, hold a message in the daemon so its sender can still withdraw it; a steer goes now.
+      if (turn && !m.steer) continue
       inflight.add(m.id)
+      try { await call($, 'POST', '/claim', { id: m.id }) } catch { inflight.delete(m.id); continue } // withdrawn or expired
+      if (m.steer && turn) await $.turn.abort({ turnId: turn }).catch(() => {}) // the turn may have just ended
       await notify($, `msg:${m.from}`, `message from ${m.from}`)
       // submit resolves once the prompt is accepted (session idle); ack after that.
       $.prompt.submit({ text: m.text, asUser: true }).then(async () => {
@@ -86,8 +92,8 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('turn.start', ($, e, next) => { forward($, 'turn.start', e); return next(e) })
-  on('turn.complete', ($, e, next) => { forward($, 'turn.complete', e); return next(e) })
+  on('turn.start', ($, e, next) => { turn = e.turnId; forward($, 'turn.start', e); return next(e) })
+  on('turn.complete', ($, e, next) => { if (turn === e.turnId) turn = undefined; forward($, 'turn.complete', e); return next(e) })
   on('session.measure', ($, e, next) => { forward($, 'session.measure', e); return next(e) })
 
   on('command.run', { command: 'o8-list' }, async $ => ({ text: await tool($, 'list_nodes', {}) }))

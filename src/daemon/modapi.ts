@@ -2,7 +2,7 @@ import type http from 'node:http';
 import { z } from 'zod';
 import type { ChildView, ModEvent, NodeView } from '../shared/protocol.js';
 import { treeOrder } from '../shared/tree.js';
-import { ack, HUMAN, inbox, markModLive } from './messaging.js';
+import { ack, claim, HUMAN, inbox, markModLive } from './messaging.js';
 import type { NodeManager } from './manager.js';
 import { PREVIEW_CHARS, readBody } from './util.js';
 
@@ -30,7 +30,7 @@ const rootOf = (manager: NodeManager, id: string): NodeView | undefined => manag
  */
 export function modApi(manager: NodeManager, authenticate: (req: http.IncomingMessage) => string | undefined, onFocus: (from: string, id: string) => void, clients: () => string[]) {
   return async (req: http.IncomingMessage, res: http.ServerResponse, path: string): Promise<boolean> => {
-    const post = req.method === 'POST' && (path === '/ack' || path === '/mod-event' || path === '/focus');
+    const post = req.method === 'POST' && (path === '/ack' || path === '/claim' || path === '/mod-event' || path === '/focus');
     if (!post && !(req.method === 'GET' && (path === '/inbox' || path === '/tree'))) return false;
     const caller = authenticate(req);
     if (!caller) { res.writeHead(401).end(); return true; }
@@ -53,6 +53,9 @@ export function modApi(manager: NodeManager, authenticate: (req: http.IncomingMe
         const id = z.object({ id: z.string().min(1) }).parse(body).id;
         const ok = ack(manager, caller, id);
         if (process.env.O8_DEBUG) console.log(`ack ${caller.slice(0, 6)} ${id}${ok ? ' (delivered via inbox)' : ' (unknown)'}`);
+      } else if (path === '/claim') {
+        // 404: withdrawn or expired, so the mod must not submit it.
+        if (!claim(manager, caller, z.object({ id: z.string().min(1) }).parse(body).id)) { res.writeHead(404).end(); return true; }
       } else if (path === '/focus') {
         const id = z.object({ id: z.string().min(1) }).parse(body).id;
         if (caller !== HUMAN && rootOf(manager, caller)?.id !== rootOf(manager, id)?.id) { res.writeHead(403).end(); return true; }

@@ -50,7 +50,7 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('rename'), id, title: z.string() }),
   z.object({ t: z.literal('confirm'), confirmId: z.string(), ok: z.boolean() }),
   z.object({ t: z.literal('diff'), id }),
-  z.object({ t: z.literal('send'), id, text: z.string().min(1) }),
+  z.object({ t: z.literal('send'), id, text: z.string().min(1), mode: z.enum(['queue', 'now']).optional() }),
 ]) satisfies z.ZodType<ClientMessage>;
 
 export interface DaemonServer {
@@ -144,7 +144,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       case 'rename': manager.rename(m.id, m.title); return;
       case 'confirm': pendingConfirms.get(m.confirmId)?.(m.ok); return;
       case 'diff': sendTo(c, { t: 'diff', id: m.id, ...(await manager.diff(m.id)) }); return;
-      case 'send': sendTo(c, { t: 'sent', id: m.id, result: await deliver(manager, HUMAN, m.id, m.text) }); return;
+      case 'send': sendTo(c, { t: 'sent', id: m.id, result: await deliver(manager, HUMAN, m.id, m.text, { mode: m.mode }) }); return;
     }
   }
 
