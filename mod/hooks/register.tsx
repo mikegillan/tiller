@@ -15,7 +15,7 @@ let quiet = false
 let ctx: Ctx | undefined
 let parent: string | undefined, busy = false
 // The running turn's id, from turn.start; unknown after a hot reload mid-turn, when messages are submitted as before.
-let turn: string | undefined
+let turn: string | undefined, endedTurn: string | undefined
 let prev: Child[] | null = null
 const inflight = new Set<string>()
 const lastToast = new Map<string, number>()
@@ -59,6 +59,11 @@ async function poll($: any) {
       await update($, quietAtom, () => q)
     }
     await update($, kids, () => list)
+    // Should a turn.complete never reach this hook (another plugin's hook answering without next), messages would be held
+    // until they expire; so release the hold once the daemon has seen this turn end on two polls in a row.
+    const ended = turn !== undefined && list.find(c => c.self)?.state === 'done'
+    if (ended && endedTurn === turn) turn = undefined
+    endedTurn = ended ? turn : undefined
     if (prev) for (const c of changes(prev, list)) await notify($, c.key, c.text)
     prev = list
     const msgs = (await call($, 'GET', '/inbox')).filter((m: any) => !inflight.has(m.id))
@@ -74,8 +79,7 @@ async function poll($: any) {
       $.prompt.submit({ text: m.text, asUser: true }).then(async () => {
         await call($, 'POST', '/ack', { id: m.id })
         inflight.delete(m.id)
-        await update($, pend, (n: number) => Math.max(0, n - 1))
-      }).catch((err: unknown) => { inflight.delete(m.id); { if (!quiet) $.ui.log(`orchestr8: deliver ${m.id} failed: ${err}`) } })
+      }).catch((err: unknown) => { inflight.delete(m.id); if (!quiet) $.ui.log(`orchestr8: deliver ${m.id} failed: ${err}`) })
     }
   } catch (err) { if (!quiet) $.ui.log(`orchestr8: poll error ${err}`) } finally { busy = false }
 }

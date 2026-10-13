@@ -6,8 +6,8 @@ export type Els = { Box: any; Text: any; Button: any }
 export function Band({ Box, Text, Button }: Els, id: string, list: Child[], pending: number, parentId: string | undefined, focus: (id: string, label: string) => void) {
   const rootId = list[0] && !list[0].self ? list[0].id : undefined
   const me = list.find(c => c.self)
-  const first = list.find(c => !c.self && needsYou(c))
-  const k = list.filter(c => !c.self && needsYou(c)).length
+  const needy = list.filter(c => !c.self && needsYou(c))
+  const first = needy[0], k = needy.length
   return (
     <Box columnGap={1}>
       <Text dimColor wrap="truncate-end">orchestr8 · {me?.title ?? id} ·{parentId ? '' : ' parent none'}</Text>

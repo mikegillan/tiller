@@ -7,7 +7,7 @@ import { NEEDS_YOU_STATES, type AgentState, type Diff, type DigestItem, type Git
 import { loadConfig, type Config, type Limits, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
-import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
+import { claudeLaunch, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
@@ -204,7 +204,6 @@ export class NodeManager extends EventEmitter {
     this.path = opts.path ?? process.env.PATH ?? '';
     mkdirSync(join(this.home, 'nodes'), { recursive: true, mode: 0o700 });
     chmodSync(this.home, 0o700); // mkdir's mode does not apply to a directory that already existed
-    ensurePrompts(this.home);
     ensurePresets(this.home);
     this.secret = this.loadSecret();
     this.registry = new NodeRegistry(join(this.home, 'state.json'));
