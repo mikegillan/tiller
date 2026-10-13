@@ -49,6 +49,9 @@
 .conn.down .dot { background: var(--needs); animation: pulse 1.2s infinite; }
 .statusbar b { font-weight: 500; }
 .keys { display: flex; gap: 8px; align-items: center; }
+.statusbar .dnd { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.statusbar .dnd:hover { color: var(--fg); }
+.statusbar .dnd.on { color: var(--needs); }
 
 /* Diff tab: a worktree node's changes, over the terminal (which stays mounted and measurable underneath). */
 .seg.tabs { grid-template-columns: auto auto; flex: none; }

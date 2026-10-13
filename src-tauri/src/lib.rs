@@ -1,5 +1,5 @@
 use std::{env, fs, path::PathBuf, process::{Command, Stdio}, thread, time::{Duration, Instant}};
-use tauri::{Manager, RunEvent, Url};
+use tauri::{image::Image, menu::{Menu, MenuItem, PredefinedMenuItem}, tray::TrayIconBuilder, AppHandle, Manager, RunEvent, Url, Wry};
 
 fn home() -> PathBuf {
     env::var_os("O8_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env::var("HOME").unwrap_or_default()).join(".orchestr8"))
@@ -37,9 +37,59 @@ fn ensure_daemon(port: u16) -> Result<(), String> {
     Err(format!("daemon did not come up on port {port}; see {}", home().join("daemon.log").display()))
 }
 
+// A filled circle for the menu bar: 32 px, so 16 pt on a Retina screen.
+fn dot(rgb: [u8; 3]) -> Image<'static> {
+    const N: u32 = 32;
+    let c = N as f32 / 2.0;
+    let px = (0..N * N).flat_map(|i| {
+        let (dx, dy) = ((i % N) as f32 + 0.5 - c, (i / N) as f32 + 0.5 - c);
+        let alpha = ((9.0 - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0) * 255.0) as u8; // radius 9, antialiased edge
+        [rgb[0], rgb[1], rgb[2], alpha]
+    }).collect();
+    Image::new_owned(px, N, N)
+}
+
+// Nodes that need you (id, title), then Open and the do-not-disturb toggle.
+fn tray_menu(app: &AppHandle, items: &[(String, String)], dnd: bool) -> tauri::Result<Menu<Wry>> {
+    let menu = Menu::new(app)?;
+    for (id, title) in items { menu.append(&MenuItem::with_id(app, format!("node:{id}"), title, true, None::<&str>)?)?; }
+    if !items.is_empty() { menu.append(&PredefinedMenuItem::separator(app)?)?; }
+    menu.append(&MenuItem::with_id(app, "open", "Open orchestr8", true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "dnd", if dnd { "Turn off do not disturb" } else { "Do not disturb 1 h" }, true, None::<&str>)?)?;
+    Ok(menu)
+}
+
+// The UI calls this whenever what needs you changes (ui/hooks.ts useDocumentSync), as it sets the Dock badge.
+#[tauri::command]
+fn set_tray(app: AppHandle, color: String, items: Vec<(String, String)>, dnd: bool) -> Result<(), String> {
+    let tray = app.tray_by_id("o8").ok_or("no tray icon")?;
+    let rgb = match color.as_str() { "red" => [0xe5, 0x48, 0x4d], "amber" => [0xf5, 0xa5, 0x24], _ => [0x30, 0xa4, 0x6c] };
+    tray.set_icon(Some(dot(rgb))).map_err(|e| e.to_string())?;
+    tray.set_menu(Some(tray_menu(&app, &items, dnd).map_err(|e| e.to_string())?)).map_err(|e| e.to_string())
+}
+
+// Menu clicks go to the UI (window.__o8tray in ui/hooks.ts), which selects the node or toggles do not disturb.
+fn on_tray_menu(app: &AppHandle, id: &str) {
+    let Some(w) = app.get_webview_window("main") else { return };
+    if id == "dnd" { let _ = w.eval("window.__o8tray?.('dnd')"); return; }
+    let _ = w.show();
+    let _ = w.set_focus();
+    if let Some(node) = id.strip_prefix("node:").filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
+        let _ = w.eval(format!("window.__o8tray?.('select', '{node}')"));
+    }
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![set_tray])
         .setup(|app| {
+            TrayIconBuilder::with_id("o8")
+                .icon(dot([0x30, 0xa4, 0x6c]))
+                .icon_as_template(false)
+                .tooltip("orchestr8")
+                .menu(&tray_menu(app.handle(), &[], false)?)
+                .on_menu_event(|app, e| on_tray_menu(app, e.id().as_ref()))
+                .build(app)?;
             let win = app.get_webview_window("main").expect("main window");
             thread::spawn(move || {
                 let port = port();

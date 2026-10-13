@@ -31,6 +31,7 @@ export function NodeRow({ row }: { row: Row }) {
           <StateDot kind={statusKind(node)} />
           {renaming ? <RenameInput id={node.id} title={node.title} /> : <span className={`title${s.exited ? ' dim' : ''}`}>{node.title}</span>}
           {node.unread && <i className="unread" title="unread" />}
+          {node.muted && <span className="muted" title="notifications muted"><Icon name="bellOff" size={11} /></span>}
           {node.gate && <GateMark gate={node.gate} />}
           {hasChanges(node) && <span className="count" title={`unmerged work on ${node.status.git!.branch}: merge or close it`}>changes</span>}
           {collapsed && <span className="count" title={`${descendants.length} hidden`}>+{descendants.length}</span>}
