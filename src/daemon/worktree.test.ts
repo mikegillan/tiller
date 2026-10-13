@@ -196,10 +196,10 @@ describe('worktree nodes', () => {
     expect(existsSync(busy) && existsSync(foreign)).toBe(true);
   });
 
-  it('an agent close of an unmerged worktree is refused even under closeWithoutConfirm "done"; discard always asks', async () => {
+  it('an agent close of an unmerged worktree is refused even under approvals.close "done"; discard always asks', async () => {
     setup();
     mkdirSync(join(repo, '.orchestr8'));
-    writeFileSync(join(repo, '.orchestr8', 'config.json'), JSON.stringify({ closeWithoutConfirm: 'done' }));
+    writeFileSync(join(repo, '.orchestr8', 'config.json'), JSON.stringify({ approvals: { close: 'done' } }));
     const confirms: string[] = [];
     const { handler } = mountMcp(m, async (t) => { confirms.push(t); return true; }, () => {});
     const server = http.createServer((req, res) => void handler(req, res));
@@ -318,7 +318,7 @@ describe('git state and merge', () => {
 
   it('squash makes one commit on base and the squashed branch still closes; ff-only refuses a moved base', async () => {
     setup();
-    config({ merge: 'squash' });
+    config({ mergeStyle: 'squash' });
     const v = await spawnW();
     commit(v.cwd, 'a.txt');
     commit(v.cwd, 'b.txt');
@@ -330,7 +330,7 @@ describe('git state and merge', () => {
     await m.close(v.id, true);
     expect(existsSync(v.cwd)).toBe(false);
 
-    config({ merge: 'ff-only' });
+    config({ mergeStyle: 'ff-only' });
     const f = await spawnW();
     commit(f.cwd, 'f.txt');
     commit(repo, 'moved.txt');

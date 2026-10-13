@@ -110,10 +110,10 @@ describe('mcp api', () => {
     answer = true;
   });
 
-  it('closeWithoutConfirm in the caller\'s project config skips the confirm only as configured', async () => {
+  it('approvals.close in the caller\'s project config skips the confirm only as configured', async () => {
     const proj = join(home, 'proj');
     mkdirSync(join(proj, '.orchestr8'), { recursive: true });
-    const setMode = (mode: string) => writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ closeWithoutConfirm: mode }));
+    const setMode = (mode: string) => writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ approvals: { close: mode } }));
     const p = (await spawnT('cfg', 'human', admin, { cwd: proj })).body.data.nodeId as string;
     const tok = manager.tokenFor(p);
     const kids = async (n: number) => Promise.all(Array.from({ length: n }, async () => (await spawnT('k', p, tok)).body.data.nodeId as string));
@@ -224,7 +224,8 @@ describe('mcp api', () => {
   it('tells the parent of each recorded outcome once, unless its pending notify_when covers that child', async () => {
     const cwd = join(home, 'plain');
     mkdirSync(join(cwd, '.orchestr8'), { recursive: true });
-    writeFileSync(join(cwd, '.orchestr8', 'config.json'), JSON.stringify({ limits: { maxLiveNodes: 100 } })); // earlier tests leave many nodes live
+    writeFileSync(join(cwd, '.orchestr8', 'config.json'), '{}');
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ daemon: { maxLiveNodes: 100 } })); // earlier tests leave many nodes live
     const p = (await spawnT('np', 'human', admin, { cwd })).body.data.nodeId as string;
     const [w1, w2] = [(await spawnT('nw1', p, manager.tokenFor(p), { cwd })).body.data.nodeId as string, (await spawnT('nw2', p, manager.tokenFor(p), { cwd })).body.data.nodeId as string];
     for (const id of [p, w1, w2]) { manager.registry.update(id, { kind: 'claude' }); inbox(manager, id); }
@@ -246,9 +247,10 @@ describe('mcp api', () => {
     const tok = (id: string) => manager.tokenFor(id);
     beforeAll(() => {
       mkdirSync(join(proj(), '.orchestr8'), { recursive: true });
-      writeFileSync(join(proj(), '.orchestr8', 'config.json'), JSON.stringify({ gate: { command: 'test -f ok.txt && echo fine || { echo missing ok.txt; exit 3; }', retries: 1 }, limits: { maxLiveNodes: 100 } })); // earlier tests leave many nodes live
+      writeFileSync(join(proj(), '.orchestr8', 'config.json'), JSON.stringify({ gate: { command: 'test -f ok.txt && echo fine || { echo missing ok.txt; exit 3; }', retries: 1 } }));
       mkdirSync(join(slow(), '.orchestr8'), { recursive: true });
-      writeFileSync(join(slow(), '.orchestr8', 'config.json'), JSON.stringify({ gate: { command: 'while [ ! -f go ]; do sleep 0.05; done' }, limits: { maxLiveNodes: 100 } }));
+      writeFileSync(join(slow(), '.orchestr8', 'config.json'), JSON.stringify({ gate: { command: 'while [ ! -f go ]; do sleep 0.05; done' } }));
+      writeFileSync(join(home, 'config.json'), JSON.stringify({ daemon: { maxLiveNodes: 100 } })); // earlier tests leave many nodes live
       writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [proj()]: { hasTrustDialogAccepted: true }, [slow()]: { hasTrustDialogAccepted: true } } })); // gate commands need trust, as setup does
       vi.stubEnv('HOME', home);
     });
@@ -308,7 +310,7 @@ describe('mcp api', () => {
       return c;
     };
     const human = await connect('human', admin);
-    expect((await human.listTools()).tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'list_nodes', 'merge', 'message_status', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'shutdown', 'spawn', 'withdraw', 'worktrees', 'write']);
+    expect((await human.listTools()).tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'dnd', 'list_nodes', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'withdraw', 'worktrees', 'write']);
     await human.close();
     const client = await connect(id, manager.tokenFor(id));
     const { tools } = await client.listTools();

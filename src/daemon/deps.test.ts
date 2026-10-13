@@ -117,11 +117,11 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
     expect(watching(m, a, b)).toBe(false);
   });
 
-  it('limits.maxWorking queues the third spawn and launches it when one finishes', async () => {
-    const { m, child, turn, live } = await setup({ limits: { maxWorking: 2 } });
+  it('daemon.maxWorking queues the third spawn and launches it when one finishes', async () => {
+    const { m, child, turn, live } = await setup({ daemon: { maxWorking: 2 } });
     const a = await child('a'), b = await child('b'), c = await child('c');
     expect(live(a) && live(b)).toBe(true);
-    expect(m.view(c)!.status).toMatchObject({ state: 'queued', activity: 'queued: 2 working, limits.maxWorking 2' });
+    expect(m.view(c)!.status).toMatchObject({ state: 'queued', activity: 'queued: 2 working, daemon.maxWorking 2' });
     m.applyHook(b, { hook_event_name: 'UserPromptSubmit' }); // working, still holds its slot
     await tick();
     expect(live(c)).toBe(false);

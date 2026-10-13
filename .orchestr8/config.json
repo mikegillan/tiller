@@ -9,7 +9,9 @@
       "effort": "medium"
     }
   },
-  "closeWithoutConfirm": "done",
+  "approvals": {
+    "close": "done"
+  },
   "gate": {
     "command": "node_modules/.bin/tsc --noEmit && node_modules/.bin/tsc --noEmit -p ui/tsconfig.json && node_modules/.bin/vitest run",
     "retries": 2,

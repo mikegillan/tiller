@@ -36,7 +36,6 @@ export function inQuietHours(spec: string, now: Date): boolean {
 
 /** How to show `kind` under the notifications config, and which setting decided it. */
 export function decide(kind: NotifyEvent['kind'], cfg: Notifications, now: Date): { level: NotifyLevel; why: string } {
-  if (cfg.failuresOnly && kind !== 'needsYou' && kind !== 'errored') return { level: 'silent', why: 'failuresOnly' };
   const level = cfg.kinds[kind];
   if (level === 'silent') return { level, why: `kinds.${kind}` };
   if (cfg.quietHours && inQuietHours(cfg.quietHours, now)) return kind === 'needsYou' ? { level: 'banner', why: 'quietHours' } : { level: 'silent', why: 'quietHours' };

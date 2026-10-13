@@ -199,6 +199,26 @@ describe('POST /hook', () => {
     await until(() => seen.filter((m) => m.t === 'focus').length === 3 || undefined);
     expect(seen.filter((m) => m.t === 'focus')).toEqual([{ t: 'focus', from: kid.id, id: cousin.id }, { t: 'focus', from: parent.id, id: kid.id }, { t: 'focus', from: kid.id, id: parent.id }]);
   });
+
+  it('the CLI\'s human-only API tools: mute, dnd and sessions_clean', async () => {
+    const n = await manager.spawn({ kind: 'terminal', title: 't', cwd: tmpdir() });
+    const api = async (tool: string, args: object, caller = 'human', token = adminToken()) => {
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/${tool}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': caller }, body: JSON.stringify(args) });
+      return { status: res.status, body: await res.json() as { text?: string; error?: string } };
+    };
+    await connect();
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    expect((await api('mute', { nodeId: n.id, muted: true })).body.text).toBe(`muted ${n.id}`);
+    expect(manager.view(n.id)!.muted).toBe(true);
+    expect((await api('mute', { nodeId: 'n-nope', muted: true })).body.error).toBe('no such node: n-nope');
+    expect((await api('mute', { nodeId: n.id, muted: false }, n.id, manager.tokenFor(n.id))).body.error).toBe('mute is only for the human');
+    expect((await api('dnd', { on: true, minutes: 30 })).body.text).toMatch(/^do not disturb is on until /);
+    await until(() => seen.find((m) => m.t === 'dnd' && m.on));
+    expect(server.dnd()).toMatchObject({ on: true });
+    expect((await api('dnd', {})).body.text).toMatch(/^do not disturb is on until /); // no `on`: only reports
+    expect((await api('dnd', { on: false })).body.text).toBe('do not disturb is off');
+    expect((await api('sessions_clean', {})).body.text).toBe('removed 0 expired session directories');
+  });
 });
 
 describe('client tracking', () => {

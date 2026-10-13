@@ -71,7 +71,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   const clients = new Set<Client>();
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
   const focus = (from: string, id: string) => broadcast({ t: 'focus', from, id });
-  const { handler: mcp, publishAdminToken, authenticate, isAdmin } = mountMcp(manager, (text) => daemon.confirm(text), focus);
+  const { handler: mcp, publishAdminToken, authenticate, isAdmin } = mountMcp(manager, (text) => daemon.confirm(text), focus, (on, minutes) => setDnd(on, minutes));
   const mod = modApi(manager, authenticate, focus, () => [...new Set([...clients].filter((c) => c.authed && c.kind).map((c) => c.kind!))]);
 
   const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
@@ -83,6 +83,14 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   let awaySince: number | undefined;
   let dnd: Dnd = { on: false };
   const noteAway = () => { awaySince = anyFocused() ? undefined : awaySince ?? Date.now(); };
+  /** Turn do not disturb on (for `minutes` when given) or off and tell every client; with `on` undefined, only return it. */
+  const setDnd = (on: boolean | undefined, minutes?: number): Dnd => {
+    if (on === undefined) return dnd;
+    dnd = on ? { on: true, ...(minutes ? { until: Date.now() + minutes * 60_000 } : {}) } : { on: false };
+    console.log(`do not disturb ${on ? `on${dnd.until ? ` until ${new Date(dnd.until).toLocaleTimeString()}` : ''}` : 'off'}`);
+    broadcast({ t: 'dnd', ...dnd });
+    return dnd;
+  };
 
   manager.on('node', (node) => broadcast({ t: 'node', node }));
   manager.on('removed', (rid: string) => {
@@ -115,7 +123,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
         c.focused = m.focused;
         if (regained && wasAway && awaySince !== undefined && c.kind !== 'mux') {
           const since = awaySince;
-          if (Date.now() - since > loadConfig(null, manager.home).digestAfterMinutes * 60_000) {
+          if (Date.now() - since > loadConfig(null, manager.home).daemon.digestAfterMinutes * 60_000) {
             const items = await manager.digest(since);
             if (items.length) sendTo(c, { t: 'digest', since, items });
           }
@@ -146,18 +154,10 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       case 'confirm': pendingConfirms.get(m.confirmId)?.(m.ok); return;
       case 'diff': sendTo(c, { t: 'diff', id: m.id, ...(await manager.diff(m.id).catch((err: Error) => ({ error: err.message }))) }); return;
       case 'send': sendTo(c, { t: 'sent', id: m.id, result: await deliver(manager, HUMAN, m.id, m.text, { mode: m.mode }) }); return;
-      case 'mute': {
-        if (!manager.registry.update(m.id, { muted: m.muted || undefined })) { sendTo(c, { t: 'error', message: `no such node: ${m.id}`, id: m.id }); return; }
-        console.log(`${m.muted ? 'muted' : 'unmuted'} ${m.id}`);
-        const v = manager.view(m.id);
-        if (v) manager.emit('node', v);
+      case 'mute':
+        if (!manager.mute(m.id, m.muted)) sendTo(c, { t: 'error', message: `no such node: ${m.id}`, id: m.id });
         return;
-      }
-      case 'dnd':
-        dnd = m.on ? { on: true, ...(m.minutes ? { until: Date.now() + m.minutes * 60_000 } : {}) } : { on: false };
-        console.log(`do not disturb ${m.on ? `on${dnd.until ? ` until ${new Date(dnd.until).toLocaleTimeString()}` : ''}` : 'off'}`);
-        broadcast({ t: 'dnd', ...dnd });
-        return;
+      case 'dnd': setDnd(m.on, m.minutes); return;
     }
   }
 

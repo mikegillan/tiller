@@ -5,18 +5,17 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { WebSocket } from 'ws';
-import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
-import { loadConfig } from './config.js';
+import { configEntries } from './config.js';
+import { gateFor } from './manager.js';
 import { promptPath } from './launch.js';
 import { listPresets } from './presets.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
 import { agentStatus, install, kickstart, LABEL, O8D, plistPath, uninstall } from './autostart.js';
-import { loginShellPath } from './pty.js';
-import { formatEvent, listSessions, parseSince, readEvents, sessionDir, sweepSessions, type SessionEvent } from './sessions.js';
+import { buildChildEnv, loginShellPath } from './pty.js';
+import { formatEvent, listSessions, parseSince, readEvents, sessionDir, type SessionEvent } from './sessions.js';
 import { fmtAge } from '../shared/format.js';
-import { mainCheckout } from './worktree.js';
+import { mainCheckout, runCommands, WORKTREES_DIR } from './worktree.js';
 import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, waitForDaemon, type OrchestratorCandidate } from './up.js';
 
 const usage = () => `o8: control orchestr8. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
@@ -51,7 +50,7 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--preset NAME] [--request-id ID]
            [--after ID,ID] [--after-success ID,ID] [--now]
                                                       --after / --after-success arm the node until those finish a turn or report
-                                                      succeeded; --now launches past limits.maxWorking instead of queueing
+                                                      succeeded; --now launches past daemon.maxWorking instead of queueing
   o8 prompts                                          show the role prompt files and any override for this directory
   o8 presets [--cwd P]                                list the spawn presets in effect for a directory and the file each comes from
   o8 config [--cwd P]                                 show the effective config for a directory and which file each key came from
@@ -59,7 +58,7 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 worktrees [--cwd P]                            list node worktrees, orphans and kept branches for this repo
   o8 worktrees clean [--force] [--cwd P]              remove orphans and kept branches that are clean and merged; --force removes all
   o8 sessions                                         list session directories (<home>/sessions/<rootId>) with title, age, size and closedAt
-  o8 sessions clean                                   delete the ones sessionsKeepDays has expired now
+  o8 sessions clean                                   delete the ones daemon.sessionsKeepDays has expired now
   o8 sessions path [id]                               print the session directory of a node's tree (default: this node's, or this directory's orchestrator's)
   o8 log [id] [--since 2h] [--follow]                 print a tree's event log (for a non-root id, only that node's events)
   o8 help`;
@@ -87,24 +86,6 @@ async function call(tool: string, args: Record<string, unknown>, print = true, s
   if (!res.ok) return soft ? { error: body.error ?? `HTTP ${res.status}` } : fail(body.error ?? `HTTP ${res.status}`);
   if (print) console.log(body.text ?? JSON.stringify(body.data, null, 2));
   return body;
-}
-
-type Snapshot = Extract<ServerMessage, { t: 'snapshot' }>;
-/** As the human, over the UI's WebSocket: after the snapshot, send what `build` returns and resolve with the first reply `isReply` accepts; with nothing to send, with the snapshot. */
-function wsHuman(build: (s: Snapshot) => ClientMessage | undefined, isReply: (r: ServerMessage) => boolean = () => false): Promise<ServerMessage> {
-  const ws = new WebSocket(`ws://127.0.0.1:${daemonPort()}/ws`);
-  return new Promise<ServerMessage>((ok, no) => {
-    const end = (r: ServerMessage) => { ok(r); ws.close(); };
-    ws.on('open', () => ws.send(JSON.stringify({ t: 'auth', token: adminToken() } satisfies ClientMessage)));
-    ws.on('message', (raw) => {
-      const r = JSON.parse(raw.toString()) as ServerMessage;
-      if (r.t !== 'snapshot') { if (isReply(r)) end(r); return; }
-      const m = build(r);
-      if (m) ws.send(JSON.stringify(m)); else end(r);
-    });
-    ws.on('error', (e) => no(new Error(`cannot reach daemon: ${e.message}`)));
-    ws.on('close', (code) => no(new Error(code === 4401 ? 'unauthorized: bad admin token' : 'daemon closed the connection')));
-  }).catch((e: Error) => fail(e.message));
 }
 
 const APP = join(dirname(dirname(import.meta.dirname)), 'src-tauri/target/release/bundle/macos/orchestr8.app');
@@ -173,33 +154,22 @@ switch (cmd) {
       console.log([p.name, p.source, fields].join('\t'));
     }
     break;
-  case 'config': {
-    const c = loadConfig(realpathSync(resolve(f.cwd ?? process.cwd())), home);
-    const { orchestrator: o, worker: w } = c.roles;
-    const values = {
-      'roles.orchestrator.model': o.model, 'roles.orchestrator.effort': o.effort, 'roles.worker.model': w.model, 'roles.worker.effort': w.effort,
-      closeWithoutConfirm: c.closeWithoutConfirm,
-      'worktrees.isolation': c.worktrees.isolation, 'worktrees.branchPrefix': c.worktrees.branchPrefix, 'worktrees.include': c.worktrees.include?.join(', ') ?? '(.worktreeinclude)',
-      'worktrees.merge': c.worktrees.merge, 'worktrees.mergeWithoutConfirm': c.worktrees.mergeWithoutConfirm,
-      'worktrees.setup': JSON.stringify(c.worktrees.setup), 'worktrees.teardown': JSON.stringify(c.worktrees.teardown),
-      'gate.command': c.gate?.command ?? '(none)', 'gate.retries': c.gate?.retries, 'gate.timeoutMinutes': c.gate?.timeoutMinutes,
-      resumeOnStart: c.resumeOnStart, resumeMaxAgeDays: c.resumeMaxAgeDays, sessionsKeepDays: c.sessionsKeepDays, digestAfterMinutes: c.digestAfterMinutes,
-      ...Object.fromEntries(Object.entries(c.limits).map(([k, v]) => [`limits.${k}`, v])),
-      ...Object.fromEntries(Object.entries(c.notifications.kinds).map(([k, v]) => [`notifications.kinds.${k}`, v])),
-      'notifications.failuresOnly': c.notifications.failuresOnly, 'notifications.treeDoneSummary': c.notifications.treeDoneSummary,
-      'notifications.quietHours': c.notifications.quietHours ?? '(none)',
-    };
-    for (const [k, v] of Object.entries(values)) console.log(`${k}: ${v ?? '(claude default)'}  [${c.sources[k as keyof typeof values]}]`);
+  case 'config':
+    for (const [k, { value, source }] of Object.entries(configEntries(realpathSync(resolve(f.cwd ?? process.cwd())), home))) {
+      const unset = k.startsWith('roles.') ? '(claude default)' : k === 'worktrees.include' ? '(.worktreeinclude)' : '(none)';
+      console.log(`${k}: ${value === undefined ? unset : Array.isArray(value) ? JSON.stringify(value) : value}  [${source}]`);
+    }
     break;
-  }
   case 'gate': {
     const dir = realpathSync(resolve(f.cwd ?? process.cwd()));
-    const gate = loadConfig(await mainCheckout(dir).catch(() => dir), home).gate ?? fail(`no gate.command configured for ${dir}`);
-    console.log(`$ ${gate.command}`);
-    const r = spawnSync('sh', ['-c', gate.command], { cwd: dir, stdio: 'inherit', timeout: gate.timeoutMinutes * 60_000 });
-    const end = r.error ? r.error.message : r.signal ? `stopped by ${r.signal}` : `exit ${r.status}`;
-    console.log(r.status === 0 ? 'gate passed' : `gate failed (${end})`);
-    process.exit(r.status === 0 ? 0 : 1);
+    // The config the daemon reads for a node here: the main checkout's for one of its worktrees, else this directory's.
+    const main = await mainCheckout(dir).catch(() => dir);
+    const gate = gateFor(dir.startsWith(join(main, WORKTREES_DIR)) ? main : dir, home) ?? fail(`no gate.command configured for ${dir}, or Claude does not trust it`);
+    // The daemon's runner, with the output going to the terminal instead of gate.log.
+    const err = await runCommands([gate.command], { cwd: dir, env: buildChildEnv({ PATH: await loginShellPath() }), log: '/dev/stdout', timeout: gate.timeoutMinutes * 60_000 })
+      .then(() => undefined, (e: Error) => e);
+    console.log(err ? `gate failed (${err.message})` : 'gate passed');
+    process.exit(err ? 1 : 0);
     break;
   }
   case 'select':
@@ -208,21 +178,13 @@ switch (cmd) {
     if (existsSync(APP)) openApp(daemonPort(), pos[0]!);
     break;
   case 'mute':
-  case 'unmute': {
-    const id = pos[0] ?? fail(usage());
-    const r = await wsHuman((snap) => snap.nodes.some((n) => n.id === id) ? { t: 'mute', id, muted: cmd === 'mute' } : fail(`no such node: ${id}`),
-      (r) => r.t === 'error' || (r.t === 'node' && r.node.id === id));
-    if (r.t === 'error') fail(r.message);
-    console.log(`${cmd}d ${id}`);
+  case 'unmute':
+    await call('mute', { nodeId: pos[0] ?? fail(usage()), muted: cmd === 'mute' });
     break;
-  }
   case 'dnd': {
     const dur = pos[0]?.match(/^(\d+)(m|h)$/);
     if (pos[0] && pos[0] !== 'on' && pos[0] !== 'off' && !dur) fail(usage());
-    const r = await wsHuman(() => pos[0] ? { t: 'dnd', on: pos[0] !== 'off', ...(dur ? { minutes: Number(dur[1]) * (dur[2] === 'h' ? 60 : 1) } : {}) } : undefined, (r) => r.t === 'dnd');
-    const dnd = r.t === 'dnd' ? r : r.t === 'snapshot' ? r.dnd : undefined;
-    const on = !!dnd?.on && (dnd.until === undefined || dnd.until > Date.now());
-    console.log(on ? `do not disturb is on${dnd!.until ? ` until ${new Date(dnd!.until).toLocaleTimeString()}` : ''}` : 'do not disturb is off');
+    await call('dnd', pos[0] ? { on: pos[0] !== 'off', ...(dur ? { minutes: Number(dur[1]) * (dur[2] === 'h' ? 60 : 1) } : {}) } : {});
     break;
   }
   case 'resume':
@@ -368,12 +330,7 @@ switch (cmd) {
   }
   case 'sessions': {
     if (pos[0] === 'path') { console.log((await sessionTarget(pos[1])).dir); break; }
-    if (pos[0] === 'clean') {
-      const ids = new Set<string>(((await call('list_nodes', {}, false)).data ?? []).map((n: { id: string }) => n.id));
-      const removed = sweepSessions(home, ids, loadConfig(null, home).sessionsKeepDays);
-      console.log(`removed ${removed.length} expired session director${removed.length === 1 ? 'y' : 'ies'}${removed.length ? `: ${removed.join(', ')}` : ''}`);
-      break;
-    }
+    if (pos[0] === 'clean') { await call('sessions_clean', {}); break; }
     if (pos[0]) fail(usage());
     const now = Date.now();
     for (const x of listSessions(home).sort((a, b) => b.newest - a.newest)) {
