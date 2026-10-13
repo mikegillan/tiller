@@ -290,7 +290,7 @@ switch (cmd) {
     if (pos[0]) fail(usage());
     const now = Date.now();
     for (const x of listSessions(home).sort((a, b) => b.newest - a.newest)) {
-      const closed = x.closedAt ? `closed ${fmtAge(now - x.closedAt)} ago` : 'open';
+      const closed = x.closedAt ? `closed ${new Date(x.closedAt).toLocaleString('sv-SE').slice(0, 16)}` : 'open';
       console.log([x.rootId, (x.title ?? '?').slice(0, 30), fmtAge(now - (x.createdAt ?? x.newest)), `${(x.bytes / 1024).toFixed(1)} KB`, closed].join('\t'));
     }
     break;

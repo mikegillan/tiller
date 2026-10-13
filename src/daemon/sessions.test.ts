@@ -66,14 +66,17 @@ describe('session directories with a fake claude', () => {
     const root = m.spawn({ kind: 'claude', title: 'root', cwd: proj });
     const w = m.spawn({ kind: 'claude', title: 'w', cwd: proj, parentId: root.id });
     m.applyHook(w.id, { hook_event_name: 'UserPromptSubmit', session_id: m.view(w.id)!.status.sessionId, prompt: 'go' });
+    m.applyModEvent(w.id, { event: 'turn.complete', payload: { durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } });
+    m.applyHook(w.id, { hook_event_name: 'Stop', session_id: m.view(w.id)!.status.sessionId, last_assistant_message: 'all done' }); // after done: still logged
     m.restart(w.id);
     await m.close(w.id);
     await m.close(root.id, true);
     await flushEvents();
     const dir = sessionDir(m.home, root.id);
     const evs = readEvents(dir);
-    expect(evs.map((e) => `${e.type}:${e.id === root.id ? 'root' : 'w'}`)).toEqual(['spawn:root', 'spawn:w', 'state:w', 'restart:w', 'close:w', 'close:root']);
+    expect(evs.map((e) => `${e.type}:${e.id === root.id ? 'root' : 'w'}`)).toEqual(['spawn:root', 'spawn:w', 'state:w', 'state:w', 'state:w', 'restart:w', 'close:w', 'close:root']);
     expect(evs[2]).toMatchObject({ from: 'unknown', to: 'working', title: 'w' });
+    expect(evs[4]).toMatchObject({ from: 'done', to: 'done', message: 'all done' });
     expect(evs.every((e, i) => e.ts >= t0 && (i === 0 || e.ts >= evs[i - 1]!.ts))).toBe(true);
     expect(JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')).closedAt).toBeGreaterThanOrEqual(t0);
   });

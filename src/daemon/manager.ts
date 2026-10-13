@@ -986,8 +986,9 @@ export class NodeManager extends EventEmitter {
     const prev = this.statuses.get(id);
     if (!prev || next === prev) return;
     this.statuses.set(id, next);
-    if (next.state !== prev.state || !!next.exited !== !!prev.exited) {
-      const message = next.lastAssistantMessage && next.lastAssistantMessage !== prev.lastAssistantMessage ? next.lastAssistantMessage.slice(0, 300) : undefined;
+    // The Stop hook's message often lands just after the mod's turn.complete has already moved the node to done.
+    const message = next.lastAssistantMessage && next.lastAssistantMessage !== prev.lastAssistantMessage ? next.lastAssistantMessage.slice(0, 300) : undefined;
+    if (next.state !== prev.state || !!next.exited !== !!prev.exited || (message && next.state !== 'working')) {
       this.logEvent(id, 'state', { from: prev.state, to: next.state, ...(next.activity ? { activity: next.activity } : {}), ...(message ? { message } : {}), ...(next.errored ? { errored: true } : {}), ...(next.exited ? { exited: true } : {}) });
     }
     let kind: NotifyEvent['kind'] | undefined;
