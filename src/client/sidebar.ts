@@ -2,6 +2,7 @@
 // Layout is pure: model in, styled lines and click targets out.
 import { needsYou, type NodeView } from '../shared/protocol.js';
 import { ctxLevel, fmtAge, fmtTokens, shortEffort, shortModel } from '../shared/format.js';
+import { fmtUsd, subtreeSpend, todaySpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { BINDINGS } from './chords.js';
 
@@ -56,9 +57,13 @@ const glyph = (n: NodeView): Seg =>
   ({ working: ['36', '●'], blocked: ['33', '!'], waiting: ['33', '!'], done: ['32', '✓'] } as Record<string, Seg>)[n.status.state] ?? ['2', '·'];
 
 
-/** `⎇ n-3f2a · opus 5.5 · high · ctx 42% (84k/200k) $0.42`; as the width shrinks, the branch goes first, then effort, token counts and cost. */
-export function meta(n: NodeView, w: number): Seg[] {
-  const s = n.status, pct = s.contextPct;
+/**
+ * `⎇ n-3f2a · opus 5.5 · high · ctx 42% (84k/200k) $0.42 Σ$3.10` (Σ: spend with descendants, `subtree`); as the width
+ * shrinks, the branch goes first, then effort, token counts and cost.
+ */
+export function meta(n: NodeView, w: number, subtree = n.spentUsd ?? 0): Seg[] {
+  const s = n.status, pct = s.contextPct, own = n.spentUsd ?? 0;
+  const spend = subtree > 0 || n.spentUsd !== undefined ? fmtUsd(own) + (subtree > own ? ` Σ${fmtUsd(subtree)}` : '') : '';
   const model = shortModel(s.model ?? n.model), effort = s.effort ? shortEffort(s.effort) : '';
   const ctxColor = pct === undefined ? '' : { ok: '32', warn: '33', bad: '31' }[ctxLevel(pct)];
   const wt = n.worktree, branch = wt && `⎇ ${wt.branch.split('/').pop()!.slice(0, 6)}`;
@@ -70,8 +75,8 @@ export function meta(n: NodeView, w: number): Seg[] {
     if (withEffort && effort) add(['2', effort]);
     if (pct !== undefined) {
       add([ctxColor, `ctx ${Math.round(pct)}%${full && s.contextTokens && s.contextWindow ? ` (${fmtTokens(s.contextTokens)}/${fmtTokens(s.contextWindow)})` : ''}`]);
-      if (full && s.costUsd !== undefined) segs.push(['2', ` $${s.costUsd.toFixed(2)}`]);
     }
+    if (full && spend) { if (pct !== undefined) segs.push(['2', ` ${spend}`]); else add(['2', spend]); }
     return segs;
   };
   const tries = [build(true, true, true), build(true, true), build(false, true), build(false, false)];
@@ -123,7 +128,8 @@ export function layoutSidebar(m: SideModel, W: number, H: number): SideLayout {
     row.push(['2', `[${a.key}]`], ['', text.slice(3)]);
     acts.push({ row: actRows.length - 1, x0, x1: Math.min(w + 1, x0 + text.length - 1), act: a.act });
   }
-  const status: Seg[] = m.connected ? [['32', '●'], ['', ` daemon ${m.port}`]] : [['31', '●'], ['', ' reconnecting…']];
+  const today = todaySpend(m.nodes.values(), m.now);
+  const status: Seg[] = m.connected ? [['32', '●'], ['', ` daemon ${m.port}`], ['2', today > 0 ? ` · ${fmtUsd(today)} today` : '']] : [['31', '●'], ['', ' reconnecting…']];
   const footer: Seg[] = m.prompt !== undefined ? [['36', m.prompt + '▏']] : [['2', m.notice ?? '^\\ n new · d detach · ? help']];
   const bottom = [rule('├', '┤'), ...actRows.map((r) => frame(paint(r, w))), rule('├', '┤'), frame(paint(status, w)), frame(paint(footer, w)), rule('╰', '╯')];
 
@@ -132,10 +138,10 @@ export function layoutSidebar(m: SideModel, W: number, H: number): SideLayout {
   const items3 = tree(m.nodes);
   for (const { n, head, cont } of items3.slice(m.scroll)) {
     const sel = n.id === m.cur, bg = sel ? BG : '';
-    const rows: Seg[][] = [lr([['2', head], glyph(n), ['', ' '], [n.status.exited ? '2' : sel || needsYou(n.status) ? '1' : '', n.title], ...(n.unread ? [['36', ' •'] as Seg] : [])], n.status.exited ? 'exited' : fmtAge(m.now - n.status.changedAt), w)];
+    const rows: Seg[][] = [lr([['2', head], glyph(n), ['', ' '], [n.status.exited ? '2' : sel || needsYou(n.status) ? '1' : '', n.title], ...(n.unread ? [['36', ' •'] as Seg] : [])], n.status.exited ? 'exited' : `${n.status.stalled ? 'no activity ' : ''}${fmtAge(m.now - n.status.changedAt)}`, w)];
     const act = n.status.activity;
     if (act) rows.push([['2', cont], [n.status.state === 'blocked' ? '33' : '2', act]]);
-    const mt = meta(n, w - cont.length);
+    const mt = meta(n, w - cont.length, subtreeSpend(m.nodes.values(), n.id));
     if (mt.length) rows.push([['2', cont], ...mt]);
     if (lines.length - 1 + rows.length > area) break;
     for (const r of rows) { lines.push(frame(paint(r, w, bg))); nodeAt.push(n.id); }

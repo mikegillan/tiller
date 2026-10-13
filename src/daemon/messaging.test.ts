@@ -117,6 +117,44 @@ describe('gates', () => {
   });
 });
 
+describe('loop detection', () => {
+  beforeEach(() => { vi.stubEnv('O8_HOME', '/nonexistent'); }); // default limits, whatever the real home holds
+  afterEach(() => { vi.unstubAllEnvs(); });
+  const send = async (text: string) => {
+    m.set('b', { state: 'done', doneSource: 'stop' });
+    const r = await deliver(m.mgr, 'a', 'b', text);
+    await vi.advanceTimersByTimeAsync(10_000); // past the per-pair rate limit
+    return r;
+  };
+
+  it('refuses the 21st message between one pair in 10 minutes and tells the sender\'s parent once', async () => {
+    for (let i = 1; i <= 20; i++) expect((await send(`m${i}`)).outcome).toBe('delivered');
+    const r = await send('m21');
+    expect(r).toMatchObject({ outcome: 'refused', retryable: false });
+    expect(r.detail).toBe('looks like a loop: 20 messages to b in 10 min (limits.maxMessagesPer10Min); escalate to the human or change approach');
+    expect(m.sessions.get('p')!.pasted).toHaveLength(1);
+    expect(m.sessions.get('p')!.pasted[0]).toContain('from: orchestr8 (child a "T-a" may be looping)');
+    expect((await send('m22')).outcome).toBe('refused');
+    expect(m.sessions.get('p')!.pasted).toHaveLength(1);
+    expect((await deliver(m.mgr, 'b', 'a', 'other pair')).outcome).toBe('delivered');
+    await vi.advanceTimersByTimeAsync(10 * 60_000); // the window has moved on
+    expect((await send('m23')).outcome).toBe('delivered');
+  });
+
+  it('refuses an identical body repeated within 10 minutes; the human and the daemon are exempt', async () => {
+    expect((await send('same')).outcome).toBe('delivered');
+    expect(await send('same')).toMatchObject({ outcome: 'refused', detail: expect.stringContaining('the same message to b twice in 10 min; escalate to the human or change approach') });
+    expect((await send('different')).outcome).toBe('delivered');
+    for (const from of ['human', 'orchestr8']) {
+      m.set('b', { state: 'done', doneSource: 'stop' });
+      expect((await deliver(m.mgr, from, 'b', 'x')).outcome).toBe('delivered');
+      await vi.advanceTimersByTimeAsync(10_000);
+      m.set('b', { state: 'done', doneSource: 'stop' });
+      expect((await deliver(m.mgr, from, 'b', 'x')).outcome).toBe('delivered');
+    }
+  });
+});
+
 describe('envelope', () => {
   it('frames the message with a per-delivery nonce', async () => {
     await deliver(m.mgr, 'a', 'b', 'line1\nline2');
@@ -229,9 +267,9 @@ describe('mod inbox', () => {
   it('station notices ride the inbox too', async () => {
     startNotices(m.mgr);
     inbox(m.mgr, 'p');
-    m.set('a', { state: 'done', errored: true, doneSource: 'stop' });
+    m.set('a', { exited: true });
     await vi.advanceTimersByTimeAsync(0);
-    expect(inbox(m.mgr, 'p')[0].text).toContain('stopped: turn-errored');
+    expect(inbox(m.mgr, 'p')[0].text).toContain('stopped: exited');
     expect(m.sessions.get('p')!.pasted).toHaveLength(0);
   });
 
@@ -275,25 +313,52 @@ describe('mod inbox', () => {
 });
 
 describe('station notices', () => {
-  it('notifies the parent once per episode and re-arms after a clean turn', async () => {
+  it('first tells an errored child once to continue, then notifies the parent on the next error; a clean Stop re-arms', async () => {
     startNotices(m.mgr);
-    const pasted = () => m.sessions.get('p')!.pasted;
-    m.set('a', { state: 'done', errored: true, doneSource: 'stop' });
+    const pasted = () => m.sessions.get('p')!.pasted, child = () => m.sessions.get('a')!.pasted;
+    m.set('a', { state: 'done', errored: true, doneSource: 'stop', changedAt: 1 });
     await vi.advanceTimersByTimeAsync(0);
+    expect(child()).toHaveLength(1);
+    expect(child()[0]).toMatch(/\nfrom: orchestr8 \(your turn errored\)\nreply-to: none\nYour last turn ended with an error\. Continue where you left off\.\n/);
+    expect(pasted()).toHaveLength(0);
+    m.set('a', { state: 'done', errored: true, doneSource: 'stop', changedAt: 1 }); // other events on the same error do nothing
+    await vi.advanceTimersByTimeAsync(0);
+    expect(child()).toHaveLength(1);
+    expect(pasted()).toHaveLength(0);
+    m.set('a', { state: 'done', errored: true, doneSource: 'stop', changedAt: 2 }); // the continued turn errored too
+    await vi.advanceTimersByTimeAsync(0);
+    expect(child()).toHaveLength(1);
     expect(pasted()).toHaveLength(1);
     expect(pasted()[0]).toMatch(/\nfrom: orchestr8 \(child a "T-a" stopped: turn-errored\)\nreply-to: none\n/);
-    m.set('a', { unread: true } as never); // other node events do not re-notify
-    m.set('a', { state: 'done', errored: true });
+    m.set('a', { state: 'done', errored: true, changedAt: 3 }); // still the same episode: nothing more
     await vi.advanceTimersByTimeAsync(0);
     expect(pasted()).toHaveLength(1);
     m.set('p', { state: 'done', doneSource: 'stop' }); // parent finished handling the first notice
     m.set('a', { state: 'working', errored: undefined });
     m.set('a', { state: 'done', errored: undefined, doneSource: 'idle_prompt' }); // not a verified Stop: no re-arm
-    m.set('a', { state: 'done', errored: true, doneSource: 'stop' });
+    m.set('a', { state: 'done', errored: true, doneSource: 'stop', changedAt: 4 });
     await vi.advanceTimersByTimeAsync(0);
     expect(pasted()).toHaveLength(1);
-    m.set('a', { state: 'done', errored: undefined, doneSource: 'stop' }); // clean Stop re-arms
-    m.set('a', { state: 'done', errored: true });
+    m.set('a', { state: 'done', errored: undefined, doneSource: 'stop' }); // clean Stop re-arms: the retry comes first again
+    m.set('a', { state: 'done', errored: true, changedAt: 5 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(child()).toHaveLength(2);
+    expect(pasted()).toHaveLength(1);
+  });
+
+  it('tells the parent once when a working child stalls, again only after activity resumes', async () => {
+    startNotices(m.mgr);
+    const pasted = () => m.sessions.get('p')!.pasted;
+    m.set('a', { state: 'working', activity: 'Bash: npm test', stalled: true, changedAt: Date.now() - 7 * 60_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pasted()).toHaveLength(1);
+    expect(pasted()[0]).toMatch(/\nfrom: orchestr8 \(child a "T-a" no activity\)\nreply-to: none\nNo hook event for 7m while working; last activity: Bash: npm test\.\n/);
+    m.set('p', { state: 'done', doneSource: 'stop' });
+    m.set('a', { activity: 'Bash: npm test' }); // still stalled
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pasted()).toHaveLength(1);
+    m.set('a', { stalled: undefined, changedAt: Date.now() }); // a hook event cleared it
+    m.set('a', { stalled: true });
     await vi.advanceTimersByTimeAsync(0);
     expect(pasted()).toHaveLength(2);
   });

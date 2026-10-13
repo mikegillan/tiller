@@ -203,3 +203,51 @@ describe('NodeManager live set and resume on start', () => {
     expect(await m.resumeLive()).toBe('resume on start: nothing to resume');
   });
 });
+
+describe('NodeManager guardrails', () => {
+  let home = '';
+  let m: NodeManager;
+  afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
+
+  it('refuses an agent spawn at each cap, naming it; the human is exempt', async () => {
+    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    const proj = join(home, 'proj');
+    mkdirSync(join(proj, '.orchestr8'), { recursive: true });
+    writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ limits: { maxDepth: 2, maxChildren: 2, maxLiveNodes: 4 } }));
+    m = new NodeManager({ home, shell: '/bin/sh' });
+    const spawn = (parentId: string | null, byHuman = false) => m.spawn({ kind: 'terminal', title: 't', cwd: proj, parentId, byHuman }).id;
+    const root = spawn(null, true);
+    const c1 = spawn(root);
+    spawn(root);
+    expect(() => spawn(root)).toThrow('refused: limits.maxChildren is 2 and ' + root + ' has 2 live children; reuse an idle worker (send it the work) or close finished ones');
+    const c3 = spawn(root, true); // the human is exempt; 4 live now
+    expect(() => spawn(c1)).toThrow(/^refused: limits\.maxLiveNodes is 4 and 4 nodes are live; reuse an idle worker/);
+    await m.close(c3);
+    const g = spawn(c1); // depth 2 is allowed
+    expect(() => spawn(g)).toThrow(/^refused: limits\.maxDepth is 2 and the new node would be 3 levels below the root; reuse/);
+    expect(m.list()).toHaveLength(4); // nothing was created by the refusals
+  });
+
+  it('keeps each node\'s spend across a session restart and a daemon restart', () => {
+    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    const bin = join(home, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'claude'), '#!/bin/sh\nsleep 5\n'); // stands in for claude
+    chmodSync(join(bin, 'claude'), 0o755);
+    const opts = { home, shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` };
+    m = new NodeManager(opts);
+    const id = m.spawn({ kind: 'claude', title: 'c', cwd: home, byHuman: true }).id;
+    const measure = (usd: number) => m.applyModEvent(id, { event: 'session.measure', payload: { cost: { usd } } });
+    measure(0.5);
+    measure(0.8);  // session totals: +0.3
+    expect(m.restart(id)).toEqual({ ok: true });
+    measure(0.25); // a fresh session counts from zero
+    expect(m.view(id)).toMatchObject({ spentUsd: 1.05, status: { costUsd: 0.25 } });
+    m.shutdown();
+    m = new NodeManager(opts);
+    expect(m.view(id)!.spentUsd).toBeCloseTo(1.05);
+    expect(m.view(id)!.spentToday).toEqual({ day: new Date().toLocaleDateString('en-CA'), usd: expect.closeTo(1.05) });
+    measure(0.1); // the resumed node's first measure after the daemon restart
+    expect(m.view(id)!.spentUsd).toBeCloseTo(1.15);
+  });
+});

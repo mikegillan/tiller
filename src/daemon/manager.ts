@@ -4,17 +4,18 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, w
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { NEEDS_YOU_STATES, type AgentState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Effort, type Isolation, type Role, type Worktree } from '../shared/protocol.js';
-import { loadConfig } from './config.js';
+import { loadConfig, type Limits } from './config.js';
 import { homeDir } from './home.js';
 import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { pruneIds } from '../shared/prune.js';
+import { dayKey } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { flushInbox } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
 import { PtySession } from './pty.js';
 import { logError, safeEqual } from './util.js';
 import * as wt from './worktree.js';
-import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, sweep, turnComplete, type HookEvent } from './status.js';
+import { interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
 
 const MAX_PREVIOUS_SESSIONS = 10;
 const INTERRUPT_MS = 1500;
@@ -103,6 +104,8 @@ export interface SpawnRequest {
   role?: Role;
   parentId?: string | null;
   isolation?: Isolation;
+  /** Set for the human's spawns (web UI, app, mux, admin token), which skip the spawn caps. */
+  byHuman?: boolean;
 }
 
 export interface ManagerOptions {
@@ -217,9 +220,25 @@ export class NodeManager extends EventEmitter {
     return loadConfig(req.cwd, this.home).worktrees.isolation;
   }
 
+  /** Throw when an agent's spawn would pass limits.maxDepth, maxChildren or maxLiveNodes (from req.cwd's config). */
+  private checkLimits(req: SpawnRequest): void {
+    if (req.byHuman) return;
+    const parentId = req.parentId ?? null;
+    const { maxDepth, maxChildren, maxLiveNodes } = loadConfig(req.cwd, this.home).limits;
+    const refuse = (cap: keyof Limits, value: number, what: string) => {
+      throw new Error(`refused: limits.${cap} is ${value} and ${what}; reuse an idle worker (send it the work) or close finished ones`);
+    };
+    const depth = parentId === null ? 0 : this.registry.lineage(parentId).length + 1;
+    if (depth > maxDepth) refuse('maxDepth', maxDepth, `the new node would be ${depth} levels below the root`);
+    const children = this.registry.list().filter((n) => n.parentId === parentId && this.sessions.has(n.id)).length;
+    if (parentId !== null && children >= maxChildren) refuse('maxChildren', maxChildren, `${parentId} has ${children} live children`);
+    if (this.sessions.size >= maxLiveNodes) refuse('maxLiveNodes', maxLiveNodes, `${this.sessions.size} nodes are live`);
+  }
+
   /** Spawn a node without a worktree. A spawn that resolves to isolation "worktree" goes through spawnWorktree. */
   spawn(req: SpawnRequest): NodeView {
     if (this.isolationFor(req) === 'worktree') throw new Error('a worktree spawn is asynchronous: call spawnWorktree');
+    this.checkLimits(req);
     const parentId = req.parentId ?? null;
     // Unset model or effort: the config's value for the node's role (role none counts as worker), recorded so restart keeps it.
     const defaults = req.kind === 'claude' ? loadConfig(req.cwd, this.home).roles[roleFor(req.role, parentId) === 'orchestrator' ? 'orchestrator' : 'worker'] : {};
@@ -247,6 +266,7 @@ export class NodeManager extends EventEmitter {
    */
   async spawnWorktree(req: SpawnRequest): Promise<NodeView> {
     if (req.kind !== 'claude') throw new Error('isolation "worktree" is for claude nodes only');
+    this.checkLimits(req);
     const repo = await wt.mainCheckout(req.cwd);
     const { base, baseSha } = await wt.headInfo(req.cwd);
     if (!trustedForWorktree(repo, readClaudeJson())) throw new Error(`refusing isolation "worktree": Claude does not trust ${repo} yet; run claude once in ${repo} to trust it`);
@@ -513,6 +533,7 @@ export class NodeManager extends EventEmitter {
       this.setStatus(nodeId, turnComplete(base, now, ev.payload));
     } else if (ev.event === 'session.measure') {
       const { context, cost } = ev.payload;
+      if (cost) this.addSpend(nodeId, cost.usd, prev.costUsd, now);
       this.setStatus(nodeId, { ...prev, contextPct: context?.percent ?? prev.contextPct, contextTokens: context?.tokens ?? prev.contextTokens, contextWindow: context?.window ?? prev.contextWindow, costUsd: cost?.usd ?? prev.costUsd });
     }
   }
@@ -728,8 +749,26 @@ export class NodeManager extends EventEmitter {
     }
   }
 
+  /**
+   * Add to the record's spend what the session spent since its last measure. A session's cost counts from zero, so a
+   * figure below the last one means a new session (restart or resume) and counts whole.
+   */
+  private addSpend(id: string, usd: number, last: number | undefined, now: number): void {
+    const rec = this.registry.get(id);
+    const delta = last !== undefined && usd >= last ? usd - last : usd;
+    if (!rec || !(delta > 0)) return;
+    const day = dayKey(now);
+    const today = rec.spentToday?.day === day ? rec.spentToday.usd : 0;
+    this.registry.update(id, { spentUsd: (rec.spentUsd ?? 0) + delta, spentToday: { day, usd: today + delta } });
+  }
+
   private sweepStale(): void {
-    for (const [id, prev] of this.statuses) this.setStatus(id, sweep(prev, Date.now()));
+    const now = Date.now();
+    for (const [id, prev] of this.statuses) {
+      const cwd = this.registry.get(id)?.cwd ?? null;
+      const stalled = prev.state === 'working' ? stall(prev, now, loadConfig(cwd, this.home).limits.stallMinutes * 60_000) : prev;
+      this.setStatus(id, sweep(stalled, now));
+    }
   }
 
   /** Store a new status, broadcast it, and notify on transitions into done / blocked / waiting. */

@@ -5,7 +5,7 @@ import { layoutSidebar, meta, revealScroll, tree } from './sidebar.js';
 const node = (id: string, title: string, parentId: string | null, status: Partial<NodeView['status']> = {}, extra: Partial<NodeView> = {}): NodeView =>
   ({ id, title, parentId, kind: 'claude', cwd: '/r', createdAt: 0, unread: false, status: { state: 'working', changedAt: 0, ...status }, ...extra });
 const nodes = new Map([
-  node('a', 'boss', null, { model: 'claude-opus-5-5', effort: 'high', contextPct: 42, contextTokens: 84000, contextWindow: 200000, costUsd: 0.42, activity: 'Bash: npm test' }),
+  node('a', 'boss', null, { model: 'claude-opus-5-5', effort: 'high', contextPct: 42, contextTokens: 84000, contextWindow: 200000, costUsd: 0.1, activity: 'Bash: npm test' }, { spentUsd: 0.42 }),
   node('b', 'builder', 'a', { state: 'blocked', activity: 'needs approval: rm -rf build' }, { unread: true }),
   node('c', 'tester', 'a', { state: 'done' }),
   node('d', 'sub', 'b', { state: 'done', exited: true }),
@@ -46,6 +46,21 @@ test('meta line drops detail as the width shrinks and colors ctx by usage', () =
   const w = { ...n, worktree: { repo: '/r', path: '/r/w', branch: 'o8/n-3f2a9c1d', base: 'main', baseSha: 'abc' } };
   expect(meta(w, 60).map((s) => s[1]).join('')).toBe('⎇ n-3f2a · opus 5.5 · high · ctx 42% (84k/200k) $0.42');
   expect(meta(w, 45).map((s) => s[1]).join('')).toBe('opus 5.5 · high · ctx 42% (84k/200k) $0.42'); // the branch goes first
+});
+
+test('spend: own and subtree (Σ) on the meta line, today total in the status line; a stalled row says no activity', () => {
+  const n = nodes.get('a')!;
+  expect(meta(n, 60, 1.5).map((s) => s[1]).join('')).toBe('opus 5.5 · high · ctx 42% (84k/200k) $0.42 Σ$1.50');
+  expect(meta(nodes.get('c')!, 40, 0.3).map((s) => s[1]).join('')).toBe('$0.00 Σ$0.30'); // no own spend, children have some
+  const now = Date.now(), day = new Date(now).toLocaleDateString('en-CA');
+  const spent = new Map([
+    node('r', 'root', null, { stalled: true, changedAt: now - 7 * 60_000 }, { spentUsd: 2, spentToday: { day, usd: 1.25 } }),
+    node('k', 'kid', 'r', {}, { spentUsd: 3, spentToday: { day: '2000-01-01', usd: 3 } }), // another day: not today
+  ].map((x) => [x.id, x]));
+  const p = layoutSidebar({ nodes: spent, cur: 'r', scroll: 0, now, port: 7788, connected: true }, 40, 24).lines.map(plain);
+  expect(p[1]).toMatch(/● root\s+no activity 7m│$/);
+  expect(p[2]).toMatch(/^│ {2}\$2\.00 Σ\$5\.00 +│$/);
+  expect(p.at(-3)).toBe('│● daemon 7788 · $1.25 today           │');
 });
 
 test('exited rows read "exited" with a dim ○ and title; revealScroll brings a far-down selection into view', () => {

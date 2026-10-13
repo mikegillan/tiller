@@ -1,6 +1,7 @@
 import { ActionButtons } from './ActionButtons';
 import { NodeMeta, StateDot } from './Bits';
 import { fmtAge } from '../src/shared/format';
+import { subtreeSpend } from '../src/shared/spend';
 import { useNow } from './hooks';
 import { Icon } from './icons';
 import { RenameInput } from './RenameInput';
@@ -32,11 +33,12 @@ export function NodeRow({ row }: { row: Row }) {
           {node.unread && <i className="unread" title="unread" />}
           {collapsed && <span className="count" title={`${descendants.length} hidden`}>+{descendants.length}</span>}
           {collapsed && needs > 0 && <span className="count warn">{needs} needs you</span>}
+          {s.stalled && !s.exited && <span className="count warn" title="working with no hook event">no activity {fmtAge(now - s.changedAt)}</span>}
           <span className="age">{s.exited ? 'exited' : fmtAge(now - s.changedAt)}</span>
           <ActionButtons node={node} />
         </div>
         {s.activity && <div className={`l2${blocked ? ' warn' : ''}`} title={s.activity}>{s.activity}</div>}
-        <NodeMeta node={node} />
+        <NodeMeta node={node} subtree={hasChildren ? subtreeSpend([node, ...descendants], node.id) : undefined} />
       </div>
     </div>
   );

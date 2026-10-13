@@ -21,6 +21,8 @@ export interface NodeStatus {
   doneSource?: 'stop' | 'idle_prompt' | 'sweep' | 'interrupt' | 'exit';
   /** Set when 'done' was reached only by the 20-minute stale sweep. */
   stale?: boolean;
+  /** Set while working with no hook event for limits.stallMinutes; cleared by the next event. changedAt is when activity stopped. */
+  stalled?: boolean;
   /** True once the PTY process has exited. */
   exited?: boolean;
   /** Claude session id (minted at launch, updated from SessionStart). */
@@ -42,6 +44,7 @@ export interface NodeStatus {
   model?: string;
   /** Latest effort level seen in a hook payload (low, medium, high, xhigh, max). */
   effort?: string;
+  /** Spend of the current session only; NodeRecord.spentUsd is the node's total. */
   costUsd?: number;
   /** Wall-clock ms of the last event that changed state. */
   changedAt: number;
@@ -93,6 +96,10 @@ export interface NodeRecord {
   transcriptPath?: string;
   /** Session ids from before each restart, oldest first (at most 10), for a later history feature. */
   previousSessions?: string[];
+  /** Total spend in USD across all of the node's sessions, summed from the mod's session.measure. */
+  spentUsd?: number;
+  /** Spend on one local day (YYYY-MM-DD); a later day starts over. */
+  spentToday?: { day: string; usd: number };
 }
 
 export interface NodeView extends NodeRecord {
