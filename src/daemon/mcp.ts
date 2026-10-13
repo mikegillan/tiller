@@ -1,6 +1,6 @@
 import { fmtAge, shortEffort, shortModel } from '../shared/format.js';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, writeFileSync } from 'node:fs';
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import type http from 'node:http';
 import { join } from 'node:path';
@@ -317,8 +317,10 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
   /** Whether `token` is the admin token (the WebSocket clients authenticate with it). */
   isAdmin: (token: string) => boolean;
 } {
-  const adminToken = randomBytes(32).toString('base64url');
   const adminFile = join(manager.home, ADMIN_TOKEN_FILE);
+  let adminToken = ''; // kept across restarts, so attached clients re-authenticate after `o8 reload`
+  try { adminToken = readFileSync(adminFile, 'utf8').trim(); } catch { /* first start: minted below */ }
+  adminToken ||= randomBytes(32).toString('base64url');
   const publishAdminToken = () => {
     writeFileSync(adminFile, adminToken, { mode: 0o600 });
     chmodSync(adminFile, 0o600);

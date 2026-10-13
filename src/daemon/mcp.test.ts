@@ -40,6 +40,10 @@ const api = async (tool: string, args: object, id = 'human', token = admin) => {
 const spawnT = (title: string, id = 'human', token = admin, extra = {}) => api('spawn', { kind: 'terminal', title, cwd: tmpdir(), ...extra }, id, token);
 
 describe('mcp api', () => {
+  it('keeps the admin token across daemon starts on the same home', () => {
+    mountMcp(manager, async () => true, () => {}).publishAdminToken();
+    expect(readFileSync(join(home, 'admin-token'), 'utf8')).toBe(admin);
+  });
   it('rejects missing or wrong credentials', async () => {
     expect((await api('list_nodes', {}, 'human', 'nope')).status).toBe(401);
     expect((await api('list_nodes', {}, 'n-ghost', manager.tokenFor('n-ghost'))).status).toBe(401);

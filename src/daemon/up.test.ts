@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { NodeManager } from './manager.js';
-import { findDaemon, pickOrchestrator, type OrchestratorCandidate } from './up.js';
+import { findDaemon, humanEnv, liveIds, pickOrchestrator, type OrchestratorCandidate } from './up.js';
 
 const node = (o: Partial<OrchestratorCandidate>): OrchestratorCandidate => ({ id: 'x', title: 't', kind: 'claude', parentId: null, cwd: '/repo', createdAt: 1, ...o });
 
@@ -24,6 +24,23 @@ describe('pickOrchestrator, exited', () => {
     const nodes = [node({ id: 'live' }), node({ id: 'd1', exited: true, createdAt: 2 }), node({ id: 'd2', exited: true, createdAt: 9 }), node({ id: 'kid', exited: true, parentId: 'p', createdAt: 99 })];
     expect(pickOrchestrator(nodes, '/repo', true)?.id).toBe('d2');
     expect(pickOrchestrator(nodes, '/repo')?.id).toBe('live');
+  });
+});
+
+describe('liveIds', () => {
+  it('lists live nodes parents first and drops exited ones', () => {
+    const nodes = [
+      { id: 'kid', parentId: 'root' }, { id: 'gone', parentId: 'root', exited: true }, { id: 'grandkid', parentId: 'gone' },
+      { id: 'root', parentId: null }, { id: 'deadroot', parentId: null, exited: true },
+    ];
+    expect(liveIds(nodes)).toEqual(['root', 'kid', 'grandkid']);
+  });
+});
+
+describe('humanEnv', () => {
+  it('drops the node identity and keeps home, port and the rest', () => {
+    const env = { O8_NODE_ID: 'n-1', O8_TOKEN_FILE: '/t', O8_ENDPOINT: 'http://x', O8_HOME: '/h', O8_PORT: '9', PATH: '/bin' };
+    expect(humanEnv(env)).toEqual({ O8_HOME: '/h', O8_PORT: '9', PATH: '/bin' });
   });
 });
 

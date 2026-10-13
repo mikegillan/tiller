@@ -8,13 +8,14 @@ import { parseArgs } from 'node:util';
 import { loadConfig } from './config.js';
 import { promptPath } from './launch.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
-import { findDaemon, pickOrchestrator, startDaemon } from './up.js';
+import { findDaemon, humanEnv, liveIds, pickOrchestrator, spawnReload, startDaemon } from './up.js';
 
 const usage = () => `o8: control orchestr8. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
 
   o8 [up|app] [--new] [--title T] [--prompt P]        start daemon if needed; open the app on (or create) this directory's orchestrator
   o8 mux [--new] [--title T] [--prompt P]             the same, in the terminal multiplexer (also: o8-mux)
   o8 status | stop                                    show or stop the daemon (o8d runs it in the foreground)
+  o8 reload                                           restart the daemon on the current code and resume the nodes that were live
   o8 new <title> [--cwd P] [--model M] [--effort E] [--prompt T] [--role R] [--worktree]  start a Claude node and attach to it in the terminal
   o8 ps | list                                        show nodes
   o8 attach <id>                                      open the sidebar client on a node (Ctrl-\\ ? for keys)
@@ -71,7 +72,7 @@ const { values: f, positionals: pos } = parseArgs({
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
     'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
-    worktree: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' },
+    worktree: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, 'resume-ids': { type: 'string' },
   },
 });
 
@@ -194,6 +195,37 @@ switch (cmd) {
     await call('shutdown', {}, false);
     console.log('daemon stopped');
     break;
+  case 'reload': {
+    process.env = humanEnv(process.env); // run from a node's terminal, still restart as the human
+    const port = daemonPort();
+    if (f['resume-ids'] === undefined) {
+      if (!(await findDaemon(port))) { await startDaemon(home, port).catch((e: Error) => fail(e.message)); console.log('no daemon was running; started it'); break; }
+      const ids = liveIds((await call('list_nodes', {}, false)).data ?? []);
+      const log = spawnReload(home, port, ids);
+      console.log(`reloading daemon; ${ids.length} node${ids.length === 1 ? '' : 's'} will be resumed; log in ${log}`);
+      break;
+    }
+    // The detached helper: stdout is daemon.log.
+    const say = (s: string) => console.log(`o8 reload: ${s}`);
+    const ids = f['resume-ids'].split(',').filter(Boolean);
+    const old = await findDaemon(port);
+    if (old) {
+      say(`stopping daemon pid ${old.pid}`);
+      await call('shutdown', {}, false, true);
+      for (const end = Date.now() + 10_000; await findDaemon(port); await new Promise((r) => setTimeout(r, 200)))
+        if (Date.now() > end) fail(`o8 reload: daemon pid ${old.pid} did not stop; nothing resumed`);
+    }
+    await startDaemon(home, port).catch((e: Error) => fail(`o8 reload: ${e.message}`));
+    const known = new Set(((await call('list_nodes', {}, false)).data ?? []).map((n: { id: string }) => n.id));
+    let resumed = 0;
+    for (const id of ids) {
+      const r = known.has(id) ? await call('resume', { nodeId: id }, false, true) : { error: 'no such node' };
+      if (r.error) say(`skipped ${id}: ${r.error}`);
+      else { say(`resumed ${id}`); resumed++; }
+    }
+    say(`resumed ${resumed}, skipped ${ids.length - resumed}`);
+    break;
+  }
   case 'help': console.log(usage()); break;
   default: fail(usage());
 }
