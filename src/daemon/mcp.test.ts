@@ -114,6 +114,10 @@ describe('mcp api', () => {
     manager.applyHook(c, { hook_event_name: 'Stop' });
     manager.applyHook(d, { hook_event_name: 'UserPromptSubmit' }); // working
     expect(await close([c, d])).toBe(1);
+    const [f] = await kids(1);
+    manager.applyHook(f, { hook_event_name: 'UserPromptSubmit' }); // still working, but it has reported its outcome
+    await api('report_outcome', { outcome: 'succeeded' }, f, manager.tokenFor(f));
+    expect(await close([f])).toBe(0);
     setMode('never');
     const [e] = await kids(1);
     manager.applyHook(e, { hook_event_name: 'Stop' });

@@ -191,7 +191,7 @@ const tools = {
     }),
 
   close: tool(
-    'Close and delete nodes. Every id must exist and be a descendant of yours, otherwise the whole batch is refused and nothing is closed. Orchestrators (root nodes) cannot be closed by agents. The human approves the batch once in the UI; if they decline you get {ok:false, reason:"denied"}. The project config (closeWithoutConfirm in .orchestr8/config.json) can skip that approval: "always" skips it, "done" skips it when every node in the batch is done or has exited, and the default "never" always asks. A node with its own git worktree closes only when the tree is clean, its branch is merged and no other live node works in it; otherwise the batch is refused, nothing is closed, and the error says why. `worktree` decides instead for the whole batch: "keep" commits uncommitted changes as a WIP commit and keeps the branch, "discard" deletes the worktree and branch with any unmerged work, and always needs the human\'s approval.',
+    'Close and delete nodes. Every id must exist and be a descendant of yours, otherwise the whole batch is refused and nothing is closed. Orchestrators (root nodes) cannot be closed by agents. The human approves the batch once in the UI; if they decline you get {ok:false, reason:"denied"}. The project config (closeWithoutConfirm in .orchestr8/config.json) can skip that approval: "always" skips it, "done" skips it when every node in the batch is done, has exited or has called report_outcome (so a worker can be closed as soon as its report arrives), and the default "never" always asks. A node with its own git worktree closes only when the tree is clean, its branch is merged and no other live node works in it; otherwise the batch is refused, nothing is closed, and the error says why. `worktree` decides instead for the whole batch: "keep" commits uncommitted changes as a WIP commit and keeps the branch, "discard" deletes the worktree and branch with any unmerged work, and always needs the human\'s approval.',
     { nodeIds: z.array(z.string().min(1)).min(1), force: z.boolean().optional(), worktree: z.enum(['keep', 'discard']).optional() },
     async (c, a) => {
       const views = a.nodeIds.map((id) => requireOwned(c, id, false));
@@ -210,7 +210,7 @@ const tools = {
       }
       const list = views.map((v) => `${v.title} (${v.id})`).join(', ');
       const mode = c.caller === HUMAN ? undefined : loadConfig(c.manager.view(c.caller)!.cwd, c.manager.home).closeWithoutConfirm;
-      const preapproved = a.worktree !== 'discard' && (mode === 'always' || (mode === 'done' && views.every((v) => v.status.exited || v.status.state === 'done')));
+      const preapproved = a.worktree !== 'discard' && (mode === 'always' || (mode === 'done' && views.every((v) => v.status.exited || v.status.state === 'done' || outcomes.has(v.id))));
       const text = `${who(c)} wants to close ${views.length} node(s): ${list}${destroys.length ? `. This deletes their worktrees: ${destroys.join('; ')}` : ''}`;
       if (c.caller !== HUMAN && !preapproved && !(await c.confirm(text))) {
         return { data: { ok: false, reason: 'denied' } };
