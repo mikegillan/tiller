@@ -77,6 +77,12 @@ The daemon appends one JSON line per event to `events.jsonl` in that directory: 
 
 When a root is closed its `meta.json` gets `closedAt`; on daemon start and once a day, directories whose root closed more than `sessionsKeepDays` (default 14) ago, or whose root is gone and that nothing has written to for that long, are deleted. `o8 sessions` lists the directories with title, age, size and whether they are closed; `o8 sessions clean` runs that sweep now; `o8 sessions path [id]` prints a tree's directory. Both config keys live in the home file only.
 
+## Outcomes and the completion gate
+
+A worker ends its task with `report_outcome`: `succeeded` or `failed`, a note, and optionally `summary`, `changedFiles`, `verified` (what it ran and the result) and `openQuestions`. `list_nodes` returns these, the app shows them in the last-message panel and on the exited card, and the multiplexer shows the outcome and summary under an idle node.
+
+The `gate` config key makes a `succeeded` report wait for a check, for example `{"gate": {"command": "npm test", "retries": 2, "timeoutMinutes": 10}}` (retries and timeout shown at their defaults). The daemon runs the command with `sh -c` in the worker's directory, with the same environment and trust rule as worktree setup, and appends the output to `~/.orchestr8/nodes/<id>/gate.log`; the node shows "gate: <command>" meanwhile and its row carries a gate marker. If the command passes, the outcome is recorded with `gate: "passed"`. If it fails, nothing is recorded and the worker gets a message with the last 60 lines of output and is asked to fix it and report again. After `retries` more failures the outcome is recorded as failed with `gate: "failed"` and the parent is told. A worktree node reads the key from the main checkout's project file. `o8 gate [--cwd P]` runs the configured command once so you can try it.
+
 ## Browser UI (optional)
 
     npm run ui:build

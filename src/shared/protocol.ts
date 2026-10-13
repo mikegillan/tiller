@@ -136,9 +136,26 @@ export interface NodeRecord {
   spentToday?: { day: string; usd: number };
 }
 
+/** What a node reported through report_outcome. Not persisted: a restarted daemon forgets it. */
+export interface Outcome {
+  outcome: 'succeeded' | 'failed';
+  note?: string;
+  summary?: string;
+  changedFiles?: string[];
+  /** What was run to check the work, and its result. */
+  verified?: string;
+  openQuestions?: string[];
+  /** Set when a completion gate (config `gate`) decided the outcome. */
+  gate?: 'passed' | 'failed';
+  at: number;
+}
+
 export interface NodeView extends NodeRecord {
   status: NodeStatus;
   unread: boolean;
+  outcome?: Outcome;
+  /** The completion gate's last run for this node: running now, or how it ended. */
+  gate?: 'running' | 'passed' | 'failed';
 }
 
 /** One rate-limit window as Claude Code's `session.measure` reports it; `kind` is five_hour, seven_day or a gateway's spend_limit. */

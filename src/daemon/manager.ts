@@ -1,10 +1,10 @@
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { NEEDS_YOU_STATES, type AgentState, type Diff, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
-import { loadConfig, type Limits, type MergeStyle } from './config.js';
+import { NEEDS_YOU_STATES, type AgentState, type Diff, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
+import { loadConfig, type Config, type Limits, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
 import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { pruneIds } from '../shared/prune.js';
@@ -37,6 +37,8 @@ const GIT_EDIT_TOOLS = ['Edit', 'Write', 'Bash'];
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 /** At most one cost event per node in this long. */
 const COST_EVENT_MS = 60_000;
+/** Lines of gate output that go back to the worker. */
+const GATE_TAIL_LINES = 60;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A node's state before any hook arrives: a Claude node is unknown until SessionStart; a terminal has no agent state. */
@@ -166,6 +168,9 @@ export class NodeManager extends EventEmitter {
   private setups = new Map<string, { abort: AbortController; done: Promise<void> }>();
   /** Nodes whose setup has not succeeded yet, with the prompt to launch them with once it does; restart retries it. */
   private needsSetup = new Map<string, string | undefined>();
+  /** What each node reported through report_outcome, and its completion gate's last run. Neither is persisted. */
+  private outcomes = new Map<string, Outcome>();
+  private gates = new Map<string, { state: NonNullable<NodeView['gate']>; command: string }>();
   /** Ids that were live when the daemon last went away, until resumeLive has dealt with them. */
   private pendingResume: Set<string>;
   /** Set by shutdown: the live set is then frozen, so the PTYs' exits do not empty it. */
@@ -225,8 +230,9 @@ export class NodeManager extends EventEmitter {
     const status = this.statuses.get(id);
     if (!rec || !status) return undefined;
     const s = status.model || !rec.model ? status : { ...status, model: rec.model };
-    const git = this.gits.get(id);
-    return { ...rec, status: git ? { ...s, git } : s, unread: this.unread.has(id) };
+    const git = this.gits.get(id), outcome = this.outcomes.get(id), gate = this.gates.get(id);
+    const shown = gate?.state === 'running' ? { ...s, activity: `gate: ${gate.command}` } : s;
+    return { ...rec, status: git ? { ...shown, git } : shown, unread: this.unread.has(id), ...(outcome ? { outcome } : {}), ...(gate ? { gate: gate.state } : {}) };
   }
 
   list(): NodeView[] {
@@ -876,6 +882,45 @@ export class NodeManager extends EventEmitter {
     this.setups.set(id, { abort, done });
   }
 
+  setOutcome(id: string, o: Outcome): void {
+    this.outcomes.set(id, o);
+    this.emitNode(id);
+    const { at: _at, ...data } = o;
+    this.logEvent(id, 'outcome', data);
+  }
+
+  /** The completion gate for a node: config `gate` from its main checkout (else its cwd), when Claude trusts that directory, as for setup. */
+  gateConfig(id: string): Config['gate'] {
+    const rec = this.registry.get(id);
+    const dir = rec && (rec.worktree?.repo ?? rec.cwd);
+    const gate = dir ? loadConfig(dir, this.home).gate : undefined;
+    return gate && trustPolicy(dir!, readClaudeJson()) === 'auto' ? gate : undefined;
+  }
+
+  /**
+   * Run the gate command once in the node's cwd with the setup runner and env, appending to <node dir>/gate.log. While it
+   * runs the node shows activity "gate: <command>". Resolves with whether it passed and the last lines of this run's output.
+   */
+  async runGate(id: string, gate: NonNullable<Config['gate']>): Promise<{ ok: boolean; tail: string }> {
+    const rec = this.registry.get(id);
+    if (!rec) return { ok: false, tail: 'node is gone' };
+    const log = join(this.nodeDir(id), 'gate.log');
+    const start = existsSync(log) ? statSync(log).size : 0;
+    const env = rec.worktree ? this.worktreeEnv(id, rec.worktree) : buildChildEnv({ PATH: this.path, O8_NODE_ID: id });
+    this.gates.set(id, { state: 'running', command: gate.command });
+    this.emitNode(id);
+    // prune: a node closed mid-gate leaves the command running until it ends or times out; add an abort if gates get long.
+    const err = await wt.runCommands([gate.command], { cwd: rec.cwd, env, log, timeout: gate.timeoutMinutes * 60_000 }).then(() => undefined, (e: Error) => e);
+    let out = '';
+    try { out = readFileSync(log).subarray(start).toString(); } catch { /* node closed meanwhile */ }
+    const lines = [...out.trimEnd().split('\n'), ...(err ? [err.message] : [])];
+    if (this.registry.get(id)) {
+      this.gates.set(id, { state: err ? 'failed' : 'passed', command: gate.command });
+      this.emitNode(id);
+    }
+    return { ok: !err, tail: lines.slice(-GATE_TAIL_LINES).join('\n') };
+  }
+
   /** Best effort: run the teardown commands in a worktree about to be removed. A failure is logged and never blocks removal. */
   private async teardown(id: string, w: Pick<Worktree, 'repo' | 'path' | 'base'>): Promise<void> {
     if (!existsSync(w.path)) return;
@@ -903,7 +948,7 @@ export class NodeManager extends EventEmitter {
     this.unread.delete(id);
     this.lastHookAt.delete(id);
     clearTimeout(this.gitTimers.get(id));
-    for (const m of [this.gits, this.gitTimers, this.merged, this.needsSetup, this.lastCostEvent]) m.delete(id);
+    for (const m of [this.gits, this.gitTimers, this.merged, this.needsSetup, this.lastCostEvent, this.outcomes, this.gates]) m.delete(id);
     rmSync(this.nodeDir(id), { recursive: true, force: true });
   }
 

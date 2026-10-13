@@ -4,17 +4,18 @@ import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import type http from 'node:http';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type Diff, type NodeView } from '../shared/protocol.js';
+import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type Diff, type NodeView, type Outcome } from '../shared/protocol.js';
 import { fmtUsd, subtreeSpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
-import { loadConfig } from './config.js';
+import { loadConfig, type Config } from './config.js';
 import { ADMIN_TOKEN_FILE } from './home.js';
 import { closeRefusal, type NodeManager, type WorktreeReport } from './manager.js';
 import { MAX_PATCH_BYTES, MergeConflict } from './worktree.js';
-import { deliver, HUMAN, inScope, isDescendant, messageStatus, startNotices } from './messaging.js';
+import { DAEMON, deliver, HUMAN, inScope, isDescendant, messageStatus, startNotices } from './messaging.js';
 import { logError, PREVIEW_CHARS, readBody, safeEqual } from './util.js';
 
 const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'] as const;
@@ -25,7 +26,11 @@ const TRANSCRIPT_CAP = 200_000;
 interface Ctx { manager: NodeManager; confirm: (text: string) => Promise<boolean>; focus: (from: string, id: string) => void; caller: string }
 interface Out { text?: string; data?: unknown }
 
-const outcomes = new Map<string, { outcome: 'succeeded' | 'failed'; note?: string; at: number }>();
+/** How long report_outcome waits for a completion gate before replying that it is still running. */
+const GATE_REPLY_MS = 30_000;
+/** Failed gate runs per node since its last recorded outcome, and the gate run in progress. */
+const gateFailures = new Map<string, number>();
+const gateRuns = new Map<string, Promise<Out>>();
 
 // ---- helpers ----
 
@@ -38,7 +43,7 @@ function summarize(v: NodeView, now: number, all: NodeView[]) {
   return {
     id: v.id, parentId: v.parentId, title: v.title, kind: v.kind, cwd: v.cwd, state: v.status.state, flags: flags(v), exited: !!v.status.exited, createdAt: v.createdAt,
     age: fmtAge(now - v.createdAt), activity: v.status.activity, lastAssistantMessage: v.status.lastAssistantMessage?.slice(0, PREVIEW_CHARS),
-    outcome: outcomes.get(v.id),
+    outcome: v.outcome, gate: v.gate,
     model: v.status.model, effort: v.status.effort, contextPct: v.status.contextPct, contextTokens: v.status.contextTokens, contextWindow: v.status.contextWindow, costUsd: v.status.costUsd,
     spentUsd: v.spentUsd, subtreeSpentUsd: subtreeSpend(all, v.id),
     worktree: v.worktree && worktreeSummary(v),
@@ -64,7 +69,8 @@ function modelInfo(n: ReturnType<typeof summarize>): string {
 
 function tree(nodes: ReturnType<typeof summarize>[]): string {
   return treeOrder(nodes).map(({ node: n, depth }) => {
-    const extra = [...n.flags, n.activity].filter(Boolean).join(', ');
+    const reported = n.outcome && `reported ${n.outcome.outcome}${n.outcome.gate ? ` (gate ${n.outcome.gate})` : ''}`;
+    const extra = [...n.flags, n.activity, reported].filter(Boolean).join(', ');
     const branch = n.worktree ? ` ${branchText(n.worktree)}` : '';
     return `${'  '.repeat(depth)}- ${n.id} "${n.title}" [${n.kind}] ${n.state}${extra ? ` (${extra})` : ''} ${n.age}${modelInfo(n)}${branch}`;
   }).join('\n') || '(no nodes)';
@@ -128,6 +134,36 @@ const requireOwned = (c: Ctx, id: string, allowSelf: boolean): NodeView => {
 
 const who = (c: Ctx) => (c.caller === HUMAN ? 'The user' : `Node ${c.manager.view(c.caller)!.title} (${c.caller})`); // authenticate() guarantees the view
 
+/**
+ * Run the completion gate for a "succeeded" report. Passing records the outcome; a failure with attempts left sends the worker
+ * the output; the last failure records the outcome as failed and tells the parent. Resolves with the report_outcome reply.
+ */
+async function runGate(m: NodeManager, id: string, gate: NonNullable<Config['gate']>, report: Omit<Outcome, 'at' | 'gate'>): Promise<Out> {
+  const { ok, tail } = await m.runGate(id, gate);
+  const v = m.view(id);
+  if (!v) return { data: { ok: false } }; // closed meanwhile
+  const tell = (to: string, text: string, fromLabel: string) => deliver(m, DAEMON, to, text, { fromLabel, replyTo: null }).catch(logError);
+  if (ok) {
+    gateFailures.delete(id);
+    m.setOutcome(id, { ...report, gate: 'passed', at: Date.now() });
+    return { text: `Completion gate passed: ${gate.command}. Your outcome is recorded.`, data: { ok: true, gate: 'passed' } };
+  }
+  const attempt = (gateFailures.get(id) ?? 0) + 1, total = gate.retries + 1;
+  const head = `Completion gate failed (attempt ${attempt} of ${total}): ${gate.command}\n${tail}`;
+  if (attempt < total) {
+    gateFailures.set(id, attempt);
+    const text = `${head}\nFix it and call report_outcome again.`;
+    tell(id, text, 'orchestr8 (completion gate)');
+    return { text, data: { ok: false, gate: 'failed', attemptsLeft: total - attempt } };
+  }
+  gateFailures.delete(id);
+  m.setOutcome(id, { ...report, outcome: 'failed', gate: 'failed', at: Date.now() });
+  if (v.parentId) tell(v.parentId, head, `orchestr8 (child ${id} "${v.title}" failed its completion gate)`);
+  const text = `${head}\nNo attempts left: your outcome is recorded as failed${v.parentId ? ' and your parent was told' : ''}.`;
+  tell(id, text, 'orchestr8 (completion gate)');
+  return { text, data: { ok: false, gate: 'failed', attemptsLeft: 0 } };
+}
+
 // ---- tools ----
 
 function tool<S extends z.ZodRawShape>(description: string, shape: S, run: (c: Ctx, a: z.infer<z.ZodObject<S>>) => Promise<Out>) {
@@ -138,7 +174,7 @@ const spawned = new Map<string, { args: string; result: unknown; at: number }>()
 
 const tools = {
   list_nodes: tool(
-    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. The text starts with one line of account-level Claude usage (5-hour and 7-day rate-limit windows, percent used and reset time), which every node draws on. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale, stalled: working with no hook event for limits.stallMinutes), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any, spentUsd (its total spend across sessions) and subtreeSpentUsd (with all its descendants), and for a node with its own git worktree, worktree { path, branch, base, ahead, behind, dirty, missing, merged }: its commits not yet in base, base's commits not on the branch, the count of uncommitted files, and whether merge has merged it. Use it to find node ids before calling send, read or close.`,
+    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. The text starts with one line of account-level Claude usage (5-hour and 7-day rate-limit windows, percent used and reset time), which every node draws on. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none), flags (errored, interrupted, exited, stale, stalled: working with no hook event for limits.stallMinutes), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any ({ outcome, note, summary, changedFiles, verified, openQuestions, gate }: read these before calling read on a finished worker), gate (its completion gate: running, passed or failed), spentUsd (its total spend across sessions) and subtreeSpentUsd (with all its descendants), and for a node with its own git worktree, worktree { path, branch, base, ahead, behind, dirty, missing, merged }: its commits not yet in base, base's commits not on the branch, the count of uncommitted files, and whether merge has merged it. Use it to find node ids before calling send, read or close.`,
     {},
     async (c) => {
       const all = c.manager.list();
@@ -243,7 +279,7 @@ const tools = {
       }
       const list = views.map((v) => `${v.title} (${v.id})`).join(', ');
       const mode = c.caller === HUMAN ? undefined : loadConfig(c.manager.view(c.caller)!.cwd, c.manager.home).closeWithoutConfirm;
-      const preapproved = a.worktree !== 'discard' && (mode === 'always' || (mode === 'done' && views.every((v) => v.status.exited || v.status.state === 'done' || outcomes.has(v.id))));
+      const preapproved = a.worktree !== 'discard' && (mode === 'always' || (mode === 'done' && views.every((v) => v.status.exited || v.status.state === 'done' || v.outcome)));
       const text = `${who(c)} wants to close ${views.length} node(s): ${list}${destroys.length ? `. This deletes their worktrees: ${destroys.join('; ')}` : ''}`;
       if (c.caller !== HUMAN && !preapproved && !(await c.confirm(text))) {
         return { data: { ok: false, reason: 'denied' } };
@@ -354,13 +390,23 @@ const tools = {
     }),
 
   report_outcome: tool(
-    'Report how your own task ended: "succeeded" or "failed", with an optional short note. Call it once when your work is finished so whoever launched you can tell the difference between done and done well. It is about yourself only.',
-    { outcome: z.enum(['succeeded', 'failed']), note: z.string().optional() },
+    'Report how your own task ended: "succeeded" or "failed", with an optional short note. Call it once when your work is finished so whoever launched you can tell the difference between done and done well. It is about yourself only. Fill the structured fields too, so your parent can read your result from list_nodes without reading your transcript: summary (what you did, in a sentence or two), changedFiles (paths), verified (what you ran to check the work and its result) and openQuestions (anything left for your parent to decide). If the project configures a completion gate (config `gate`), a "succeeded" report is accepted only once the gate command passes in your directory: the reply says whether the gate is still running, passed, or failed with the attempts you have left. A failure also arrives as a message with the command\'s output; fix the problem and call report_outcome again. When no attempts are left the outcome is recorded as failed and your parent is told.',
+    {
+      outcome: z.enum(['succeeded', 'failed']), note: z.string().optional(), summary: z.string().optional(), changedFiles: z.array(z.string()).optional(),
+      verified: z.string().optional(), openQuestions: z.array(z.string()).optional(),
+    },
     async (c, a) => {
       if (c.caller === HUMAN) throw new Error('report_outcome is only for agent nodes');
-      outcomes.set(c.caller, { ...a, at: Date.now() });
-      c.manager.logEvent(c.caller, 'outcome', a);
-      return { data: { ok: true } };
+      const gate = a.outcome === 'succeeded' ? c.manager.gateConfig(c.caller) : undefined;
+      if (!gate) {
+        c.manager.setOutcome(c.caller, { ...a, at: Date.now() });
+        return { data: { ok: true } };
+      }
+      if (gateRuns.has(c.caller)) return { text: 'The completion gate is still running for your previous report; wait for its result.', data: { ok: false, gate: 'running' } };
+      const run = runGate(c.manager, c.caller, gate, a).finally(() => gateRuns.delete(c.caller));
+      gateRuns.set(c.caller, run);
+      const pending: Out = { text: `Completion gate running: ${gate.command}. Your outcome is recorded if it passes; if it fails you get a message with its output.`, data: { ok: true, gate: 'pending' } };
+      return Promise.race([run, sleep(GATE_REPLY_MS, pending, { ref: false })]);
     }),
 };
 
@@ -389,7 +435,7 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
   };
   startNotices(manager);
   manager.on('removed', (id: string) => {
-    outcomes.delete(id);
+    gateFailures.delete(id);
     for (const k of spawned.keys()) if (k.startsWith(`${id}\0`)) spawned.delete(k);
   });
 
