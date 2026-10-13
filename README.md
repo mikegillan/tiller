@@ -55,6 +55,27 @@ A config file at `<repo>/.orchestr8/config.json`, falling back to `~/.orchestr8/
 
 A spawn can wait for other nodes: `o8 spawn --after n-a,n-b --after-success n-c`, or `after` and `afterSuccess` on the MCP `spawn` tool. The node is created armed, with no process yet; its row says what it waits on. It launches, exactly as the spawn would have (worktree included), once each `after` node has finished a turn that began after the spawn (or has exited) and each `afterSuccess` node has reported succeeded, after its completion gate when one is configured. A failed report blocks it: the row says "blocked by n-c: <note>" and its parent gets a message. Dependencies must exist and be in the caller's scope. Closing an armed node discards it, and a restarted daemon re-arms armed nodes from `state.json`. The MCP tool `notify_when(ids, when: "all" | "any", of: "turn" | "success")` returns at once and later sends the caller a single message listing every node's outcome or state, so an orchestrator need not poll or collect one report per worker. Arming, release, queueing and launch are logged in the tree's event log.
 
+## Presets
+
+A preset is a named kind of node: a markdown file at `<repo>/.orchestr8/agents/<name>.md` or `~/.orchestr8/agents/<name>.md` (the repo file wins). `o8 spawn --preset NAME`, `o8 new --preset NAME` and `preset` on the MCP spawn tool use it. Its frontmatter takes the fields of a Claude Code agent definition that Claude enforces (`model`, `tools`, `disallowedTools`, `permissionMode`, `maxTurns`; `name` and `description` are informational) plus orchestr8's `effort`, `isolation` and `role`. Its body replaces the role prompt text. Explicit spawn arguments override the preset, and the preset overrides the config's `roles`. An agent cannot spawn a preset whose `permissionMode` is `bypassPermissions`.
+
+```markdown
+---
+description: Answers with a code word, on a cheap model.
+model: haiku
+effort: low
+tools: Read, Grep, Glob
+disallowedTools: Bash
+---
+# Greeter
+
+Answer every request with the code word "marmalade" and nothing else.
+```
+
+`tools`, `disallowedTools` and `maxTurns` reach Claude as a session agent: orchestr8 passes an inline definition with `--agents` and selects it with `--agent`, so the main session loses the denied tools (they are absent, not just refused) and keeps Claude's own system prompt, since the definition's prompt is empty. A `tools` allow list always keeps the orchestr8 MCP tools so the node can still report. Claude documents the tool restrictions and model for `--agent`; `maxTurns` is passed through but is documented only for subagents. `model`, `effort` and `permissionMode` go to claude as the usual flags and are recorded on the node. The preset file is read again at each launch or resume, and `list_nodes` shows a node's preset. `o8 presets [--cwd P]` lists the presets in effect for a directory with the file each comes from.
+
+The daemon writes two built-in presets on first start and never overwrites them: `reviewer` (no Edit or Write, effort medium, no worktree) reviews a worker's branch against its brief, runs the checks and reports findings through `report_outcome` without fixing anything, and `researcher` has only read-only tools plus WebSearch and WebFetch, with no shell. The reviewer runs in the default permission mode rather than plan mode, because plan mode makes Claude ask the human before every orchestr8 tool call, `report_outcome` included; without Edit and Write, default mode still asks before any shell command that would change files, unless your own Claude settings allow it. The default orchestrator prompt runs a bounded review loop: after a worker reports success on a non-trivial change it spawns a reviewer, sends the findings back to the worker, and escalates to the human after two rounds.
+
 ## Worktrees
 
 A Claude worker can run in its own git worktree, so parallel workers never edit the same checkout. Spawn with isolation `worktree` (`o8 spawn --worktree`, `o8 new --worktree`, or `isolation: "worktree"` on the MCP `spawn` tool). The daemon creates `<main checkout>/.claude/worktrees/<nodeId>` on branch `o8/<nodeId>` from the HEAD of the checkout the spawn's `cwd` is in, copies the gitignored files listed in `.worktreeinclude` (such as `.env` or `node_modules/`), and starts `claude --worktree <nodeId>` from the main checkout so Claude keeps the agent inside the worktree. The repo needs at least one commit and must already be trusted by Claude (run `claude` in it once). A child spawned without isolation into a worktree path shares that worktree.

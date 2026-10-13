@@ -16,10 +16,10 @@ import { ADMIN_TOKEN_FILE } from './home.js';
 import { notifyWhen } from './deps.js';
 import { closeRefusal, type NodeManager, type WorktreeReport } from './manager.js';
 import { MAX_PATCH_BYTES, MergeConflict } from './worktree.js';
+import { loadPreset, PERMISSION_MODES } from './presets.js';
 import { DAEMON, deliver, HUMAN, inScope, isDescendant, messageStatus, startNotices, withdraw } from './messaging.js';
 import { logError, PREVIEW_CHARS, readBody, safeEqual } from './util.js';
 
-const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'] as const;
 const MAX_WRITE_CHARS = 2000;
 const IDEMPOTENCY_MS = 24 * 3600_000;
 const TRANSCRIPT_CAP = 200_000;
@@ -44,7 +44,7 @@ function summarize(v: NodeView, now: number, all: NodeView[]) {
   return {
     id: v.id, parentId: v.parentId, title: v.title, kind: v.kind, cwd: v.cwd, state: v.status.state, flags: flags(v), exited: !!v.status.exited, createdAt: v.createdAt,
     age: fmtAge(now - v.createdAt), activity: v.status.activity, lastAssistantMessage: v.status.lastAssistantMessage?.slice(0, PREVIEW_CHARS),
-    outcome: v.outcome, gate: v.gate,
+    outcome: v.outcome, gate: v.gate, preset: v.preset,
     model: v.status.model, effort: v.status.effort, contextPct: v.status.contextPct, contextTokens: v.status.contextTokens, contextWindow: v.status.contextWindow, costUsd: v.status.costUsd,
     spentUsd: v.spentUsd, subtreeSpentUsd: subtreeSpend(all, v.id),
     worktree: v.worktree && worktreeSummary(v),
@@ -62,7 +62,7 @@ function branchText(w: ReturnType<typeof worktreeSummary>): string {
 }
 
 function modelInfo(n: ReturnType<typeof summarize>): string {
-  const me = [n.model && shortModel(n.model), n.effort && shortEffort(n.effort)].filter(Boolean).join(' ');
+  const me = [n.preset && `preset ${n.preset}`, n.model && shortModel(n.model), n.effort && shortEffort(n.effort)].filter(Boolean).join(' ');
   const own = n.spentUsd ?? 0;
   const spend = n.subtreeSpentUsd ? fmtUsd(own) + (n.subtreeSpentUsd > own ? ` (tree ${fmtUsd(n.subtreeSpentUsd)})` : '') : '';
   return [me, n.contextPct !== undefined && `ctx ${Math.round(n.contextPct)}%`, spend].filter(Boolean).map((p) => ` · ${p}`).join('');
@@ -184,14 +184,15 @@ const tools = {
     }),
 
   spawn: tool(
-    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `model` and `effort` to use the defaults for the role from the project config, if any. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. isolation "worktree" (claude nodes only) gives the child its own git worktree at <main checkout>/.claude/worktrees/<id> on a new branch from the HEAD of the checkout `cwd` is in, which needs a repo with a commit that Claude already trusts, and the reply then carries worktree { path, branch, base }. Omitting isolation uses the project config (default "none"), so a child whose cwd is inside an existing worktree shares that tree. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error. `after` and `afterSuccess` (node ids in your scope) create the node armed, with no process yet: it launches by itself, exactly as this spawn would, once each `after` node has finished a turn that began after this spawn (or has exited), and each `afterSuccess` node has reported succeeded through report_outcome (gate passed, when one is configured). A failed report blocks it and you get a message; close it to drop it. When the project sets limits.maxWorking and that many claude nodes are working, a new node is queued instead and launched in creation order as others stop. The reply then has state "armed" or "queued" and what it waits on.',
+    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `model` and `effort` to use the defaults for the role from the project config, if any. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. isolation "worktree" (claude nodes only) gives the child its own git worktree at <main checkout>/.claude/worktrees/<id> on a new branch from the HEAD of the checkout `cwd` is in, which needs a repo with a commit that Claude already trusts, and the reply then carries worktree { path, branch, base }. Omitting isolation uses the project config (default "none"), so a child whose cwd is inside an existing worktree shares that tree. `preset` names a spawn preset (.orchestr8/agents/<name>.md in `cwd`, else ~/.orchestr8/agents/<name>.md; built-in: "reviewer", "researcher"): it sets the role text, model, effort, permissionMode, isolation and tool restrictions, and any argument you pass overrides it. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error. `after` and `afterSuccess` (node ids in your scope) create the node armed, with no process yet: it launches by itself, exactly as this spawn would, once each `after` node has finished a turn that began after this spawn (or has exited), and each `afterSuccess` node has reported succeeded through report_outcome (gate passed, when one is configured). A failed report blocks it and you get a message; close it to drop it. When the project sets limits.maxWorking and that many claude nodes are working, a new node is queued instead and launched in creation order as others stop. The reply then has state "armed" or "queued" and what it waits on.',
     {
       kind: z.enum(NODE_KINDS), title: z.string().min(1), cwd: z.string().min(1), prompt: z.string().optional(),
-      model: z.string().optional(), effort: z.enum(EFFORTS).optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), role: z.enum(ROLES).optional(), isolation: z.enum(ISOLATIONS).optional(), requestId: z.string().optional(),
+      model: z.string().optional(), effort: z.enum(EFFORTS).optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), role: z.enum(ROLES).optional(), isolation: z.enum(ISOLATIONS).optional(), preset: z.string().min(1).optional(), requestId: z.string().optional(),
       after: z.array(z.string().min(1)).optional(), afterSuccess: z.array(z.string().min(1)).optional(), now: z.boolean().optional(),
     },
     async (c, { requestId, ...req }) => {
-      if (req.permissionMode === 'bypassPermissions' && c.caller !== HUMAN) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
+      const presetMode = req.preset ? loadPreset(req.preset, req.cwd, c.manager.home).permissionMode : undefined;
+      if ((req.permissionMode ?? presetMode) === 'bypassPermissions' && c.caller !== HUMAN) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
       if (req.now && c.caller !== HUMAN) throw new Error('refused: only the human may bypass limits.maxWorking with now');
       const now = Date.now();
       for (const [k, v] of spawned) if (now - v.at > IDEMPOTENCY_MS) spawned.delete(k);
@@ -204,7 +205,7 @@ const tools = {
       }
       const caller = c.caller === HUMAN ? undefined : c.manager.view(c.caller);
       const inherited = caller?.status.permissionMode ?? caller?.permissionMode;
-      const permissionMode = req.permissionMode ?? (inherited === 'bypassPermissions' ? undefined : inherited); // bypass stays human-only
+      const permissionMode = req.permissionMode ?? presetMode ?? (inherited === 'bypassPermissions' ? undefined : inherited); // bypass stays human-only
       const r = { ...req, permissionMode, parentId: c.caller === HUMAN ? null : c.caller, byHuman: c.caller === HUMAN };
       const view = c.manager.isolationFor(r) === 'worktree' ? await c.manager.spawnWorktree(r) : c.manager.spawn(r);
       const w = view.worktree;

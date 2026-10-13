@@ -6,6 +6,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { NEEDS_YOU_STATES, type AgentState, type Diff, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Pending, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { loadConfig, type Config, type Limits, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
+import { ensurePresets, loadPreset } from './presets.js';
 import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
@@ -117,6 +118,8 @@ export interface SpawnRequest {
   role?: Role;
   parentId?: string | null;
   isolation?: Isolation;
+  /** A spawn preset's name; its fields fill in what the request leaves unset (see withPreset). */
+  preset?: string;
   /** Set for the human's spawns (web UI, app, mux, admin token), which skip the spawn caps. */
   byHuman?: boolean;
   /** Arm the node: launch it once each of these has finished a turn begun after this spawn, or has exited. */
@@ -199,6 +202,7 @@ export class NodeManager extends EventEmitter {
     mkdirSync(join(this.home, 'nodes'), { recursive: true, mode: 0o700 });
     chmodSync(this.home, 0o700); // mkdir's mode does not apply to a directory that already existed
     ensurePrompts(this.home);
+    ensurePresets(this.home);
     this.secret = this.loadSecret();
     this.registry = new NodeRegistry(join(this.home, 'state.json'));
     this.registry.load();
@@ -295,6 +299,7 @@ export class NodeManager extends EventEmitter {
 
   /** The request's isolation, else the config default for a claude node whose role is worker or none. */
   isolationFor(req: SpawnRequest): Isolation {
+    req = this.withPreset(req);
     if (req.isolation) return req.isolation;
     if (req.kind !== 'claude' || roleFor(req.role, req.parentId ?? null) === 'orchestrator') return 'none';
     return loadConfig(req.cwd, this.home).worktrees.isolation;
@@ -315,8 +320,17 @@ export class NodeManager extends EventEmitter {
     if (this.sessions.size >= maxLiveNodes) refuse('maxLiveNodes', maxLiveNodes, `${this.sessions.size} nodes are live`);
   }
 
+  /** The request with its preset's role, model, effort, permissionMode and isolation filling what it leaves unset. */
+  private withPreset(req: SpawnRequest): SpawnRequest {
+    if (!req.preset) return req;
+    if (req.kind !== 'claude') throw new Error('a preset is for claude nodes only');
+    const p = loadPreset(req.preset, req.cwd, this.home);
+    return { ...req, role: req.role ?? p.role, model: req.model ?? p.model, effort: req.effort ?? p.effort, permissionMode: req.permissionMode ?? p.permissionMode, isolation: req.isolation ?? p.isolation };
+  }
+
   /** Spawn a node without a worktree. A spawn that resolves to isolation "worktree" goes through spawnWorktree. */
   spawn(req: SpawnRequest): NodeView {
+    req = this.withPreset(req);
     if (this.isolationFor(req) === 'worktree') throw new Error('a worktree spawn is asynchronous: call spawnWorktree');
     this.checkLimits(req);
     this.checkDependencies(req);
@@ -326,7 +340,7 @@ export class NodeManager extends EventEmitter {
     const model = req.model ?? defaults.model, effort = req.effort ?? defaults.effort;
     const rec = this.registry.create({
       parentId, kind: req.kind, title: req.title, cwd: req.cwd,
-      model, effort, permissionMode: req.permissionMode, role: req.role,
+      model, effort, permissionMode: req.permissionMode, role: req.role, preset: req.preset,
       sessionId: req.kind === 'claude' ? randomUUID() : undefined,
     });
     if (this.arm(rec.id, req, 'none')) return this.emitNode(rec.id)!;
@@ -349,6 +363,7 @@ export class NodeManager extends EventEmitter {
    */
   async spawnWorktree(req: SpawnRequest): Promise<NodeView> {
     if (req.kind !== 'claude') throw new Error('isolation "worktree" is for claude nodes only');
+    req = this.withPreset(req);
     this.checkLimits(req);
     this.checkDependencies(req);
     const repo = await wt.mainCheckout(req.cwd);
@@ -359,7 +374,7 @@ export class NodeManager extends EventEmitter {
     const defaults = config.roles[roleFor(req.role, parentId) === 'orchestrator' ? 'orchestrator' : 'worker'];
     const rec = this.registry.create({
       parentId, kind: 'claude', title: req.title, cwd: req.cwd,
-      model: req.model ?? defaults.model, effort: req.effort ?? defaults.effort, permissionMode: req.permissionMode, role: req.role,
+      model: req.model ?? defaults.model, effort: req.effort ?? defaults.effort, permissionMode: req.permissionMode, role: req.role, preset: req.preset,
       sessionId: randomUUID(),
     });
     if (this.arm(rec.id, req, 'worktree')) return this.emitNode(rec.id)!;
@@ -1122,6 +1137,8 @@ export class NodeManager extends EventEmitter {
       nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path,
       title: rec.title, parentId: rec.parentId, home: this.home, cwd: rec.cwd, role: rec.role, sessionId: this.statuses.get(id)?.sessionId ?? rec.sessionId ?? '',
       resume, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
+      // From the main checkout, as at spawn: a worktree may not carry an uncommitted or ignored .orchestr8/agents.
+      preset: rec.preset ? loadPreset(rec.preset, rec.worktree?.repo ?? rec.cwd, this.home) : undefined,
     };
     const spec: LaunchSpec = rec.kind === 'claude' ? claudeLaunch(input) : terminalLaunch(input, this.shell);
     const cwd = rec.worktree?.repo ?? rec.cwd; // claude adopts the worktree itself through --worktree, or re-enters it on --resume
