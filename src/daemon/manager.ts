@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { NEEDS_YOU_STATES, type AgentState, type Diff, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Pending, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { loadConfig, type Config, type Limits, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
@@ -42,7 +43,6 @@ const COST_EVENT_MS = 60_000;
 /** Lines of gate output that go back to the worker. */
 const GATE_TAIL_LINES = 60;
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A node's state before any hook arrives: a Claude node is unknown until SessionStart; a terminal has no agent state. */
 const initialState = (kind: NodeKind): AgentState => (kind === 'claude' ? 'unknown' : 'none');
 const inside = (path: string, dir: string) => path === dir || path.startsWith(dir + sep);
@@ -80,10 +80,8 @@ export interface WorktreeReport {
  * records trust for the cwd or one of its ancestors; otherwise the human has to decide.
  */
 export function trustPolicy(cwd: string, claudeJson: unknown): 'auto' | 'manual' {
-  const projects = (claudeJson as { projects?: Record<string, { hasTrustDialogAccepted?: unknown }> } | null)?.projects;
-  if (!projects || typeof projects !== 'object') return 'manual';
   for (let dir = resolve(cwd); ; dir = dirname(dir)) {
-    if (projects[dir]?.hasTrustDialogAccepted === true) return 'auto';
+    if (trusted(claudeJson, dir)) return 'auto';
     if (dirname(dir) === dir) return 'manual';
   }
 }
@@ -93,7 +91,12 @@ export function trustPolicy(cwd: string, claudeJson: unknown): 'auto' | 'manual'
  * trust is recorded for the repo itself: with 2.1.296 a trusted ancestor did not count when the repo had its own entry.
  */
 export function trustedForWorktree(repo: string, claudeJson: unknown): boolean {
-  return (claudeJson as { projects?: Record<string, { hasTrustDialogAccepted?: unknown }> } | null)?.projects?.[repo]?.hasTrustDialogAccepted === true;
+  return trusted(claudeJson, repo);
+}
+
+/** Whether ~/.claude.json records trust for exactly `dir`. */
+function trusted(claudeJson: unknown, dir: string): boolean {
+  return (claudeJson as { projects?: Record<string, { hasTrustDialogAccepted?: unknown }> } | null)?.projects?.[dir]?.hasTrustDialogAccepted === true;
 }
 
 function readClaudeJson(): unknown {
@@ -168,12 +171,10 @@ export class NodeManager extends EventEmitter {
   private lastHookAt = new Map<string, number>();
   private sweepTimer: NodeJS.Timeout;
   private interruptTimers = new Map<string, NodeJS.Timeout>();
-  /** Worktree nodes being closed or merged; the two exclude each other. */
-  private busy = new Map<string, 'closing' | 'merging'>();
+  /** Worktree nodes whose worktree is being created, or that are being closed or merged; each excludes the others. */
+  private busy = new Map<string, 'creating' | 'closing' | 'merging'>();
   private gits = new Map<string, GitState>();
   private gitTimers = new Map<string, NodeJS.Timeout>();
-  /** The branch tip and time of each node's last merge: a squashed branch counts as merged until it moves. */
-  private merged = new Map<string, { tip: string; at: number }>();
   /** Worktree setups in progress, so close can stop one. */
   private setups = new Map<string, { abort: AbortController; done: Promise<void> }>();
   /** Nodes whose setup has not succeeded yet, with the prompt to launch them with once it does; restart retries it. */
@@ -393,6 +394,15 @@ export class NodeManager extends EventEmitter {
    * setup commands when configured. A failure removes the worktree and branch and throws; the caller deals with the record.
    */
   private async addWorktree(id: string, prompt: string | undefined, head?: { base: string; baseSha: string }): Promise<void> {
+    this.busy.set(id, 'creating');
+    try {
+      await this.createWorktree(id, prompt, head);
+    } finally {
+      this.busy.delete(id);
+    }
+  }
+
+  private async createWorktree(id: string, prompt: string | undefined, head?: { base: string; baseSha: string }): Promise<void> {
     const rec = this.registry.get(id)!;
     const repo = await wt.mainCheckout(rec.cwd);
     const { base, baseSha } = head ?? await wt.headInfo(rec.cwd);
@@ -409,6 +419,7 @@ export class NodeManager extends EventEmitter {
       await wt.ensureExcluded(repo);
       this.registry.flush(); // a crash from here on leaves a record, not an orphan
       await wt.copyIncluded(repo, path, config.worktrees.include);
+      if (!this.registry.get(id)) throw new Error(`${id} was closed while its worktree was being created`);
       this.writeFiles(id);
       this.statuses.set(id, { state: initialState('claude'), sessionId: rec.sessionId, changedAt: Date.now() });
       const setup = this.worktreeCommands(repo, 'setup');
@@ -527,11 +538,6 @@ export class NodeManager extends EventEmitter {
     }
   }
 
-  /**
-   * Merge a worktree node's branch into its base in the project's style (worktrees.merge). Refused, with nothing changed,
-   * while the node is working, closing or setting up, when its tree has uncommitted files, or when the branch conflicts
-   * with base (the error names the paths).
-   */
   /** A worktree node's changes since it branched, committed or not. */
   async diff(id: string): Promise<Diff> {
     const rec = this.registry.get(id);
@@ -540,6 +546,11 @@ export class NodeManager extends EventEmitter {
     return wt.diff(rec.worktree);
   }
 
+  /**
+   * Merge a worktree node's branch into its base in the project's style (worktrees.merge). Refused, with nothing changed,
+   * while the node is working, closing or setting up, when its tree has uncommitted files, or when the branch conflicts
+   * with base (the error names the paths).
+   */
   async merge(id: string): Promise<{ base: string; sha: string; style: MergeStyle }> {
     const rec = this.registry.get(id);
     if (!rec) throw new Error(`no such node: ${id}`);
@@ -557,7 +568,8 @@ export class NodeManager extends EventEmitter {
       const style = loadConfig(w.repo, this.home).worktrees.merge;
       const subject = style === 'squash' ? `${rec.title} (squashed from ${w.branch})` : `Merge branch '${w.branch}': ${rec.title}`;
       const sha = await wt.mergeInto(w.repo, w.branch, w.base, style, subject);
-      this.merged.set(id, { tip: await this.branchTip(w), at: Date.now() });
+      const merged = { tip: await this.branchTip(w), at: Date.now() };
+      this.registry.update(id, { worktree: { ...this.registry.get(id)!.worktree!, merged } });
       this.logEvent(id, 'merge', { branch: w.branch, base: w.base, sha: sha.slice(0, 7), style });
       return { base: w.base, sha, style };
     } finally {
@@ -616,12 +628,9 @@ export class NodeManager extends EventEmitter {
     if (rec.pending) return { ok: false, error: 'node is armed or queued: it launches by itself; close it to drop it' };
     if (rec.worktree && !existsSync(rec.worktree.path)) return { ok: false, error: 'worktree missing' }; // --worktree would make a fresh one
     if (this.setups.has(id)) return { ok: false, error: 'worktree setup is running' };
+    if (this.busy.has(id)) return { ok: false, error: `${id} is ${this.busy.get(id)}` };
     const old = this.statuses.get(id)?.sessionId ?? rec.sessionId;
-    clearTimeout(this.interruptTimers.get(id));
-    const s = this.sessions.get(id);
-    this.sessions.delete(id); // first, so the exit callback ignores it
-    this.liveChanged();
-    s?.kill();
+    this.kill(id);
     this.lastHookAt.delete(id);
     const sessionId = rec.kind === 'claude' ? randomUUID() : undefined;
     this.registry.update(id, { sessionId, transcriptPath: undefined, previousSessions: [...(rec.previousSessions ?? []), ...(old ? [old] : [])].slice(-MAX_PREVIOUS_SESSIONS) });
@@ -651,6 +660,7 @@ export class NodeManager extends EventEmitter {
   async close(id: string, force = false, worktree?: 'keep' | 'discard'): Promise<string | undefined> {
     const rec = this.registry.get(id);
     if (!force && rec?.parentId === null) throw new Error('refusing to close an orchestrator: restart it instead, or force the close');
+    if (this.busy.has(id)) throw new Error(`${id} is already ${this.busy.get(id)}`);
     if (rec?.worktree) return this.closeWorktreeNode(id, rec.title, rec.worktree, worktree);
     this.kill(id);
     if (!this.registry.get(id)) return undefined;
@@ -659,7 +669,6 @@ export class NodeManager extends EventEmitter {
   }
 
   private async closeWorktreeNode(id: string, title: string, w: Worktree, mode?: 'keep' | 'discard'): Promise<string | undefined> {
-    if (this.busy.has(id)) throw new Error(`${id} is already ${this.busy.get(id)}`);
     this.busy.set(id, 'closing');
     try {
       await this.refreshGit(id).catch(logError);
@@ -692,11 +701,12 @@ export class NodeManager extends EventEmitter {
     this.emit('removed', id);
   }
 
-  /** Kill the node's process, if any, and forget it; returns the session it had. */
+  /** Kill the node's process, if any, and forget it, freeing its maxWorking slot; returns the session it had. */
   private kill(id: string): PtySession | undefined {
     const s = this.sessions.get(id);
     clearTimeout(this.interruptTimers.get(id));
     this.sessions.delete(id); // first, so the exit callback ignores it
+    this.starting.delete(id);
     this.liveChanged();
     s?.kill();
     return s;
@@ -1014,10 +1024,10 @@ export class NodeManager extends EventEmitter {
 
   /** When the node's branch was last merged, if it has not moved since; a moved branch forgets the merge. */
   private async mergedAt(id: string, w: Worktree): Promise<number | undefined> {
-    const m = this.merged.get(id);
-    if (!m) return undefined;
-    if ((await this.branchTip(w)) === m.tip) return m.at;
-    this.merged.delete(id);
+    if (!w.merged) return undefined;
+    if ((await this.branchTip(w)) === w.merged.tip) return w.merged.at;
+    const cur = this.registry.get(id)?.worktree;
+    if (cur?.merged) this.registry.update(id, { worktree: { ...cur, merged: undefined } });
     return undefined;
   }
 
@@ -1051,6 +1061,7 @@ export class NodeManager extends EventEmitter {
       this.emitNode(id);
     }).catch((err: Error) => {
       if (abort.signal.aborted || !this.registry.get(id)) return; // closed or shut down meanwhile
+      this.starting.delete(id); // no process ever started, so no exit frees its maxWorking slot
       show({ state: 'done', errored: true, exited: true, activity: `worktree setup failed: ${err.message}; see ${log}` }, true);
     }).finally(() => this.setups.delete(id));
     this.setups.set(id, { abort, done });
@@ -1122,7 +1133,7 @@ export class NodeManager extends EventEmitter {
     this.unread.delete(id);
     this.lastHookAt.delete(id);
     clearTimeout(this.gitTimers.get(id));
-    for (const m of [this.gits, this.gitTimers, this.merged, this.needsSetup, this.lastCostEvent, this.outcomes, this.gates, this.turnStarts]) m.delete(id);
+    for (const m of [this.gits, this.gitTimers, this.needsSetup, this.lastCostEvent, this.outcomes, this.gates, this.turnStarts]) m.delete(id);
     this.starting.delete(id);
     this.restored.delete(id);
     rmSync(this.nodeDir(id), { recursive: true, force: true });

@@ -120,6 +120,15 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
     await expect.poll(() => live(c)).toBe(true);
   });
 
+  it('a restart with no prompt frees the limits.maxWorking slot of a node whose first turn never began', () => {
+    const { m, child, live } = setup({ limits: { maxWorking: 1 } });
+    const a = child('a');
+    expect(m.restart(a)).toEqual({ ok: true });
+    const b = child('b');
+    expect(m.view(b)!.status.state).not.toBe('queued');
+    expect(live(b)).toBe(true);
+  });
+
   it('armed nodes survive a manager restart', async () => {
     const { m, open, child } = setup();
     const a = child('a');
