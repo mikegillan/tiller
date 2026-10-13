@@ -32,6 +32,8 @@ class FakeManager extends EventEmitter {
   session = (id: string) => this.sessions.get(id) as never;
   typed: [string, string][] = [];
   input = (id: string, data: string) => { this.typed.push([id, data]); };
+  events: [string, string, Record<string, unknown>][] = [];
+  logEvent = (id: string, type: string, data: Record<string, unknown> = {}) => { this.events.push([id, type, data]); };
   add(id: string, parentId: string | null, status: Partial<NodeStatus> = {}, kind: 'claude' | 'terminal' = 'claude') {
     this.nodes.set(id, { id, parentId, kind, title: `T-${id}`, cwd: '/', createdAt: 0, unread: false, status: { state: 'done', doneSource: 'stop', changedAt: 0, ...status } });
     this.sessions.set(id, new FakeSession(this, id));
@@ -154,6 +156,23 @@ describe('loop detection', () => {
       m.set('b', { state: 'done', doneSource: 'stop' });
       expect((await deliver(m.mgr, from, 'b', 'x')).outcome).toBe('delivered');
     }
+  });
+
+  it('does not count a send that came back queueFull or was later withdrawn or expired', async () => {
+    m.set('b', { state: 'working' });
+    const fill = [];
+    for (let i = 0; i < 16; i++) fill.push(await deliver(m.mgr, 'orchestr8', 'b', `fill${i}`));
+    expect((await deliver(m.mgr, 'a', 'b', 'retry me')).outcome).toBe('queueFull');
+    await withdraw(m.mgr, 'human', fill[0].messageId!);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const r = await deliver(m.mgr, 'a', 'b', 'retry me');
+    expect(r.outcome).toBe('queued');
+    await withdraw(m.mgr, 'a', r.messageId!);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect((await deliver(m.mgr, 'a', 'b', 'retry me')).outcome).toBe('queued');
+    await vi.advanceTimersByTimeAsync(5 * 60_000); // it expires
+    expect((await deliver(m.mgr, 'a', 'b', 'retry me')).outcome).toBe('queued');
+    expect(m.sessions.get('p')!.pasted).toEqual([]); // no loop notice
   });
 });
 
@@ -278,6 +297,22 @@ describe('mod inbox', () => {
     m.set('b', { state: 'done', doneSource: 'stop' });
     await vi.advanceTimersByTimeAsync(5 * 60_000);
     expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'expired' });
+  });
+
+  it('does not expire a claimed message while the mod is live and submitting it', async () => {
+    const r = await deliver(m.mgr, 'a', 'b', 'slow submit');
+    expect(claim(m.mgr, 'b', r.messageId!)).toBe(true);
+    await vi.advanceTimersByTimeAsync(5 * 60_000 - 1000);
+    inbox(m.mgr, 'b'); // the mod still polls
+    await vi.advanceTimersByTimeAsync(2000); // past the TTL
+    expect(messageStatus(m.mgr, 'a', r.messageId!)?.outcome).toBe('queued');
+    expect(ack(m.mgr, 'b', r.messageId!)).toBe(true);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'delivered' });
+    // A claimed message whose mod has gone away still expires.
+    const gone = await deliver(m.mgr, 'p', 'b', 'mod died');
+    claim(m.mgr, 'b', gone.messageId!);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(messageStatus(m.mgr, 'p', gone.messageId!)).toMatchObject({ outcome: 'expired' });
   });
 
   it('caps the inbox at 16', async () => {
@@ -419,6 +454,19 @@ describe('withdraw', () => {
   });
 });
 
+describe('event log', () => {
+  it('logs sends and withdrawals on the target, the human\'s included, but not the daemon\'s own sends', async () => {
+    m.set('b', { state: 'working' });
+    const r = await deliver(m.mgr, 'human', 'b', 'hi');
+    await deliver(m.mgr, 'orchestr8', 'b', 'notice');
+    await withdraw(m.mgr, 'human', r.messageId!);
+    expect(m.events).toEqual([
+      ['b', 'send', { from: 'human', outcome: 'queued', messageId: r.messageId }],
+      ['b', 'withdraw', { from: 'human', messageId: r.messageId }],
+    ]);
+  });
+});
+
 describe('station notices', () => {
   it('first tells an errored child once to continue, then notifies the parent on the next error; a clean Stop re-arms', async () => {
     startNotices(m.mgr);
@@ -451,6 +499,17 @@ describe('station notices', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(child()).toHaveLength(2);
     expect(pasted()).toHaveLength(1);
+  });
+
+  it('tells the parent of the turn error when the queued "continue" message expires', async () => {
+    startNotices(m.mgr);
+    inbox(m.mgr, 'a'); // a's mod is live, so the retry message queues in its inbox
+    m.set('a', { state: 'done', errored: true, doneSource: 'stop', changedAt: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(inbox(m.mgr, 'a')[0].text).toContain('Continue where you left off');
+    expect(m.sessions.get('p')!.pasted).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(m.sessions.get('p')!.pasted[0]).toMatch(/\nfrom: orchestr8 \(child a "T-a" stopped: turn-errored\)\n/);
   });
 
   it('tells the parent once when a working child stalls, again only after activity resumes', async () => {
