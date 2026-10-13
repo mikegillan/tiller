@@ -10,5 +10,5 @@ Commands: `/o8-list`, `/o8-spawn <title> :: <prompt>`, `/o8-send <nodeId> <text>
 The four call the daemon's `POST /api/<tool>` with the node's token and print the text result.
 The band's `↑ parent` and `⌂ root` buttons POST `/focus {id}` (any node in the same tree); the daemon broadcasts it and an `o8` client showing that node switches to the target.
 Source is TypeScript under `hooks/`: `register.tsx` holds everything that uses `$`; `api.ts`, `notify.ts`, `commands.ts` and `band.tsx` are pure helpers (the validator forbids passing `$` to imported functions).
-Check with `claude plugin validate mod/` and `claude plugin test mod/`; the quiet behaviour is tested against a stub daemon in `mod/tests/quiet.test.tsx`, and `npx tsx spike/mux-check.ts` exercises the mod against a real daemon (node-pty).
-The mod sends no OS notifications: the daemon is the single sender (see the repo README), so the app and the terminal never both notify.
+Check with `claude plugin validate mod/` and `claude plugin test mod/`; the quiet behaviour and the hold during a turn are tested against a stub daemon in `mod/tests/quiet.test.tsx` and `mod/tests/hold.test.tsx`, and `npx tsx spike/mux-check.ts` exercises the mod against a real daemon (node-pty).
+The mod sends no OS notifications: the daemon is the single sender (see docs/frontends.md), so the app and the terminal never both notify.

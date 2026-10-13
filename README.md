@@ -1,139 +1,50 @@
 # orchestr8
 
-orchestr8 is a local daemon that runs several Claude Code sessions ("nodes") as child processes and lets one of them, the orchestrator, spawn, message and watch the others. The main front end is a native (Tauri) app, which `o8` opens; the same UI runs in a browser, and `o8-mux` is a terminal multiplexer for the terminal. A small Claude Code mod in each node delivers messages and adds a few slash commands.
-
-The design is in [PLAN.md](PLAN.md).
+orchestr8 is a local daemon that runs several Claude Code sessions as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser, and `o8-mux` is a multiplexer for the terminal. A small Claude Code mod (a plugin loaded into each node) delivers messages and adds a few slash commands.
 
 ## Requirements
 
 - Node 24 and the `claude` CLI (Claude Code) on your PATH.
 - Optional: `terminal-notifier` (`brew install terminal-notifier`), so clicking a macOS notification selects the node.
+- For the native app only: Rust through Homebrew's rustup (see [docs/frontends.md](docs/frontends.md)).
 
 ## Install
 
     npm install && npm link
 
-This puts `o8` (client), `o8d` (daemon), `o8-mux` (terminal multiplexer) and `o8-app` (native app) on your PATH.
+This puts `o8` (the client), `o8d` (the daemon in the foreground), `o8-mux` (the terminal multiplexer) and `o8-app` (the native app) on your PATH.
 
-## Run
+## Use
 
-    cd ~/some/repo && o8
+- `cd ~/some/repo && o8` starts the daemon if it is not running, finds, resumes or creates the orchestrator for that directory, and opens the app on it (or the browser UI when the app is not built). `o8 --new` always starts a fresh orchestrator.
+- `o8 mux` (or `o8-mux`) does the same and attaches the terminal multiplexer instead.
+- `o8 stop` shuts the daemon down and closes every node; the nodes are not resumed on the next start.
+- `o8 reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
+- `o8 autostart on|off|status` manages a launchd agent that starts the daemon at login and again after a crash.
 
-That one command starts the daemon if it is not running (detached, logging to `~/.orchestr8/daemon.log`), finds or creates (or resumes, if it exited) the orchestrator for the current directory, and opens the native app on it. If the app is already running it switches to that session. If the app has not been built it says so and opens the browser UI instead (see App below). `o8 --new` always starts a fresh orchestrator, and `--title T` and `--prompt P` set its title and first prompt. `o8 status` shows the daemon and node count, and `o8 stop` shuts the daemon down and closes all nodes.
+`o8 help` lists every command and flag.
 
-The daemon remembers which nodes were live (in `state.json`), and when it starts it resumes them, parents first, after a crash, a kill, a reboot or `o8 reload`. It skips nodes that no longer exist, nodes whose worktree is missing and nodes idle for more than `daemon.resumeMaxAgeDays` (default 3), and logs one summary line. `o8 stop` is the "do not come back" switch: it clears that set, so the next start resumes nothing. Set `daemon.resumeOnStart` to false or change `daemon.resumeMaxAgeDays` in `~/.orchestr8/config.json` (the home file only; `o8 config` shows both).
+## Where files live
 
-`o8 autostart on` installs a launchd user agent (`~/Library/LaunchAgents/com.orchestr8.daemon.plist`) that starts the daemon at login, so the nodes come back after a reboot without opening the app, and starts it again if it crashes; `o8 stop` exits cleanly and launchd leaves it stopped. `o8 autostart off` removes it (stopping the daemon if launchd started it), and `o8 autostart status` says whether it is installed and loaded. Turning it on while a daemon is running leaves that daemon alone: the agent's first launch finds the port taken and exits, and the next `o8 reload` or login hands the daemon to launchd.
-
-For the terminal version, run `o8-mux` (or `o8 mux`) in the directory instead; it does the same setup and attaches the multiplexer described below. `o8 attach <id>` opens the multiplexer on a specific node.
-
-`o8d` is the same daemon in the foreground, for when you want its log in a terminal.
-
-`o8 reload` restarts the daemon on the current code and resumes the nodes that were live; run it after pulling or editing daemon code. It works from inside a node's terminal too: a detached helper stops the daemon (keeping its live set), starts a new one (through launchd when autostart is on), which resumes the nodes itself, and logs each step to `daemon.log` with an `o8 reload:` prefix. If no daemon is running it just starts one.
-
-`o8-mux` is a small terminal multiplexer. A rounded sidebar on the left shows the whole tree (connectors, a colored state glyph per node, an unread dot, age, the current activity, and `model · effort · ctx %` with token counts and cost when known); the rest of the terminal is the selected node's live screen, and what you type goes to it. Click a node in the sidebar to swap its screen in; the mouse wheel and clicks in the main area are forwarded to the node when it has asked for mouse reports. The sidebar footer shows the daemon status (red and reconnecting if the connection drops). The sidebar hides below 90 columns.
-
-Controls apply to the selected node and are both clickable in the sidebar and available as keys after the prefix Ctrl-\: `n` new child (asks for a title; same folder, claude), `e` rename, `x` kill (asks y/n; refused on an orchestrator), `R` restart (asks y/n), `r` resume (exited nodes), `o` new orchestrator in this directory, `s` hide or show the sidebar, `?` help overlay. Navigation: `d` detach (leaves everything running), `j`/`k` next/previous node, `!` next node needing you, `b` back, `1`-`9` jump to the nth node, `l` then a number and Enter, Ctrl-\ twice sends a literal Ctrl-\. The terminal bell rings once (at most every 5 s per node) when a node you are not looking at needs you.
-
-Inside a node you will see a one-line band above the prompt and the slash commands `/o8-list`, `/o8-spawn <title> :: <prompt>`, `/o8-send <id> <text>` and `/o8-read <id>`. The orchestrator also has MCP tools to do the same.
-
-Other commands: `o8 ps` lists nodes, `o8 attach <id>` opens the multiplexer on a node, `o8 resume <id>` relaunches an exited node, `o8 kill <id...>` closes nodes, and `o8 restart <id>` relaunches a node with a fresh session.
-
-Orchestrators (root nodes) are never closed by accident. Agents cannot close them, the UI and multiplexer offer Restart instead of Kill, and `o8 kill <id>` on a root refuses with a hint; `o8 kill --force <id>` (or a `force` flag on the websocket `close` message) overrides it. Restart kills the node's process and relaunches it under a new session id, so a Claude orchestrator starts with an empty context while keeping its id, title, directory, model, role and children. The previous session ids are kept on the node record (`previousSessions`, newest 10). Restart is human-only for MCP callers. `o8 help` lists the rest.
-
-Messages between nodes are queued in the daemon and submitted as prompts by the receiving node's mod when it is idle, then confirmed. If a node's mod is not running, the daemon pastes the message into its terminal instead. When a child needs you or finishes, the orchestrator shows an in-session toast, but only when no app, browser or multiplexer client is attached.
-
-## Role prompts
-
-Every Claude node gets a role section appended to its system prompt, so it survives `/clear`. A root node (no parent) is an orchestrator and a node with a parent is a worker. The text is the built-in default (`DEFAULT_PROMPTS` in `src/daemon/launch.ts`) unless you create `~/.orchestr8/prompts/orchestrator.md` or `worker.md` to override it. A file at `<repo>/.orchestr8/orchestrator.md` or `worker.md` wins for nodes whose directory is that repo. Files are read at each launch or resume, so edits apply to the next node you start. `--role orchestrator|worker|none` on `o8 new` and `o8 spawn` (and `role` on the MCP spawn tool) overrides the default; `none` omits the section. `o8 prompts` prints the paths in effect for the current directory, or `built-in` where there is no file.
-
-A config file at `<repo>/.orchestr8/config.json`, falling back to `~/.orchestr8/config.json`, sets per-project defaults. All keys are optional: `{"roles": {"orchestrator": {"model": "opus", "effort": "high"}, "worker": {"model": "haiku", "effort": "low"}}, "approvals": {"close": "never"}}`. Each key resolves on its own, from an explicit spawn argument, then the repo file, then the home file, then the built-in default. `roles` picks the model and effort (`low`, `medium`, `high`, `xhigh` or `max`, passed to claude as `--effort`) for a node spawned without them, by role (`none` counts as worker), and the node keeps them across restarts. `approvals.close` lets an agent's `close` skip the human's approval: `always` skips it, `done` skips it when every node in the batch is done or has exited, and `never` (the default) always asks. The file is read on each use, so edits apply without restarting the daemon; a malformed file is logged and skipped. `o8 config [--cwd P]` prints the effective values and which file each came from.
-
-`limits` holds guardrails for agents left to run on their own: `{"limits": {"maxDepth": 3, "maxChildren": 8, "stallMinutes": 5, "maxMessagesPer10Min": 20}, "daemon": {"maxLiveNodes": 20, "maxWorking": 0}}` (the defaults). An agent's spawn is refused when the new node would sit more than `maxDepth` levels below its root, when its parent already has `maxChildren` live children, or when `daemon.maxLiveNodes` nodes are live; the error names the cap and tells the agent to reuse an idle worker or close finished ones. The human's spawns are exempt. A node working with no hook event for `stallMinutes` shows "no activity 7m" on its row and its parent gets a notice. A send is refused as a likely loop after `maxMessagesPer10Min` messages from one node to another in 10 minutes, or when the same text was already sent to that node in the last 10 minutes; the sender's parent is told. When a child's turn ends in an error, orchestr8 first sends the child one message to continue where it left off, and tells the parent only if the next turn errors too. Each node's spend is summed across its sessions and kept in `state.json`; rows show it, with the subtree total (Σ) on nodes with children, and the status bar and mux footer show today's total. `daemon.maxWorking` (0 means no cap) bounds how many Claude nodes work at once: past it a new spawn is queued, shown as "queued" with the reason, and launched in creation order as nodes stop working; the status bar shows how many are queued. The human can skip the queue with `o8 spawn --now`.
-
-## Dependencies and notify_when
-
-A spawn can wait for other nodes: `o8 spawn --after n-a,n-b --after-success n-c`, or `after` and `afterSuccess` on the MCP `spawn` tool. The node is created armed, with no process yet; its row says what it waits on. It launches, exactly as the spawn would have (worktree included), once each `after` node has finished a turn that began after the spawn (or has exited) and each `afterSuccess` node has reported succeeded, after its completion gate when one is configured. A failed report blocks it: the row says "blocked by n-c: <note>" and its parent gets a message. Dependencies must exist and be in the caller's scope. Closing an armed node discards it, and a restarted daemon re-arms armed nodes from `state.json`. The MCP tool `notify_when(ids, when: "all" | "any", of: "turn" | "success")` returns at once and later sends the caller a single message listing every node's outcome or state, so an orchestrator need not poll or collect one report per worker. Arming, release, queueing and launch are logged in the tree's event log.
-
-## Presets
-
-A preset is a named kind of node: a markdown file at `<repo>/.orchestr8/agents/<name>.md` or `~/.orchestr8/agents/<name>.md` (the repo file wins). `o8 spawn --preset NAME`, `o8 new --preset NAME` and `preset` on the MCP spawn tool use it. Its frontmatter takes the fields of a Claude Code agent definition that Claude enforces (`model`, `tools`, `disallowedTools`, `permissionMode`, `maxTurns`; `name` and `description` are informational) plus orchestr8's `effort`, `isolation` and `role`. Its body replaces the role prompt text. Explicit spawn arguments override the preset, and the preset overrides the config's `roles`. An agent cannot spawn a preset whose `permissionMode` is `bypassPermissions`.
-
-```markdown
----
-description: Answers with a code word, on a cheap model.
-model: haiku
-effort: low
-tools: Read, Grep, Glob
-disallowedTools: Bash
----
-# Greeter
-
-Answer every request with the code word "marmalade" and nothing else.
-```
-
-`tools`, `disallowedTools` and `maxTurns` reach Claude as a session agent: orchestr8 passes an inline definition with `--agents` and selects it with `--agent`, so the main session loses the denied tools (they are absent, not just refused) and keeps Claude's own system prompt, since the definition's prompt is empty. A `tools` allow list always keeps the orchestr8 MCP tools so the node can still report. Claude documents the tool restrictions and model for `--agent`; `maxTurns` is passed through but is documented only for subagents. `model`, `effort` and `permissionMode` go to claude as the usual flags and are recorded on the node. The preset file is read again at each launch or resume, and `list_nodes` shows a node's preset. `o8 presets [--cwd P]` lists the presets in effect for a directory with the file each comes from.
-
-The daemon writes two built-in presets on first start and never overwrites them: `reviewer` (no Edit or Write, effort medium, no worktree) reviews a worker's branch against its brief, runs the checks and reports findings through `report_outcome` without fixing anything, and `researcher` has only read-only tools plus WebSearch and WebFetch, with no shell. The reviewer runs in the default permission mode rather than plan mode, because plan mode makes Claude ask the human before every orchestr8 tool call, `report_outcome` included; without Edit and Write, default mode still asks before any shell command that would change files, unless your own Claude settings allow it. The default orchestrator prompt runs a bounded review loop: after a worker reports success on a non-trivial change it spawns a reviewer, sends the findings back to the worker, and escalates to the human after two rounds.
-
-## Worktrees
-
-A Claude worker can run in its own git worktree, so parallel workers never edit the same checkout. Spawn with isolation `worktree` (`o8 spawn --worktree`, `o8 new --worktree`, or `isolation: "worktree"` on the MCP `spawn` tool). The daemon creates `<main checkout>/.claude/worktrees/<nodeId>` on branch `o8/<nodeId>` from the HEAD of the checkout the spawn's `cwd` is in, copies the gitignored files listed in `.worktreeinclude` (such as `.env` or `node_modules/`), and starts `claude --worktree <nodeId>` from the main checkout so Claude keeps the agent inside the worktree. The repo needs at least one commit and must already be trusted by Claude (run `claude` in it once). A child spawned without isolation into a worktree path shares that worktree.
-
-Each worktree node's row shows its branch, how many commits it is ahead of its base (↑), how many files are uncommitted, a "changes" marker once it is done or exited with work not yet in its base, and "merged" after orchestr8 merged it. The daemon recomputes this when the node's turn ends, a few seconds after it edits a file or runs a command, when it exits, before a merge or close, and on start. `list_nodes` and `o8 list` carry the same counts in each node's `worktree` field.
-
-To bring the work back, use the Merge button on the row or the exited card, `o8 merge <id> [--close]`, or the MCP `merge` tool (an agent may merge only its descendants, with the human's approval unless `approvals.merge` is true). Merge is refused, with nothing changed, while the node is working, when its worktree has uncommitted files, when the base branch is checked out somewhere with uncommitted changes, or when the branch conflicts with the base; a conflict check with `git merge-tree` names the conflicting paths without touching any file (the MCP tool replies `{ok: false, conflicts: [paths]}`). The result is written with `git commit-tree`, then the base's checkout, if it has one, is fast-forwarded to it; a base checked out nowhere has its ref moved atomically. `worktrees.mergeStyle` picks the style: `merge` (the default, always a merge commit), `squash` (one commit on the base) or `ff-only` (refused once the base has moved on). You can also merge with git yourself. Closing the node then removes the worktree and deletes the branch, but only when the tree is clean, the branch is merged and no other live node works in it; otherwise the close is refused with the counts. `o8 kill <id> --keep-branch` commits any changes as a WIP commit, removes the directory and keeps the branch; `--discard` deletes both. Prune keeps worktree nodes with unmerged work. `o8 worktrees` lists node worktrees, orphans (worktrees left by a crash) and kept branches; `o8 worktrees clean` removes those that are clean and merged, and `--force` removes them all and prints the commits and files that went. On start the daemon removes orphans that hold no work and reports the rest.
-
-The `worktrees` key in the config file has these settings: `isolation` (`none` or `worktree`, default `none`) is used when a spawn of a claude worker does not say; `branchPrefix` (default `o8/`) starts each branch name; `include` (a list of gitignore patterns) replaces `.worktreeinclude` for orchestr8's worktrees; `mergeStyle` is described above; `setup` and `teardown` are lists of shell commands. For a worktree node the project file is read from the main checkout.
-
-Setup commands run one by one with `sh -c` in a new worktree, after the include copy and before Claude starts, with `O8_NODE_ID`, `O8_WORKTREE`, `O8_REPO`, `O8_BASE` and the daemon's login PATH in the environment, for example `{"worktrees": {"setup": ["npm ci"]}}`. The node shows "setting up worktree: <command>" meanwhile. Output goes to `~/.orchestr8/nodes/<id>/setup.log`, and each command has 10 minutes. If one fails, the node is left exited and errored with the log's path in its activity; restart runs the setup again and then starts the agent with its original prompt. Teardown commands run the same way, best effort, before orchestr8 removes any worktree. Neither runs unless Claude already trusts the repo.
-
-The daemon hides `.claude/worktrees/` from `git status` through `.git/info/exclude`, which ripgrep also honours, but test runners, linters and other tools that glob the tree do not. Exclude `**/.claude/worktrees/**` in them; this repo does so in `vitest.config.ts`.
-
-## Session artifacts and the event log
-
-Each tree (a root and everything under it) gets a directory, `~/.orchestr8/sessions/<rootId>/`, created when the root launches. Every node in the tree has its path in `O8_SESSION_DIR`, a line in its system prompt telling it to keep notes that must outlive its context there with `handoff.md` as the current state of the work, and permission to write there without prompting. The directory is keyed by the root's id, not Claude's session id, so it survives restart, `o8 reload` and a reboot, unlike Claude's scratchpad under `/tmp`.
-
-`o8 restart <id> --prompt T` (also the app's Restart dialog) gives the restarted node a first prompt. Without one, if the tree has a `handoff.md`, the node is told to read it first.
-
-The daemon appends one JSON line per event to `events.jsonl` in that directory: spawn, close, state changes, report_outcome, send with its outcome, restart, resume, merge, and a cost snapshot at most once a minute per node. `o8 log [id] [--since 2h] [--follow]` prints it; a non-root id shows only that node's events. When the app or a browser tab regains focus after more than `daemon.digestAfterMinutes` (default 10) with no focused window, it gets a "While you were away" card built from the log: per node, what still needs you, what errored and what finished, with outcome notes; clicking a row selects the node.
-
-When a root is closed its `meta.json` gets `closedAt`; on daemon start and once a day, directories whose root closed more than `daemon.sessionsKeepDays` (default 14) ago, or whose root is gone and that nothing has written to for that long, are deleted. `o8 sessions` lists the directories with title, age, size and whether they are closed; `o8 sessions clean` runs that sweep now; `o8 sessions path [id]` prints a tree's directory. Both config keys live in the home file only.
-
-## Outcomes and the completion gate
-
-A worker ends its task with `report_outcome`: `succeeded` or `failed`, a note, and optionally `summary`, `changedFiles`, `verified` (what it ran and the result) and `openQuestions`. `list_nodes` returns these, the app shows them in the last-message panel and on the exited card, and the multiplexer shows the outcome and summary under an idle node.
-
-The `gate` config key makes a `succeeded` report wait for a check, for example `{"gate": {"command": "npm test", "retries": 2, "timeoutMinutes": 10}}` (retries and timeout shown at their defaults). The daemon runs the command with `sh -c` in the worker's directory, with the same environment and trust rule as worktree setup, and appends the output to `~/.orchestr8/nodes/<id>/gate.log`; the node shows "gate: <command>" meanwhile and its row carries a gate marker. If the command passes, the outcome is recorded with `gate: "passed"`. If it fails, nothing is recorded and the worker gets a message with the last 60 lines of output and is asked to fix it and report again. After `retries` more failures the outcome is recorded as failed with `gate: "failed"` and the parent is told. A worktree node reads the key from the main checkout's project file. `o8 gate [--cwd P]` runs the configured command once so you can try it.
-
-## Browser UI (optional)
-
-    npm run ui:build
-
-then open the URL `o8d` prints.
-
-## App (macOS)
-
-A small Tauri v2 shell that hosts the browser UI in a native window and shows the number of blocked or waiting nodes as the Dock badge. Requirements: Rust via Homebrew rustup, with `export PATH=/opt/homebrew/opt/rustup/bin:$PATH` in the shell that builds it, and a built UI (`npm run ui:build`).
-
-    npm run app:build    # unsigned src-tauri/target/release/bundle/macos/orchestr8.app
-    bin/o8-app           # just opens that app (`o8` also picks the session); or runs `npm run app:dev` if it is not built
-
-On launch the app finds the daemon the way `o8` does (`O8_PORT`, then `~/.orchestr8/port`, then 7788). If none answers it starts `bin/o8d` detached, using the repo path that `o8` records in `~/.orchestr8/repo` the last time it started a daemon, then opens the UI with the admin token. The daemon keeps running when the app quits.
-
-Notifications: the daemon is the only sender of macOS notifications, so the app, the browser and the terminal never double up. When a node needs approval, asks a question, finishes, fails a turn or exits, the daemon posts one notification titled with the node (subtitle: its session, when different) whose body says what it needs, for example `Needs approval: Bash touch /tmp/x`. It stays quiet when a focused window (app, browser tab or `o8` multiplexer) has that node selected, and sends at most one per node and kind every 5 seconds. With `terminal-notifier` installed (`brew install terminal-notifier`), notifications replace the node's previous one, play a sound for needs-you and errors, and clicking one runs `o8 select <id>`, which shows the node in the app (opening it if built). Without it the daemon falls back to `osascript` notifications, which cannot be clicked. The browser UI keeps its toasts, tab-title badge and a chime; the multiplexer rings its terminal bell only when the app is not connected.
-
-The config key `notifications` controls them, resolved per key like the others (the repo file wins over the home file; the node's cwd picks the repo): `{"notifications": {"kinds": {"needsYou": "sound", "errored": "sound", "done": "banner", "exited": "banner"}, "treeDoneSummary": false, "quietHours": "22:00-07:00"}}`. The kinds shown are the defaults, which is today's behaviour; `sound` is a banner with a sound and `silent` sends nothing. `treeDoneSummary` replaces the per-node done and exited notifications with one, "tree <title> finished: N succeeded, M failed", once every Claude node of a tree is done or exited (failed means the turn errored or the node reported a failed outcome). `quietHours` is local time and may run across midnight; during it everything is silent except needs-you, which becomes a banner without sound (there is none by default). `o8 mute <id>` and `o8 unmute <id>`, or the bell button on a row, stop a node's notifications; a muted row shows a crossed-out bell and the mute is kept across restarts. `o8 dnd [on|off|1h|30m]`, or the "do not disturb 1 h" button in the status bar, stops all of them until turned off or for the time given (not kept across a daemon restart); the status bar shows the time left, and the Dock badge still counts. The daemon log has one line per notification, sent or suppressed and why. In the app, a menu bar dot is green when nothing needs you, amber when a node is waiting or blocked, and red when a node's turn errored; its menu lists the nodes that need you (a click selects one), Open orchestr8 and Do not disturb 1 h. terminal-notifier 3.1.0 has no interruption level (time-sensitive) option, and its `-ignoreDnD` is documented as usually a no-op, so needs-you notifications are not marked time-sensitive. Its `-action` buttons are not used either: they keep the process waiting for an answer, and the useful action (approving) would answer for the human.
-
-## State
-
-Everything lives in `~/.orchestr8` (override with `O8_HOME`): the node registry, per-node settings and tokens, and the admin token used by `o8`. `O8_PORT` changes the port (default 7788). `O8_TERMINAL_BUNDLE` overrides the app a notification click activates when the native app is not connected (otherwise derived from `TERM_PROGRAM`); `O8_TERMINAL_NOTIFIER` overrides the `terminal-notifier` path.
+Everything the daemon keeps is under `~/.orchestr8`, or `O8_HOME` when set: the node registry (`state.json`), per-node files under `nodes/<id>/`, the admin token `o8` uses, `config.json` ([docs/config.md](docs/config.md)), presets under `agents/` and the log `daemon.log`. Each tree of nodes has a session directory, `sessions/<rootId>/`, for notes and the event log ([docs/sessions.md](docs/sessions.md)). The daemon listens on 127.0.0.1, port 7788 unless `O8_PORT` says otherwise.
 
 ## Known limits
 
-- Anthropic can disable mods remotely, and `--bare` or `--safe-mode` drop them. The daemon and CLI still work then; messages fall back to pasting into the terminal.
+- Anthropic can disable mods remotely, and `--bare` or `--safe-mode` drop them. The daemon and CLI still work then; messages are pasted into the terminal instead.
 - Claude shows its trust dialog the first time it opens a new folder; attach and accept it.
 - One daemon per user.
-- With autostart on, a daemon started by `o8` or the app (when none was running) runs outside launchd, so a crash does not bring it back, until the next `o8 reload` or login.
+- With autostart on, a daemon started by `o8` or the app (when none was running) runs outside launchd, so a crash does not bring it back until the next `o8 reload` or login.
 
-Tests: `npm test`, `npm run typecheck`, `claude plugin validate mod`.
+## Tests
+
+`npm test` (vitest), `npm run typecheck` and `npx tsc --noEmit -p ui/tsconfig.json` for the code; `claude plugin validate mod/` and `claude plugin test mod/` for the mod.
+
+## Documentation
+
+- [docs/config.md](docs/config.md): every config key, its default and which file it is read from.
+- [docs/messaging.md](docs/messaging.md): how messages between nodes are queued, delivered, steered and limited.
+- [docs/agent-roles.md](docs/agent-roles.md): role prompts, presets, outcomes and the completion gate.
+- [docs/worktrees.md](docs/worktrees.md): running workers in their own git worktrees and merging their work.
+- [docs/sessions.md](docs/sessions.md): session directories, the event log, restart and resume.
+- [docs/frontends.md](docs/frontends.md): the app, the browser UI, the multiplexer, the in-session band and notifications.
+- [PLAN.md](PLAN.md): the original design rationale; [docs/design/](docs/design/) holds the design documents for later features.
