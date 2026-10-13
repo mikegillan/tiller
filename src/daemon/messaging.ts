@@ -85,6 +85,13 @@ function stateOf(m: Mgr): State {
   const kick = (id: string) => { if (st.queues.get(id)?.length) drain(m, st, id).catch(logError); };
   if (m.home) loadInbox(st, join(m.home, 'inbox.json'));
   m.on('node', (v: NodeView) => kick(v.id));
+  // The prompt entering is the delivery. Do not rely on the mod's /ack alone: a hot reload of the mod right after
+  // it submits drops the callback that would ack, and the reloaded mod then submits the still-queued message again.
+  m.on('hook', (id: string, ev: { hook_event_name?: string; prompt?: unknown }) => {
+    if (ev.hook_event_name !== 'UserPromptSubmit') return;
+    const prompt = String(ev.prompt ?? '');
+    for (const i of [...(st.inbox.get(id) ?? [])]) if (prompt.includes(i.msg.text.split('\n', 1)[0])) ack(m, id, i.msg.id);
+  });
   m.on('removed', (id: string) => {
     for (const [k, v] of st.status) if (v.from === id) st.status.delete(k);
     for (const i of st.inbox.get(id) ?? []) {
