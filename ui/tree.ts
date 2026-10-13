@@ -13,8 +13,6 @@ export function statusKind(n: NodeView): StatusKind {
   return 'unknown';
 }
 
-export const needsYou = (n: NodeView) => statusKind(n) === 'needs';
-
 export const KIND_LABEL: Record<StatusKind, string> = {
   working: 'working', needs: 'needs you', done: 'done', errored: 'errored', exited: 'exited', unknown: 'idle', armed: 'armed', queued: 'queued',
 };

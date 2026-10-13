@@ -1,4 +1,4 @@
-import { fmtAge, shortEffort, shortModel, usageLine } from '../shared/format.js';
+import { fmtAge, outcomeLine, shortEffort, shortModel, usageLine } from '../shared/format.js';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -8,7 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import type { Diff, NodeView, Outcome } from '../shared/protocol.js';
+import { EFFORTS, finished, ISOLATIONS, NODE_KINDS, ROLES, type Diff, type NodeView, type Outcome } from '../shared/protocol.js';
 import { fmtUsd, subtreeSpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { loadConfig, type Config } from './config.js';
@@ -30,9 +30,6 @@ interface Out { text?: string; data?: unknown }
 
 /** How long report_outcome waits for a completion gate before replying that it is still running. */
 const GATE_REPLY_MS = 30_000;
-/** Failed gate runs per node since its last recorded outcome, and the gate run in progress. */
-const gateFailures = new Map<string, number>();
-const gateRuns = new Map<string, Promise<Out>>();
 
 // ---- helpers ----
 
@@ -71,7 +68,7 @@ function modelInfo(n: ReturnType<typeof summarize>): string {
 
 function tree(nodes: ReturnType<typeof summarize>[]): string {
   return treeOrder(nodes).map(({ node: n, depth }) => {
-    const reported = n.outcome && `reported ${n.outcome.outcome}${n.outcome.gate ? ` (gate ${n.outcome.gate})` : ''}`;
+    const reported = n.outcome && `reported ${outcomeLine(n.outcome)}`;
     const extra = [...n.flags, n.activity, reported].filter(Boolean).join(', ');
     const branch = n.worktree ? ` ${branchText(n.worktree)}` : '';
     return `${'  '.repeat(depth)}- ${n.id} "${n.title}" [${n.kind}] ${n.state}${extra ? ` (${extra})` : ''} ${n.age}${modelInfo(n)}${branch}`;
@@ -137,39 +134,31 @@ const requireOwned = (c: Ctx, id: string, allowSelf: boolean): NodeView => {
 const who = (c: Ctx) => (c.caller === HUMAN ? 'The user' : `Node ${c.manager.view(c.caller)!.title} (${c.caller})`); // authenticate() guarantees the view
 
 /**
- * Run the completion gate for a "succeeded" report. Passing records the outcome; a failure with attempts left sends the worker
- * the output; the last failure records the outcome as failed and tells the parent. Resolves with the report_outcome reply.
+ * Run the completion gate for a "succeeded" report. Passing records the outcome; the last failure records it as failed,
+ * which tells the parent. Resolves with the report_outcome reply; a failure is also sent to the worker as a message when
+ * `late()` says the reply already went out as "pending".
  */
-async function runGate(m: NodeManager, id: string, gate: NonNullable<Config['gate']>, report: Omit<Outcome, 'at' | 'gate'>): Promise<Out> {
-  const { ok, tail } = await m.runGate(id, gate);
+async function runGate(m: NodeManager, id: string, gate: NonNullable<Config['gate']>, report: Omit<Outcome, 'at' | 'gate'>, late: () => boolean): Promise<Out> {
+  const { ok, tail, failures } = await m.runGate(id, gate);
   const v = m.view(id);
   if (!v) return { data: { ok: false } }; // closed meanwhile
-  const tell = (to: string, text: string, fromLabel: string) => deliver(m, DAEMON, to, text, { fromLabel, replyTo: null }).catch(logError);
   if (ok) {
-    gateFailures.delete(id);
     m.setOutcome(id, { ...report, gate: 'passed', at: Date.now() });
     return { text: `Completion gate passed: ${gate.command}. Your outcome is recorded.`, data: { ok: true, gate: 'passed' } };
   }
-  const attempt = (gateFailures.get(id) ?? 0) + 1, total = gate.retries + 1;
-  const head = `Completion gate failed (attempt ${attempt} of ${total}): ${gate.command}\n${tail}`;
-  if (attempt < total) {
-    gateFailures.set(id, attempt);
-    const text = `${head}\nFix it and call report_outcome again.`;
-    tell(id, text, 'orchestr8 (completion gate)');
-    return { text, data: { ok: false, gate: 'failed', attemptsLeft: total - attempt } };
-  }
-  gateFailures.delete(id);
-  m.setOutcome(id, { ...report, outcome: 'failed', gate: 'failed', at: Date.now() });
-  if (v.parentId) tell(v.parentId, head, `orchestr8 (child ${id} "${v.title}" failed its completion gate)`);
-  const text = `${head}\nNo attempts left: your outcome is recorded as failed${v.parentId ? ' and your parent was told' : ''}.`;
-  tell(id, text, 'orchestr8 (completion gate)');
-  return { text, data: { ok: false, gate: 'failed', attemptsLeft: 0 } };
+  const total = gate.retries + 1, left = Math.max(0, total - failures);
+  const head = `Completion gate failed (attempt ${failures} of ${total}): ${gate.command}\n${tail}`;
+  if (!left) m.setOutcome(id, { ...report, outcome: 'failed', gate: 'failed', at: Date.now() });
+  const text = left ? `${head}\nFix it and call report_outcome again.` : `${head}\nNo attempts left: your outcome is recorded as failed${v.parentId ? ' and your parent was told' : ''}.`;
+  if (late()) deliver(m, DAEMON, id, text, { fromLabel: 'orchestr8 (completion gate)', replyTo: null }).catch(logError);
+  return { text, data: { ok: false, gate: 'failed', attemptsLeft: left } };
 }
 
 // ---- tools ----
 
-function tool<S extends z.ZodRawShape>(description: string, shape: S, run: (c: Ctx, a: z.infer<z.ZodObject<S>>) => Promise<Out>) {
-  return { description, shape, run: run as (c: Ctx, a: never) => Promise<Out> };
+/** humanOnly: refused to agents over /api and not listed to them over MCP. */
+function tool<S extends z.ZodRawShape>(description: string, shape: S, run: (c: Ctx, a: z.infer<z.ZodObject<S>>) => Promise<Out>, humanOnly = false) {
+  return { description, shape, run: run as (c: Ctx, a: never) => Promise<Out>, humanOnly };
 }
 
 const spawned = new Map<string, { args: string; result: unknown; at: number }>();
@@ -285,7 +274,8 @@ const tools = {
       }
       const list = views.map((v) => `${v.title} (${v.id})`).join(', ');
       const mode = c.caller === HUMAN ? undefined : loadConfig(c.manager.projectDir(c.manager.view(c.caller)!), c.manager.home).closeWithoutConfirm;
-      const preapproved = a.worktree !== 'discard' && (mode === 'always' || (mode === 'done' && views.every((v) => v.status.exited || v.status.state === 'done' || v.outcome)));
+      // "done" also counts a node that has reported but is still working, so a worker can be closed as soon as its report arrives.
+      const preapproved = a.worktree !== 'discard' && (mode === 'always' || (mode === 'done' && views.every((v) => finished(v.status) || v.outcome)));
       const text = `${who(c)} wants to close ${views.length} node(s): ${list}${destroys.length ? `. This deletes their worktrees: ${destroys.join('; ')}` : ''}`;
       if (c.caller !== HUMAN && !preapproved && !(await c.confirm(text))) {
         return { data: { ok: false, reason: 'denied' } };
@@ -322,31 +312,28 @@ const tools = {
     'Relaunch an exited Claude node with its previous conversation. Only the human may call this.',
     { nodeId: z.string().min(1) },
     async (c, a) => {
-      if (c.caller !== HUMAN) throw new Error('resume is only for the human');
       const r = await c.manager.resume(a.nodeId);
       if (!r.ok) throw new Error(r.error);
       return { data: { ok: true } };
-    }),
+    }, true),
 
   restart: tool(
     'Restart a node: kill its process and relaunch it with a fresh session, which clears its context. Its title, directory, model, effort and children are kept. `prompt` is its first prompt; without one, a node whose tree has a handoff.md in its session directory is told to read it first. Only the human may call this.',
     { nodeId: z.string().min(1), prompt: z.string().optional() },
     async (c, a) => {
-      if (c.caller !== HUMAN) throw new Error('restart is only for the human');
       const r = c.manager.restart(a.nodeId, a.prompt);
       if (!r.ok) throw new Error(r.error);
       return { data: { ok: true } };
-    }),
+    }, true),
 
   prune: tool(
     'Remove every exited node that has no live descendant (files and records). A node whose git worktree has uncommitted or unmerged work is kept and listed. Only the human may call this.',
     {},
     async (c) => {
-      if (c.caller !== HUMAN) throw new Error('prune is only for the human');
       const { removed, kept } = await c.manager.prune();
       const keptText = kept.length ? `; kept ${kept.length} node(s) with worktree work:\n${kept.map((k) => `  ${k.id}: ${k.reason}`).join('\n')}` : '';
       return { text: `removed ${removed.length} exited node(s)${keptText}`, data: { ok: true, removed, kept } };
-    }),
+    }, true),
 
   diff: tool(
     `Show what a node with its own git worktree (yourself or one of your descendants) changed since it branched from its base: its commits plus its uncommitted and untracked files, as one unified diff of the working tree against where the branch started. Patch text stops after ${MAX_PATCH_BYTES >> 20} MB; the remaining files are listed with their line counts only, as are binary files. stat true lists only the files and counts.`,
@@ -360,31 +347,28 @@ const tools = {
     'List orchestr8 git worktrees for the repo `cwd` is in (all known repos when omitted): node worktrees, orphans (a worktree with no node) and kept branches. clean "safe" removes the orphans and kept branches that are clean and merged; "force" removes all of them and reports the commits and files that went. Only the human may call this.',
     { cwd: z.string().min(1).optional(), clean: z.enum(['safe', 'force']).optional() },
     async (c, a) => {
-      if (c.caller !== HUMAN) throw new Error('worktrees is only for the human');
       const r = await c.manager.worktrees(a);
       return { text: worktreeText(r), data: r };
-    }),
+    }, true),
 
   select: tool(
     'Make the web UI and app show a node (they switch to it). Only the human may call this.',
     { nodeId: z.string().min(1) },
     async (c, a) => {
-      if (c.caller !== HUMAN) throw new Error('select is only for the human');
       requireNode(c.manager, a.nodeId);
       if (process.env.O8_DEBUG) console.log(`select ${a.nodeId}`);
       c.focus(HUMAN, a.nodeId);
       return { data: { ok: true } };
-    }),
+    }, true),
 
   shutdown: tool(
     'Stop the daemon: flush the registry, kill every node process and exit. The nodes are not resumed on the next start. Only the human may call this.',
     {},
     async (c) => {
-      if (c.caller !== HUMAN) throw new Error('shutdown is only for the human');
       c.manager.shutdown({ clearLive: true });
       setTimeout(() => process.exit(0), 100); // after the reply is flushed
       return { text: 'daemon stopping', data: { ok: true, pid: process.pid } };
-    }),
+    }, true),
 
   rename: tool(
     'Change the title of yourself or one of your descendants.',
@@ -396,23 +380,26 @@ const tools = {
     }),
 
   report_outcome: tool(
-    'Report how your own task ended: "succeeded" or "failed", with an optional short note. Call it once when your work is finished so whoever launched you can tell the difference between done and done well. It is about yourself only. Fill the structured fields too, so your parent can read your result from list_nodes without reading your transcript: summary (what you did, in a sentence or two), changedFiles (paths), verified (what you ran to check the work and its result) and openQuestions (anything left for your parent to decide). If the project configures a completion gate (config `gate`), a "succeeded" report is accepted only once the gate command passes in your directory: the reply says whether the gate is still running, passed, or failed with the attempts you have left. A failure also arrives as a message with the command\'s output; fix the problem and call report_outcome again. When no attempts are left the outcome is recorded as failed and your parent is told.',
+    'Report how your own task ended: "succeeded" or "failed", with an optional short note. Call it once when your work is finished so whoever launched you can tell the difference between done and done well. It is about yourself only. Fill the structured fields too, so your parent can read your result from list_nodes without reading your transcript: summary (what you did, in a sentence or two), changedFiles (paths), verified (what you ran to check the work and its result) and openQuestions (anything left for your parent to decide). If the project configures a completion gate (config `gate`), a "succeeded" report is accepted only once the gate command passes in your directory: the reply says whether the gate passed or failed (with the command\'s output and the attempts you have left); fix the problem and call report_outcome again. A gate still running after 30 seconds is replied to as pending, and a failure then arrives as a message instead. Any report while your gate runs is refused. When no attempts are left the outcome is recorded as failed. Your parent is told of every recorded outcome.',
     {
       outcome: z.enum(['succeeded', 'failed']), note: z.string().optional(), summary: z.string().optional(), changedFiles: z.array(z.string()).optional(),
       verified: z.string().optional(), openQuestions: z.array(z.string()).optional(),
     },
     async (c, a) => {
       if (c.caller === HUMAN) throw new Error('report_outcome is only for agent nodes');
+      // A report of either verdict waits for a running gate, so the gate's result cannot overwrite a later "failed".
+      if (c.manager.gateRunning(c.caller)) return { text: 'The completion gate is still running for your previous report; wait for its result.', data: { ok: false, gate: 'running' } };
       const gate = a.outcome === 'succeeded' ? c.manager.gateConfig(c.caller) : undefined;
       if (!gate) {
         c.manager.setOutcome(c.caller, { ...a, at: Date.now() });
         return { data: { ok: true } };
       }
-      if (gateRuns.has(c.caller)) return { text: 'The completion gate is still running for your previous report; wait for its result.', data: { ok: false, gate: 'running' } };
-      const run = runGate(c.manager, c.caller, gate, a).finally(() => gateRuns.delete(c.caller));
-      gateRuns.set(c.caller, run);
+      let late = false;
       const pending: Out = { text: `Completion gate running: ${gate.command}. Your outcome is recorded if it passes; if it fails you get a message with its output.`, data: { ok: true, gate: 'pending' } };
-      return Promise.race([run, sleep(GATE_REPLY_MS, pending, { ref: false })]);
+      return Promise.race([
+        runGate(c.manager, c.caller, gate, a, () => late),
+        sleep(GATE_REPLY_MS, undefined, { ref: false }).then(() => { late = true; return pending; }),
+      ]);
     }),
 };
 
@@ -441,7 +428,6 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
   };
   startNotices(manager);
   manager.on('removed', (id: string) => {
-    gateFailures.delete(id);
     for (const k of spawned.keys()) if (k.startsWith(`${id}\0`)) spawned.delete(k);
   });
 
@@ -460,6 +446,7 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
     const raw = await readBody(req, res);
     if (raw === undefined) return;
     try {
+      if (t.humanOnly && ctx.caller !== HUMAN) throw new Error(`${name} is only for the human`);
       const args = z.object(t.shape).parse(raw ? JSON.parse(raw) : {});
       reply(200, await t.run(ctx, args as never));
     } catch (err) {
@@ -476,6 +463,7 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
 
     const mcp = new McpServer({ name: 'orchestr8', version: '0.0.0' });
     for (const [name, t] of Object.entries(tools)) {
+      if (t.humanOnly && caller !== HUMAN) continue;
       mcp.registerTool(name, { description: t.description, inputSchema: t.shape }, async (args: unknown) => {
         try {
           const out = await t.run(ctx, args as never);

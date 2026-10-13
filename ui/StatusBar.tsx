@@ -1,15 +1,14 @@
-import { dndActive } from '../src/shared/protocol';
+import { dndActive, needsYou } from '../src/shared/protocol';
 import { fmtAge, usageParts } from '../src/shared/format';
 import { fmtUsd, todaySpend } from '../src/shared/spend';
 import { toggleDnd, useNow } from './hooks';
 import { useStore } from './store';
-import { needsYou } from './tree';
 
 export function StatusBar() {
   const connected = useStore((s) => s.connected);
   const retry = useStore((s) => s.retry);
   const total = useStore((s) => Object.keys(s.nodes).length);
-  const needs = useStore((s) => Object.values(s.nodes).filter(needsYou).length);
+  const needs = useStore((s) => Object.values(s.nodes).filter((n) => needsYou(n.status)).length);
   const queued = useStore((s) => Object.values(s.nodes).filter((n) => n.status.state === 'queued').length);
   const usage = useStore((s) => s.usage);
   const now = useNow();

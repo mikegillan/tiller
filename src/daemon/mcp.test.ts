@@ -43,8 +43,13 @@ const spawnT = (title: string, id = 'human', token = admin, extra = {}) => api('
 
 describe('mcp api', () => {
   it('keeps the admin token across daemon starts on the same home', () => {
-    mountMcp(manager, async () => true, () => {}).publishAdminToken();
-    expect(readFileSync(join(home, 'admin-token'), 'utf8')).toBe(admin);
+    const again = join(home, 'restart');
+    mkdirSync(again);
+    writeFileSync(join(again, 'admin-token'), admin);
+    const m = new NodeManager({ home: again, shell: '/bin/sh' }); // a second mount on the shared manager would double its notices
+    mountMcp(m, async () => true, () => {}).publishAdminToken();
+    m.shutdown();
+    expect(readFileSync(join(again, 'admin-token'), 'utf8')).toBe(admin);
   });
   it('rejects missing or wrong credentials', async () => {
     expect((await api('list_nodes', {}, 'human', 'nope')).status).toBe(401);
@@ -213,23 +218,45 @@ describe('mcp api', () => {
     expect((await api('report_outcome', report, w, manager.tokenFor(w))).body.data).toEqual({ ok: true });
     const list = (await api('list_nodes', {}, p, manager.tokenFor(p))).body;
     expect(list.data.find((n: any) => n.id === w).outcome).toMatchObject(report);
-    expect(list.text).toContain('reported succeeded');
+    expect(list.text).toContain('reported succeeded: did it');
+  });
+
+  it('tells the parent of each recorded outcome once, unless its pending notify_when covers that child', async () => {
+    const cwd = join(home, 'plain');
+    mkdirSync(join(cwd, '.orchestr8'), { recursive: true });
+    writeFileSync(join(cwd, '.orchestr8', 'config.json'), JSON.stringify({ limits: { maxLiveNodes: 100 } })); // earlier tests leave many nodes live
+    const p = (await spawnT('np', 'human', admin, { cwd })).body.data.nodeId as string;
+    const [w1, w2] = [(await spawnT('nw1', p, manager.tokenFor(p), { cwd })).body.data.nodeId as string, (await spawnT('nw2', p, manager.tokenFor(p), { cwd })).body.data.nodeId as string];
+    for (const id of [p, w1, w2]) { manager.registry.update(id, { kind: 'claude' }); inbox(manager, id); }
+    await api('report_outcome', { outcome: 'succeeded', summary: 'did one' }, w1, manager.tokenFor(w1));
+    await expect.poll(() => inbox(manager, p).map((x) => x.text)).toEqual([expect.stringContaining(`${w1} reported succeeded: did one`)]);
+    expect((await api('notify_when', { ids: [w2], when: 'all', of: 'success' }, p, manager.tokenFor(p))).status).toBe(200);
+    await api('report_outcome', { outcome: 'failed', note: 'no' }, w2, manager.tokenFor(w2));
+    await expect.poll(() => inbox(manager, p).length).toBe(2);
+    await new Promise((r) => setTimeout(r, 50));
+    const texts = inbox(manager, p).map((x) => x.text);
+    expect(texts).toHaveLength(2);
+    expect(texts[1]).toContain(`1 of 1 finished:\n${w2}: failed: no`);
   });
 
   describe('completion gate', () => {
     const proj = () => join(home, 'gated');
+    /** A gate that runs until a file named go appears. */
+    const slow = () => join(home, 'gated-slow');
     const tok = (id: string) => manager.tokenFor(id);
     beforeAll(() => {
       mkdirSync(join(proj(), '.orchestr8'), { recursive: true });
       writeFileSync(join(proj(), '.orchestr8', 'config.json'), JSON.stringify({ gate: { command: 'test -f ok.txt && echo fine || { echo missing ok.txt; exit 3; }', retries: 1 }, limits: { maxLiveNodes: 100 } })); // earlier tests leave many nodes live
-      writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [proj()]: { hasTrustDialogAccepted: true } } })); // gate commands need trust, as setup does
+      mkdirSync(join(slow(), '.orchestr8'), { recursive: true });
+      writeFileSync(join(slow(), '.orchestr8', 'config.json'), JSON.stringify({ gate: { command: 'while [ ! -f go ]; do sleep 0.05; done' }, limits: { maxLiveNodes: 100 } }));
+      writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [proj()]: { hasTrustDialogAccepted: true }, [slow()]: { hasTrustDialogAccepted: true } } })); // gate commands need trust, as setup does
       vi.stubEnv('HOME', home);
     });
     afterAll(() => vi.unstubAllEnvs());
     /** A parent and a worker in the gated project, both "claude" with a polling mod so the daemon's messages land in their inboxes. */
-    const pair = async () => {
-      const p = (await spawnT('gp', 'human', admin, { cwd: proj() })).body.data.nodeId as string;
-      const w = (await spawnT('gw', p, tok(p), { cwd: proj() })).body.data.nodeId as string;
+    const pair = async (cwd = proj()) => {
+      const p = (await spawnT('gp', 'human', admin, { cwd })).body.data.nodeId as string;
+      const w = (await spawnT('gw', p, tok(p), { cwd })).body.data.nodeId as string;
       for (const id of [p, w]) { manager.registry.update(id, { kind: 'claude' }); inbox(manager, id); }
       return { p, w };
     };
@@ -244,33 +271,48 @@ describe('mcp api', () => {
       rmSync(join(proj(), 'ok.txt'));
     });
 
-    it('a failing gate messages the worker without recording; the last failure records failed and tells the parent', async () => {
+    it('a fast gate failure is in the reply only, without recording; the last failure records failed and tells the parent', async () => {
       const { p, w } = await pair();
       const first = await api('report_outcome', { outcome: 'succeeded' }, w, tok(w));
       expect(first.body.data).toEqual({ ok: false, gate: 'failed', attemptsLeft: 1 });
+      expect(first.body.text).toContain('Completion gate failed (attempt 1 of 2): test -f ok.txt');
+      expect(first.body.text).toContain('missing ok.txt');
+      expect(first.body.text).toContain('exited with 3');
+      expect(first.body.text).toContain('Fix it and call report_outcome again.');
       expect(manager.view(w)!.outcome).toBeUndefined();
       expect(manager.view(w)!.gate).toBe('failed');
-      const [msg] = inbox(manager, w);
-      expect(msg.text).toContain('Completion gate failed (attempt 1 of 2): test -f ok.txt');
-      expect(msg.text).toContain('missing ok.txt');
-      expect(msg.text).toContain('exited with 3');
-      expect(msg.text).toContain('Fix it and call report_outcome again.');
-      expect(inbox(manager, p)).toEqual([]);
       const last = await api('report_outcome', { outcome: 'succeeded', summary: 's' }, w, tok(w));
       expect(last.body.data).toEqual({ ok: false, gate: 'failed', attemptsLeft: 0 });
+      expect(last.body.text).toContain('attempt 2 of 2');
       expect(manager.view(w)!.outcome).toMatchObject({ outcome: 'failed', gate: 'failed', summary: 's' });
-      const [notice] = inbox(manager, p);
-      expect(notice.text).toContain(`failed its completion gate`);
-      expect(notice.text).toContain('attempt 2 of 2');
+      await expect.poll(() => inbox(manager, p).map((x) => x.text)).toEqual([expect.stringContaining(`${w} reported failed (gate failed): s`)]);
+      expect(inbox(manager, w)).toEqual([]);
+    });
+
+    it('refuses any report while the gate runs, so the run cannot overwrite a later verdict', async () => {
+      const { w } = await pair(slow());
+      const run = api('report_outcome', { outcome: 'succeeded', summary: 's' }, w, tok(w));
+      await expect.poll(() => manager.view(w)!.gate).toBe('running');
+      expect((await api('report_outcome', { outcome: 'failed' }, w, tok(w))).body.data).toEqual({ ok: false, gate: 'running' });
+      writeFileSync(join(slow(), 'go'), '');
+      expect((await run).body.data).toEqual({ ok: true, gate: 'passed' });
+      expect(manager.view(w)!.outcome).toMatchObject({ outcome: 'succeeded', gate: 'passed' });
     });
   });
 
-  it('serves the tools over MCP with schemas', async () => {
+  it('serves the tools over MCP with schemas, without the human-only ones for agents', async () => {
     const id = (await spawnT('mcp-caller')).body.data.nodeId as string;
-    const client = new Client({ name: 't', version: '0' });
-    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${manager.tokenFor(id)}`, 'X-O8-Node': id } } }));
+    const connect = async (who: string, token: string) => {
+      const c = new Client({ name: 't', version: '0' });
+      await c.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': who } } }));
+      return c;
+    };
+    const human = await connect('human', admin);
+    expect((await human.listTools()).tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'list_nodes', 'merge', 'message_status', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'shutdown', 'spawn', 'withdraw', 'worktrees', 'write']);
+    await human.close();
+    const client = await connect(id, manager.tokenFor(id));
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'list_nodes', 'merge', 'message_status', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'shutdown', 'spawn', 'withdraw', 'worktrees', 'write']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'list_nodes', 'merge', 'message_status', 'notify_when', 'read', 'rename', 'report_outcome', 'send', 'spawn', 'withdraw', 'write']);
     expect(tools.find((t) => t.name === 'spawn')!.inputSchema.required).toEqual(['kind', 'title', 'cwd']);
     const r = (await client.callTool({ name: 'report_outcome', arguments: { outcome: 'succeeded' } })) as { content: Array<{ text: string }> };
     expect(r.content[0].text).toBe('{"ok":true}');

@@ -6,7 +6,8 @@ import { useNow } from './hooks';
 import { Icon } from './icons';
 import { RenameInput } from './RenameInput';
 import { selectNode, toggleCollapsed, useStore } from './store';
-import { needsYou, statusKind, type Row } from './tree';
+import { needsYou } from '../src/shared/protocol';
+import { statusKind, type Row } from './tree';
 
 export function NodeRow({ row }: { row: Row }) {
   const { node, depth, hasChildren, collapsed, descendants } = row;
@@ -14,7 +15,7 @@ export function NodeRow({ row }: { row: Row }) {
   const selected = useStore((s) => s.selected === node.id);
   const renaming = useStore((s) => s.renaming === node.id);
   const s = node.status;
-  const needs = descendants.filter(needsYou).length;
+  const needs = descendants.filter((d) => needsYou(d.status)).length;
   const blocked = s.state === 'blocked' && !s.exited;
 
   return (

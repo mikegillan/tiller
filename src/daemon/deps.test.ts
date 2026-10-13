@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { notifyWhen } from './deps.js';
+import { notifyWhen, watching } from './deps.js';
 import { NodeManager } from './manager.js';
 import { inbox } from './messaging.js';
 import { flushEvents } from './sessions.js';
@@ -73,11 +73,11 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
     await expect.poll(() => live(b)).toBe(true);
 
     outcome(c, 'failed', 'tests broke');
-    await expect.poll(() => m.view(d)!.status.activity).toBe(`blocked by ${c}: tests broke`);
+    await expect.poll(() => m.view(d)!.status.activity).toBe(`blocked by ${c}: failed: tests broke`);
     expect(live(d)).toBe(false);
     const notices = inbox(m, root).filter((x) => x.text.includes(`armed ${d} blocked`));
     expect(notices).toHaveLength(1);
-    expect(notices[0].text).toContain(`blocked by ${c}: tests broke`);
+    expect(notices[0].text).toContain(`blocked by ${c}: failed: tests broke`);
   });
 
   it('refuses unknown dependencies and ones outside the caller\'s scope', async () => {
@@ -101,11 +101,20 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
     await expect.poll(() => inbox(m, root).length).toBe(1);
     const text = inbox(m, root)[0].text;
     expect(text).toContain('2 of 2 finished');
-    expect(text).toContain(`${a}: succeeded - did a`);
-    expect(text).toContain(`${b}: failed - b broke`);
+    expect(text).toContain(`${a}: succeeded: did a`);
+    expect(text).toContain(`${b}: failed: b broke`);
     outcome(a, 'succeeded', 'again');
     await tick();
     expect(inbox(m, root)).toHaveLength(1); // one-shot
+  });
+
+  it('drops a notify_when when its caller is closed', async () => {
+    const { m, child } = await setup();
+    const a = await child('a'), b = await child('b');
+    notifyWhen(m, a, { ids: [b], when: 'all', of: 'success' });
+    expect(watching(m, a, b)).toBe(true);
+    await m.close(a);
+    expect(watching(m, a, b)).toBe(false);
   });
 
   it('limits.maxWorking queues the third spawn and launches it when one finishes', async () => {

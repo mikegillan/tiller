@@ -11,8 +11,13 @@ export type AgentState = 'working' | 'waiting' | 'blocked' | 'done' | 'unknown' 
 
 /** States in which an agent is waiting on the human: a permission prompt or a question. */
 export const NEEDS_YOU_STATES: readonly AgentState[] = ['blocked', 'waiting'];
-/** A live node waiting on the human. mod/hooks/notify.ts keeps its own copy (the mod cannot import src/shared). */
+/**
+ * A live node waiting on the human. sessions.ts applies the same rule to logged state events, and mod/hooks/notify.ts
+ * keeps its own copy (the mod cannot import src/shared).
+ */
 export const needsYou = (s: NodeStatus) => !s.exited && NEEDS_YOU_STATES.includes(s.state);
+/** A node whose work has stopped: its process exited or its turn is done. */
+export const finished = (s: NodeStatus) => !!s.exited || s.state === 'done';
 
 export interface NodeStatus {
   state: AgentState;

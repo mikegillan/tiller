@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fmtAge } from '../shared/format.js';
+import { fmtAge, outcomeLine } from '../shared/format.js';
 import type { InboxMessage, NodeView, SendMode, SendResult } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
+import { watching } from './deps.js';
 import type { NodeManager } from './manager.js';
 import { logError } from './util.js';
 
@@ -437,7 +438,8 @@ function loopNotice(m: Mgr, s: State, from: NodeView | undefined, key: string, w
 // ---- station notices (PLAN §7) ----
 
 /**
- * Tell a parent when its child exits, errors, sits on a question or stalls. Once per episode. A turn error first gets
+ * Tell a parent when its child reports an outcome (unless the parent's pending notify_when covers that child, which then
+ * carries it), exits, errors, sits on a question or stalls. Once per episode. A turn error first gets
  * one "continue" message to the child; the parent hears of the next error in the episode. Returns a disposer.
  */
 export function startNotices(m: Mgr): () => void {
@@ -483,6 +485,12 @@ export function startNotices(m: Mgr): () => void {
       } else if (at !== v.status.changedAt) notice(v, 'turn-errored');
     } else if (state === 'done' && v.status.doneSource === 'stop') { notified.delete(v.id); retried.delete(v.id); } // only a clean Stop re-arms
   };
+  const onOutcome = (id: string) => {
+    const v = m.view(id);
+    if (!v?.parentId || !v.outcome || watching(m, v.parentId, id)) return;
+    deliver(m, DAEMON, v.parentId, `${id} reported ${outcomeLine(v.outcome)}`, { fromLabel: `orchestr8 (child ${id} "${v.title}" reported ${v.outcome.outcome})`, replyTo: null }).catch(logError);
+  };
   m.on('node', onNode);
-  return () => { m.off('node', onNode); for (const t of timers.values()) clearTimeout(t); };
+  m.on('outcome', onOutcome);
+  return () => { m.off('node', onNode); m.off('outcome', onOutcome); for (const t of timers.values()) clearTimeout(t); };
 }
