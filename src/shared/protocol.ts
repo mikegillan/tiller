@@ -5,7 +5,7 @@ export type NodeKind = (typeof NODE_KINDS)[number];
 
 /**
  * Agent status derived from hook events. 'none' is for plain terminals. 'armed' and 'queued' are nodes with no process
- * yet: armed waits on its dependencies (spawn after / afterSuccess), queued on limits.maxWorking.
+ * yet: armed waits on its dependencies (spawn after / afterSuccess), queued on daemon.maxWorking.
  */
 export type AgentState = 'working' | 'waiting' | 'blocked' | 'done' | 'unknown' | 'none' | 'armed' | 'queued';
 
@@ -122,7 +122,7 @@ export interface Pending {
   /** The first prompt and isolation to launch with. */
   prompt?: string;
   isolation?: Isolation;
-  /** Launch past limits.maxWorking (the human's o8 spawn --now). */
+  /** Launch past daemon.maxWorking (the human's o8 spawn --now). */
   now?: boolean;
   /** The failed dependency, "n-x: note", once its parent has been told. */
   blocked?: string;
@@ -144,7 +144,7 @@ export interface NodeRecord {
   /** Set on a node that owns a git worktree (spawned with isolation "worktree"); its cwd is the worktree path. */
   worktree?: Worktree;
   createdAt: number;
-  /** When the node last launched or changed state on a hook; resume on start skips nodes idle longer than resumeMaxAgeDays. */
+  /** When the node last launched or changed state on a hook; resume on start skips nodes idle longer than daemon.resumeMaxAgeDays. */
   lastActiveAt?: number;
   /** Persisted so a restarted daemon can offer Resume. */
   sessionId?: string;
@@ -226,7 +226,7 @@ export type ClientMessage =
   | { t: 'select'; id: string }                // clears unread
   | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean }
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
-  | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.merge style
+  | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.mergeStyle style
   | { t: 'restart'; id: string; prompt?: string } // relaunch with a fresh session: clears context, keeps the node and its children; prompt is its first prompt
   | { t: 'resume'; id: string }
   | { t: 'prune' }                             // remove every exited node that has no live descendant

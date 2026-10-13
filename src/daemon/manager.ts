@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, s
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { NEEDS_YOU_STATES, type AgentState, type Diff, type DigestItem, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Pending, type Role, type Usage, type Worktree } from '../shared/protocol.js';
-import { loadConfig, type Config, type Limits, type MergeStyle } from './config.js';
+import { loadConfig, type Config, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset } from './presets.js';
 import { claudeLaunch, ensurePrompts, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
@@ -100,6 +100,12 @@ function readClaudeJson(): unknown {
   try { return JSON.parse(readFileSync(join(homedir(), '.claude.json'), 'utf8')); } catch { return null; }
 }
 
+/** The completion gate configured for `dir`, when Claude trusts that directory, as for worktree setup. `o8 gate` uses it too. */
+export function gateFor(dir: string, home: string): Config['gate'] {
+  const gate = loadConfig(dir, home).gate;
+  return gate && trustPolicy(dir, readClaudeJson()) === 'auto' ? gate : undefined;
+}
+
 /** Fallback for where Claude keeps a session's transcript: the real path of cwd with every non-alphanumeric character replaced by -. */
 function transcriptFor(cwd: string, sessionId: string): string {
   let real = cwd;
@@ -126,7 +132,7 @@ export interface SpawnRequest {
   after?: string[];
   /** Arm the node: launch it once each of these reported succeeded. A failed report blocks it. */
   afterSuccess?: string[];
-  /** Launch past limits.maxWorking instead of queueing (the human's o8 spawn --now). */
+  /** Launch past daemon.maxWorking instead of queueing (the human's o8 spawn --now). */
   now?: boolean;
 }
 
@@ -188,7 +194,7 @@ export class NodeManager extends EventEmitter {
   private lastCostEvent = new Map<string, number>();
   /** When each node's latest turn began (UserPromptSubmit), for after dependencies and notify_when. Not persisted. */
   private turnStarts = new Map<string, number>();
-  /** Claude nodes launched with a prompt whose first turn has not begun: they count against limits.maxWorking. */
+  /** Claude nodes launched with a prompt whose first turn has not begun: they count against daemon.maxWorking. */
   private starting = new Set<string>();
   /** Armed nodes loaded from the record; they wait for resumeLive, which runs once the daemon has its endpoint. */
   private restored = new Set<string>();
@@ -290,9 +296,9 @@ export class NodeManager extends EventEmitter {
     return buildDigest(listSessions(this.home).filter((x) => x.newest >= since).flatMap((x) => readEvents(x.dir, since)));
   }
 
-  /** Delete the session directories that sessionsKeepDays has expired; returns their root ids. */
+  /** Delete the session directories that daemon.sessionsKeepDays has expired; returns their root ids. */
   sweepSessions(): string[] {
-    return sweepSessions(this.home, new Set(this.registry.list().map((n) => n.id)), loadConfig(null, this.home).sessionsKeepDays);
+    return sweepSessions(this.home, new Set(this.registry.list().map((n) => n.id)), loadConfig(null, this.home).daemon.sessionsKeepDays);
   }
 
   // ---- lifecycle ----
@@ -305,19 +311,20 @@ export class NodeManager extends EventEmitter {
     return loadConfig(req.cwd, this.home).worktrees.isolation;
   }
 
-  /** Throw when an agent's spawn would pass limits.maxDepth, maxChildren or maxLiveNodes (from req.cwd's config). */
+  /** Throw when an agent's spawn would pass limits.maxDepth or maxChildren (from req.cwd's config), or daemon.maxLiveNodes. */
   private checkLimits(req: SpawnRequest): void {
     if (req.byHuman) return;
     const parentId = req.parentId ?? null;
-    const { maxDepth, maxChildren, maxLiveNodes } = loadConfig(req.cwd, this.home).limits;
-    const refuse = (cap: keyof Limits, value: number, what: string) => {
-      throw new Error(`refused: limits.${cap} is ${value} and ${what}; reuse an idle worker (send it the work) or close finished ones`);
+    const { maxDepth, maxChildren } = loadConfig(req.cwd, this.home).limits;
+    const { maxLiveNodes } = loadConfig(null, this.home).daemon;
+    const refuse = (cap: string, value: number, what: string) => {
+      throw new Error(`refused: ${cap} is ${value} and ${what}; reuse an idle worker (send it the work) or close finished ones`);
     };
     const depth = parentId === null ? 0 : this.registry.lineage(parentId).length + 1;
-    if (depth > maxDepth) refuse('maxDepth', maxDepth, `the new node would be ${depth} levels below the root`);
+    if (depth > maxDepth) refuse('limits.maxDepth', maxDepth, `the new node would be ${depth} levels below the root`);
     const children = this.registry.list().filter((n) => n.parentId === parentId && this.sessions.has(n.id)).length;
-    if (parentId !== null && children >= maxChildren) refuse('maxChildren', maxChildren, `${parentId} has ${children} live children`);
-    if (this.sessions.size >= maxLiveNodes) refuse('maxLiveNodes', maxLiveNodes, `${this.sessions.size} nodes are live`);
+    if (parentId !== null && children >= maxChildren) refuse('limits.maxChildren', maxChildren, `${parentId} has ${children} live children`);
+    if (this.sessions.size >= maxLiveNodes) refuse('daemon.maxLiveNodes', maxLiveNodes, `${this.sessions.size} nodes are live`);
   }
 
   /** The request with its preset's role, model, effort, permissionMode and isolation filling what it leaves unset. */
@@ -436,12 +443,12 @@ export class NodeManager extends EventEmitter {
   }
 
   /**
-   * Hold a new node back, with no process, when it has dependencies or must queue for limits.maxWorking (a claude node,
+   * Hold a new node back, with no process, when it has dependencies or must queue for daemon.maxWorking (a claude node,
    * unless `now`, while the cap is reached or others already queue). Returns whether it was held.
    */
   private arm(id: string, req: SpawnRequest, isolation: Isolation): boolean {
     const after = req.after ?? [], afterSuccess = req.afterSuccess ?? [];
-    const max = loadConfig(req.cwd, this.home).limits.maxWorking;
+    const max = loadConfig(null, this.home).daemon.maxWorking;
     const queue = req.kind === 'claude' && !req.now && max > 0 && (this.workingCount() >= max || this.list().some((v) => v.status.state === 'queued'));
     if (!after.length && !afterSuccess.length && !queue) return false;
     const rec = this.registry.update(id, { pending: { after, afterSuccess, met: [], prompt: req.prompt, isolation, ...(req.now ? { now: true } : {}) } })!;
@@ -459,7 +466,7 @@ export class NodeManager extends EventEmitter {
 
   /**
    * Walk the armed and queued nodes in creation order: show what each waits on, tell the parent once when a failed
-   * dependency blocks one, and launch each whose dependencies are met while limits.maxWorking has room.
+   * dependency blocks one, and launch each whose dependencies are met while daemon.maxWorking has room.
    */
   private schedule(): void {
     if (this.stopped) return;
@@ -473,12 +480,12 @@ export class NodeManager extends EventEmitter {
         if (!unmet.length) this.logEvent(rec.id, 'release', { after: p.after, afterSuccess: p.afterSuccess });
         if (blocked) this.blockedNotice(rec.id, blocked);
       }
-      const max = loadConfig(rec.cwd, this.home).limits.maxWorking;
+      const max = loadConfig(null, this.home).daemon.maxWorking;
       let state: AgentState = 'armed', activity: string;
       if (unmet.length) activity = blocked ? `blocked by ${blocked}` : `after ${unmet.join(', ')}`;
       else if (rec.kind === 'claude' && !p.now && max > 0 && working >= max) {
         state = 'queued';
-        activity = `queued: ${working} working, limits.maxWorking ${max}`;
+        activity = `queued: ${working} working, daemon.maxWorking ${max}`;
       } else {
         this.release(rec.id);
         if (rec.kind === 'claude') working++;
@@ -528,7 +535,7 @@ export class NodeManager extends EventEmitter {
   }
 
   /**
-   * Merge a worktree node's branch into its base in the project's style (worktrees.merge). Refused, with nothing changed,
+   * Merge a worktree node's branch into its base in the project's style (worktrees.mergeStyle). Refused, with nothing changed,
    * while the node is working, closing or setting up, when its tree has uncommitted files, or when the branch conflicts
    * with base (the error names the paths).
    */
@@ -554,7 +561,7 @@ export class NodeManager extends EventEmitter {
       await this.refreshGit(id).catch(logError);
       const dirty = existsSync(w.path) ? await wt.dirtyFiles(w.path) : [];
       if (dirty.length) throw new Error(`merge refused, nothing changed: ${count(dirty.length, 'uncommitted file')} in the worktree; commit them first`);
-      const style = loadConfig(w.repo, this.home).worktrees.merge;
+      const style = loadConfig(w.repo, this.home).worktrees.mergeStyle;
       const subject = style === 'squash' ? `${rec.title} (squashed from ${w.branch})` : `Merge branch '${w.branch}': ${rec.title}`;
       const sha = await wt.mergeInto(w.repo, w.branch, w.base, style, subject);
       this.merged.set(id, { tip: await this.branchTip(w), at: Date.now() });
@@ -748,6 +755,14 @@ export class NodeManager extends EventEmitter {
     if (this.registry.update(id, { title })) this.emitNode(id);
   }
 
+  /** Stop or restore a node's notifications (kept in its record); false when there is no such node. */
+  mute(id: string, muted: boolean): boolean {
+    if (!this.registry.update(id, { muted: muted || undefined })) return false;
+    console.log(`${muted ? 'muted' : 'unmuted'} ${id}`);
+    this.emitNode(id);
+    return true;
+  }
+
   /** A client selected `id`, which clears its unread flag. */
   select(id: string): void {
     if (this.unread.delete(id)) this.emitNode(id);
@@ -846,9 +861,9 @@ export class NodeManager extends EventEmitter {
    */
   async resumeLive(): Promise<string> {
     const ids = this.pendingResume;
-    const { resumeOnStart, resumeMaxAgeDays } = loadConfig(null, this.home);
+    const { resumeOnStart, resumeMaxAgeDays } = loadConfig(null, this.home).daemon;
     let summary = 'nothing to resume';
-    if (ids.size && !resumeOnStart) summary = `resumeOnStart is off; not resuming ${count(ids.size, 'node')}`;
+    if (ids.size && !resumeOnStart) summary = `daemon.resumeOnStart is off; not resuming ${count(ids.size, 'node')}`;
     else if (ids.size) {
       const cutoff = Date.now() - resumeMaxAgeDays * 86_400_000;
       const skipped = [...ids].filter((id) => !this.registry.get(id)).map((id) => `${id} (no such node)`);
@@ -1063,12 +1078,10 @@ export class NodeManager extends EventEmitter {
     this.logEvent(id, 'outcome', data);
   }
 
-  /** The completion gate for a node: config `gate` from its main checkout (else its cwd), when Claude trusts that directory, as for setup. */
+  /** The completion gate for a node: gateFor its main checkout when it has its own worktree, else its cwd. */
   gateConfig(id: string): Config['gate'] {
     const rec = this.registry.get(id);
-    const dir = rec && (rec.worktree?.repo ?? rec.cwd);
-    const gate = dir ? loadConfig(dir, this.home).gate : undefined;
-    return gate && trustPolicy(dir!, readClaudeJson()) === 'auto' ? gate : undefined;
+    return rec && gateFor(rec.worktree?.repo ?? rec.cwd, this.home);
   }
 
   /**

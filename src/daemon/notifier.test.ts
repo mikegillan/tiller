@@ -11,7 +11,7 @@ const node = (title: string, status: Partial<NodeStatus> = {}, more: Partial<Nod
   id: 'n1', parentId: null, kind: 'claude', title, cwd: '/', createdAt: 0, unread: false,
   status: { state: 'done', changedAt: 0, ...status }, ...more,
 });
-const DEFAULTS: Notifications = { kinds: { needsYou: 'sound', errored: 'sound', done: 'banner', exited: 'banner' }, failuresOnly: false, treeDoneSummary: false };
+const DEFAULTS: Notifications = { kinds: { needsYou: 'sound', errored: 'sound', done: 'banner', exited: 'banner' }, treeDoneSummary: false };
 const at = (hhmm: string) => new Date(`2026-10-13T${hhmm}:00`);
 
 describe('content', () => {
@@ -60,12 +60,10 @@ describe('decide', () => {
     expect((['needsYou', 'errored', 'done', 'exited'] as const).map((k) => decide(k, DEFAULTS, at('12:00')).level)).toEqual(['sound', 'sound', 'banner', 'banner']);
   });
 
-  it('follows the kinds map, and failuresOnly silences done and exited only', () => {
+  it('follows the kinds map', () => {
     const cfg: Notifications = { ...DEFAULTS, kinds: { ...DEFAULTS.kinds, needsYou: 'banner', errored: 'silent' } };
     expect(decide('needsYou', cfg, at('12:00')).level).toBe('banner');
     expect(decide('errored', cfg, at('12:00'))).toEqual({ level: 'silent', why: 'kinds.errored' });
-    const only = { ...DEFAULTS, failuresOnly: true };
-    expect((['needsYou', 'errored', 'done', 'exited'] as const).map((k) => decide(k, only, at('12:00')).level)).toEqual(['sound', 'sound', 'silent', 'silent']);
   });
 
   it('quiet hours across midnight: silent except needs-you, which loses its sound', () => {

@@ -247,7 +247,8 @@ describe('NodeManager guardrails', () => {
     home = mkdtempSync(join(tmpdir(), 'o8-'));
     const proj = join(home, 'proj');
     mkdirSync(join(proj, '.orchestr8'), { recursive: true });
-    writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ limits: { maxDepth: 2, maxChildren: 2, maxLiveNodes: 4 } }));
+    writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ limits: { maxDepth: 2, maxChildren: 2 } }));
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ daemon: { maxLiveNodes: 4 } }));
     m = new NodeManager({ home, shell: '/bin/sh' });
     const spawn = (parentId: string | null, byHuman = false) => m.spawn({ kind: 'terminal', title: 't', cwd: proj, parentId, byHuman }).id;
     const root = spawn(null, true);
@@ -255,7 +256,7 @@ describe('NodeManager guardrails', () => {
     spawn(root);
     expect(() => spawn(root)).toThrow('refused: limits.maxChildren is 2 and ' + root + ' has 2 live children; reuse an idle worker (send it the work) or close finished ones');
     const c3 = spawn(root, true); // the human is exempt; 4 live now
-    expect(() => spawn(c1)).toThrow(/^refused: limits\.maxLiveNodes is 4 and 4 nodes are live; reuse an idle worker/);
+    expect(() => spawn(c1)).toThrow(/^refused: daemon\.maxLiveNodes is 4 and 4 nodes are live; reuse an idle worker/);
     await m.close(c3);
     const g = spawn(c1); // depth 2 is allowed
     expect(() => spawn(g)).toThrow(/^refused: limits\.maxDepth is 2 and the new node would be 3 levels below the root; reuse/);

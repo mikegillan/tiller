@@ -8,7 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type Diff, type NodeView, type Outcome } from '../shared/protocol.js';
+import { dndActive, EFFORTS, ISOLATIONS, NODE_KINDS, ROLES, type Diff, type Dnd, type NodeView, type Outcome } from '../shared/protocol.js';
 import { fmtUsd, subtreeSpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { loadConfig, type Config } from './config.js';
@@ -24,7 +24,8 @@ const MAX_WRITE_CHARS = 2000;
 const IDEMPOTENCY_MS = 24 * 3600_000;
 const TRANSCRIPT_CAP = 200_000;
 
-interface Ctx { manager: NodeManager; confirm: (text: string) => Promise<boolean>; focus: (from: string, id: string) => void; caller: string }
+/** dnd sets do not disturb when `on` is given, and returns it. */
+interface Ctx { manager: NodeManager; confirm: (text: string) => Promise<boolean>; focus: (from: string, id: string) => void; dnd: (on?: boolean, minutes?: number) => Dnd; caller: string }
 interface Out { text?: string; data?: unknown }
 
 /** How long report_outcome waits for a completion gate before replying that it is still running. */
@@ -175,7 +176,7 @@ const spawned = new Map<string, { args: string; result: unknown; at: number }>()
 
 const tools = {
   list_nodes: tool(
-    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. The text starts with one line of account-level Claude usage (5-hour and 7-day rate-limit windows, percent used and reset time), which every node draws on. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none; armed: waiting on spawn dependencies, queued: waiting on limits.maxWorking, with the reason in activity),flags (errored, interrupted, exited, stale, stalled: working with no hook event for limits.stallMinutes), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any ({ outcome, note, summary, changedFiles, verified, openQuestions, gate }: read these before calling read on a finished worker), gate (its completion gate: running, passed or failed), spentUsd (its total spend across sessions) and subtreeSpentUsd (with all its descendants), and for a node with its own git worktree, worktree { path, branch, base, ahead, behind, dirty, missing, merged }: its commits not yet in base, base's commits not on the branch, the count of uncommitted files, and whether merge has merged it. Use it to find node ids before calling send, read or close.`,
+    `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. The text starts with one line of account-level Claude usage (5-hour and 7-day rate-limit windows, percent used and reset time), which every node draws on. Each node has id, parentId, title, kind (claude or terminal), cwd, state (working, waiting, blocked, done, unknown, none; armed: waiting on spawn dependencies, queued: waiting on daemon.maxWorking, with the reason in activity),flags (errored, interrupted, exited, stale, stalled: working with no hook event for limits.stallMinutes), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any ({ outcome, note, summary, changedFiles, verified, openQuestions, gate }: read these before calling read on a finished worker), gate (its completion gate: running, passed or failed), spentUsd (its total spend across sessions) and subtreeSpentUsd (with all its descendants), and for a node with its own git worktree, worktree { path, branch, base, ahead, behind, dirty, missing, merged }: its commits not yet in base, base's commits not on the branch, the count of uncommitted files, and whether merge has merged it. Use it to find node ids before calling send, read or close.`,
     {},
     async (c) => {
       const all = c.manager.list();
@@ -184,7 +185,7 @@ const tools = {
     }),
 
   spawn: tool(
-    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `model` and `effort` to use the defaults for the role from the project config, if any. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. isolation "worktree" (claude nodes only) gives the child its own git worktree at <main checkout>/.claude/worktrees/<id> on a new branch from the HEAD of the checkout `cwd` is in, which needs a repo with a commit that Claude already trusts, and the reply then carries worktree { path, branch, base }. Omitting isolation uses the project config (default "none"), so a child whose cwd is inside an existing worktree shares that tree. `preset` names a spawn preset (.orchestr8/agents/<name>.md in `cwd`, else ~/.orchestr8/agents/<name>.md; built-in: "reviewer", "researcher"): it sets the role text, model, effort, permissionMode, isolation and tool restrictions, and any argument you pass overrides it. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error. `after` and `afterSuccess` (node ids in your scope) create the node armed, with no process yet: it launches by itself, exactly as this spawn would, once each `after` node has finished a turn that began after this spawn (or has exited), and each `afterSuccess` node has reported succeeded through report_outcome (gate passed, when one is configured). A failed report blocks it and you get a message; close it to drop it. When the project sets limits.maxWorking and that many claude nodes are working, a new node is queued instead and launched in creation order as others stop. The reply then has state "armed" or "queued" and what it waits on.',
+    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `model` and `effort` to use the defaults for the role from the project config, if any. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. isolation "worktree" (claude nodes only) gives the child its own git worktree at <main checkout>/.claude/worktrees/<id> on a new branch from the HEAD of the checkout `cwd` is in, which needs a repo with a commit that Claude already trusts, and the reply then carries worktree { path, branch, base }. Omitting isolation uses the project config (default "none"), so a child whose cwd is inside an existing worktree shares that tree. `preset` names a spawn preset (.orchestr8/agents/<name>.md in `cwd`, else ~/.orchestr8/agents/<name>.md; built-in: "reviewer", "researcher"): it sets the role text, model, effort, permissionMode, isolation and tool restrictions, and any argument you pass overrides it. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error. `after` and `afterSuccess` (node ids in your scope) create the node armed, with no process yet: it launches by itself, exactly as this spawn would, once each `after` node has finished a turn that began after this spawn (or has exited), and each `afterSuccess` node has reported succeeded through report_outcome (gate passed, when one is configured). A failed report blocks it and you get a message; close it to drop it. When the daemon config sets daemon.maxWorking and that many claude nodes are working, a new node is queued instead and launched in creation order as others stop. The reply then has state "armed" or "queued" and what it waits on.',
     {
       kind: z.enum(NODE_KINDS), title: z.string().min(1), cwd: z.string().min(1), prompt: z.string().optional(),
       model: z.string().optional(), effort: z.enum(EFFORTS).optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), role: z.enum(ROLES).optional(), isolation: z.enum(ISOLATIONS).optional(), preset: z.string().min(1).optional(), requestId: z.string().optional(),
@@ -193,7 +194,7 @@ const tools = {
     async (c, { requestId, ...req }) => {
       const presetMode = req.preset ? loadPreset(req.preset, req.cwd, c.manager.home).permissionMode : undefined;
       if ((req.permissionMode ?? presetMode) === 'bypassPermissions' && c.caller !== HUMAN) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
-      if (req.now && c.caller !== HUMAN) throw new Error('refused: only the human may bypass limits.maxWorking with now');
+      if (req.now && c.caller !== HUMAN) throw new Error('refused: only the human may bypass daemon.maxWorking with now');
       const now = Date.now();
       for (const [k, v] of spawned) if (now - v.at > IDEMPOTENCY_MS) spawned.delete(k);
       const key = `${c.caller}\0${requestId}`;
@@ -283,7 +284,7 @@ const tools = {
     }),
 
   close: tool(
-    'Close and delete nodes. Every id must exist and be a descendant of yours, otherwise the whole batch is refused and nothing is closed. Orchestrators (root nodes) cannot be closed by agents. The human approves the batch once in the UI; if they decline you get {ok:false, reason:"denied"}. The project config (closeWithoutConfirm in .orchestr8/config.json) can skip that approval: "always" skips it, "done" skips it when every node in the batch is done, has exited or has called report_outcome (so a worker can be closed as soon as its report arrives), and the default "never" always asks. A node with its own git worktree closes only when the tree is clean, its branch is merged and no other live node works in it; otherwise the batch is refused, nothing is closed, and the error says why. `worktree` decides instead for the whole batch: "keep" commits uncommitted changes as a WIP commit and keeps the branch, "discard" deletes the worktree and branch with any unmerged work, and always needs the human\'s approval.',
+    'Close and delete nodes. Every id must exist and be a descendant of yours, otherwise the whole batch is refused and nothing is closed. Orchestrators (root nodes) cannot be closed by agents. The human approves the batch once in the UI; if they decline you get {ok:false, reason:"denied"}. The project config (approvals.close in .orchestr8/config.json) can skip that approval: "always" skips it, "done" skips it when every node in the batch is done, has exited or has called report_outcome (so a worker can be closed as soon as its report arrives), and the default "never" always asks. A node with its own git worktree closes only when the tree is clean, its branch is merged and no other live node works in it; otherwise the batch is refused, nothing is closed, and the error says why. `worktree` decides instead for the whole batch: "keep" commits uncommitted changes as a WIP commit and keeps the branch, "discard" deletes the worktree and branch with any unmerged work, and always needs the human\'s approval.',
     { nodeIds: z.array(z.string().min(1)).min(1), force: z.boolean().optional(), worktree: z.enum(['keep', 'discard']).optional() },
     async (c, a) => {
       const views = a.nodeIds.map((id) => requireOwned(c, id, false));
@@ -291,7 +292,7 @@ const tools = {
         if (v.parentId !== null) continue; // only the human gets here with a root: requireOwned refuses agents
         if (!a.force) throw new Error(`refusing to close an orchestrator; use o8 kill --force ${v.id}`);
       }
-      // Refusals come before the confirm and before closeWithoutConfirm: no setting turns a refused close into a close.
+      // Refusals come before the confirm and before approvals.close: no setting turns a refused close into a close.
       const destroys: string[] = [];
       for (const v of views) {
         const check = await c.manager.worktreeCheck(v.id);
@@ -301,7 +302,7 @@ const tools = {
         if (a.worktree === 'discard') destroys.push(`${v.title}: discards ${check.unmerged.length} commit(s) and ${check.dirty.length} changed file(s) on ${v.worktree!.branch}`);
       }
       const list = views.map((v) => `${v.title} (${v.id})`).join(', ');
-      const mode = c.caller === HUMAN ? undefined : loadConfig(c.manager.view(c.caller)!.cwd, c.manager.home).closeWithoutConfirm;
+      const mode = c.caller === HUMAN ? undefined : loadConfig(c.manager.view(c.caller)!.cwd, c.manager.home).approvals.close;
       const preapproved = a.worktree !== 'discard' && (mode === 'always' || (mode === 'done' && views.every((v) => v.status.exited || v.status.state === 'done' || v.outcome)));
       const text = `${who(c)} wants to close ${views.length} node(s): ${list}${destroys.length ? `. This deletes their worktrees: ${destroys.join('; ')}` : ''}`;
       if (c.caller !== HUMAN && !preapproved && !(await c.confirm(text))) {
@@ -316,12 +317,12 @@ const tools = {
     }),
 
   merge: tool(
-    'Merge the git branch of one of your descendants that has its own worktree into the branch it was created from (its base), in the project\'s merge style (worktrees.merge in .orchestr8/config.json: "merge", the default, makes a merge commit; "squash" makes one commit; "ff-only" only fast-forwards). Refused, with nothing changed, while the node is working, when its worktree has uncommitted files, when the base is checked out somewhere with uncommitted changes, A conflict with the base is checked first without touching any file: the reply is then {ok:false, conflicts:[paths]}; send the worker a rebase instruction rather than resolving it yourself, then merge again. The human approves each merge in the UI unless the project config sets worktrees.mergeWithoutConfirm; if they decline you get {ok:false, reason:"denied"}. Close the node afterwards to remove its worktree and branch.',
+    'Merge the git branch of one of your descendants that has its own worktree into the branch it was created from (its base), in the project\'s merge style (worktrees.mergeStyle in .orchestr8/config.json: "merge", the default, makes a merge commit; "squash" makes one commit; "ff-only" only fast-forwards). Refused, with nothing changed, while the node is working, when its worktree has uncommitted files, when the base is checked out somewhere with uncommitted changes, A conflict with the base is checked first without touching any file: the reply is then {ok:false, conflicts:[paths]}; send the worker a rebase instruction rather than resolving it yourself, then merge again. The human approves each merge in the UI unless the project config sets approvals.merge; if they decline you get {ok:false, reason:"denied"}. Close the node afterwards to remove its worktree and branch.',
     { nodeId: z.string().min(1) },
     async (c, a) => {
       const v = requireOwned(c, a.nodeId, false);
       if (!v.worktree) throw new Error(`${v.id} has no worktree of its own to merge`);
-      const skip = c.caller === HUMAN || loadConfig(v.worktree.repo, c.manager.home).worktrees.mergeWithoutConfirm;
+      const skip = c.caller === HUMAN || loadConfig(v.worktree.repo, c.manager.home).approvals.merge;
       if (!skip && !(await c.confirm(`${who(c)} wants to merge ${v.title} (${v.id}): branch ${v.worktree.branch} into ${v.worktree.base}`))) {
         return { data: { ok: false, reason: 'denied' } };
       }
@@ -403,6 +404,34 @@ const tools = {
       return { text: 'daemon stopping', data: { ok: true, pid: process.pid } };
     }),
 
+  mute: tool(
+    'Stop (muted true) or restore one node\'s OS notifications; the mute is kept across restarts. Only the human may call this.',
+    { nodeId: z.string().min(1), muted: z.boolean() },
+    async (c, a) => {
+      if (c.caller !== HUMAN) throw new Error('mute is only for the human');
+      if (!c.manager.mute(a.nodeId, a.muted)) throw new Error(`no such node: ${a.nodeId}`);
+      return { text: `${a.muted ? 'muted' : 'unmuted'} ${a.nodeId}`, data: { ok: true } };
+    }),
+
+  dnd: tool(
+    'Turn do not disturb on, for `minutes` when given, or off: it stops every OS notification and is not kept across a daemon restart. Without `on`, only report it. Only the human may call this.',
+    { on: z.boolean().optional(), minutes: z.number().positive().max(7 * 24 * 60).optional() },
+    async (c, a) => {
+      if (c.caller !== HUMAN) throw new Error('dnd is only for the human');
+      const d = c.dnd(a.on, a.minutes);
+      const text = dndActive(d, Date.now()) ? `do not disturb is on${d.until ? ` until ${new Date(d.until).toLocaleTimeString()}` : ''}` : 'do not disturb is off';
+      return { text, data: d };
+    }),
+
+  sessions_clean: tool(
+    'Delete the session directories that daemon.sessionsKeepDays has expired now, rather than at the daily sweep. Only the human may call this.',
+    {},
+    async (c) => {
+      if (c.caller !== HUMAN) throw new Error('sessions_clean is only for the human');
+      const removed = c.manager.sweepSessions();
+      return { text: `removed ${removed.length} expired session director${removed.length === 1 ? 'y' : 'ies'}${removed.length ? `: ${removed.join(', ')}` : ''}`, data: { removed } };
+    }),
+
   rename: tool(
     'Change the title of yourself or one of your descendants.',
     { nodeId: z.string().min(1), title: z.string().min(1) },
@@ -439,7 +468,7 @@ const tools = {
  * Handler for `/mcp` (MCP over stateless streamable HTTP) and `POST /api/<tool>` (the same tools as plain JSON, for the CLI).
  * Both authenticate with `Authorization: Bearer` + `X-O8-Node`. Node id `human` takes the admin token written to `<home>/admin-token`.
  */
-export function mountMcp(manager: NodeManager, confirm: (text: string) => Promise<boolean>, focus: (from: string, id: string) => void): {
+export function mountMcp(manager: NodeManager, confirm: Ctx['confirm'], focus: Ctx['focus'], dnd: Ctx['dnd'] = () => ({ on: false })): {
   handler: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void>;
   /** Write the admin token file. Call once the server is listening, so a daemon that fails to bind leaves the running daemon's token alone. */
   publishAdminToken: () => void;
@@ -487,7 +516,7 @@ export function mountMcp(manager: NodeManager, confirm: (text: string) => Promis
   const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const caller = authenticate(req);
     if (!caller) return void res.writeHead(401).end();
-    const ctx: Ctx = { manager, confirm, focus, caller };
+    const ctx: Ctx = { manager, confirm, focus, dnd, caller };
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     if (path.startsWith('/api/')) return api(req, res, path.slice(5), ctx);
 

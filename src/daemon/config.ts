@@ -1,9 +1,9 @@
 // Per-project settings: <cwd>/.orchestr8/config.json, then <home>/config.json, then built-in defaults. Read fresh on every call.
-// Daemon settings (resumeOnStart, resumeMaxAgeDays, sessionsKeepDays, digestAfterMinutes) come from the home file only.
+// The `daemon` group holds daemon-wide settings and comes from the home file only.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { EFFORTS, ISOLATIONS, type Isolation } from '../shared/protocol.js';
+import { EFFORTS, ISOLATIONS } from '../shared/protocol.js';
 import { homeDir } from './home.js';
 
 export const MERGE_STYLES = ['merge', 'squash', 'ff-only'] as const;
@@ -15,177 +15,156 @@ export type NotifyLevel = (typeof NOTIFY_LEVELS)[number];
 /** "HH:MM-HH:MM", local time; the end may be earlier than the start (across midnight). */
 const QUIET_HOURS = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
 
-const RoleDefaults = z.object({ model: z.string().min(1).optional(), effort: z.enum(EFFORTS).optional() });
+const RoleDefaults = z.object({ model: z.string().min(1).optional(), effort: z.enum(EFFORTS).optional() }).strict();
 const Level = z.enum(NOTIFY_LEVELS).optional();
 const ConfigFile = z.object({
-  roles: z.object({ orchestrator: RoleDefaults.optional(), worker: RoleDefaults.optional() }).optional(),
-  closeWithoutConfirm: z.enum(['never', 'done', 'always']).optional(),
+  /** model and effort for a claude node spawned without them, by role (none counts as worker). */
+  roles: z.object({ orchestrator: RoleDefaults.optional(), worker: RoleDefaults.optional() }).strict().optional(),
+  /**
+   * When an agent's action skips the human's approval. close: "always"; "done" when every node in the batch is done, has
+   * exited or has reported an outcome; "never". merge: true means an agent's merge never asks.
+   */
+  approvals: z.object({ close: z.enum(['never', 'done', 'always']).optional(), merge: z.boolean().optional() }).strict().optional(),
+  /**
+   * isolation: what a spawn that omits it gets, for claude nodes whose role is worker or none.
+   * branchPrefix: a worktree's branch is <prefix><nodeId>. include: gitignored files to copy in; absent means .worktreeinclude.
+   * mergeStyle: how the merge verb brings a branch into its base.
+   * setup, teardown: shell commands run in a new worktree before launch, and in a worktree before it is removed.
+   */
   worktrees: z.object({
     isolation: z.enum(ISOLATIONS).optional(),
     branchPrefix: z.string().min(1).optional(),
     include: z.array(z.string().min(1)).optional(),
-    merge: z.enum(MERGE_STYLES).optional(),
-    mergeWithoutConfirm: z.boolean().optional(),
+    mergeStyle: z.enum(MERGE_STYLES).optional(),
     setup: z.array(z.string().min(1)).optional(),
     teardown: z.array(z.string().min(1)).optional(),
   }).strict().optional(),
+  /**
+   * A command that must pass before a worker's report_outcome "succeeded" is accepted; absent means no gate. Once it has
+   * failed retries + 1 times the outcome is recorded as failed. Each run is stopped after timeoutMinutes.
+   */
   gate: z.object({
     command: z.string().min(1).optional(),
     retries: z.number().int().nonnegative().optional(),
     timeoutMinutes: z.number().positive().optional(),
   }).strict().optional(),
-  resumeOnStart: z.boolean().optional(),
-  resumeMaxAgeDays: z.number().nonnegative().optional(),
-  sessionsKeepDays: z.number().nonnegative().optional(),
-  digestAfterMinutes: z.number().nonnegative().optional(),
+  /**
+   * Home file only. resumeOnStart: on start, resume the nodes that were live when the daemon last went away, unless idle for
+   * more than resumeMaxAgeDays. sessionsKeepDays: a session directory is deleted this long after its root closed (or, with
+   * the root gone, after its last write). digestAfterMinutes: a client regaining focus after this long with no focused
+   * client gets an away digest. maxLiveNodes: an agent's spawn is refused once this many nodes are live. maxWorking: Claude
+   * nodes working at once; past it a spawn is queued and launched in creation order as nodes stop; 0 is unlimited.
+   */
+  daemon: z.object({
+    resumeOnStart: z.boolean().optional(),
+    resumeMaxAgeDays: z.number().nonnegative().optional(),
+    sessionsKeepDays: z.number().nonnegative().optional(),
+    digestAfterMinutes: z.number().nonnegative().optional(),
+    maxLiveNodes: z.number().int().nonnegative().optional(),
+    maxWorking: z.number().int().nonnegative().optional(),
+  }).strict().optional(),
+  /**
+   * kinds: how each notify kind is shown; sound means a banner with a sound.
+   * treeDoneSummary: once every node of a tree is done or exited, one "tree <title> finished" notification replaces the
+   * per-node done and exited ones. quietHours: everything is silent then, except needsYou, which is a banner without sound.
+   */
   notifications: z.object({
     kinds: z.object({ needsYou: Level, done: Level, errored: Level, exited: Level }).strict().optional(),
-    failuresOnly: z.boolean().optional(),
     treeDoneSummary: z.boolean().optional(),
     quietHours: z.string().regex(QUIET_HOURS, 'expected "HH:MM-HH:MM"').optional(),
   }).strict().optional(),
+  /**
+   * Guardrails for unattended agents; the human is exempt from the spawn caps. maxDepth: levels below the root a spawned node
+   * may sit at (a root is level 0). maxChildren: live children per node. stallMinutes: a working node with no hook event
+   * this long gets a notice to its parent. maxMessagesPer10Min: messages one sender may send one target in 10 minutes.
+   */
   limits: z.object({
     maxDepth: z.number().int().nonnegative().optional(),
     maxChildren: z.number().int().nonnegative().optional(),
-    maxLiveNodes: z.number().int().nonnegative().optional(),
     stallMinutes: z.number().positive().optional(),
     maxMessagesPer10Min: z.number().int().positive().optional(),
-    maxWorking: z.number().int().nonnegative().optional(),
   }).strict().optional(),
-});
+}).strict();
 type ConfigFile = z.infer<typeof ConfigFile>;
-type RoleDefaults = z.infer<typeof RoleDefaults>;
 
-type Key = `roles.${'orchestrator' | 'worker'}.${'model' | 'effort'}` | 'closeWithoutConfirm' | `worktrees.${'isolation' | 'branchPrefix' | 'include' | 'merge' | 'mergeWithoutConfirm' | 'setup' | 'teardown'}` | `gate.${'command' | 'retries' | 'timeoutMinutes'}` | 'resumeOnStart' | 'resumeMaxAgeDays' | 'sessionsKeepDays' | 'digestAfterMinutes' | `limits.${LimitKey}`
-  | `notifications.kinds.${NotifyKind}` | `notifications.${'failuresOnly' | 'treeDoneSummary' | 'quietHours'}`;
-type LimitKey = keyof Limits;
+type Leaf = string | number | boolean | unknown[];
+/** [dotted path, value] for every leaf of T. */
+type Entries<T, P extends string = ''> = { [K in keyof T & string]-?: NonNullable<T[K]> extends Leaf ? [`${P}${K}`, T[K]] : Entries<NonNullable<T[K]>, `${P}${K}.`> }[keyof T & string];
+type Flat = { [E in Entries<ConfigFile> as E[0]]: E[1] };
+export type Key = keyof Flat;
 
-/** Guardrails for unattended agents; the human is exempt from the spawn caps. */
-export interface Limits {
-  /** Levels below the root a spawned node may sit at; a root is level 0. */
-  maxDepth: number;
-  /** Live children per node. */
-  maxChildren: number;
-  /** Live nodes in the whole daemon. */
-  maxLiveNodes: number;
-  /** A working node with no hook event this long gets a notice to its parent. */
-  stallMinutes: number;
-  /** Messages one sender may send one target in 10 minutes. */
-  maxMessagesPer10Min: number;
-  /** Claude nodes working at once; past it a spawn is queued and launched in creation order as nodes stop. 0 is unlimited. */
-  maxWorking: number;
-}
-/**
- * kinds: how each notify kind is shown; sound means a banner with a sound. failuresOnly: only needsYou and errored notify.
- * treeDoneSummary: once every node of a tree is done or exited, one "tree <title> finished" notification replaces the
- * per-node done and exited ones. quietHours: everything is silent then, except needsYou, which is a banner without sound.
- */
-export interface Notifications { kinds: Record<NotifyKind, NotifyLevel>; failuresOnly: boolean; treeDoneSummary: boolean; quietHours?: string }
-const KIND_DEFAULTS: Notifications['kinds'] = { needsYou: 'sound', errored: 'sound', done: 'banner', exited: 'banner' };
+/** Every key of the schema with its built-in default; undefined means none. Adding a key is a schema line and a line here. */
+const DEFAULTS = {
+  'roles.orchestrator.model': undefined, 'roles.orchestrator.effort': undefined, 'roles.worker.model': undefined, 'roles.worker.effort': undefined,
+  'approvals.close': 'never', 'approvals.merge': false,
+  'worktrees.isolation': 'none', 'worktrees.branchPrefix': 'o8/', 'worktrees.include': undefined, 'worktrees.mergeStyle': 'merge', 'worktrees.setup': [], 'worktrees.teardown': [],
+  'gate.command': undefined, 'gate.retries': 2, 'gate.timeoutMinutes': 10,
+  'daemon.resumeOnStart': true, 'daemon.resumeMaxAgeDays': 3, 'daemon.sessionsKeepDays': 14, 'daemon.digestAfterMinutes': 10, 'daemon.maxLiveNodes': 20, 'daemon.maxWorking': 0,
+  'notifications.kinds.needsYou': 'sound', 'notifications.kinds.errored': 'sound', 'notifications.kinds.done': 'banner', 'notifications.kinds.exited': 'banner',
+  'notifications.treeDoneSummary': false, 'notifications.quietHours': undefined,
+  'limits.maxDepth': 3, 'limits.maxChildren': 8, 'limits.stallMinutes': 5, 'limits.maxMessagesPer10Min': 20,
+} satisfies Flat;
 
-const LIMIT_DEFAULTS: Limits = { maxDepth: 3, maxChildren: 8, maxLiveNodes: 20, stallMinutes: 5, maxMessagesPer10Min: 20, maxWorking: 0 };
-
-export interface Config {
-  roles: { orchestrator: RoleDefaults; worker: RoleDefaults };
-  closeWithoutConfirm: 'never' | 'done' | 'always';
-  /**
-   * isolation: what a spawn that omits it gets, for claude nodes whose role is worker or none.
-   * branchPrefix: a worktree's branch is <prefix><nodeId>. include: gitignored files to copy in; absent means .worktreeinclude.
-   * merge: how the merge verb brings a branch into its base. mergeWithoutConfirm: an agent's merge skips the human's approval.
-   * setup, teardown: shell commands run in a new worktree before launch, and in a worktree before it is removed.
-   */
-  worktrees: { isolation: Isolation; branchPrefix: string; include?: string[]; merge: MergeStyle; mergeWithoutConfirm: boolean; setup: string[]; teardown: string[] };
-  /**
-   * A command that must pass before a worker's report_outcome "succeeded" is accepted; absent means no gate. Once it has
-   * failed retries + 1 times the outcome is recorded as failed. Each run is stopped after timeoutMinutes.
-   */
-  gate?: { command: string; retries: number; timeoutMinutes: number };
-  /** On start, resume the nodes that were live when the daemon last went away, unless idle for more than resumeMaxAgeDays. */
-  resumeOnStart: boolean;
-  resumeMaxAgeDays: number;
-  /** A session directory is deleted this long after its root closed (or, with the root gone, after its last write). */
-  sessionsKeepDays: number;
-  /** A client regaining focus after this long with no focused client gets an away digest. */
-  digestAfterMinutes: number;
-  limits: Limits;
-  notifications: Notifications;
-  /** Where each key came from: a file path, or 'default'. */
-  sources: Record<Key, string>;
-}
+type Defaulted = { [K in Key]: (typeof DEFAULTS)[K] extends undefined ? never : K }[Key];
+/** The leaves of T (at path prefix P) that have no default. */
+type NoDefault<T, P extends string> = { [K in keyof T & string]: NonNullable<T[K]> extends Leaf ? (`${P}${K}` extends Defaulted ? never : K) : never }[keyof T & string];
+/** T with every group present and every leaf that has a default required; the others stay optional. */
+type Filled<T, P extends string = ''> =
+  & { [K in Exclude<keyof T & string, NoDefault<T, P>>]-?: NonNullable<T[K]> extends Leaf ? NonNullable<T[K]> : Filled<NonNullable<T[K]>, `${P}${K}.`> }
+  & { [K in NoDefault<T, P>]?: T[K] };
+type Resolved = Filled<ConfigFile>;
+export type Notifications = Resolved['notifications'];
+/** gate is present only when gate.command is set. */
+export type Config = Omit<Resolved, 'gate'> & { gate?: Resolved['gate'] & { command: string } };
 
 /** The project file for `cwd` (none when null), then the home file; earlier wins. */
 export const configPaths = (cwd: string | null, home = homeDir()): string[] => [...(cwd === null ? [] : [join(cwd, '.orchestr8', 'config.json')]), join(home, 'config.json')];
 
 const warned = new Set<string>();
+const warn = (path: string, msg: string) => {
+  if (!warned.has(`${path}\0${msg}`)) { warned.add(`${path}\0${msg}`); console.error(`orchestr8: ignoring in ${path}: ${msg}`); }
+};
+const get = (o: unknown, path: PropertyKey[]): any => path.reduce<any>((x, k) => x?.[k], o);
 
-function readLayer(path: string): ConfigFile | undefined {
+/** A file's settings. An unreadable file gives none; a bad key (unknown, renamed or invalid) is logged once and dropped. */
+function readLayer(path: string, isHome: boolean): ConfigFile | undefined {
   let raw: string;
   try { raw = readFileSync(path, 'utf8'); } catch { return undefined; } // absent: nothing to say
-  try { return ConfigFile.parse(JSON.parse(raw)); } catch (err) {
-    const msg = err instanceof z.ZodError ? err.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') : (err as Error).message;
-    if (!warned.has(`${path}\0${msg}`)) { warned.add(`${path}\0${msg}`); console.error(`orchestr8: ignoring ${path}: ${msg}`); }
-    return undefined;
+  let data: any;
+  try { data = JSON.parse(raw); } catch (err) { warn(path, (err as Error).message); return undefined; }
+  const bad: string[] = [];
+  if (!isHome && data?.daemon !== undefined) { delete data.daemon; bad.push('daemon: read from the home file only'); }
+  const r = ConfigFile.safeParse(data);
+  if (!r.success) {
+    for (const i of r.error.issues) {
+      for (const p of i.code === 'unrecognized_keys' ? i.keys.map((k) => [...i.path, k]) : [i.path]) {
+        bad.push(`${p.map(String).join('.')}: ${i.code === 'unrecognized_keys' ? 'unknown key' : i.message}`);
+        const parent = get(data, p.slice(0, -1));
+        if (p.length && parent && typeof parent === 'object') delete parent[p.at(-1)!];
+      }
+    }
   }
+  if (bad.length) warn(path, bad.join('; '));
+  return r.success ? r.data : ConfigFile.safeParse(data).data;
+}
+
+/** Each key's effective value and where it came from: the first file that sets it, else 'default'. */
+export function configEntries(cwd: string | null, home = homeDir()): Record<Key, { value: unknown; source: string }> {
+  const homeFile = join(home, 'config.json');
+  const layers = configPaths(cwd, home).flatMap((path) => { const c = readLayer(path, path === homeFile); return c ? [{ path, c }] : []; });
+  return Object.fromEntries((Object.entries(DEFAULTS) as [Key, unknown][]).map(([key, fallback]) => {
+    const path = key.split('.');
+    const layer = layers.find(({ c }) => get(c, path) !== undefined);
+    return [key, layer ? { value: get(layer.c, path), source: layer.path } : { value: fallback, source: 'default' }];
+  })) as Record<Key, { value: unknown; source: string }>;
 }
 
 export function loadConfig(cwd: string | null, home = homeDir()): Config {
-  const layers = configPaths(cwd, home).flatMap((path) => { const c = readLayer(path); return c ? [{ path, c }] : []; });
-  const homeFile = join(home, 'config.json');
-  const pick = <T>(get: (c: ConfigFile) => T | undefined, homeOnly = false): [T | undefined, string] => {
-    for (const { path, c } of layers) { const v = homeOnly && path !== homeFile ? undefined : get(c); if (v !== undefined) return [v, path]; }
-    return [undefined, 'default'];
-  };
-  const sources = {} as Record<Key, string>;
-  const role = (r: 'orchestrator' | 'worker'): RoleDefaults => {
-    const [model, sm] = pick((c) => c.roles?.[r]?.model);
-    const [effort, se] = pick((c) => c.roles?.[r]?.effort);
-    sources[`roles.${r}.model`] = sm; sources[`roles.${r}.effort`] = se;
-    return { model, effort };
-  };
-  const roles = { orchestrator: role('orchestrator'), worker: role('worker') };
-  const [close, sc] = pick((c) => c.closeWithoutConfirm);
-  sources.closeWithoutConfirm = sc;
-  const [isolation, si] = pick((c) => c.worktrees?.isolation);
-  const [branchPrefix, sb] = pick((c) => c.worktrees?.branchPrefix);
-  const [include, sinc] = pick((c) => c.worktrees?.include);
-  const [merge, smerge] = pick((c) => c.worktrees?.merge);
-  const [mergeWithoutConfirm, smwc] = pick((c) => c.worktrees?.mergeWithoutConfirm);
-  const [setup, ssetup] = pick((c) => c.worktrees?.setup);
-  const [teardown, steardown] = pick((c) => c.worktrees?.teardown);
-  sources['worktrees.isolation'] = si; sources['worktrees.branchPrefix'] = sb; sources['worktrees.include'] = sinc;
-  sources['worktrees.merge'] = smerge; sources['worktrees.mergeWithoutConfirm'] = smwc; sources['worktrees.setup'] = ssetup; sources['worktrees.teardown'] = steardown;
-  const worktrees = {
-    isolation: isolation ?? 'none', branchPrefix: branchPrefix ?? 'o8/', ...(include ? { include } : {}),
-    merge: merge ?? 'merge', mergeWithoutConfirm: mergeWithoutConfirm ?? false, setup: setup ?? [], teardown: teardown ?? [],
-  };
-  const [command, sgc] = pick((c) => c.gate?.command);
-  const [retries, sgr] = pick((c) => c.gate?.retries);
-  const [timeoutMinutes, sgt] = pick((c) => c.gate?.timeoutMinutes);
-  sources['gate.command'] = sgc; sources['gate.retries'] = sgr; sources['gate.timeoutMinutes'] = sgt;
-  const gate = command ? { command, retries: retries ?? 2, timeoutMinutes: timeoutMinutes ?? 10 } : undefined;
-  const [resumeOnStart, sr] = pick((c) => c.resumeOnStart, true);
-  const [resumeMaxAgeDays, sa] = pick((c) => c.resumeMaxAgeDays, true);
-  sources.resumeOnStart = sr; sources.resumeMaxAgeDays = sa;
-  const [sessionsKeepDays, sk] = pick((c) => c.sessionsKeepDays, true);
-  const [digestAfterMinutes, sd] = pick((c) => c.digestAfterMinutes, true);
-  sources.sessionsKeepDays = sk; sources.digestAfterMinutes = sd;
-  const limits = { ...LIMIT_DEFAULTS };
-  for (const k of Object.keys(LIMIT_DEFAULTS) as LimitKey[]) {
-    const [v, src] = pick((c) => c.limits?.[k]);
-    if (v !== undefined) limits[k] = v;
-    sources[`limits.${k}`] = src;
+  const config: any = {};
+  for (const [key, { value }] of Object.entries(configEntries(cwd, home))) {
+    const path = key.split('.');
+    path.slice(0, -1).reduce((o, k) => (o[k] ??= {}), config)[path.at(-1)!] = value;
   }
-  const kinds = { ...KIND_DEFAULTS };
-  for (const k of NOTIFY_KINDS) {
-    const [v, src] = pick((c) => c.notifications?.kinds?.[k]);
-    if (v !== undefined) kinds[k] = v;
-    sources[`notifications.kinds.${k}`] = src;
-  }
-  const [failuresOnly, snf] = pick((c) => c.notifications?.failuresOnly);
-  const [treeDoneSummary, snt] = pick((c) => c.notifications?.treeDoneSummary);
-  const [quietHours, snq] = pick((c) => c.notifications?.quietHours);
-  sources['notifications.failuresOnly'] = snf; sources['notifications.treeDoneSummary'] = snt; sources['notifications.quietHours'] = snq;
-  const notifications = { kinds, failuresOnly: failuresOnly ?? false, treeDoneSummary: treeDoneSummary ?? false, ...(quietHours ? { quietHours } : {}) };
-  return { roles, closeWithoutConfirm: close ?? 'never', worktrees, ...(gate ? { gate } : {}), resumeOnStart: resumeOnStart ?? true, resumeMaxAgeDays: resumeMaxAgeDays ?? 3,
-    sessionsKeepDays: sessionsKeepDays ?? 14, digestAfterMinutes: digestAfterMinutes ?? 10, limits, notifications, sources };
+  const { gate, ...rest } = config as Resolved;
+  return gate.command ? { ...rest, gate: gate as Config['gate'] } : rest;
 }
