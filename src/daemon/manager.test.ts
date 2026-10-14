@@ -316,4 +316,22 @@ describe('NodeManager guardrails', () => {
     measure(0.1); // the resumed node's first measure after the daemon restart
     expect(m.view(id)!.spentUsd).toBeCloseTo(1.15);
   });
+
+  it('does not count a resumed session\'s earlier spend again after a daemon restart', async () => {
+    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    const bin = join(home, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'claude'), '#!/bin/sh\nsleep 5\n'); // stands in for claude
+    chmodSync(join(bin, 'claude'), 0o755);
+    const opts = { home, shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` };
+    m = new NodeManager(opts);
+    const id = (await m.spawn({ kind: 'claude', title: 'c', cwd: home, byHuman: true })).id;
+    const measure = (usd: number) => m.applyModEvent(id, { event: 'session.measure', payload: { cost: { usd } } });
+    measure(0.5);
+    measure(0.8);
+    m.shutdown();
+    m = new NodeManager(opts);
+    measure(1.0); // the same session, resumed: its cost keeps counting from 0.8
+    expect(m.view(id)!.spentUsd).toBeCloseTo(1.0);
+  });
 });

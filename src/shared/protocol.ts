@@ -158,6 +158,8 @@ export interface NodeRecord {
   spentUsd?: number;
   /** Spend on one local day (YYYY-MM-DD); a later day starts over. */
   spentToday?: { day: string; usd: number };
+  /** The session's cumulative cost at its last measure, so the next measure (even after a daemon restart) adds only the difference. */
+  lastCost?: { sessionId?: string; usd: number };
   /** Set by the human (o8 mute, the row's mute button): the node never sends an OS notification. */
   muted?: boolean;
   /** Set while the node is armed or queued; cleared when it launches. */
