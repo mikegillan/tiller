@@ -66,6 +66,7 @@ button.caret:hover { background: var(--surface-2); color: var(--fg); }
 .arch:hover { background: var(--hover); }
 .arch.sel { background: var(--sel); }
 .arch .meta, .arch .line { padding-left: 22px; }
+.arch .meta .branch { max-width: 30ch; }
 .arch .line { display: block; overflow: hidden; color: var(--dim); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .glyph { flex: none; width: 14px; text-align: center; font-weight: 700; color: var(--dim); }
 .glyph.succeeded { color: var(--done); }

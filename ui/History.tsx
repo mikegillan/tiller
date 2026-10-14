@@ -14,6 +14,10 @@ const OutcomeGlyph = ({ o }: { o?: Outcome }) => (
   <span className={`glyph ${o?.outcome ?? 'none'}`} title={o ? o.outcome : 'no outcome reported'}>{o ? GLYPH[o.outcome] : '·'}</span>
 );
 
+/** "o8/n-123 merged into main", "o8/n-123 kept", "o8/n-123 discarded", or the bare branch when its fate is unknown. */
+export const branchLine = (a: ArchivedNode) =>
+  !a.branchFate ? a.branch : `${a.branch} ${a.branchFate === 'merged' && a.base ? `merged into ${a.base}` : a.branchFate}`;
+
 /** Closed nodes of this tree or all trees, newest first, filtered by the daemon; picking one shows it in the main pane. */
 export function HistoryPanel() {
   const items = useStore((s) => s.history);
@@ -54,7 +58,7 @@ export function HistoryPanel() {
               </span>
               {(a.branch || a.spentUsd !== undefined) && (
                 <span className="meta">
-                  {a.branch && <span className="part"><span className="branch" title={a.branch}>⎇ {a.branch}</span></span>}
+                  {a.branch && <span className="part"><span className="branch" title={branchLine(a)}>⎇ {branchLine(a)}</span></span>}
                   {a.spentUsd !== undefined && <span className="part">{fmtUsd(a.spentUsd)}</span>}
                 </span>
               )}
@@ -85,7 +89,7 @@ export function ArchivePane({ a }: { a: ArchivedNode }) {
         </div>
         <div className="tb2">
           <span className="cwd" title={a.cwd}>{a.cwd}</span>
-          {a.branch && <span className="tag">⎇ {a.branch}</span>}
+          {a.branch && <span className="tag">⎇ {branchLine(a)}</span>}
           {a.spentUsd !== undefined && <span>{fmtUsd(a.spentUsd)}</span>}
         </div>
         {a.brief && <p className="brief">{a.brief}</p>}

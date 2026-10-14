@@ -2,9 +2,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { Transcript } from '../src/shared/protocol';
 import { followupMsg, forkMsg } from './Dialogs';
+import { branchLine } from './History';
 import { TranscriptView } from './TranscriptPane';
 
 vi.mock('./conn', () => ({ send: vi.fn() }));
+vi.mock('./hooks', () => ({ useNow: () => 0 })); // hooks.ts reaches for window on import
 
 const data: Transcript = {
   entries: [
@@ -37,5 +39,12 @@ describe('transcript', () => {
     const d = { kind: 'fork' as const, from: 'n-1', title: 'auth', cwd: '/w/auth', parentId: 'root' };
     expect(forkMsg(d, ' try B ', 'use approach B')).toEqual({ t: 'spawn', kind: 'claude', title: 'try B', cwd: '/w/auth', parentId: 'root', fork: 'n-1', prompt: 'use approach B' });
     expect(forkMsg(d, '', ' ')).toEqual({ t: 'spawn', kind: 'claude', title: 'fork of auth', cwd: '/w/auth', parentId: 'root', fork: 'n-1' });
+  });
+
+  it('names an archived branch with its fate', () => {
+    const a = { id: 'a', rootId: 'r', parentId: null, title: 'a', cwd: '/w', createdAt: 0, closedAt: 1, branch: 'o8/n-123' };
+    expect([
+      branchLine({ ...a, branchFate: 'merged', base: 'main' }), branchLine({ ...a, branchFate: 'kept' }), branchLine({ ...a, branchFate: 'discarded' }), branchLine(a),
+    ]).toEqual(['o8/n-123 merged into main', 'o8/n-123 kept', 'o8/n-123 discarded', 'o8/n-123']);
   });
 });
