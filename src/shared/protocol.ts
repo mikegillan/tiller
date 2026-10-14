@@ -124,6 +124,8 @@ export interface Pending {
   /** The first prompt and isolation to launch with. */
   prompt?: string;
   isolation?: Isolation;
+  /** The worktree's base branch, resolved at spawn; absent in records from before it was, which fork from the cwd's HEAD. */
+  base?: string;
   /** Launch past daemon.maxWorking (the human's tl spawn --now). */
   now?: boolean;
   /** The failed dependency, "n-x: note", once its parent has been told. */
@@ -276,7 +278,7 @@ export type ClientMessage =
   | { t: 'input'; id: string; data: string }
   | { t: 'resize'; id: string; cols: number; rows: number }
   | { t: 'select'; id: string }                // clears unread
-  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); kind must be claude
+  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; base?: string; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); kind must be claude
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
   | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.mergeStyle style
   | { t: 'restart'; id: string; prompt?: string } // relaunch with a fresh session: clears context, keeps the node and its children; prompt is its first prompt

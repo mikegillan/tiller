@@ -24,7 +24,7 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
                                                       the nodes are not resumed on the next start
   tl reload                                           restart the daemon on the current code and resume the nodes that were live
   tl autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
-  tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--worktree]  start a Claude node and show it in the app
+  tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--worktree [--base B]]  start a Claude node and show it in the app
   tl ps | list                                        show nodes
   tl usage                                            show account-level Claude usage (5-hour and 7-day windows) as nodes last reported it
   tl select <id>                                      show a node in the app (opens the app if it is built)
@@ -48,11 +48,12 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
                                                       title, first prompt or last message
   tl transcript <id> [--session SID]                  a live or closed node's conversation; SID picks one of its earlier sessions
   tl followup <id> --prompt P [--title T]             continue a closed node's session as a new node that starts on P
-  tl spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--preset NAME] [--request-id ID]
+  tl spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree [--base B]] [--preset NAME] [--request-id ID]
            [--after ID,ID] [--after-success ID,ID] [--now] [--fork ID]
                                                       --after / --after-success arm the node until those finish a turn or report
                                                       succeeded; --now launches past daemon.maxWorking instead of queueing;
-                                                      --fork starts from a copy of a live or closed node's conversation (cwd: its)
+                                                      --fork starts from a copy of a live or closed node's conversation (cwd: its);
+                                                      --base names the branch the worktree forks from and merges into
   tl prompts                                          show the role prompt files and any override for this directory
   tl presets [--cwd P]                                list the spawn presets in effect for a directory and the file each comes from
   tl config [--cwd P]                                 show the effective config for a directory and which file each key came from
@@ -104,7 +105,7 @@ const { values: f, positionals: pos } = parseArgs({
     'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
     worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' }, preset: { type: 'string' },
     after: { type: 'string', multiple: true }, 'after-success': { type: 'string', multiple: true }, now: { type: 'boolean' },
-    fork: { type: 'string' }, root: { type: 'string' }, session: { type: 'string' },
+    fork: { type: 'string' }, root: { type: 'string' }, session: { type: 'string' }, base: { type: 'string' },
   },
 });
 /** `--after a,b --after c` as [a, b, c]; undefined when absent. */
@@ -136,7 +137,7 @@ switch (cmd) {
     break;
   case 'new': {
     if (!pos[0]) fail(usage());
-    const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, effort: f.effort, role: f.role, isolation: isolation(), preset: f.preset }, false);
+    const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, effort: f.effort, role: f.role, isolation: isolation(), base: f.base, preset: f.preset }, false);
     console.log(`started ${pos.join(' ')} (${data.nodeId})`);
     await call('select', { nodeId: data.nodeId }, false);
     if (existsSync(APP)) openApp(daemonPort(), data.nodeId);

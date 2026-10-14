@@ -74,23 +74,25 @@ export function readClaudeJson(): unknown {
 }
 
 /**
- * Give a node its worktree, branched from the HEAD of the checkout its cwd is in (or `head`), and launch it, after the
- * setup commands when configured. A failure removes the worktree and branch and throws; the caller deals with the record.
+ * Give a node its worktree, branched from the tip of branch `baseBranch` (absent: the HEAD of the checkout its cwd is in),
+ * and launch it, after the setup commands when configured. A failure removes the worktree and branch and throws; the
+ * caller deals with the record.
  */
-export async function addWorktree(m: NodeManager, id: string, prompt: string | undefined, head?: { base: string; baseSha: string }): Promise<void> {
+export async function addWorktree(m: NodeManager, id: string, prompt: string | undefined, baseBranch?: string): Promise<void> {
   const rt = m.runtimes.get(id)!;
   rt.busy = 'creating';
   try {
-    await createWorktree(m, id, prompt, head);
+    await createWorktree(m, id, prompt, baseBranch);
   } finally {
     rt.busy = undefined;
   }
 }
 
-async function createWorktree(m: NodeManager, id: string, prompt: string | undefined, head?: { base: string; baseSha: string }): Promise<void> {
+async function createWorktree(m: NodeManager, id: string, prompt: string | undefined, baseBranch?: string): Promise<void> {
   const rec = m.registry.get(id)!;
   const repo = await wt.mainCheckout(rec.cwd);
-  const { base, baseSha } = head ?? await wt.headInfo(rec.cwd);
+  const { base, baseSha } = baseBranch ? { base: baseBranch, baseSha: await wt.branchSha(rec.cwd, baseBranch) } : await wt.headInfo(rec.cwd);
+  if (!baseSha) throw new Error(`base branch ${base} no longer exists`);
   const config = loadConfig(repo, m.home); // the main checkout's file, whichever branch rec.cwd has checked out
   const path = join(repo, wt.WORKTREES_DIR, id);
   const worktree: Worktree = { repo, path, branch: config.worktrees.branchPrefix + id, base, baseSha };
@@ -123,6 +125,10 @@ export async function mergeWorktree(m: NodeManager, id: string): Promise<{ base:
   if (!rec) throw new Error(`no such node: ${id}`);
   const w = rec.worktree;
   if (!w) throw new Error(`${id} has no worktree of its own to merge`);
+  const config = loadConfig(w.repo, m.home).worktrees;
+  if ((await wt.protectedBranches(w.repo, config.protected)).includes(w.base)) {
+    throw new Error(`refusing to merge into protected branch ${w.base}; spawn workers with base <branch> (tl spawn --base, or base on the spawn tool) and open a pull request from it`);
+  }
   const rt = m.runtimes.get(id)!, s = rt.status!;
   if (s.state === 'working' && !s.exited) throw new Error(`refusing to merge while ${id} is working; wait until its turn ends`);
   if (rt.setup) throw new Error('worktree setup is running');
@@ -132,7 +138,7 @@ export async function mergeWorktree(m: NodeManager, id: string): Promise<{ base:
     await refreshGit(m, id).catch(logError);
     const dirty = existsSync(w.path) ? await wt.dirtyFiles(w.path) : [];
     if (dirty.length) throw new Error(`merge refused, nothing changed: ${count(dirty.length, 'uncommitted file')} in the worktree; commit them first`);
-    const style = loadConfig(w.repo, m.home).worktrees.mergeStyle;
+    const style = config.mergeStyle;
     const subject = style === 'squash' ? `${rec.title} (squashed from ${w.branch})` : `Merge branch '${w.branch}': ${rec.title}`;
     const sha = await wt.mergeInto(w.repo, w.branch, w.base, style, subject);
     const merged = { tip: await branchTip(w), at: Date.now() };

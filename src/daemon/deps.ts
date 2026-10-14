@@ -52,7 +52,7 @@ export function arm(m: NodeManager, id: string, req: SpawnRequest, isolation: Is
   const max = loadConfig(null, m.home).daemon.maxWorking;
   const queue = req.kind === 'claude' && !req.now && max > 0 && (workingCount(m) >= max || m.list().some((v) => v.status.state === 'queued'));
   if (!after.length && !afterSuccess.length && !queue) return false;
-  const rec = m.registry.update(id, { pending: { after, afterSuccess, met: [], prompt: req.prompt, isolation, ...(req.now ? { now: true } : {}) } })!;
+  const rec = m.registry.update(id, { pending: { after, afterSuccess, met: [], prompt: req.prompt, isolation, ...(req.base ? { base: req.base } : {}), ...(req.now ? { now: true } : {}) } })!;
   m.runtimes.get(id)!.status = { state: 'armed', changedAt: Date.now() };
   if (after.length || afterSuccess.length) m.logEvent(id, 'arm', { parentId: rec.parentId, after, afterSuccess });
   schedule(m);
@@ -126,7 +126,7 @@ function release(m: NodeManager, id: string): void {
     if (p.isolation === 'worktree') {
       if (p.prompt) rt.starting = true; // the worktree takes a while; hold its maxWorking slot meanwhile
       m.setStatus(id, { ...rt.status!, state: 'unknown', activity: 'creating worktree', changedAt: Date.now() }, false);
-      addWorktree(m, id, p.prompt).then(() => m.emitNode(id), fail);
+      addWorktree(m, id, p.prompt, p.base).then(() => m.emitNode(id), fail);
       return;
     }
     m.writeFiles(id);

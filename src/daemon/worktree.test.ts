@@ -23,7 +23,7 @@ function setup(): void {
   vi.stubEnv('HOME', home); // trustPolicy reads ~/.claude.json; git then reads no global config
   repo = join(home, 'repo');
   mkdirSync(repo);
-  g(repo, 'init', '-q', '-b', 'main');
+  g(repo, 'init', '-q', '-b', 'dev');
   for (const [k, v] of [['user.email', 't@example.com'], ['user.name', 'T'], ['commit.gpgsign', 'false']]) g(repo, 'config', k!, v!);
   commit(repo, 'README');
   writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [repo]: { hasTrustDialogAccepted: true } } }));
@@ -60,9 +60,9 @@ describe('worktree nodes', () => {
     const v = await spawnW();
     const path = join(repo, '.claude', 'worktrees', v.id);
     expect(v.cwd).toBe(path);
-    expect(v.worktree).toEqual({ repo, path, branch: `tl/${v.id}`, base: 'main', baseSha: sha });
+    expect(v.worktree).toEqual({ repo, path, branch: `tl/${v.id}`, base: 'dev', baseSha: sha });
     expect(g(path, 'branch', '--show-current')).toBe(`tl/${v.id}`);
-    expect(JSON.parse(readFileSync(join(repo, '.git', 'worktrees', v.id, 'tl-node'), 'utf8'))).toEqual({ home: m.home, nodeId: v.id, base: 'main', baseSha: sha });
+    expect(JSON.parse(readFileSync(join(repo, '.git', 'worktrees', v.id, 'tl-node'), 'utf8'))).toEqual({ home: m.home, nodeId: v.id, base: 'dev', baseSha: sha });
     await spawnW(); // a second worktree does not add the line again
     expect(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8').split('\n').filter((l) => l === '/.claude/worktrees/')).toHaveLength(1);
     expect(g(repo, 'status', '--porcelain')).toBe('');
@@ -162,7 +162,7 @@ describe('worktree nodes', () => {
     await m.close(discarded.id, true, 'discard');
     const fates = Object.fromEntries((await history(m.home)).map((a) => [a.id, [a.branch, a.branchFate, a.base]]));
     expect(fates).toEqual({
-      [merged.id]: [`tl/${merged.id}`, 'merged', 'main'], [kept.id]: [`tl/${kept.id}`, 'kept', undefined], [discarded.id]: [`tl/${discarded.id}`, 'discarded', undefined],
+      [merged.id]: [`tl/${merged.id}`, 'merged', 'dev'], [kept.id]: [`tl/${kept.id}`, 'kept', undefined], [discarded.id]: [`tl/${discarded.id}`, 'discarded', undefined],
     });
     for (const cwd of [merged.cwd, '']) { // the UI passes the archived cwd; tl spawn --fork passes none
       const f = await m.spawn({ kind: 'claude', title: 'f', cwd, fork: merged.id, byHuman: true });
@@ -230,7 +230,7 @@ describe('worktree nodes', () => {
     const orphan = async (id: string, markerHome: string) => {
       const path = join(repo, '.claude', 'worktrees', id);
       await wt.add(repo, path, `tl/${id}`, sha);
-      await wt.writeMarker(path, { home: markerHome, nodeId: id, base: 'main', baseSha: sha });
+      await wt.writeMarker(path, { home: markerHome, nodeId: id, base: 'dev', baseSha: sha });
       return path;
     };
     const busy = await orphan('n-0000000a', m.home);
@@ -284,12 +284,12 @@ describe('git state and merge', () => {
   it('counts commits ahead and behind and dirty files, refreshed when a turn stops', async () => {
     setup();
     const v = await spawnW();
-    await expect.poll(() => m.view(v.id)!.status.git).toEqual({ branch: `tl/${v.id}`, base: 'main', ahead: 0, behind: 0, dirty: 0, additions: 0, deletions: 0 });
+    await expect.poll(() => m.view(v.id)!.status.git).toEqual({ branch: `tl/${v.id}`, base: 'dev', ahead: 0, behind: 0, dirty: 0, additions: 0, deletions: 0 });
     commit(v.cwd, 'a.txt');
     writeFileSync(join(v.cwd, 'b.txt'), 'b\n');
     commit(repo, 'c.txt');
     stop(v.id);
-    await expect.poll(() => m.view(v.id)!.status.git).toEqual({ branch: `tl/${v.id}`, base: 'main', ahead: 1, behind: 1, dirty: 1, additions: 2, deletions: 0 });
+    await expect.poll(() => m.view(v.id)!.status.git).toEqual({ branch: `tl/${v.id}`, base: 'dev', ahead: 1, behind: 1, dirty: 1, additions: 2, deletions: 0 });
   });
 
   it('diffs commits and uncommitted work as one, file by file, leaving the node\'s own index alone', async () => {
@@ -302,7 +302,7 @@ describe('git state and merge', () => {
     writeFileSync(join(v.cwd, 'new.txt'), 'one\ntwo\n');
     const d = await m.diff(v.id);
     expect({ ...d, files: d.files.map(({ patch, ...f }) => f) }).toEqual({
-      base: 'main', branch: `tl/${v.id}`, files: [
+      base: 'dev', branch: `tl/${v.id}`, files: [
         { path: 'README', status: 'modified', additions: 1, deletions: 0 },
         { path: 'gone.txt', status: 'deleted', additions: 0, deletions: 1 },
         { path: 'new.txt', status: 'added', additions: 2, deletions: 0 },
@@ -339,7 +339,7 @@ describe('git state and merge', () => {
     writeFileSync(join(repo, 'README'), 'ours\n');
     g(repo, 'commit', '-qam', 'ours');
     const head = g(repo, 'rev-parse', 'HEAD');
-    await expect(m.merge(v.id)).rejects.toMatchObject({ message: `merge refused, nothing changed: tl/${v.id} conflicts with main in README`, conflicts: ['README'] });
+    await expect(m.merge(v.id)).rejects.toMatchObject({ message: `merge refused, nothing changed: tl/${v.id} conflicts with dev in README`, conflicts: ['README'] });
     expect(g(repo, 'rev-parse', 'HEAD')).toBe(head);
     expect(readFileSync(join(repo, 'README'), 'utf8')).toBe('ours\n');
     expect(g(repo, 'status', '--porcelain') + g(v.cwd, 'status', '--porcelain')).toBe('');
@@ -354,7 +354,7 @@ describe('git state and merge', () => {
     await expect(m.merge(v.id)).rejects.toThrow('1 uncommitted file in the worktree');
     rmSync(join(v.cwd, 'b.txt'));
     const r = await m.merge(v.id);
-    expect(r).toEqual({ base: 'main', sha: g(repo, 'rev-parse', 'main'), style: 'merge' });
+    expect(r).toEqual({ base: 'dev', sha: g(repo, 'rev-parse', 'dev'), style: 'merge' });
     expect(g(repo, 'log', '-1', '--format=%P').split(' ')).toHaveLength(2);
     expect(g(repo, 'log', '-1', '--format=%s')).toBe(`Merge branch 'tl/${v.id}': w`);
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('a.txt\n'); // the main checkout moved with its branch
@@ -371,11 +371,11 @@ describe('git state and merge', () => {
     const v = await spawnW();
     commit(v.cwd, 'a.txt');
     commit(v.cwd, 'b.txt');
-    const before = g(repo, 'rev-parse', 'main');
+    const before = g(repo, 'rev-parse', 'dev');
     await m.merge(v.id);
     expect(g(repo, 'log', '-1', '--format=%P')).toBe(before);
     expect(g(repo, 'log', '-1', '--format=%B')).toBe(`w (squashed from tl/${v.id})\n\n* add a.txt\n* add b.txt`);
-    expect(g(repo, 'show', '--format=', '--name-only', 'main').split('\n')).toEqual(['a.txt', 'b.txt']);
+    expect(g(repo, 'show', '--format=', '--name-only', 'dev').split('\n')).toEqual(['a.txt', 'b.txt']);
     await m.close(v.id, true);
     expect(existsSync(v.cwd)).toBe(false);
 
@@ -383,10 +383,10 @@ describe('git state and merge', () => {
     const f = await spawnW();
     commit(f.cwd, 'f.txt');
     commit(repo, 'moved.txt');
-    await expect(m.merge(f.id)).rejects.toThrow('cannot fast-forward main');
+    await expect(m.merge(f.id)).rejects.toThrow('cannot fast-forward dev');
     g(repo, 'reset', '-q', '--hard', 'HEAD~1');
     await m.merge(f.id);
-    expect(g(repo, 'rev-parse', 'main')).toBe(g(repo, 'rev-parse', `tl/${f.id}`));
+    expect(g(repo, 'rev-parse', 'dev')).toBe(g(repo, 'rev-parse', `tl/${f.id}`));
   });
 
   it('a squash-merged branch still counts as merged after a daemon restart', async () => {
@@ -407,13 +407,65 @@ describe('git state and merge', () => {
     const v = await spawnW();
     commit(v.cwd, 'a.txt');
     writeFileSync(join(repo, 'README'), 'edited\n');
-    await expect(m.merge(v.id)).rejects.toThrow(`main is checked out at ${repo} with uncommitted changes`);
+    await expect(m.merge(v.id)).rejects.toThrow(`dev is checked out at ${repo} with uncommitted changes`);
     g(repo, 'checkout', '-q', '--', 'README');
     g(repo, 'switch', '-q', '-c', 'other');
     await m.merge(v.id);
-    expect(g(repo, 'show', '--format=', '--name-only', 'main^2')).toBe('a.txt');
+    expect(g(repo, 'show', '--format=', '--name-only', 'dev^2')).toBe('a.txt');
     expect(existsSync(join(repo, 'a.txt'))).toBe(false); // the checkout on "other" is untouched
     expect(g(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('a requested base is created at HEAD, workers fork from its tip, and merges move it and leave main alone', async () => {
+    setup();
+    g(repo, 'branch', '-m', 'main');
+    const main = g(repo, 'rev-parse', 'main');
+    await expect(m.spawn({ kind: 'claude', title: 'w', cwd: repo, base: 'feat/x' })).rejects.toThrow('base is for isolation "worktree" only');
+    await expect(spawnW({ base: 'bad..name' })).rejects.toThrow('not a valid branch name: bad..name');
+    const v = await spawnW({ base: 'feat/x' });
+    expect(v.worktree).toMatchObject({ base: 'feat/x', baseSha: main });
+    expect(g(repo, 'rev-parse', 'feat/x')).toBe(main);
+    commit(v.cwd, 'a.txt');
+    const r = await m.merge(v.id);
+    expect(r.base).toBe('feat/x');
+    expect(g(repo, 'rev-parse', 'feat/x')).toBe(r.sha);
+    expect(g(repo, 'rev-parse', 'main')).toBe(main);
+    const next = await spawnW({ base: 'feat/x' }); // the second worker of the task starts from the first one's merge
+    expect(next.worktree).toMatchObject({ base: 'feat/x', baseSha: r.sha });
+  });
+
+  it('without a base, a worker spawned on a protected branch gets a task branch named from its title', async () => {
+    setup();
+    g(repo, 'branch', '-m', 'main');
+    const main = g(repo, 'rev-parse', 'main');
+    const a = await spawnW({ title: 'Fix the Login bug!' }), b = await spawnW({ title: 'Fix the Login bug!' });
+    expect(a.worktree).toMatchObject({ base: 'tl/fix-the-login-bug', baseSha: main });
+    expect(b.worktree!.base).toBe('tl/fix-the-login-bug-2');
+    g(repo, 'switch', '-q', '--detach');
+    expect((await spawnW({ title: '???' })).worktree!.base).toBe('tl/task'); // detached counts as protected
+    g(repo, 'switch', '-q', 'main');
+    config({ taskBranch: 'feature/{slug}' });
+    expect((await spawnW({ title: 'x' })).worktree!.base).toBe('feature/x');
+  });
+
+  it('refuses to merge into a protected branch, changing nothing, unless the config empties the list; origin\'s default counts', async () => {
+    setup();
+    g(repo, 'branch', '-m', 'main');
+    const v = await spawnW({ base: 'main' });
+    commit(v.cwd, 'a.txt');
+    const main = g(repo, 'rev-parse', 'main'), tip = g(repo, 'rev-parse', `tl/${v.id}`);
+    await expect(m.merge(v.id)).rejects.toThrow('refusing to merge into protected branch main; spawn workers with base <branch> (tl spawn --base, or base on the spawn tool) and open a pull request from it');
+    expect([g(repo, 'rev-parse', 'main'), g(repo, 'rev-parse', `tl/${v.id}`)]).toEqual([main, tip]);
+    expect(m.view(v.id)!.status.git?.mergedAt).toBeUndefined();
+    config({ protected: [] });
+    expect((await m.merge(v.id)).base).toBe('main');
+
+    g(repo, 'update-ref', 'refs/remotes/origin/trunk', 'HEAD');
+    g(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/trunk');
+    g(repo, 'branch', 'trunk');
+    const t = await spawnW({ base: 'trunk' });
+    commit(t.cwd, 't.txt');
+    await expect(m.merge(t.id)).rejects.toThrow('refusing to merge into protected branch trunk');
   });
 });
 
@@ -429,7 +481,7 @@ describe('setup and teardown commands', () => {
     await expect(m.merge(v.id)).rejects.toThrow('worktree setup is running');
     expect(m.session(v.id)).toBeUndefined();
     await expect.poll(() => argvOf(v.id), { timeout: 5000 }).toContain('-- hi');
-    expect(readFileSync(join(repo, '.claude', 'worktrees', `setup-${v.id}`), 'utf8')).toBe(`${v.id} main ${repo} ${v.cwd} ${v.cwd}\n`);
+    expect(readFileSync(join(repo, '.claude', 'worktrees', `setup-${v.id}`), 'utf8')).toBe(`${v.id} dev ${repo} ${v.cwd} ${v.cwd}\n`);
 
     config({ setup: ['echo broken; exit 3'] });
     const bad = await spawnW({ prompt: 'brief' });
