@@ -97,7 +97,6 @@ const ENV_KEYS = [
   "TL_TOKEN_FILE",
   "TL_SESSION_ID",
   "TL_PI_POLL_MS",
-  "TL_PERMISSION_MODE",
 ] as const;
 
 const ENV_BACKUP: Record<string, string | undefined> = {};
@@ -450,30 +449,6 @@ describe("tiller pi extension", () => {
     );
     expect(shutdown).toHaveBeenCalled();
     expect(calls).toEqual([]);
-  });
-
-  it("refuses to activate and shuts down when unsupported restriction settings are present", async () => {
-    setBaseEnv();
-    process.env.TL_PERMISSION_MODE = "plan";
-    const calls = stubFetch();
-    const pi = fakePi();
-    const notify = vi.fn();
-    const shutdown = vi.fn();
-    tillerPiExtension(pi.api);
-    await pi.emit(
-      "session_start",
-      { type: "session_start", reason: "startup" },
-      fakeContext({ ui: { notify }, shutdown }),
-    );
-    await tick();
-
-    expect(pi.mcp).toEqual([]);
-    expect(calls.filter((call) => !call.url.endsWith("/inbox"))).toEqual([]);
-    expect(shutdown).toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith(
-      expect.stringContaining("unsupported restriction settings"),
-      "error",
-    );
   });
 
   it("shuts down instead of running half-activate when the bridge environment is invalid", async () => {

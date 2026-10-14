@@ -159,6 +159,14 @@ export class TillerClient {
     await this.call("POST", "/ack", { id });
   }
 
+  /** Hand back a claim that was never submitted. Returns false when the daemon no longer has it (404). */
+  async release(id: string): Promise<boolean> {
+    const { status } = await this.raw("POST", "/release", { id });
+    if (status === 404) return false;
+    if (status >= 200 && status < 300) return true;
+    throw new TillerHttpError(`POST /release: ${status}`, status);
+  }
+
   /** Retire an ambiguous native submission. No delivery receipt and no automatic retry. */
   async unconfirmed(id: string): Promise<void> {
     await this.call("POST", "/unconfirmed", { id });

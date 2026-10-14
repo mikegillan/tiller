@@ -30,6 +30,8 @@ const MAX_PREVIOUS_SESSIONS = 10;
 const INTERRUPT_MS = 1500;
 const SWEEP_MS = 60_000;
 const TRUST_WATCH_MS = 20_000;
+/** How the Pi adapter prints an activation refusal to stderr (adapters/pi/index.ts report). */
+const PI_REFUSAL = '[tiller] tiller: ';
 const TRUST_BLOCKED_ACTIVITY = 'Trust dialog: answer it in the terminal';
 /** The marker (U+276F) Claude draws in front of the selected option of a dialog. */
 const SELECTED = String.fromCodePoint(0x276f);
@@ -381,7 +383,7 @@ export class NodeManager extends EventEmitter {
       parentId, kind: req.kind, ...(req.harness ? { harness: req.harness } : {}), title: req.title, cwd: req.cwd,
       model: req.model ?? p.model ?? defaults.model, effort: req.effort ?? p.effort ?? defaults.effort, permissionMode, role, preset: req.preset,
       sessionId: adapter ? req.followup?.sessionId ?? randomUUID() : undefined,
-      ...(req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
+      ...(adapter?.id === 'pi' && req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
       ...(adapter?.id === 'pi' && req.followup?.previousSessions ? { previousSessions: req.followup.previousSessions } : {}),
       rootId: parentId ? this.rootIdOf(parentId) : undefined,
       prompt: req.prompt, forkOf: req.fork, forkSession: from?.sessionId, followupOf: req.followup?.id,
@@ -418,7 +420,7 @@ export class NodeManager extends EventEmitter {
     if (!src) throw new Error(`no such node to fork: ${req.fork}`);
     if ((src.harness ?? 'claude') !== harnessFor(req)) throw new Error('cannot fork a session across harnesses');
     // transcriptPath comes with SessionStart: without it the session has not started and there is nothing to fork.
-    if (!src.sessionId || !src.transcriptPath) throw new Error(`refused: ${req.fork} has no Claude session yet to fork`);
+    if (!src.sessionId || !src.transcriptPath) throw new Error(`refused: ${req.fork} has no session yet to fork`);
     const want = req.cwd || src.cwd, cwd = usableCwd(want);
     if (!cwd) throw new Error(`refused: ${want} no longer exists`);
     return { sessionId: src.sessionId, cwd };
@@ -485,7 +487,7 @@ export class NodeManager extends EventEmitter {
   async resume(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
     const rec = this.registry.get(id);
     if (!rec) return { ok: false, error: 'No such node' };
-    if (!isAgentKind(rec.kind) || !adapterFor(rec).capabilities.resume) return { ok: false, error: 'Only resumable agent nodes can be resumed' };
+    if (!isAgentKind(rec.kind)) return { ok: false, error: 'Only agent nodes can be resumed' };
     const rt = this.runtimes.get(id)!;
     if (rt.session) return { ok: false, error: 'Node is still running' };
     if (rt.setup) return { ok: false, error: 'worktree setup is running' };
@@ -725,13 +727,15 @@ export class NodeManager extends EventEmitter {
       rt.starting = false;
       this.setStatus(nodeId, reduce(prev, { hook_event_name: 'UserPromptSubmit', prompt_id: ev.payload.turnId }, now));
     } else if (ev.event === 'turn.complete') {
-      rt.lastHookAt = now;
-      rt.starting = false;
       const model = ev.payload.usage?.model;
-      const base = { ...prev,
-        ...(typeof model === 'string' ? { model } : {}),
-        ...(typeof ev.payload.answer === 'string' ? { lastAssistantMessage: ev.payload.answer } : {}),
-      };
+      let base = typeof model === 'string' && model !== prev.model ? { ...prev, model } : prev;
+      // Claude's Stop hook owns its final message; only Pi reports it here.
+      const rec = this.registry.get(nodeId);
+      if (rec && isAgentKind(rec.kind) && harnessFor(rec) === 'pi') {
+        rt.lastHookAt = now;
+        rt.starting = false;
+        if (typeof ev.payload.answer === 'string') base = { ...base, lastAssistantMessage: ev.payload.answer };
+      }
       this.setStatus(nodeId, turnComplete(base, now, ev.payload));
       refreshGit(this, nodeId).catch(logError);
     } else if (ev.event === 'session.measure') {
@@ -915,9 +919,10 @@ export class NodeManager extends EventEmitter {
     if (adapter && prompt) rt.starting = true;
     this.registry.update(id, { lastActiveAt: Date.now(), forkSession: undefined });
     this.liveChanged();
-    let outputTail = '';
+    const pi = adapter?.id === 'pi';
+    let outputTail = ''; // only Pi's exit handler reads it
     s.onData((d) => {
-      outputTail = (outputTail + d).slice(-8192);
+      if (pi) outputTail = (outputTail + d).slice(-8192);
       this.emit('data', id, d);
     });
     s.onExit((code) => {
@@ -927,10 +932,12 @@ export class NodeManager extends EventEmitter {
       this.liveChanged();
       this.markUnread(id);
       let status = ptyExited(rt.status!, Date.now());
-      if (adapter?.id === 'pi') {
-        if (code !== 0) {
-          const lines = stripVTControlCharacters(outputTail).split(/[\r\n]+/).map((line) => line.trim());
-          const error = lines.findLast((line) => /^Error:/i.test(line));
+      if (pi) {
+        const lines = stripVTControlCharacters(outputTail).split(/[\r\n]+/).map((line) => line.trim());
+        // The adapter's refusals (an incompatible Pi build, a bad launch environment) shut Pi down cleanly, often with code 0.
+        const refusal = lines.findLast((line) => line.includes(PI_REFUSAL));
+        if (code !== 0 || refusal) {
+          const error = refusal?.slice(refusal.indexOf(PI_REFUSAL) + '[tiller] '.length) ?? lines.findLast((line) => /^Error:/i.test(line));
           status = { ...status, errored: true, activity: error?.slice(0, 300) ?? `Process exited with code ${code}` };
         } else status = { ...status, activity: undefined };
       }

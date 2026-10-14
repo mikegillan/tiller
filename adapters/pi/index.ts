@@ -9,8 +9,9 @@
  * - Polls `/inbox`, claims only the immediate next message, submits through `pi.sendUserMessage`,
  *   and acks only once a matching `before_agent_start` confirms Pi accepted the prompt. A void
  *   `sendUserMessage` return is ambiguous; after a bounded wait the claim retires as unconfirmed
- *   (stalled/nonretryable), never re-sent or falsely acknowledged. Non-steer messages wait in the
- *   daemon until Pi is idle; steers abort the running turn and submit after Pi reports idle.
+ *   (stalled/nonretryable), never re-sent or falsely acknowledged. Messages are claimed only while
+ *   Pi is idle, so they stay withdrawable until then; steers abort the running turn first. A claim
+ *   Pi became busy before submitting is released back to the daemon as retryable.
  * - Reports `/hook` `SessionStart` with the daemon's `TL_SESSION_ID` (never Pi's own header UUID),
  *   `UserPromptSubmit` from the actual `before_agent_start` prompt, `SessionEnd`, and optionally
  *   PreToolUse/PostToolUse for tool activity.
@@ -26,15 +27,14 @@
  * Every lifecycle HTTP call is serialized through one queue, so `SessionStart` can never race the
  * first turn's events; handlers for state-critical events await that queue.
  *
- * It does not change Pi's permission handling. If the environment asks for a restriction it
- * cannot enforce, it refuses to activate (see config.ts) instead of running with weaker safety.
+ * It does not change Pi's permission handling; the daemon refuses restrictions it cannot map
+ * before launch.
  */
 
 import { randomBytes } from "node:crypto";
 import { TillerBridge } from "./bridge.ts";
 import { readToken, TillerClient } from "./client.ts";
 import {
-  findUnsupportedRestrictions,
   missingCapabilities,
   nativePiVersion,
   supportsNativeEvents,
@@ -269,17 +269,6 @@ export default function tillerPiExtension(
     runActive = false;
     uiOpenCount = 0;
     runStartedAt = Date.now();
-
-    // Reject restriction settings the adapter cannot honor instead of silently ignoring them.
-    const unsupported = findUnsupportedRestrictions(process.env);
-    if (unsupported.length > 0) {
-      config = undefined;
-      failClosed(
-        ctx,
-        `tiller: refusing to activate with unsupported restriction settings: ${unsupported.join(", ")}`,
-      );
-      return;
-    }
 
     let token: string;
     try {
