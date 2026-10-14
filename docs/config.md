@@ -1,6 +1,6 @@
 # Configuration
 
-orchestr8 reads JSON config from two files: the project file `<repo>/.orchestr8/config.json` and the home file `~/.orchestr8/config.json` (under `O8_HOME` when set). Every key is optional. `o8 config [--cwd P]` prints the effective value of every key for a directory and the file it came from, or `default`.
+Tiller reads JSON config from two files: the project file `<repo>/.tiller/config.json` and the home file `~/.tiller/config.json` (under `TL_HOME` when set). Every key is optional. `tl config [--cwd P]` prints the effective value of every key for a directory and the file it came from, or `default`.
 
 ## Resolution
 
@@ -10,7 +10,7 @@ Keys in the `daemon` group are daemon-wide and come from the home file only. A `
 
 ## Bad files and bad keys
 
-A file that does not parse as JSON is skipped as a whole, and the daemon logs one line naming it. Inside a file that parses, every group and the top level are strict: an unknown key (for example a misspelling, or a name that has since been renamed) and a key with an invalid value are each logged once and dropped, and the rest of the file still applies. The warning goes to the daemon's log (or to the terminal, for `o8 config`) in the form `orchestr8: ignoring in <path>: <key>: <reason>`.
+A file that does not parse as JSON is skipped as a whole, and the daemon logs one line naming it. Inside a file that parses, every group and the top level are strict: an unknown key (for example a misspelling, or a name that has since been renamed) and a key with an invalid value are each logged once and dropped, and the rest of the file still applies. The warning goes to the daemon's log (or to the terminal, for `tl config`) in the form `tiller: ignoring in <path>: <key>: <reason>`.
 
 ## Keys
 
@@ -25,11 +25,11 @@ The layer column says where a key may be set: "project, home" means either file,
 | `approvals.close` | `never`, `done`, `always` | `never` | project, home | Whether an agent's `close` skips the human's approval: always, only when every node in the batch is done, exited or has reported an outcome, or never. |
 | `approvals.merge` | boolean | `false` | project, home | When true, an agent's `merge` does not ask the human. |
 | `worktrees.isolation` | `none`, `worktree` | `none` | project, home | What a spawn of a Claude worker gets when it does not say. |
-| `worktrees.branchPrefix` | string | `o8/` | project, home | A worktree's branch is this prefix followed by the node id. |
+| `worktrees.branchPrefix` | string | `tl/` | project, home | A worktree's branch is this prefix followed by the node id. |
 | `worktrees.include` | list of gitignore patterns | `.worktreeinclude` | project, home | Gitignored files copied into a new worktree; when absent, the repo's `.worktreeinclude` file is used. |
 | `worktrees.mergeStyle` | `merge`, `squash`, `ff-only` | `merge` | project, home | How the merge verb brings a branch into its base. |
 | `worktrees.setup` | list of shell commands | `[]` | project, home | Run in a new worktree before the agent starts. |
-| `worktrees.teardown` | list of shell commands | `[]` | project, home | Run in a worktree before orchestr8 removes it. |
+| `worktrees.teardown` | list of shell commands | `[]` | project, home | Run in a worktree before tiller removes it. |
 | `gate.command` | shell command | none | project, home | A check that must pass before a worker's `succeeded` report is recorded; no gate when unset. |
 | `gate.retries` | integer, 0 or more | `2` | project, home | Further failed gate runs allowed before the outcome is recorded as failed. |
 | `gate.timeoutMinutes` | positive number | `10` | project, home | Each gate run is stopped after this long. |

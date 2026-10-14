@@ -1,6 +1,6 @@
 > Built differently: the merge and squash styles write their result with `git commit-tree` and then fast-forwards the base's checkout, instead of running `git merge --no-ff` there; the config keys became `worktrees.mergeStyle` and `approvals.merge`; of phase 3 only the per-node diff view was built. See [../worktrees.md](../worktrees.md) for current behaviour.
 
-# orchestr8 — a git worktree per worker node (design)
+# tiller — a git worktree per worker node (design)
 
 Written 2026-10-13 by node n-e622b9c4 ("plan: worktrees"). Design only; nothing in the repo was changed. Restored from the orchestrator's context after a reboot cleared /tmp.
 
@@ -11,7 +11,7 @@ The behaviour this design depends on was checked in a throwaway repo under a scr
 ## What the experiments established
 
 1. `claude --worktree <name>` creates `<repo>/.claude/worktrees/<name>` on branch `worktree-<name>`. It takes a `git worktree lock` whose reason reads `claude session <name> (pid N start …)`, and it writes a `CLAUDE_BASE` file into `.git/worktrees/<name>/`. A `-p` run leaves the lock in place after it exits. Unless `.claude/` is ignored, the main checkout then shows `?? .claude/` in `git status`.
-2. **The daemon can create the worktree with plain git and Claude will adopt it.** `git worktree add -b o8/n-b .claude/worktrees/n-b feat` and then `claude --worktree n-b`: Claude ran inside that directory on branch `o8/n-b`, the branch name the daemon chose, and locked it. It also enforced isolation: a `Write` to a file in the main checkout was refused with "This session is isolated in the worktree … Edit the worktree copy of this file instead of the shared-checkout path." A marker file the daemon wrote into `.git/worktrees/n-b/` survived the adoption.
+2. **The daemon can create the worktree with plain git and Claude will adopt it.** `git worktree add -b tl/n-b .claude/worktrees/n-b feat` and then `claude --worktree n-b`: Claude ran inside that directory on branch `tl/n-b`, the branch name the daemon chose, and locked it. It also enforced isolation: a `Write` to a file in the main checkout was refused with "This session is isolated in the worktree … Edit the worktree copy of this file instead of the shared-checkout path." A marker file the daemon wrote into `.git/worktrees/n-b/` survived the adoption.
 3. `claude --resume <sid>` launched from the main checkout puts the session back into that daemon-created worktree. `claude --session-id <new> --worktree <name>` reopens the existing worktree at its current tip, which is the restart case. Both runs had `worktree.baseRef: "head"` set through `--settings`.
 4. **If the worktree directory has been deleted, `--resume` keeps going in the main checkout with no isolation.** It prints "continuing in the current directory without worktree isolation. The worktree binding has been cleared." The daemon therefore has to check that the worktree exists before it resumes a node.
 5. Launching `claude --worktree c1` from inside another worktree, p1, put c1 at the main checkout's `.claude/worktrees/c1`, not nested inside p1. Its base was p1's HEAD because baseRef was `head`.
@@ -25,9 +25,9 @@ Goal: a worker can be spawned into its own git worktree and branch, so parallel 
 
 The owner's "clean" made concrete, each testable:
 
-- **No orphans.** Every worktree under `<repo>/.claude/worktrees/` that carries an orchestr8 marker for this daemon home belongs to a node in the registry. Daemon start finds and reports the ones that do not.
-- **No stale branches.** An `o8/<id>` branch is deleted when its node's work is merged or discarded. One is kept only when the human chose "keep branch", and `o8 worktrees` lists every kept branch.
-- **Predictable place.** A node's worktree is always `<main checkout>/.claude/worktrees/<nodeId>` on branch `o8/<nodeId>`.
+- **No orphans.** Every worktree under `<repo>/.claude/worktrees/` that carries a tiller marker for this daemon home belongs to a node in the registry. Daemon start finds and reports the ones that do not.
+- **No stale branches.** An `tl/<id>` branch is deleted when its node's work is merged or discarded. One is kept only when the human chose "keep branch", and `tl worktrees` lists every kept branch.
+- **Predictable place.** A node's worktree is always `<main checkout>/.claude/worktrees/<nodeId>` on branch `tl/<nodeId>`.
 - **Lifecycle parity.** Spawn, close, prune, restart, resume, daemon shutdown, crash, reboot and manual deletion each have one defined effect on the worktree and the branch (section 5).
 - **Clear merge-back.** One supported path in the first slice: the branch is an ordinary git branch, and close recognises when it has been merged. A daemon `merge` verb follows in phase 2.
 - **Nothing surprising in the main checkout.** No untracked `.claude/` entry, no edits to tracked files such as `.gitignore`, and no worker edits leaking into the main checkout (Claude enforces this). The main checkout's files change only when the human or orchestrator explicitly merges.
@@ -37,15 +37,15 @@ Non-goals: phone integration and permission changes, a diff viewer (theme 3, whi
 
 ## 2. Disk layout and naming
 
-**Inside the repo, at `<main checkout>/.claude/worktrees/<nodeId>`, on branch `o8/<nodeId>`.**
+**Inside the repo, at `<main checkout>/.claude/worktrees/<nodeId>`, on branch `tl/<nodeId>`.**
 
 - The path is Claude Code's own convention and the only place `claude --worktree <name>` will adopt an existing worktree from; adopting is what turns on Claude's isolation checks.
 - The main checkout's root is resolved from any cwd as the first `worktree` line of `git worktree list --porcelain`. Every worktree, nested ones included, lands flat under that one directory.
-- The branch is `o8/<nodeId>`; the node id already has the form `n-<8 hex>`. A title slug would go stale on rename; show the title next to the branch in the UI instead.
+- The branch is `tl/<nodeId>`; the node id already has the form `n-<8 hex>`. A title slug would go stale on rename; show the title next to the branch in the UI instead.
 - **Hiding it:** the daemon appends `/.claude/worktrees/` to `$(git rev-parse --git-common-dir)/info/exclude` the first time it creates a worktree in a repo. ripgrep (and so Claude's Grep and Glob) honours it; test runners and other globbing tools do not, so each repo excludes `.claude/worktrees/**` in those tools.
-- **Mapping a path to a node:** the basename is the node id. The daemon also writes `.git/worktrees/<nodeId>/o8-node` containing `{"home", "nodeId", "base", "baseSha"}`. Reconciliation uses `home` so a test daemon with a temporary O8_HOME never treats the real daemon's worktrees as orphans. Claude's own worktrees have no marker and are never touched.
+- **Mapping a path to a node:** the basename is the node id. The daemon also writes `.git/worktrees/<nodeId>/tl-node` containing `{"home", "nodeId", "base", "baseSha"}`. Reconciliation uses `home` so a test daemon with a temporary TL_HOME never treats the real daemon's worktrees as orphans. Claude's own worktrees have no marker and are never touched.
 
-Alternatives rejected: `~/.orchestr8/worktrees/…` (Claude will not adopt it; `EnterWorktree` outside `.claude/worktrees/` asks for approval every time, so no enforcement) and a sibling directory (same loss, least predictable).
+Alternatives rejected: `~/.tiller/worktrees/…` (Claude will not adopt it; `EnterWorktree` outside `.claude/worktrees/` asks for approval every time, so no enforcement) and a sibling directory (same loss, least predictable).
 
 **Base ref:** the HEAD of the checkout the spawn's `cwd` points at, at spawn time. The daemon records the symbolic name (`base`) and `baseSha`. The node's generated settings set `worktree.baseRef: "head"` so Claude never resets an adopted worktree.
 
@@ -53,7 +53,7 @@ Alternatives rejected: `~/.orchestr8/worktrees/…` (Claude will not adopt it; `
 
 **MCP `spawn`** gains `isolation: "none" | "worktree"`, default `"none"`. With `"worktree"`, `kind` must be `claude`; `cwd` must be inside a git work tree with at least one commit; any directory in the main checkout means "branch from the main checkout's HEAD", and the caller's own worktree path means "branch from my HEAD". The reply gains `worktree: { path, branch, base }`. `requestId` replay keeps working.
 
-**The `o8` CLI** adds `o8 spawn … --worktree`, `o8 new <title> --worktree`, `o8 worktrees` (node worktrees, orphans, kept branches), `o8 worktrees clean [--force]`, `o8 kill <id> --keep-branch | --discard`, and `o8 merge <id>` in phase 2.
+**The `tl` CLI** adds `tl spawn … --worktree`, `tl new <title> --worktree`, `tl worktrees` (node worktrees, orphans, kept branches), `tl worktrees clean [--force]`, `tl kill <id> --keep-branch | --discard`, and `tl merge <id>` in phase 2.
 
 **WebSocket:** `spawn` gains `isolation?`; `close` gains `worktree?: 'keep' | 'discard'`; phase 2 adds `{ t: 'merge'; id }`.
 
@@ -67,13 +67,13 @@ Alternatives rejected: `~/.orchestr8/worktrees/…` (Claude will not adopt it; `
 
 **Gitignored files: reuse `.worktreeinclude` at the main checkout root.** Same semantics as Claude's own; the daemon does the copy with `cp -cR` on macOS (APFS clonefile, copy-on-write) and a plain recursive copy elsewhere; symlinks copied as links.
 
-**Setup and teardown commands** live in `.orchestr8/config.json` (project, then home):
+**Setup and teardown commands** live in `.tiller/config.json` (project, then home):
 
 ```json
 { "worktrees": { "setup": ["npm ci --prefer-offline"], "teardown": ["docker compose down"] } }
 ```
 
-Read from the main checkout root. Run with `sh -c` in the worktree with `O8_NODE_ID`, `O8_WORKTREE`, `O8_REPO`, `O8_BASE` and the daemon's login PATH. Output to the node's dir as `setup.log`; 10-minute timeout per command.
+Read from the main checkout root. Run with `sh -c` in the worktree with `TL_NODE_ID`, `TL_WORKTREE`, `TL_REPO`, `TL_BASE` and the daemon's login PATH. Output to the node's dir as `setup.log`; 10-minute timeout per command.
 
 - Setup runs after the include copy and before Claude launches; the node shows `activity: "setting up worktree: npm ci"` with state unknown. On failure the node shows exited and errored with the activity pointing at setup.log; the worktree is kept; restart retries setup; close removes everything.
 - Teardown runs before removal on every removal path, best effort: a failure is logged but does not block removal.
@@ -81,7 +81,7 @@ Read from the main checkout root. Run with `sh -c` in the worktree with `O8_NODE
 
 ### 4.1 Config keys
 
-All under `worktrees` in `.orchestr8/config.json`, precedence spawn argument, project file, home file, defaults; for a worktree node the project file is read from the main checkout root. Keys: `isolation` ("none" default; workers only), `branchPrefix` ("o8/"), `include` (patterns; absent falls back to `.worktreeinclude`), `setup` and `teardown` (project list replaces the home list), `merge` ("merge" no-ff default, "squash", "ff-only"), `mergeWithoutConfirm` (false; no spawn override). Deliberately no worktree root key.
+All under `worktrees` in `.tiller/config.json`, precedence spawn argument, project file, home file, defaults; for a worktree node the project file is read from the main checkout root. Keys: `isolation` ("none" default; workers only), `branchPrefix` ("tl/"), `include` (patterns; absent falls back to `.worktreeinclude`), `setup` and `teardown` (project list replaces the home list), `merge` ("merge" no-ff default, "squash", "ff-only"), `mergeWithoutConfirm` (false; no spawn override). Deliberately no worktree root key.
 
 Spawn becomes asynchronous for worktree nodes; all git calls go through `execFile` with a timeout.
 
@@ -91,9 +91,9 @@ Spawn becomes asynchronous for worktree nodes; all git calls go through `execFil
 
 | Event | Worktree | Branch | Node shows |
 |---|---|---|---|
-| **spawn** | exclude line if missing; `git worktree add -b o8/<id> <repo>/.claude/worktrees/<id> <baseSha>`; marker; immediate registry flush; include copy; setup; `claude --worktree <id>`. Any git failure removes worktree and branch and discards the record. | created at baseSha | setting up…, then normal; branch in the row |
+| **spawn** | exclude line if missing; `git worktree add -b tl/<id> <repo>/.claude/worktrees/<id> <baseSha>`; marker; immediate registry flush; include copy; setup; `claude --worktree <id>`. Any git failure removes worktree and branch and discards the record. | created at baseSha | setting up…, then normal; branch in the row |
 | **close** (default) | check safe before killing (a refused close leaves the node running); if safe: kill, check again, teardown, unlock a `claude session <id>` lock, `git worktree remove`. If the second check fails: keep and mark "worktree kept: changed during close". | `-d` (or `-D` after the daemon's own merged check) | removed; refusal names dirty count, unmerged count, sharing nodes, offers keep or discard |
-| **close, keep** | only check that no other node uses the tree; uncommitted changes committed as `WIP: orchestr8 node "<title>" (<id>)` with `git add -A && git commit --no-verify`; then removed | kept, listed by `o8 worktrees` | removed |
+| **close, keep** | only check that no other node uses the tree; uncommitted changes committed as `WIP: tiller node "<title>" (<id>)` with `git add -A && git commit --no-verify`; then removed | kept, listed by `tl worktrees` | removed |
 | **close, discard** | teardown, unlock, `git worktree remove --force` | `-D` | removed; agents only via the close confirm, whose text says what is destroyed |
 | **prune** | safe ones removed as close; others skipped in place | as close | reply lists kept nodes; never discards |
 | **restart** | untouched; `--session-id <new> --worktree <id>`; setup not re-run unless it failed | untouched | as today |
@@ -105,11 +105,11 @@ Spawn becomes asynchronous for worktree nodes; all git calls go through `execFil
 
 ## 6. Cleanliness guarantees
 
-**Orphan detection on daemon start.** `~/.orchestr8/worktree-repos.json` lists main-checkout roots the daemon has created worktrees in. For each existing repo: `git worktree prune`; parse `git worktree list --porcelain`; each entry under `.claude/worktrees/` with an `o8-node` marker whose `home` is this daemon's: known node fine, else orphan; registry nodes with `worktree` set but no entry: missing; `o8/n-*` branches with neither a worktree nor a node: kept branches. An orphan that is clean with no commits beyond `baseSha` is removed automatically (after unlocking a dead `claude session` lock); everything else is listed by `o8 worktrees` and in a status-bar notice.
+**Orphan detection on daemon start.** `~/.tiller/worktree-repos.json` lists main-checkout roots the daemon has created worktrees in. For each existing repo: `git worktree prune`; parse `git worktree list --porcelain`; each entry under `.claude/worktrees/` with a `tl-node` marker whose `home` is this daemon's: known node fine, else orphan; registry nodes with `worktree` set but no entry: missing; `tl/n-*` branches with neither a worktree nor a node: kept branches. An orphan that is clean with no commits beyond `baseSha` is removed automatically (after unlocking a dead `claude session` lock); everything else is listed by `tl worktrees` and in a status-bar notice.
 
-**Definitions.** Dirty: `git status --porcelain` prints anything (ignored files do not count). Merged: `git merge-base --is-ancestor o8/<id> <base>`, or no commits beyond `baseSha`, or every commit in `git cherry <base> o8/<id>` is `-`; after a phase-2 merge `mergedAt` on the node counts too. Locked by someone else: any lock reason other than `claude session <id>` with a dead pid; never removed.
+**Definitions.** Dirty: `git status --porcelain` prints anything (ignored files do not count). Merged: `git merge-base --is-ancestor tl/<id> <base>`, or no commits beyond `baseSha`, or every commit in `git cherry <base> tl/<id>` is `-`; after a phase-2 merge `mergedAt` on the node counts too. Locked by someone else: any lock reason other than `claude session <id>` with a dead pid; never removed.
 
-**Force path:** close discard, `o8 kill --discard`, `o8 worktrees clean --force`; each prints the commits (`git log --oneline base..branch`) and dirty files that will go; still runs teardown; still refuses while another live node's cwd is inside.
+**Force path:** close discard, `tl kill --discard`, `tl worktrees clean --force`; each prints the commits (`git log --oneline base..branch`) and dirty files that will go; still runs teardown; still refuses while another live node's cwd is inside.
 
 **Branch deletion:** delete when merged; `-D` only on discard; otherwise keep only when asked, never silently.
 
@@ -121,25 +121,25 @@ Options: merge into base (no-ff, squash, ff-only); rebase (done by the worker in
 
 **Phase 2, `merge`:**
 - Preconditions: worktree clean (worker committed), node not working.
-- Conflict check without touching files: `git merge-tree --write-tree --name-only <base> o8/<id>`; exit 1 returns `{ ok: false, conflicts: [paths] }` and nothing changes; the reply suggests sending the worker a rebase instruction.
-- Applying: if `base` is checked out in the main checkout or a parent's worktree, that checkout must be clean, else refuse "main checkout has uncommitted changes"; then `git merge --no-ff --no-edit o8/<id>` there. If `base` is not checked out anywhere: `git commit-tree` on the merge-tree result plus `git update-ref refs/heads/<base> <new> <old>` (atomic; no working tree touched).
-- Afterwards: set `mergedAt`; row shows "merged"; `o8 merge --close` merges then closes.
-- Who runs it: the human (Merge button on the row and the exited card, `o8 merge <id>`); the orchestrator through a `merge` MCP tool scoped to descendants behind the same human confirm as close, with `worktrees.mergeWithoutConfirm`; never the worker on its own branch.
+- Conflict check without touching files: `git merge-tree --write-tree --name-only <base> tl/<id>`; exit 1 returns `{ ok: false, conflicts: [paths] }` and nothing changes; the reply suggests sending the worker a rebase instruction.
+- Applying: if `base` is checked out in the main checkout or a parent's worktree, that checkout must be clean, else refuse "main checkout has uncommitted changes"; then `git merge --no-ff --no-edit tl/<id>` there. If `base` is not checked out anywhere: `git commit-tree` on the merge-tree result plus `git update-ref refs/heads/<base> <new> <old>` (atomic; no working tree touched).
+- Afterwards: set `mergedAt`; row shows "merged"; `tl merge --close` merges then closes.
+- Who runs it: the human (Merge button on the row and the exited card, `tl merge <id>`); the orchestrator through a `merge` MCP tool scoped to descendants behind the same human confirm as close, with `worktrees.mergeWithoutConfirm`; never the worker on its own branch.
 
 ## 8. What the UI, sidebar and agents see
 
-`GitState = { branch, base, ahead, behind, dirty, missing?, mergedAt? }` per worktree node: `ahead`/`behind` from `git rev-list --left-right --count <base>...o8/<id>`; `dirty` from `git status --porcelain` line count. Refresh on worktree creation, Stop and `turn.complete`, debounced 3 s on PostToolUse for Edit, Write and Bash, PTY exit, before close or merge, daemon start. Lives on `NodeStatus` (not persisted); node re-emitted on change.
+`GitState = { branch, base, ahead, behind, dirty, missing?, mergedAt? }` per worktree node: `ahead`/`behind` from `git rev-list --left-right --count <base>...tl/<id>`; `dirty` from `git status --porcelain` line count. Refresh on worktree creation, Stop and `turn.complete`, debounced 3 s on PostToolUse for Edit, Write and Bash, PTY exit, before close or merge, daemon start. Lives on `NodeStatus` (not persisted); node re-emitted on change.
 
-- Web UI: `NodeMeta` gains a leading `⎇ o8/n-3f2a ↑3 ●2`; a has-changes marker when `ahead + dirty > 0` and the node is done or exited; "merged" once `mergedAt` is set; `missing` in the warning colour; close dialog gains Keep branch and Discard.
+- Web UI: `NodeMeta` gains a leading `⎇ tl/n-3f2a ↑3 ●2`; a has-changes marker when `ahead + dirty > 0` and the node is done or exited; "merged" once `mergedAt` is set; `missing` in the warning colour; close dialog gains Keep branch and Discard.
 - Mux sidebar: prepend `⎇↑3●2` to the meta line, dropped first under width pressure.
-- list_nodes: `worktree: { path, branch, base, ahead, behind, dirty, missing, merged }`; text tree appends `⎇ o8/n-3f2a ↑3 dirty`.
+- list_nodes: `worktree: { path, branch, base, ahead, behind, dirty, missing, merged }`; text tree appends `⎇ tl/n-3f2a ↑3 dirty`.
 - /tree ChildView: `branch?`, `ahead?`, `dirty?`.
 
 ## 9. Role prompt changes
 
 `ensurePrompts` never overwrites an edited role file, so the mechanics go in the generated preamble in `systemPrompt()`, added only when the node owns or shares a worktree:
 
-> You are working in a git worktree at `<path>` on branch `o8/<id>`, branched from `<base>` at `<sha7>`. The main checkout at `<repo>` belongs to the user and to other nodes. Never edit files there, even if your brief names paths under it: use the same repo-relative path inside your worktree. Commit your work on your branch with clear messages before you report success, and leave `git status` clean. Do not merge, push, switch branches or rebase unless asked; your parent integrates your branch.
+> You are working in a git worktree at `<path>` on branch `tl/<id>`, branched from `<base>` at `<sha7>`. The main checkout at `<repo>` belongs to the user and to other nodes. Never edit files there, even if your brief names paths under it: use the same repo-relative path inside your worktree. Commit your work on your branch with clear messages before you report success, and leave `git status` clean. Do not merge, push, switch branches or rebase unless asked; your parent integrates your branch.
 
 A sharing child gets "You share the worktree of node X; coordinate before editing files it is editing."
 
@@ -151,11 +151,11 @@ The worker default prompt needs nothing new.
 
 ## 10. Phased build order
 
-**Phase 1 (built):** isolation on spawn and CLI; `NodeRecord.worktree`; daemon-created worktree, marker, exclude line, include copy, `baseRef: "head"`; launch with `--worktree`; close and prune safety with keep and discard; resume guard; startup reconciliation and `o8 worktrees`; preamble; static branch in rows and list_nodes; vitest exclude; merge-back is "merge with git, then close".
+**Phase 1 (built):** isolation on spawn and CLI; `NodeRecord.worktree`; daemon-created worktree, marker, exclude line, include copy, `baseRef: "head"`; launch with `--worktree`; close and prune safety with keep and discard; resume guard; startup reconciliation and `tl worktrees`; preamble; static branch in rows and list_nodes; vitest exclude; merge-back is "merge with git, then close".
 
 **Phase 2:** live GitState in rows, /tree and list_nodes; has-changes and merged markers; `merge` via merge-tree through UI, CLI and MCP with confirm; setup and teardown from config gated on trust; the orchestrator prompt text.
 
-**Phase 3:** `o8 pr <id>` (human only); recreate a missing worktree from its kept branch; optional `base` ref on spawn; terminal-node isolation; the per-node diff view reading `base...branch`.
+**Phase 3:** `tl pr <id>` (human only); recreate a missing worktree from its kept branch; optional `base` ref on spawn; terminal-node isolation; the per-node diff view reading `base...branch`.
 
 ## 11. Decisions (all taken as recommended)
 
@@ -168,6 +168,6 @@ D1 in-repo `.claude/worktrees/<id>`; D2 opt-in per spawn, config default later; 
 - Tools that glob the main checkout see `.claude/worktrees/*`; per-repo exclude needed.
 - Planted git config: a worker can reach `.git/config` through Bash; the daemon could pass `-c filter.<name>.smudge=` overrides like Claude does; undecided.
 - Disk and time: APFS clones are cheap; `npm ci` per worker is not; sparse paths unconfirmed.
-- Squash merges done outside orchestr8 with more than one commit are not detected as merged; close refuses and the human uses discard.
+- Squash merges done outside tiller with more than one commit are not detected as merged; close refuses and the human uses discard.
 - Claude's periodic sweep keeps worktrees it did not create (documented, not observed over time).
 - A sharing child whose owner closes: close refuses while the child is live; an exited sharing child's resume should report "worktree missing".

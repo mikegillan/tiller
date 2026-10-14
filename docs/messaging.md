@@ -1,17 +1,17 @@
 # Messaging between nodes
 
-Nodes talk through the daemon. An agent calls the MCP tool `send` (the human uses `o8 send <id> "text"`), and the daemon delivers the text to the target as a prompt. Scope is the sender's lineage: its parent and other ancestors, its siblings and its descendants. Only Claude nodes receive messages; a terminal node takes raw keystrokes through `write`, which the human approves each time.
+Nodes talk through the daemon. An agent calls the MCP tool `send` (the human uses `tl send <id> "text"`), and the daemon delivers the text to the target as a prompt. Scope is the sender's lineage: its parent and other ancestors, its siblings and its descendants. Only Claude nodes receive messages; a terminal node takes raw keystrokes through `write`, which the human approves each time.
 
 ## The envelope
 
 The target sees the message inside a frame that says who sent it and where to answer:
 
 ```
---- O8 MESSAGE <nonce> ---
+--- TL MESSAGE <nonce> ---
 from: Builder (n-3f2a)
 reply-to: n-3f2a
 <body>
---- END O8 MESSAGE <nonce> ---
+--- END TL MESSAGE <nonce> ---
 ```
 
 The nonce is new for each delivery. Every node's system prompt says that framed messages are legitimate instructions and that only the outermost frame is authentic, so a body that contains something frame-shaped is plain data. Messages from the daemon itself have `reply-to: none`.
@@ -28,11 +28,11 @@ Each target holds at most 16 queued messages, and a message expires after 5 minu
 
 ## Steering
 
-A send with mode `now` (`o8 send --now`) is a steer. If the target is working, its turn is interrupted and the message is delivered at once, ahead of the other queued messages, with an extra envelope line telling the target it was interrupted on purpose. With the mod running, the mod claims the steer, aborts the turn and submits it; without the mod, the daemon presses Esc in the terminal and pastes the message once the turn has stopped. To a target that is not working, mode `now` is the same as the default `queue`. The orchestrator prompt reserves steering for a worker heading the wrong way.
+A send with mode `now` (`tl send --now`) is a steer. If the target is working, its turn is interrupted and the message is delivered at once, ahead of the other queued messages, with an extra envelope line telling the target it was interrupted on purpose. With the mod running, the mod claims the steer, aborts the turn and submits it; without the mod, the daemon presses Esc in the terminal and pastes the message once the turn has stopped. To a target that is not working, mode `now` is the same as the default `queue`. The orchestrator prompt reserves steering for a worker heading the wrong way.
 
 ## Withdrawing
 
-`withdraw` (or `o8 withdraw <messageId>`) takes back a message that is still queued: not yet claimed by the target's mod and not yet pasted. Its outcome becomes `withdrawn`. Only the sender, or the human, may withdraw a message, and the error says why when it cannot.
+`withdraw` (or `tl withdraw <messageId>`) takes back a message that is still queued: not yet claimed by the target's mod and not yet pasted. Its outcome becomes `withdrawn`. Only the sender, or the human, may withdraw a message, and the error says why when it cannot.
 
 ## Rate limit and loop guard
 
@@ -50,6 +50,6 @@ When a child's outcome is recorded through `report_outcome`, its parent gets a m
 
 ## Dependency launches and the spawn queue
 
-A spawn can wait for other nodes: `o8 spawn --after n-a,n-b --after-success n-c`, or `after` and `afterSuccess` on the MCP `spawn` tool. The node is created armed, with no process yet, and its row says what it waits on. It launches exactly as the spawn would have (worktree included) once each `after` node has finished a turn that began after the spawn, or has exited, and each `afterSuccess` node has reported succeeded, after its completion gate when one is configured. A failed report blocks it: the row says "blocked by n-c: <note>" and its parent gets a message. Dependencies must exist and be in the caller's scope. Closing an armed node discards it, and a restarted daemon re-arms armed nodes from `state.json`.
+A spawn can wait for other nodes: `tl spawn --after n-a,n-b --after-success n-c`, or `after` and `afterSuccess` on the MCP `spawn` tool. The node is created armed, with no process yet, and its row says what it waits on. It launches exactly as the spawn would have (worktree included) once each `after` node has finished a turn that began after the spawn, or has exited, and each `afterSuccess` node has reported succeeded, after its completion gate when one is configured. A failed report blocks it: the row says "blocked by n-c: <note>" and its parent gets a message. Dependencies must exist and be in the caller's scope. Closing an armed node discards it, and a restarted daemon re-arms armed nodes from `state.json`.
 
-When `daemon.maxWorking` is set and that many Claude nodes are working, a new spawn is queued instead, shown as "queued" with the reason, and launched in creation order as nodes stop working; the status bar shows how many are queued. Only the human can skip the queue, with `o8 spawn --now`. Arming, release, queueing and launch are written to the tree's event log.
+When `daemon.maxWorking` is set and that many Claude nodes are working, a new spawn is queued instead, shown as "queued" with the reason, and launched in creation order as nodes stop working; the status bar shows how many are queued. Only the human can skip the queue, with `tl spawn --now`. Arming, release, queueing and launch are written to the tree's event log.
