@@ -61,6 +61,15 @@ describe('role prompts', () => {
     expect(prompt(home, home, 'p')).toContain('call report_outcome');
     expect(prompt(home, home, null)).not.toContain('call report_outcome');
   });
+  it('keeps the external-changes rule in the preamble even when a preset replaces the role', () => {
+    const home = tmp();
+    const preset = { name: 'x', body: 'preset body', source: 'x.md' };
+    const sp = systemPrompt({ nodeId: 'n', title: 't', parentId: 'p', home, cwd: home, preset });
+    expect(sp).toContain('# Role\npreset body');
+    expect(sp).toContain('Never run anything that changes infrastructure');
+    expect(sp).toContain('ask your parent with send');
+    expect(prompt(home, home, null)).toContain('stop and ask the human first');
+  });
   it('puts the role text in --append-system-prompt and stays compact', () => {
     const home = tmp();
     const args = launchArgs({ nodeId: 'n', nodeDir: '/tmp/n', endpoint: 'http://x', path: '', title: 't', parentId: null, home, cwd: home, sessionId: 's' });
