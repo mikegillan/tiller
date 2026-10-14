@@ -132,6 +132,16 @@ describe('archivedOf harness', () => {
     expect(archivedOf({ ...rec, harness: 'claude' }, undefined, undefined, 'n-1', {})).not.toHaveProperty('harness');
     expect(archivedOf(rec, undefined, undefined, 'n-1', {})).not.toHaveProperty('harness');
   });
+  it('preserves Pi provider qualifiers for the same selected model and ignores its no-model sentinel', () => {
+    const pi = { ...rec, harness: 'pi' as const, model: 'anthropic/claude-sonnet-4-5' };
+    const status = { state: 'done' as const, changedAt: 0, model: 'claude-sonnet-4-5' };
+    expect(archivedOf(pi, status, undefined, 'n-1', {}).model).toBe(pi.model);
+    expect(archivedOf(pi, { ...status, model: 'unknown' }, undefined, 'n-1', {}).model).toBe(pi.model);
+    expect(archivedOf({ ...pi, model: undefined }, { ...status, model: 'unknown' }, undefined, 'n-1', {}).model).toBeUndefined();
+    expect(archivedOf(pi, { ...status, model: 'openai/other' }, undefined, 'n-1', {}).model).toBe('openai/other');
+    expect(archivedOf(pi, { ...status, model: 'other' }, undefined, 'n-1', {}).model).toBe('other'); // Do not reuse a stale requested model.
+    expect(archivedOf({ ...rec, model: 'old' }, status, undefined, 'n-1', {}).model).toBe(status.model); // Claude is unchanged.
+  });
 });
 
 describe('archive, history, follow-up and fork', () => {

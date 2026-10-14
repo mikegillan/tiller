@@ -274,7 +274,7 @@ export class NodeManager extends EventEmitter {
     for (const n of this.registry.list()) {
       protectedRoots.add(n.id);
       protectedRoots.add(this.rootIdOf(n.id));
-      // An archived follow-up may still write to its old root's Pi conversation file.
+      // Protect legacy cross-root transcript references until the next launch adopts them.
       if (n.transcriptPath && inside(resolve(n.transcriptPath), sessionsRoot)) {
         protectedRoots.add(relative(sessionsRoot, resolve(n.transcriptPath)).split(sep)[0]!);
       }
@@ -364,6 +364,7 @@ export class NodeManager extends EventEmitter {
       model: req.model ?? p.model ?? defaults.model, effort: req.effort ?? p.effort ?? defaults.effort, permissionMode, role, preset: req.preset,
       sessionId: adapter ? req.followup?.sessionId ?? randomUUID() : undefined,
       ...(req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
+      ...(adapter?.id === 'pi' && req.followup?.previousSessions ? { previousSessions: req.followup.previousSessions } : {}),
       rootId: parentId ? this.rootIdOf(parentId) : undefined,
       prompt: req.prompt, forkOf: req.fork, forkSession: from?.sessionId, followupOf: req.followup?.id,
       // A follow-up's resumed session keeps counting its cost from where the archived node's last measure left it.
@@ -863,7 +864,7 @@ export class NodeManager extends EventEmitter {
   }
 
   launch(id: string, prompt: string | undefined, resume: boolean): void {
-    const rec = this.registry.get(id)!;
+    let rec = this.registry.get(id)!;
     // A follow-up's first launch (every launch sets lastActiveAt) resumes the session its record was created with.
     // prune: a restart before that first launch mints a fresh session and loses it; a follow-up has no worktree setup to fail first.
     resume ||= rec.lastActiveAt === undefined && !!rec.followupOf;
@@ -871,16 +872,18 @@ export class NodeManager extends EventEmitter {
     const owner = rec.worktree ? undefined : this.registry.list().find((n) => n.id !== id && n.worktree && this.session(n.id) && inside(rec.cwd, n.worktree.path));
     const rootId = this.rootIdOf(id), root = this.registry.get(rootId) ?? rec;
     const sessionDir = ensureSession(this.home, { rootId, title: root.title, cwd: root.cwd, createdAt: root.createdAt });
+    const adapter = isAgentKind(rec.kind) ? adapterFor(rec) : undefined;
+    if (adapter?.prepareTranscript) {
+      rec = this.registry.update(id, { transcriptPath: adapter.prepareTranscript(rec, sessionDir, resume) })!;
+    }
     const input: LaunchInput = {
       nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path,
       title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, sessionId: rec.sessionId ?? '',
       resume, forkSession, transcriptPath: rec.transcriptPath, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
       preset: rec.preset ? loadPreset(rec.preset, this.projectDir(rec), this.home) : undefined,
     };
-    const adapter = isAgentKind(rec.kind) ? adapterFor(rec) : undefined;
     const spec = adapter ? adapter.launch(input) : terminalLaunch(input, this.shell);
     const cwd = adapter ? adapter.cwd(rec) : rec.cwd;
-    if (adapter?.id === 'pi') this.registry.update(id, { transcriptPath: adapter.transcript(rec, sessionDir) });
     const s = PtySession.spawn({ ...spec, cwd, ...DEFAULT_SIZE });
     const rt = this.runtimes.get(id)!;
     rt.session = s;

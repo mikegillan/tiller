@@ -36,6 +36,16 @@ pi --extension <repo>/adapters/pi \
 never Pi's own header session UUID, because the node record, transcript path and resume all key
 off the Tiller id.
 
+Before a follow-up launches, the daemon copies its current transcript and any available recorded
+prior sessions to the new node's own `sessions/<rootId>/agents/<nodeId>` directory. Pi's native
+header UUID and Tiller's session id stay unchanged, preserving cost continuity and preventing two
+live nodes from continuing the same session. Only the copied header's `cwd` is changed to the
+selected workspace: native Pi uses this header to choose resource discovery and built-in tool
+paths, even when launched from a different directory. All conversation entries are copied
+verbatim and the source archive is untouched. This also adopts older cross-root live records on
+resume. The copied files follow the new tree's retention clock, including after it closes.
+Missing source transcripts cannot be recovered; missing prior-session files remain missing.
+
 You can also try it without a daemon:
 
 ```sh
