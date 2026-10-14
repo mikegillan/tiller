@@ -315,6 +315,8 @@ export class NodeManager extends EventEmitter {
       model: req.model ?? p.model ?? defaults.model, effort: req.effort ?? p.effort ?? defaults.effort, permissionMode, role, preset: req.preset,
       sessionId: req.kind === 'claude' ? from?.sessionId ?? req.followup?.sessionId ?? randomUUID() : undefined,
       prompt: req.prompt, forkOf: req.fork, followupOf: req.followup?.id,
+      // A follow-up's resumed session keeps counting its cost from where the archived node's last measure left it.
+      lastCost: req.followup?.lastCost?.sessionId === req.followup?.sessionId ? req.followup?.lastCost : undefined,
     });
     this.runtimes.set(rec.id, {});
     if (arm(this, rec.id, req, isolation)) return this.emitNode(rec.id)!;

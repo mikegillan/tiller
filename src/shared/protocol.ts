@@ -223,6 +223,8 @@ export interface ArchivedNode {
   /** One plain line (at most 200 characters) saying what the node did and how it ended, for an agent deciding whether to resume or fork it: the reported outcome's summary or note when there is one, else the first line of its last message. */
   brief?: string;
   spentUsd?: number;
+  /** The session's cumulative cost at its last measure (NodeRecord.lastCost), so a follow-up resuming that session does not count it again. */
+  lastCost?: { sessionId?: string; usd: number };
   /** The worktree branch it worked on, when it had one. */
   branch?: string;
   /** What became of that branch at close, decided by the close check itself: merged into `base`, kept with a WIP commit (unmerged), or discarded with unmerged work. */
