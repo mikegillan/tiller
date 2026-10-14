@@ -3,7 +3,7 @@
 // the config run through a shell (runCommands), by design.
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { closeSync, existsSync, openSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, openSync, realpathSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -80,6 +80,14 @@ export interface WorktreeEntry {
   /** The lock reason ('' for a lock without one); absent when not locked. */
   locked?: string;
 }
+
+/** `path` with symlinks resolved, as `git worktree list` reports it (git registers resolved paths); `path` itself when it does not exist. */
+export function canonical(path: string): string {
+  try { return realpathSync(path); } catch { return path; }
+}
+
+/** Whether two paths name the same place once symlinks are resolved: compare a recorded path with a listed one this way. */
+export const samePath = (a: string, b: string) => canonical(a) === canonical(b);
 
 export async function listWorktrees(repo: string): Promise<WorktreeEntry[]> {
   return (await git(repo, ['worktree', 'list', '--porcelain'])).split('\n\n').filter(Boolean).map((block) => {
@@ -277,7 +285,7 @@ export function staleClaudeLock(reason: string, id: string): boolean {
 
 /** Lift a stale Claude lock on `path` so it can be removed. Any other lock is the user's: refuse. */
 export async function unlockForRemoval(repo: string, path: string, id: string): Promise<void> {
-  const e = (await listWorktrees(repo)).find((w) => w.path === path);
+  const e = (await listWorktrees(repo)).find((w) => samePath(w.path, path));
   if (e?.locked === undefined) return;
   if (!staleClaudeLock(e.locked, id)) throw new Error(`worktree ${path} is locked (${e.locked || 'no reason given'}); run git worktree unlock ${path} once nothing uses it`);
   await git(repo, ['worktree', 'unlock', path]);

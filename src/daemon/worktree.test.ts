@@ -4,11 +4,12 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { history } from './archive.js';
 import { NodeManager, type SpawnRequest } from './manager.js';
 import { mountMcp } from './mcp.js';
+import { transcriptFor } from './transcript.js';
 import * as wt from './worktree.js';
 
 const g = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -194,6 +195,32 @@ describe('worktree nodes', () => {
     expect(m.restart(v.id)).toEqual({ ok: false, error: 'worktree missing' });
     await m.close(v.id, true);
     expect(g(repo, 'branch', '--list', `tl/${v.id}`)).toBe('');
+  });
+
+  it('a worktree under a symlinked .claude, which git lists by its resolved path, is not missing; resume and close discard work', async () => {
+    setup();
+    mkdirSync(join(repo, '.agent'));
+    symlinkSync('.agent', join(repo, '.claude'));
+    const v = await spawnW();
+    expect(v.cwd).toBe(join(repo, '.claude', 'worktrees', v.id));
+    expect(g(repo, 'worktree', 'list', '--porcelain')).toContain(join(repo, '.agent', 'worktrees', v.id));
+    expect((await m.worktrees()).nodes).toEqual([expect.objectContaining({ nodeId: v.id, missing: undefined })]);
+    await exited(v.id);
+    const transcript = transcriptFor(v.cwd, m.registry.get(v.id)!.sessionId!);
+    mkdirSync(dirname(transcript), { recursive: true });
+    writeFileSync(transcript, '');
+    expect(await m.resume(v.id)).toEqual({ ok: true });
+    await exited(v.id);
+    g(repo, 'worktree', 'lock', '--reason', `claude session ${v.id} (pid 999999 start x)`, v.cwd); // a stale Claude lock
+    commit(v.cwd, 'a.txt');
+    expect(await m.close(v.id, true, 'discard')).toBeUndefined();
+    expect(existsSync(join(repo, '.agent', 'worktrees', v.id))).toBe(false);
+    expect(g(repo, 'branch', '--list', `tl/${v.id}`)).toBe('');
+    // A cwd reached through a symlink still finds the main checkout by git's path.
+    symlinkSync(repo, join(home, 'link'));
+    const u = await spawnW({ cwd: join(home, 'link') });
+    expect(m.view(u.id)!.worktree!.repo).toBe(repo);
+    expect((await m.worktrees()).nodes).toEqual([expect.objectContaining({ nodeId: u.id, missing: undefined })]);
   });
 
   it('startup reconciliation removes a clean orphan, lists one with work, and ignores worktrees with another home', async () => {

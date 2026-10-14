@@ -225,7 +225,8 @@ async function reconcileRepo(m: NodeManager, repo: string, clean: 'startup' | 's
   await wt.prune(repo);
   const entries = await wt.listWorktrees(repo);
   const live = (path: string) => m.registry.list().some((n) => m.session(n.id) && inside(n.cwd, path));
-  for (const e of entries.filter((x) => x.path.startsWith(join(repo, wt.WORKTREES_DIR) + sep))) {
+  const dir = wt.canonical(join(repo, wt.WORKTREES_DIR)) + sep;
+  for (const e of entries.filter((x) => wt.canonical(x.path).startsWith(dir))) {
     const marker = await wt.readMarker(e.path);
     if (!marker || marker.home !== m.home || m.registry.get(marker.nodeId)?.worktree) continue; // not ours, or a node's
     const dirty = await wt.dirtyFiles(e.path);
@@ -250,7 +251,7 @@ async function reconcileRepo(m: NodeManager, repo: string, clean: 'startup' | 's
   }
   for (const n of m.registry.list()) {
     if (n.worktree?.repo !== repo) continue;
-    setMissing(m, n.id, !entries.some((e) => e.path === n.worktree!.path));
+    setMissing(m, n.id, !entries.some((e) => wt.samePath(e.path, n.worktree!.path)));
     const w = m.registry.get(n.id)!.worktree!;
     r.nodes.push({ nodeId: n.id, title: n.title, repo, path: w.path, branch: w.branch, base: w.base, missing: w.missing });
   }

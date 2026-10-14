@@ -438,7 +438,7 @@ export class NodeManager extends EventEmitter {
     if (rec.worktree) {
       // Without its worktree, claude --resume carries on in the main checkout with no isolation.
       const w = rec.worktree;
-      const listed = existsSync(w.path) && (await wt.listWorktrees(w.repo).catch(() => [])).some((e) => e.path === w.path);
+      const listed = existsSync(w.path) && (await wt.listWorktrees(w.repo).catch(() => [])).some((e) => wt.samePath(e.path, w.path));
       setMissing(this, id, !listed);
       if (!listed) return { ok: false, error: 'worktree missing' };
       if (rt.session) return { ok: false, error: 'Node is still running' };
