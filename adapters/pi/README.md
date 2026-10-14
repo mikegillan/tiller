@@ -13,7 +13,7 @@ spawn processes.
    index.ts      extension factory (loaded by pi)
    bridge.ts     inbox poll / claim / submit / ack / steer state machine
    client.ts     Tiller HTTP client (node-scoped bearer auth)
-   config.ts     TL_* environment parsing + unsupported-restriction rejection
+   config.ts     TL_* environment parsing
    lifecycle.ts  pure Pi-event -> Tiller /hook and /mod-event mappers
    types.ts      structural subset of the Pi API (host supplies Pi)
    *.test.ts     vitest coverage for the pure helpers and the bridge
@@ -21,15 +21,16 @@ spawn processes.
 
 ## Load it
 
-The daemon launches Pi with an explicit session file and the extension path, e.g.:
+The daemon launches Pi with an explicit session file and the extension's entry file, roughly:
 
 ```sh
 TL_NODE_ID=n-abc123 \
 TL_ENDPOINT=http://127.0.0.1:7654 \
 TL_TOKEN_FILE=<home>/nodes/n-abc123/token \
 TL_SESSION_ID=<tiller-session-uuid> \
-pi --extension <repo>/adapters/pi \
-  --session <home>/sessions/<rootId>/agents/n-abc123/<tiller-session-uuid>.jsonl
+TL_PI_HOOK_TOOLS=1 \
+pi --session <home>/sessions/<rootId>/agents/n-abc123/<tiller-session-uuid>.jsonl \
+  --name <title> --extension <repo>/adapters/pi/index.ts --append-system-prompt <prompt>
 ```
 
 `TL_SESSION_ID` is the daemon-minted Tiller session id. The bridge reports it as `session_id`,
@@ -39,9 +40,10 @@ off the Tiller id.
 Before a follow-up launches, the daemon copies its current transcript and any available recorded
 prior sessions to the new node's own `sessions/<rootId>/agents/<nodeId>` directory. Pi's native
 header UUID and Tiller's session id stay unchanged, preserving cost continuity and preventing two
-live nodes from continuing the same session. Only the copied header's `cwd` is changed to the
-selected workspace: native Pi uses this header to choose resource discovery and built-in tool
-paths, even when launched from a different directory. All conversation entries are copied
+live nodes from continuing the same session. Only the copied header's `cwd` is changed, to the
+selected workspace or, when the node's worktree has been removed, the main checkout: native Pi
+uses this header to choose resource discovery and built-in tool paths, even when launched from a
+different directory. All conversation entries are copied
 verbatim and the source archive is untouched. This also adopts older cross-root live records on
 resume. The copied files follow the new tree's retention clock, including after it closes.
 Missing source transcripts cannot be recovered; missing prior-session files remain missing.
@@ -65,22 +67,9 @@ mod). Pi loads the directory through `jiti`, so no build step is required.
 | `TL_SESSION_ID` | no | The daemon-minted Tiller session id reported as `session_id`. Missing means unmanaged. |
 | `TL_PARENT_ID` | no | Recorded but not otherwise used by the bridge. |
 | `TL_SESSION_DIR` | no | Tiller session directory; not used by the bridge itself. |
-| `TL_PI_POLL_MS` | no | Inbox poll interval in ms, `>= 100`. Default `1000`. |
-| `TL_PI_HOOK_TOOLS` | no | `1`/`true`/`yes`/`on` to forward tool activity as `/hook`. |
-| `TL_PI_MCP_EXPOSURE` | no | MCP exposure for the node-scoped Tiller server: `direct` (default), `codemode`, `deferred`, `hidden`. |
-
-### Rejected settings
-
-The adapter cannot enforce Pi permission or tool restrictions safely, so it refuses to activate
-when it sees any of these (and leaves Pi's own permissions untouched):
-
-`TL_PERMISSION_MODE`, `TL_APPROVAL_MODE`, `TL_ALLOWED_TOOLS`, `TL_TOOLS`,
-`TL_DISALLOWED_TOOLS`, `TL_EXCLUDE_TOOLS`, `TL_MAX_TURNS`, `TL_SANDBOX`,
-`TL_BYPASS_PERMISSIONS`.
-
-The daemon should reject these before spawning a Pi node. `findUnsupportedRestrictions()` in
-`config.ts` is exported so daemon code can share the same list. This is a fail-closed choice: the
-bridge stays inert rather than running with weaker safety than the operator asked for.
+| `TL_PI_POLL_MS` | no | Developer override, never set by the daemon. Inbox poll interval in ms, `>= 100`. Default `1000`. |
+| `TL_PI_HOOK_TOOLS` | no | `1`/`true`/`yes`/`on` to forward tool activity as `/hook`. The daemon always sets `1`. |
+| `TL_PI_MCP_EXPOSURE` | no | Developer override, never set by the daemon. MCP exposure for the node-scoped Tiller server: `direct` (default), `codemode`, `deferred`, `hidden`. |
 
 ## Protocol mapping
 
@@ -160,7 +149,7 @@ before registering MCP or reading credentials. `pi.on` accepting an event name i
 build emits it; the version gate pins the documented native event contract. Unknown, older, newer,
 and prerelease versions fail closed. It also checks `registerMcpServer`, `unregisterMcpServer`,
 `sendUserMessage`, `pi.on`, `ctx.isIdle`, `ctx.abort`, and `ctx.shutdown`. Optional UI/usage APIs
-are not required. This is the same fail-closed posture as unsupported restrictions.
+are not required.
 
 `agent_settled` is the final boundary (`docs/extensions.md`): unlike `agent_end`, no automatic
 retry, compaction, or queued continuation follows, so `turn.complete` is reported there.
@@ -179,7 +168,7 @@ npx vitest run adapters/pi
 npx tsc -p adapters/pi/tsconfig.json
 ```
 
-The suite covers config parsing and restriction rejection, the HTTP client, the lifecycle
+The suite covers config parsing, the HTTP client, the lifecycle
 mappers, and the bridge state machine (idle delivery, daemon-held messages, steer abort, poll
 non-overlap, timer cleanup, unconfirmed retirement, late acceptance/reload races, ack failure) with an injectable fake Pi and fetch.
 
@@ -194,10 +183,7 @@ and calls `ctx.shutdown()` instead of letting the managed UUID point at a differ
 
 ## Safety boundary
 
-Tiller's `tl trust`/`tl untrust` guard based on `TL_NODE_ID` is advisory UX only, **not a sandbox or
-security boundary**. A same-user agent can unset the variable or write the trust file. Enforced
-isolation needs OS accounts/containers/sandboxing and restricted credentials/filesystem access;
-Pi project trust and node-scoped HTTP authentication do not constrain same-user local code.
+The trust guard is advisory, not a sandbox; see [Worktrees and safety](../../docs/harnesses.md#worktrees-and-safety).
 
 ## Limitations
 
