@@ -166,8 +166,12 @@ export interface NodeRecord {
   pending?: Pending;
   /** The first prompt it was spawned with, kept for the archive. */
   prompt?: string;
+  /** The root of its tree, set at spawn so the node keeps its session directory after an ancestor closes; absent on a root. */
+  rootId?: string;
   /** The node whose conversation this one was forked from (spawn fork): live or archived. */
   forkOf?: string;
+  /** The session a fork starts from, until it has launched (--resume <forkSession> --fork-session). */
+  forkSession?: string;
   /** The archived node whose session this one continues (followup). */
   followupOf?: string;
 }

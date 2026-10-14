@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -114,9 +114,9 @@ describe('mcp api', () => {
     const tok = (id: string) => manager.tokenFor(id);
     const transcript = join(home, 'archived.jsonl');
     writeFileSync(transcript, `${JSON.stringify({ type: 'user', message: { content: 'hello there' } })}\n`);
-    /** A started Claude node under `parentId`, closed: no claude process is launched. */
+    /** A Claude node that ran under `parentId`, closed; no claude process is launched. */
     const archived = (parentId: string, title: string) => {
-      const id = manager.registry.create({ parentId, kind: 'claude', title, cwd: tmpdir(), prompt: `${title} task`, sessionId: `s-${title}`, transcriptPath: transcript }).id;
+      const id = manager.registry.create({ parentId, kind: 'claude', title, cwd: tmpdir(), lastActiveAt: Date.now(), prompt: `${title} task`, sessionId: `s-${title}`, transcriptPath: transcript }).id;
       manager.runtimes.set(id, {});
       manager.closed(id);
       return id;
@@ -132,6 +132,9 @@ describe('mcp api', () => {
     expect((await api('spawn', { kind: 'claude', title: 'f' }, kidA, tok(kidA))).body.error).toMatch(/cwd is required unless you fork/);
     expect((await api('read', { nodeId: oldA, what: 'summary' }, kidA, tok(kidA))).body.text).toBe('user: hello there');
     expect((await api('read', { nodeId: oldB, what: 'summary' }, kidA, tok(kidA))).status).toBe(400);
+    // A line in tree B's archive cannot claim tree A by naming it: the tree is the directory the line sits in.
+    appendFileSync(join(manager.sessionDirOf(rootB), 'archive.jsonl'), `${JSON.stringify({ id: 'n-forged', rootId: rootA, parentId: rootA, title: 'f', cwd: tmpdir(), sessionId: 's', transcriptPath: transcript, createdAt: 0, closedAt: 0 })}\n`);
+    expect((await api('read', { nodeId: 'n-forged', what: 'summary' }, kidA, tok(kidA))).body.error).toBe('refused: archived node n-forged is not of your own tree');
     const mine = (await api('history', { rootId: rootB }, kidA, tok(kidA))).body.text!; // an agent always gets its own tree
     expect(mine).toMatch(new RegExp(`^${oldA} "old-a" closed just now: old-a task$`));
     const all = (await api('history', { query: 'old-' })).body.text!;

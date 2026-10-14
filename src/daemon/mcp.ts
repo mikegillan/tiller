@@ -19,7 +19,7 @@ import { closeRefusal, type WorktreeReport } from './worktree-lifecycle.js';
 import { MAX_PATCH_BYTES, MergeConflict } from './worktree.js';
 import { PERMISSION_MODES } from './presets.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
-import { readTranscript, renderEntry } from './transcript.js';
+import { readMessages, renderMessage, sessionMessages } from './transcript.js';
 import { DAEMON, deliver, HUMAN, inScope, isDescendant, messageStatus, QUEUE_CAP, QUEUE_TTL_MS, RATE_MS, startNotices, withdraw } from './messaging.js';
 import { logError, PREVIEW_CHARS, readBody, safeEqual } from './util.js';
 
@@ -116,12 +116,11 @@ function requireScope(c: Ctx, id: string): NodeView {
   return v;
 }
 
-/** The root of the caller's tree, as the archive records it (the topmost registered ancestor). */
-const rootOf = (c: Ctx) => (c.manager.registry.lineage(c.caller).at(-1) ?? { id: c.caller }).id;
+const rootOf = (c: Ctx) => c.manager.rootIdOf(c.caller);
 
 /** An archived node of the caller's own tree; any tree for the human. */
 async function requireArchived(c: Ctx, id: string): Promise<ArchivedNode> {
-  const a = await findArchived(c.manager.home, id);
+  const a = await findArchived(c.manager.home, id, c.caller === HUMAN ? undefined : rootOf(c));
   if (!a) throw new Error(`no such node: ${id}`);
   if (c.caller !== HUMAN && a.rootId !== rootOf(c)) throw new Error(`refused: archived node ${id} is not of your own tree`);
   return a;
@@ -251,7 +250,7 @@ const tools = {
       }
       const path = v.transcriptPath;
       if (!path) throw new Error('node has no transcript yet (not a Claude node, or it has not started); try what: "terminal"');
-      const entries = (await readTranscript(path)).map(renderEntry);
+      const entries = (await readMessages(path)).messages.map(renderMessage);
       if (a.what === 'summary') return { text: entries.slice(-(a.lines ?? 30)).join('\n\n') };
       return { text: entries.join('\n\n').slice(-TRANSCRIPT_CAP) };
     }),
@@ -269,9 +268,9 @@ const tools = {
     'A live or closed Claude node\'s conversation in one of its sessions (default: the current one), as read "transcript" prints it, with its session ids. Only the human may call this.',
     { nodeId: z.string().min(1), sessionId: z.string().min(1).optional() },
     async (c, a) => {
-      const t = await c.manager.transcript(a.nodeId, a.sessionId);
-      const head = `sessions: ${t.sessions.map((s) => s.sessionId + (s.current ? ' (current)' : '')).join(', ')}${t.truncated ? `; older entries cut, showing the last ${t.entries.length}` : ''}`;
-      return { text: [head, ...t.entries.map(renderEntry)].join('\n\n') };
+      const t = await sessionMessages(await c.manager.transcriptNode(a.nodeId), a.sessionId);
+      const head = `sessions: ${t.sessions.map((s) => s.sessionId + (s.current ? ' (current)' : '')).join(', ')}${t.truncated ? `; older entries cut, showing the last ${t.messages.length}` : ''}`;
+      return { text: [head, ...t.messages.map(renderMessage)].join('\n\n') };
     }, true),
 
   followup: tool(

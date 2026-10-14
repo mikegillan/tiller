@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { NEEDS_YOU_STATES, type ArchivedNode, type Diff, type DigestItem, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
+import { NEEDS_YOU_STATES, type ArchivedNode, type Diff, type DigestItem, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { loadConfig, type Config, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
@@ -36,6 +36,13 @@ const GIT_EDIT_TOOLS = ['Edit', 'Write', 'Bash'];
 const COST_EVENT_MS = 60_000;
 /** Lines of gate output that go back to the worker. */
 const GATE_TAIL_LINES = 60;
+
+/** `cwd`, or the main checkout when it was a worktree since removed; undefined when neither exists. */
+function usableCwd(cwd: string): string | undefined {
+  if (existsSync(cwd)) return cwd;
+  const at = cwd.indexOf(`${sep}${wt.WORKTREES_DIR}${sep}`), repo = at >= 0 ? cwd.slice(0, at) : undefined;
+  return repo && existsSync(repo) ? repo : undefined;
+}
 
 /** The completion gate configured for `dir`, when Claude trusts that directory, as for worktree setup. `o8 gate` uses it too. */
 export function gateFor(dir: string, home: string): Config['gate'] {
@@ -163,6 +170,7 @@ export class NodeManager extends EventEmitter {
     this.pendingResume = new Set(this.registry.live);
     // Nodes from a previous run have no process; they can be resumed.
     for (const n of this.registry.list()) {
+      if (n.parentId && !n.rootId) this.registry.update(n.id, { rootId: this.rootIdOf(n.id) }); // records from before rootId
       if (n.pending) {
         this.runtimes.set(n.id, { restored: true, status: { state: 'armed', changedAt: Date.now() } });
         continue;
@@ -227,9 +235,15 @@ export class NodeManager extends EventEmitter {
     return this.runtimes.get(id)?.session;
   }
 
-  /** The tree's session directory: keyed by the topmost ancestor still registered (the node itself for a root). */
+  /** The root of the node's tree: the one recorded at spawn, else (for a root, or an older record) its topmost registered ancestor. */
+  rootIdOf(id: string): string {
+    const rec = this.registry.get(id);
+    return rec?.rootId ?? (this.registry.lineage(id).at(-1) ?? rec)?.id ?? id;
+  }
+
+  /** The tree's session directory, keyed by its root id. */
   sessionDirOf(id: string): string {
-    return sessionDir(this.home, (this.registry.lineage(id).at(-1) ?? this.registry.get(id))?.id ?? id);
+    return sessionDir(this.home, this.rootIdOf(id));
   }
 
   /** Append an event to the node's tree's events.jsonl; never blocks. */
@@ -290,7 +304,7 @@ export class NodeManager extends EventEmitter {
    */
   async spawn(req: SpawnRequest): Promise<NodeView> {
     const from = req.fork ? await this.forkSource(req) : undefined;
-    if (from) req = { ...req, cwd: req.cwd || from.cwd };
+    if (from) req = { ...req, cwd: from.cwd };
     const parentId = req.parentId ?? null, dir = this.projectDir(req);
     const config = loadConfig(dir, this.home);
     if (req.preset && req.kind !== 'claude') throw new Error('a preset is for claude nodes only');
@@ -313,8 +327,9 @@ export class NodeManager extends EventEmitter {
     const rec = this.registry.create({ // the resolved fields, so restart keeps them
       parentId, kind: req.kind, title: req.title, cwd: req.cwd,
       model: req.model ?? p.model ?? defaults.model, effort: req.effort ?? p.effort ?? defaults.effort, permissionMode, role, preset: req.preset,
-      sessionId: req.kind === 'claude' ? from?.sessionId ?? req.followup?.sessionId ?? randomUUID() : undefined,
-      prompt: req.prompt, forkOf: req.fork, followupOf: req.followup?.id,
+      sessionId: req.kind === 'claude' ? req.followup?.sessionId ?? randomUUID() : undefined,
+      rootId: parentId ? this.rootIdOf(parentId) : undefined,
+      prompt: req.prompt, forkOf: req.fork, forkSession: from?.sessionId, followupOf: req.followup?.id,
       // A follow-up's resumed session keeps counting its cost from where the archived node's last measure left it.
       lastCost: req.followup?.lastCost?.sessionId === req.followup?.sessionId ? req.followup?.lastCost : undefined,
     });
@@ -335,28 +350,35 @@ export class NodeManager extends EventEmitter {
     return this.emitNode(rec.id)!;
   }
 
-  /** The session a fork starts from: node req.fork's, live or archived. */
+  /**
+   * The session a fork starts from (node req.fork's, live or archived, from the new node's own tree when both exist) and
+   * its cwd: the one asked for, else the source's, either falling back to the main checkout for a removed worktree.
+   */
   private async forkSource(req: SpawnRequest): Promise<{ sessionId: string; cwd: string }> {
     if (req.kind !== 'claude') throw new Error('fork is for claude nodes only');
-    const src = this.registry.get(req.fork!) ?? await findArchived(this.home, req.fork!);
+    const src = this.registry.get(req.fork!) ?? await findArchived(this.home, req.fork!, req.parentId ? this.rootIdOf(req.parentId) : undefined);
     if (!src) throw new Error(`no such node to fork: ${req.fork}`);
     // transcriptPath comes with SessionStart: without it the session has not started and there is nothing to fork.
     if (!src.sessionId || !src.transcriptPath) throw new Error(`refused: ${req.fork} has no Claude session yet to fork`);
-    return { sessionId: src.sessionId, cwd: src.cwd };
+    const want = req.cwd || src.cwd, cwd = usableCwd(want);
+    if (!cwd) throw new Error(`refused: ${want} no longer exists`);
+    return { sessionId: src.sessionId, cwd };
   }
 
   /**
    * Continue an archived node's session as a new live node (claude --resume) that starts on `prompt`, with the archived
    * title (unless given), model, effort and role, under its parent when that is still live, else as a root. Its cwd is
-   * the archived one, else the main checkout when that was a worktree since removed.
+   * the archived one, else the main checkout when that was a worktree since removed. Refused while another live node
+   * continues the same session.
    */
   async followup(id: string, prompt: string, title?: string): Promise<NodeView> {
     const a = await findArchived(this.home, id);
     if (!a) throw new Error(`no archived node ${id}`);
     if (!a.sessionId || !a.transcriptPath) throw new Error(`${id} never started a session to follow up`);
     if (!existsSync(a.transcriptPath)) throw new Error(`the transcript of ${id} is gone (${a.transcriptPath})`);
-    const at = a.cwd.indexOf(`${sep}${wt.WORKTREES_DIR}${sep}`), repo = at >= 0 ? a.cwd.slice(0, at) : undefined;
-    const cwd = existsSync(a.cwd) ? a.cwd : repo && existsSync(repo) ? repo : undefined;
+    const twin = this.registry.list().find((n) => n.followupOf === id || n.sessionId === a.sessionId);
+    if (twin) throw new Error(`refused: ${twin.id} already continues the session of ${id}; send it the prompt instead`);
+    const cwd = usableCwd(a.cwd);
     if (!cwd) throw new Error(`refused: ${a.cwd} no longer exists`);
     const parentId = a.parentId && this.registry.get(a.parentId) ? a.parentId : null;
     return this.spawn({ kind: 'claude', title: title || a.title, cwd, prompt, model: a.model, effort: a.effort, role: a.role, parentId, isolation: 'none', byHuman: true, followup: a });
@@ -364,9 +386,14 @@ export class NodeManager extends EventEmitter {
 
   /** A live or archived Claude node's conversation in one of its sessions (default: the current one). */
   async transcript(id: string, sessionId?: string): Promise<Transcript> {
+    return nodeTranscript(await this.transcriptNode(id), sessionId);
+  }
+
+  /** The record of a live node, else the archive line of a closed one; throws for neither. */
+  async transcriptNode(id: string): Promise<NodeRecord | ArchivedNode> {
     const n = this.registry.get(id) ?? await findArchived(this.home, id);
     if (!n) throw new Error(`no such node: ${id}`);
-    return nodeTranscript(n, sessionId);
+    return n;
   }
 
   /** Throw unless every after / afterSuccess id is a node in the caller's scope. No cycle can form: a dependency must already exist. */
@@ -489,11 +516,12 @@ export class NodeManager extends EventEmitter {
     return undefined;
   }
 
-  /** Log the close, archive a Claude node, record closedAt for a root's session directory, and forget the node. */
+  /** Log the close, archive a Claude node that has launched, record closedAt for a root's session directory, and forget the node. */
   closed(id: string, note?: string, fate: BranchFate = {}): void {
     this.logEvent(id, 'close', note ? { note } : {});
     const rec = this.registry.get(id), rt = this.runtimes.get(id);
-    if (rec?.kind === 'claude') archiveNode(this.sessionDirOf(id), archivedOf(rec, rt?.status, rt?.outcome, (this.registry.lineage(id).at(-1) ?? rec).id, fate));
+    // Every launch sets lastActiveAt; a node that never launched has no conversation (nor a session directory) to keep.
+    if (rec?.kind === 'claude' && rec.lastActiveAt !== undefined) archiveNode(this.sessionDirOf(id), archivedOf(rec, rt?.status, rt?.outcome, this.rootIdOf(id), fate));
     if (rec?.parentId === null) markClosed(this.home, id);
     this.discard(id);
     this.emit('removed', id);
@@ -516,7 +544,8 @@ export class NodeManager extends EventEmitter {
   /** Close every exited node with no live descendant. A node whose worktree is not safe to remove is kept, with the reason. */
   async prune(): Promise<{ removed: string[]; kept: { id: string; reason: string }[] }> {
     const removed: string[] = [], kept: { id: string; reason: string }[] = [];
-    for (const id of pruneIds(this.list())) {
+    const depth = (id: string) => this.registry.lineage(id).length;
+    for (const id of pruneIds(this.list()).sort((a, b) => depth(b) - depth(a))) { // children first
       try {
         await this.close(id, true); // exited only, so never a live orchestrator
         removed.push(id);
@@ -782,15 +811,13 @@ export class NodeManager extends EventEmitter {
 
   launch(id: string, prompt: string | undefined, resume: boolean): void {
     const rec = this.registry.get(id)!;
-    // A fork's or follow-up's first launch (every launch sets lastActiveAt) starts from the session its record was created with.
-    // prune: a restart before that first launch (failed worktree setup) mints a fresh session and loses it; keep it there if that matters.
-    const first = rec.lastActiveAt === undefined;
-    const forkSession = first && rec.forkOf ? rec.sessionId : undefined;
-    if (forkSession) this.registry.update(id, { sessionId: randomUUID() });
-    resume ||= first && !!rec.followupOf;
+    // A follow-up's first launch (every launch sets lastActiveAt) resumes the session its record was created with.
+    // prune: a restart before that first launch mints a fresh session and loses it; a follow-up has no worktree setup to fail first.
+    resume ||= rec.lastActiveAt === undefined && !!rec.followupOf;
+    const forkSession = rec.forkSession; // cleared once the fork has launched
     const owner = rec.worktree ? undefined : this.registry.list().find((n) => n.id !== id && n.worktree && this.session(n.id) && inside(rec.cwd, n.worktree.path));
-    const root = this.registry.lineage(id).at(-1) ?? rec;
-    const sessionDir = ensureSession(this.home, { rootId: root.id, title: root.title, cwd: root.cwd, createdAt: root.createdAt });
+    const rootId = this.rootIdOf(id), root = this.registry.get(rootId) ?? rec;
+    const sessionDir = ensureSession(this.home, { rootId, title: root.title, cwd: root.cwd, createdAt: root.createdAt });
     const input: LaunchInput = {
       nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path,
       title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, sessionId: rec.sessionId ?? '',
@@ -803,7 +830,7 @@ export class NodeManager extends EventEmitter {
     const rt = this.runtimes.get(id)!;
     rt.session = s;
     if (rec.kind === 'claude' && prompt) rt.starting = true;
-    this.registry.update(id, { lastActiveAt: Date.now() });
+    this.registry.update(id, { lastActiveAt: Date.now(), forkSession: undefined });
     this.liveChanged();
     s.onData((d) => this.emit('data', id, d));
     s.onExit(() => {
