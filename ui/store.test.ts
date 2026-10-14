@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { applyServer, diffRequested, getState } from './store';
+import { applyServer, diffRequested, getState, transcriptRequested } from './store';
 
 it('the diff panel shows the diff reply\'s own failure, not another error for the same node', () => {
   diffRequested('a');
@@ -7,4 +7,30 @@ it('the diff panel shows the diff reply\'s own failure, not another error for th
   expect(getState().diff).toEqual({ id: 'a' });
   applyServer({ t: 'diff', id: 'a', error: 'a has no worktree of its own to diff' });
   expect(getState().diff).toEqual({ id: 'a', error: 'a has no worktree of its own to diff' });
+});
+
+it('a transcript reply lands in the slot asked for and is ignored for another node or session', () => {
+  const data = { entries: [{ role: 'user' as const, text: 'hi' }], sessions: [{ sessionId: 's2', current: true }, { sessionId: 's1', current: false }] };
+  transcriptRequested('a');
+  applyServer({ t: 'transcript', id: 'b', ...data });
+  applyServer({ t: 'transcript', id: 'a', sessionId: 's1', ...data });
+  expect(getState().transcript).toEqual({ id: 'a' });
+  applyServer({ t: 'transcript', id: 'a', sessionId: 's2', ...data }); // the current session, named by the reply
+  expect(getState().transcript).toEqual({ id: 'a', sessionId: undefined, data });
+
+  transcriptRequested('a'); // a refresh keeps the old data until the reply
+  expect(getState().transcript?.data).toEqual(data);
+  transcriptRequested('a', 's1');
+  expect(getState().transcript).toEqual({ id: 'a', sessionId: 's1' });
+  applyServer({ t: 'transcript', id: 'a', ...data });
+  expect(getState().transcript).toEqual({ id: 'a', sessionId: 's1' });
+  applyServer({ t: 'transcript', id: 'a', sessionId: 's1', error: 'session file is gone' });
+  expect(getState().transcript).toEqual({ id: 'a', sessionId: 's1', error: 'session file is gone' });
+});
+
+it('a history reply replaces the items', () => {
+  const item = (id: string) => ({ id, rootId: 'r', parentId: null, title: id, cwd: '/w', createdAt: 0, closedAt: 1 });
+  applyServer({ t: 'history', items: [item('x'), item('y')] });
+  applyServer({ t: 'history', items: [item('z')] });
+  expect(getState().history.map((a) => a.id)).toEqual(['z']);
 });

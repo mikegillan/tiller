@@ -19,6 +19,7 @@ export function actionsFor(node: NodeView): Act[] {
     node.muted
       ? { key: 'mute', label: 'Unmute notifications', icon: 'bell', run: () => send({ t: 'mute', id: node.id, muted: false }) }
       : { key: 'mute', label: 'Mute notifications', icon: 'bellOff', run: () => send({ t: 'mute', id: node.id, muted: true }) },
+    ...(node.kind === 'claude' ? [{ key: 'fork', label: 'Fork…', icon: 'fork' as const, run: () => openDialog({ kind: 'fork', from: node.id, title: node.title, cwd: node.cwd, parentId: node.parentId }) }] : []),
     ...(exited ? [{ key: 'resume', label: 'Resume', icon: 'play' as const, run: () => send({ t: 'resume', id: node.id }) }] : []),
     ...(canMerge(node) ? [{ key: 'merge', label: `Merge into ${node.status.git!.base}`, icon: 'merge' as const, run: () => send({ t: 'merge', id: node.id }) }] : []),
     last,

@@ -4,7 +4,7 @@ import { NodeMeta, StateDot } from './Bits';
 import { Icon } from './icons';
 import { RenameInput } from './RenameInput';
 import { ancestry } from './sessions';
-import { selectNode, toggleDiff, togglePanel, useStore } from './store';
+import { selectNode, showPane, togglePanel, useStore } from './store';
 import { KIND_LABEL, statusKind } from './tree';
 
 function Breadcrumb({ node }: { node: NodeView }) {
@@ -26,7 +26,13 @@ function Breadcrumb({ node }: { node: NodeView }) {
 
 export function TitleBar({ node }: { node: NodeView }) {
   const panel = useStore((s) => s.panel);
-  const diff = useStore((s) => s.diffOpen);
+  const diff = useStore((s) => s.diffOpen) && !!node.worktree;
+  const transcript = useStore((s) => s.transcriptOpen) && node.kind === 'claude';
+  const tabs = [
+    { key: 'terminal', label: 'Terminal', on: !diff && !transcript, show: true },
+    { key: 'diff', label: 'Diff', on: diff, show: !!node.worktree },
+    { key: 'transcript', label: 'Transcript', on: transcript, show: node.kind === 'claude' },
+  ] as const;
   const kind = statusKind(node);
   const s = node.status;
   return (
@@ -36,10 +42,11 @@ export function TitleBar({ node }: { node: NodeView }) {
         <span className={`badge ${kind}`}><StateDot kind={kind} />{KIND_LABEL[kind]}{s.errored && s.interrupted ? ' (interrupted)' : ''}</span>
         <span className="spacer" />
         <ActionButtons node={node} labels />
-        {node.worktree && (
+        {tabs.filter((t) => t.show).length > 1 && (
           <div className="seg tabs" role="group" aria-label="Pane">
-            <button className={diff ? '' : 'on'} aria-pressed={!diff} onClick={() => diff && toggleDiff()}>Terminal</button>
-            <button className={diff ? 'on' : ''} aria-pressed={diff} onClick={() => diff || toggleDiff()}>Diff</button>
+            {tabs.filter((t) => t.show).map((t) => (
+              <button key={t.key} className={t.on ? 'on' : ''} aria-pressed={t.on} onClick={() => showPane(t.key)}>{t.label}</button>
+            ))}
           </div>
         )}
         <button className={`btn icon${panel ? ' on' : ''}`} title="Last message" aria-label="Toggle last message panel" aria-pressed={panel} onClick={togglePanel}>

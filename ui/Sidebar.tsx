@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { send } from './conn';
+import { HistoryPanel } from './History';
 import { Icon } from './icons';
 import { NodeRow } from './NodeRow';
 import { SessionSwitcher } from './SessionSwitcher';
 import { flattenSession, type Row } from './tree';
-import { openDialog, selectNode, toggleCollapsed, useStore } from './store';
+import { openDialog, selectNode, toggleCollapsed, toggleHistory, useStore } from './store';
 
 export function useRows(): Row[] {
   const nodes = useStore((s) => s.nodes);
@@ -32,6 +33,7 @@ export function Sidebar() {
   const exited = useStore((s) => Object.values(s.nodes).filter((n) => n.status.exited).length);
   const tree = useRef<HTMLDivElement>(null);
   const cur = useStore((s) => (s.selected ? s.nodes[s.selected] : undefined));
+  const history = useStore((s) => s.historyOpen);
 
   // Keep the selected row in view when selection moves (keyboard, palette, focus message).
   useEffect(() => { tree.current?.querySelector('.row.sel')?.scrollIntoView({ block: 'nearest' }); }, [selected]);
@@ -39,16 +41,21 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <SessionSwitcher />
-      <div className="tree" role="tree" tabIndex={0} ref={tree} onKeyDown={(e) => onKey(e, rows, selected)}>
-        {rows.map((r) => <NodeRow key={r.node.id} row={r} />)}
-        {!rows.length && <p className="hint">No sessions yet.</p>}
-      </div>
+      {history ? <HistoryPanel /> : (
+        <div className="tree" role="tree" tabIndex={0} ref={tree} onKeyDown={(e) => onKey(e, rows, selected)}>
+          {rows.map((r) => <NodeRow key={r.node.id} row={r} />)}
+          {!rows.length && <p className="hint">No sessions yet.</p>}
+        </div>
+      )}
       <footer className="sidefoot">
         <button className="btn" disabled={!cur || !!cur.status.exited} onClick={() => cur && openDialog({ kind: 'spawn', parentId: cur.id, cwd: cur.cwd })}>
           <Icon name="subnode" size={14} />New child
         </button>
         <button className="btn" disabled={!exited} onClick={() => send({ t: 'prune' })} title="Remove exited nodes that have no live descendant">
           <Icon name="trash" size={14} />Clear exited{exited ? ` (${exited})` : ''}
+        </button>
+        <button className={`btn hist${history ? ' on' : ''}`} aria-pressed={history} onClick={toggleHistory} title="History: closed nodes to read, follow up or fork" aria-label="History">
+          <Icon name="history" size={14} />
         </button>
       </footer>
     </aside>

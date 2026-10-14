@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { Diff, DigestItem, Dnd, ServerMessage, Usage } from '../src/shared/protocol';
+import type { ArchivedNode, Diff, DigestItem, Dnd, ServerMessage, Transcript, Usage } from '../src/shared/protocol';
 import type { ReviewComment } from './diff';
 import { pickInitial, rootOf } from './sessions';
 import { insertSorted, type Nodes } from './tree';
@@ -12,6 +12,9 @@ export type Dialog =
   | { kind: 'spawn'; parentId: string | null; cwd: string }
   | { kind: 'kill'; id: string }
   | { kind: 'restart'; id: string }
+  | { kind: 'followup'; id: string; title: string }
+  /** Spawn a Claude node that starts from `from`'s conversation (a live or archived node). */
+  | { kind: 'fork'; from: string; title: string; cwd: string; parentId: string | null }
   | { kind: 'palette' };
 
 export interface State {
@@ -46,6 +49,16 @@ export interface State {
   diff: { id: string; data?: Diff; error?: string } | null;
   /** Review comments not sent yet, for any node. */
   comments: ReviewComment[];
+  /** The Transcript tab is showing instead of the terminal (for Claude nodes). */
+  transcriptOpen: boolean;
+  /** The last transcript asked for (no sessionId: the node's current session); data stays while a refresh is out. */
+  transcript: { id: string; sessionId?: string; data?: Transcript; error?: string } | null;
+  /** The sidebar shows closed nodes instead of the tree. */
+  historyOpen: boolean;
+  /** The last history reply. */
+  history: ArchivedNode[];
+  /** The closed node shown in the main pane, over the selected live node. */
+  archived: ArchivedNode | null;
 }
 
 const stored = (() => { try { return localStorage.getItem('o8.panel') === '1'; } catch { return false; } })();
@@ -53,6 +66,7 @@ const stored = (() => { try { return localStorage.getItem('o8.panel') === '1'; }
 let state: State = {
   nodes: {}, order: [], selected: null, session: null, opened: [], collapsed: [], toasts: [], confirms: [],
   connected: false, retry: 0, panel: stored, dialog: null, renaming: null, awaitSpawn: false, diffOpen: false, diff: null, comments: [],
+  transcriptOpen: false, transcript: null, historyOpen: false, history: [], archived: null,
 };
 const subs = new Set<() => void>();
 let toastSeq = 0;
@@ -85,9 +99,15 @@ export const togglePanel = () => update((s) => {
   return { panel: !s.panel };
 });
 
-export const toggleDiff = () => update((s) => ({ diffOpen: !s.diffOpen }));
+/** What the stage shows for a live node. */
+export const showPane = (pane: 'terminal' | 'diff' | 'transcript') => update(() => ({ diffOpen: pane === 'diff', transcriptOpen: pane === 'transcript' }));
 /** Note that a diff for `id` was asked for; conn.ts sends the request. */
 export const diffRequested = (id: string) => update((s) => ({ diff: s.diff?.id === id ? s.diff : { id } }));
+/** Note that a transcript for `id` (and `sessionId`, else the current one) was asked for; the caller sends the request. */
+export const transcriptRequested = (id: string, sessionId?: string) =>
+  update((s) => ({ transcript: s.transcript?.id === id && s.transcript.sessionId === sessionId ? s.transcript : { id, sessionId } }));
+export const toggleHistory = () => update((s) => ({ historyOpen: !s.historyOpen }));
+export const viewArchived = (archived: ArchivedNode | null) => update(() => ({ archived }));
 export const addComment = (c: ReviewComment) => update((s) => ({ comments: [...s.comments, c] }));
 export const removeComment = (c: ReviewComment) => update((s) => ({ comments: without(s.comments, c) }));
 export const clearComments = (nodeId: string) => update((s) => ({ comments: s.comments.filter((c) => c.nodeId !== nodeId) }));
@@ -104,10 +124,10 @@ function choose(s: State, nodes: Nodes, id: string | null): Partial<State> {
   };
 }
 
-export const selectNode = (id: string) => update((s) => (s.nodes[id] ? choose(s, s.nodes, id) : {}));
+export const selectNode = (id: string) => update((s) => (s.nodes[id] ? { archived: null, ...choose(s, s.nodes, id) } : {}));
 
 /** Switching session selects its root. */
-export const selectSession = (rootId: string) => update((s) => (s.session === rootId ? {} : choose(s, s.nodes, rootId)));
+export const selectSession = (rootId: string) => update((s) => (s.session === rootId ? {} : { archived: null, ...choose(s, s.nodes, rootId) }));
 
 /** Reducer for server messages that change state (data/notify are handled by conn.ts). */
 export function applyServer(m: ServerMessage) {
@@ -133,7 +153,7 @@ export function applyServer(m: ServerMessage) {
         const order = isNew ? insertSorted(s.order, s.nodes, m.node) : s.order;
         // The selected node is being looked at, so it never shows as unread.
         if (s.selected === m.node.id) nodes[m.node.id] = { ...m.node, unread: false };
-        if (isNew && s.awaitSpawn) return { order, awaitSpawn: false, ...choose(s, nodes, m.node.id) };
+        if (isNew && s.awaitSpawn) return { order, awaitSpawn: false, archived: null, ...choose(s, nodes, m.node.id) };
         return { nodes, order };
       });
     case 'removed':
@@ -154,6 +174,18 @@ export function applyServer(m: ServerMessage) {
       const { t: _, id, ...data } = m;
       return update((s) => (s.diff?.id === id ? { diff: 'error' in data ? { id, error: data.error } : { id, data } } : {}));
     }
+    case 'transcript': {
+      const { t: _, id, sessionId, ...data } = m;
+      return update((s) => {
+        const want = s.transcript;
+        // A request without a session is answered for the current one, whether or not the reply names it.
+        const current = 'sessions' in data ? data.sessions.find((x) => x.current)?.sessionId : undefined;
+        if (want?.id !== id || (want.sessionId !== sessionId && !(want.sessionId === undefined && sessionId === current))) return {};
+        return { transcript: 'error' in data ? { id, sessionId: want.sessionId, error: data.error } : { id, sessionId: want.sessionId, data } };
+      });
+    }
+    case 'history':
+      return update(() => ({ history: m.items }));
     case 'sent': {
       const title = state.nodes[m.id]?.title ?? m.id;
       const { outcome, detail } = m.result;
