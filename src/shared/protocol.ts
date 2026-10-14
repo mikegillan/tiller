@@ -192,6 +192,35 @@ export interface NodeView extends NodeRecord {
   gate?: 'running' | 'passed' | 'failed';
 }
 
+/** One user or assistant message of a node's conversation, for the transcript viewer. `tools` names the tools an assistant message called. */
+export interface TranscriptEntry { role: 'user' | 'assistant'; at?: number; text: string; tools?: string[] }
+/** A node's conversation (live or archived). `sessions` lists the sessions on record, current first; `truncated` when older entries were cut. */
+export interface Transcript { entries: TranscriptEntry[]; sessions: { sessionId: string; current: boolean }[]; truncated?: boolean }
+
+/** What close keeps of a Claude node so it can be found, read, followed up or forked later. One line per node in <sessionDir>/archive.jsonl. */
+export interface ArchivedNode {
+  id: string;
+  rootId: string;
+  parentId: string | null;
+  title: string;
+  cwd: string;
+  model?: string;
+  effort?: Effort;
+  role?: Role;
+  /** The first prompt the node was spawned with. */
+  prompt?: string;
+  sessionId?: string;
+  previousSessions?: string[];
+  transcriptPath?: string;
+  lastAssistantMessage?: string;
+  outcome?: Outcome;
+  spentUsd?: number;
+  /** The worktree branch it worked on, when it had one. */
+  branch?: string;
+  createdAt: number;
+  closedAt: number;
+}
+
 /** One rate-limit window as Claude Code's `session.measure` reports it; `kind` is five_hour, seven_day or a gateway's spend_limit. */
 export interface RateLimit { kind: string; percentUsed: number; resetsAt?: string }
 /** Account-level Claude usage: the newest non-empty rateLimits any node's mod reported. Limits are per account, so there is one. */
@@ -213,6 +242,8 @@ export type ServerMessage =
   | { t: 'focus'; from: string; id: string }   // a node's mod asked to view node `id`; an attach client showing `from` switches
   | { t: 'digest'; since: number; items: DigestItem[] } // what happened while no client was focused; sent to the client that regained focus
   | ({ t: 'diff'; id: string } & (Diff | { error: string })) // reply to a diff request: the diff, or why there is none
+  | ({ t: 'transcript'; id: string; sessionId?: string } & (Transcript | { error: string })) // reply to a transcript request
+  | { t: 'history'; items: ArchivedNode[] }   // reply to a history request, newest closed first
   | { t: 'sent'; id: string; result: SendResult } // reply to a send request
   ;
 
@@ -228,7 +259,7 @@ export type ClientMessage =
   | { t: 'input'; id: string; data: string }
   | { t: 'resize'; id: string; cols: number; rows: number }
   | { t: 'select'; id: string }                // clears unread
-  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean }
+  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); kind must be claude
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
   | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.mergeStyle style
   | { t: 'restart'; id: string; prompt?: string } // relaunch with a fresh session: clears context, keeps the node and its children; prompt is its first prompt
@@ -237,6 +268,9 @@ export type ClientMessage =
   | { t: 'rename'; id: string; title: string }
   | { t: 'confirm'; confirmId: string; ok: boolean }
   | { t: 'diff'; id: string }                  // a worktree node's diff; replies diff, with error for a node without a worktree
+  | { t: 'transcript'; id: string; sessionId?: string } // a live or archived Claude node's conversation (default: its current session); replies transcript
+  | { t: 'history'; rootId?: string; query?: string } // archived nodes, of one tree or all, optionally filtered by text in title, prompt or last message; replies history
+  | { t: 'followup'; id: string; prompt: string; title?: string } // continue an archived node's session as a new live node (claude --resume <session>) that starts on `prompt`; replies node (or error)
   | { t: 'send'; id: string; text: string; mode?: SendMode } // a message from the human, as `o8 send` delivers it; replies sent
   | { t: 'mute'; id: string; muted: boolean }  // the human mutes or unmutes a node's OS notifications
   | { t: 'dnd'; on: boolean; minutes?: number } // do not disturb on (for minutes, else until turned off) or off
