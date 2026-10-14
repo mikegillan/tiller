@@ -391,6 +391,16 @@ describe('NodeManager harness delegation and lifecycle', () => {
     expect(m.view(id)!.status).not.toBe(prev);
   });
 
+  it.each([0, 1])('shows the adapter\'s activation refusal on a Pi exit %s', async (code) => {
+    const { id } = await pi(undefined, { byHuman: true });
+    output('\u001b[2J pi starting\r\n\u001b[31m[tiller] tiller: incompatible Pi build (missing native Pi 1.2.x events (version 0.87.1)); not activating\u001b[0m\r\n');
+    output('\u001b[?1049lbye\r\n');
+    exit(code);
+    expect(m.view(id)!.status).toMatchObject({
+      exited: true, errored: true, activity: 'tiller: incompatible Pi build (missing native Pi 1.2.x events (version 0.87.1)); not activating',
+    });
+  });
+
   it('finishes an active Pi on a failing PTY exit without mutating its working status', async () => {
     const { id } = await pi(undefined, { byHuman: true });
     const prev: NodeStatus = Object.freeze({ state: 'working', changedAt: 1, activity: 'tool running' });

@@ -30,6 +30,8 @@ const MAX_PREVIOUS_SESSIONS = 10;
 const INTERRUPT_MS = 1500;
 const SWEEP_MS = 60_000;
 const TRUST_WATCH_MS = 20_000;
+/** How the Pi adapter prints an activation refusal to stderr (adapters/pi/index.ts report). */
+const PI_REFUSAL = '[tiller] tiller: ';
 const TRUST_BLOCKED_ACTIVITY = 'Trust dialog: answer it in the terminal';
 /** The marker (U+276F) Claude draws in front of the selected option of a dialog. */
 const SELECTED = String.fromCodePoint(0x276f);
@@ -917,9 +919,10 @@ export class NodeManager extends EventEmitter {
     if (adapter && prompt) rt.starting = true;
     this.registry.update(id, { lastActiveAt: Date.now(), forkSession: undefined });
     this.liveChanged();
-    let outputTail = '';
+    const pi = adapter?.id === 'pi';
+    let outputTail = ''; // only Pi's exit handler reads it
     s.onData((d) => {
-      outputTail = (outputTail + d).slice(-8192);
+      if (pi) outputTail = (outputTail + d).slice(-8192);
       this.emit('data', id, d);
     });
     s.onExit((code) => {
@@ -929,10 +932,12 @@ export class NodeManager extends EventEmitter {
       this.liveChanged();
       this.markUnread(id);
       let status = ptyExited(rt.status!, Date.now());
-      if (adapter?.id === 'pi') {
-        if (code !== 0) {
-          const lines = stripVTControlCharacters(outputTail).split(/[\r\n]+/).map((line) => line.trim());
-          const error = lines.findLast((line) => /^Error:/i.test(line));
+      if (pi) {
+        const lines = stripVTControlCharacters(outputTail).split(/[\r\n]+/).map((line) => line.trim());
+        // The adapter's refusals (an incompatible Pi build, a bad launch environment) shut Pi down cleanly, often with code 0.
+        const refusal = lines.findLast((line) => line.includes(PI_REFUSAL));
+        if (code !== 0 || refusal) {
+          const error = refusal?.slice(refusal.indexOf(PI_REFUSAL) + '[tiller] '.length) ?? lines.findLast((line) => /^Error:/i.test(line));
           status = { ...status, errored: true, activity: error?.slice(0, 300) ?? `Process exited with code ${code}` };
         } else status = { ...status, activity: undefined };
       }
