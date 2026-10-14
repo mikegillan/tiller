@@ -89,7 +89,7 @@ All calls use `Authorization: Bearer <token>` and `X-TL-Node: <nodeId>`.
 | `tool_execution_start` / `_end` | `POST /hook` `PreToolUse` / `PostToolUse` | Only with `TL_PI_HOOK_TOOLS`. Pi tool names/fields are mapped to the Claude names the daemon's reducer reads; the raw name stays in `pi_tool_name`. |
 | `session_shutdown` (`quit`) | `POST /hook` `SessionEnd` | Await the queued hooks, then dispose the HTTP client. Other shutdown reasons replace the runtime and a new `session_start` follows. |
 | `model_select` | `POST /mod-event` `session.measure` | Provider-qualified `model` (`provider/id`) including idle switches, so follow-up can replay the selected provider. |
-| poll loop | `GET /inbox`, `POST /claim`, `POST /ack`, `POST /unconfirmed` | See below. |
+| poll loop | `GET /inbox`, `POST /claim`, `POST /release`, `POST /ack`, `POST /unconfirmed` | See below. |
 
 Every hook and mod-event is serialized through one in-process queue and awaited, so
 `SessionStart` can never race the first turn's `turn.start` / `UserPromptSubmit`.
@@ -100,14 +100,17 @@ On every poll (`pollOnce`, one in flight at a time):
 
 1. A claimed message is submitted (or, if it was already submitted, its ack is retried).
 2. `GET /inbox` is fetched.
-3. At most **one immediate next** message is claimed: the oldest while idle, or a single `steer`
-   while busy. Everything behind it stays in the daemon (unclaimed) so its sender can still
-   withdraw it. A claimed steer aborts the running turn and is delivered once Pi reports idle.
-4. A message claimed while idle is submitted in the same cycle.
+3. At most **one immediate next** message is claimed, and only while Pi is idle. Everything else
+   stays in the daemon (unclaimed) so its sender can still withdraw it.
+4. While Pi is busy, a `steer` aborts the running turn once but stays unclaimed and withdrawable.
+   When Pi is idle again it is claimed ahead of the queue.
+5. A claimed message is submitted in the same cycle. If Pi turned busy between claim and submit,
+   the bridge hands the claim back with `POST /release`: the message returns to the queue,
+   withdrawable and retryable under the normal inbox TTL.
 
-`POST /claim` returning `404` means withdrawn, expired, or (for Pi) already claimed by a prior
-runtime; never submit it. There is no `followUp` fallback: Pi can combine queued prompts without
-an exact matching acceptance event. A busy race is treated as ambiguous instead.
+`POST /claim` returning `404` means withdrawn, expired, already claimed by a prior runtime, or
+not persisted (the daemon undoes such a claim); never submit it. There is no `followUp`
+fallback: Pi can combine queued prompts without an exact matching acceptance event.
 
 Native `sendUserMessage` catches/logs prompt errors and returns **void**. Missing credentials,
 compaction failure, and consumed input therefore need not throw or start a run. The bridge marks
@@ -115,11 +118,9 @@ compaction failure, and consumed input therefore need not throw or start a run. 
 exact matching `before_agent_start` confirms acceptance and permits `/ack`; ack failures retry
 only the receipt. Pi does not use the daemon's Claude substring-hook acknowledgment.
 
-A claim without confirmation retires within **60 seconds from claim**, independently of inbox TTL
-renewal. The lease starts **before native submission**: a busy steer whose abort/compaction never
-reaches idle can consume its whole lease without any `sendUserMessage` call. It still retires
-conservatively as unconfirmed/nonretryable; this protocol does not prove cancellation or delivery.
-The bridge uses `/unconfirmed`; the daemon also bounds Pi claims if the adapter stops polling.
+A message that was submitted but never confirmed retires within **60 seconds from claim**,
+independently of inbox TTL renewal. Retirement is conservative; this protocol does not prove
+cancellation or delivery. The bridge uses `/unconfirmed`; the daemon also bounds Pi claims if the adapter stops polling.
 Retirement removes the claim and reports `stalled`, `retryable: false`, with an explicit warning
 that the prompt may still run later. **Do not resend automatically.** Later messages, including
 steers, can progress; timeout is not cancellation, so late execution may change run ordering.
