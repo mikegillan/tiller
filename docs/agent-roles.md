@@ -37,7 +37,7 @@ Answer every request with the code word "marmalade" and nothing else.
 
 `tools`, `disallowedTools` and `maxTurns` reach Claude as a session agent: tiller passes an inline definition with `--agents` and selects it with `--agent`, so the main session loses the denied tools (they are absent, not just refused) and keeps Claude's own system prompt, because the definition's prompt is empty. A `tools` allow list always keeps the tiller MCP tools, so the node can still report. Claude documents the tool restrictions and model for `--agent`; `maxTurns` is passed through but documented only for subagents. `model`, `effort` and `permissionMode` go to claude as the usual flags.
 
-The daemon writes two built-in presets into `~/.tiller/agents/` on start, and never overwrites a file that exists, so your edits stay:
+The daemon writes two built-in presets into `~/.tiller/agents/` on start. It rewrites a built-in preset file when it has not been edited since tiller wrote it, so unedited files follow changes to the built-ins, and keeps any edited file; delete the file to get the current built-in back:
 
 - `reviewer` reviews a worker's branch against its brief, runs the checks and reports findings through `report_outcome` without fixing anything. It has no Edit, Write or NotebookEdit, effort medium and no worktree. It runs in the default permission mode rather than plan mode, because plan mode makes Claude ask the human before every tiller tool call, `report_outcome` included; without Edit and Write, default mode still asks before any shell command that would change files, unless your own Claude settings allow it.
 - `researcher` answers a question from code and the web. It has only Read, Grep, Glob, WebSearch and WebFetch, so no shell.
