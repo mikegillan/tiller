@@ -4,11 +4,8 @@
  * The daemon launches Pi with the same node-scoped environment it uses for Claude nodes:
  * `TL_NODE_ID`, `TL_ENDPOINT`, `TL_TOKEN_FILE`, and optionally `TL_PARENT_ID` / `TL_SESSION_DIR`.
  *
- * The adapter intentionally supports no way to weaken or strengthen Pi's permission handling.
- * Configuration keys that request restrictions the adapter cannot enforce are treated as
- * unsupported and must be rejected by the daemon before launch. `findUnsupportedRestrictions()`
- * is exported so daemon code can share the allow/deny list, and the extension itself refuses to
- * activate the bridge if it sees any of them.
+ * The adapter intentionally supports no way to weaken or strengthen Pi's permission handling; the
+ * daemon refuses restrictions it cannot map before launch (piAdapter.validate in src/daemon/harness.ts).
  */
 
 export const TILLER_MCP_NAME = "tl";
@@ -17,23 +14,6 @@ export const MIN_POLL_INTERVAL_MS = 100;
 
 export const MCP_EXPOSURES = ["codemode", "deferred", "direct", "hidden"] as const;
 export type McpExposure = (typeof MCP_EXPOSURES)[number];
-
-/**
- * Environment keys that would ask the adapter to restrict, broaden, or otherwise alter Pi's
- * permission/tool safety. The adapter cannot honor these (it must not change permission safety),
- * so their presence is an error rather than a silent no-op.
- */
-export const UNSUPPORTED_RESTRICTION_KEYS = [
-  "TL_PERMISSION_MODE",
-  "TL_APPROVAL_MODE",
-  "TL_ALLOWED_TOOLS",
-  "TL_TOOLS",
-  "TL_DISALLOWED_TOOLS",
-  "TL_EXCLUDE_TOOLS",
-  "TL_MAX_TURNS",
-  "TL_SANDBOX",
-  "TL_BYPASS_PERMISSIONS",
-] as const;
 
 export interface BridgeConfig {
   nodeId: string;
@@ -63,13 +43,6 @@ const nonEmpty = (value: string | undefined): string | undefined => {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
 };
-
-/** Env keys present with a non-empty value that the adapter refuses to run with. */
-export function findUnsupportedRestrictions(
-  env: Record<string, string | undefined>,
-): string[] {
-  return UNSUPPORTED_RESTRICTION_KEYS.filter((key) => nonEmpty(env[key]) !== undefined);
-}
 
 /**
  * Parse the Tiller environment. Returns a result object rather than throwing so the caller can

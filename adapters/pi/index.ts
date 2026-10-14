@@ -27,15 +27,14 @@
  * Every lifecycle HTTP call is serialized through one queue, so `SessionStart` can never race the
  * first turn's events; handlers for state-critical events await that queue.
  *
- * It does not change Pi's permission handling. If the environment asks for a restriction it
- * cannot enforce, it refuses to activate (see config.ts) instead of running with weaker safety.
+ * It does not change Pi's permission handling; the daemon refuses restrictions it cannot map
+ * before launch.
  */
 
 import { randomBytes } from "node:crypto";
 import { TillerBridge } from "./bridge.ts";
 import { readToken, TillerClient } from "./client.ts";
 import {
-  findUnsupportedRestrictions,
   missingCapabilities,
   nativePiVersion,
   supportsNativeEvents,
@@ -270,17 +269,6 @@ export default function tillerPiExtension(
     runActive = false;
     uiOpenCount = 0;
     runStartedAt = Date.now();
-
-    // Reject restriction settings the adapter cannot honor instead of silently ignoring them.
-    const unsupported = findUnsupportedRestrictions(process.env);
-    if (unsupported.length > 0) {
-      config = undefined;
-      failClosed(
-        ctx,
-        `tiller: refusing to activate with unsupported restriction settings: ${unsupported.join(", ")}`,
-      );
-      return;
-    }
 
     let token: string;
     try {
