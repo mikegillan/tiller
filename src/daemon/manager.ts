@@ -420,7 +420,7 @@ export class NodeManager extends EventEmitter {
     if (!src) throw new Error(`no such node to fork: ${req.fork}`);
     if ((src.harness ?? 'claude') !== harnessFor(req)) throw new Error('cannot fork a session across harnesses');
     // transcriptPath comes with SessionStart: without it the session has not started and there is nothing to fork.
-    if (!src.sessionId || !src.transcriptPath) throw new Error(`refused: ${req.fork} has no Claude session yet to fork`);
+    if (!src.sessionId || !src.transcriptPath) throw new Error(`refused: ${req.fork} has no session yet to fork`);
     const want = req.cwd || src.cwd, cwd = usableCwd(want);
     if (!cwd) throw new Error(`refused: ${want} no longer exists`);
     return { sessionId: src.sessionId, cwd };
@@ -487,7 +487,7 @@ export class NodeManager extends EventEmitter {
   async resume(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
     const rec = this.registry.get(id);
     if (!rec) return { ok: false, error: 'No such node' };
-    if (!isAgentKind(rec.kind) || !adapterFor(rec).capabilities.resume) return { ok: false, error: 'Only resumable agent nodes can be resumed' };
+    if (!isAgentKind(rec.kind)) return { ok: false, error: 'Only agent nodes can be resumed' };
     const rt = this.runtimes.get(id)!;
     if (rt.session) return { ok: false, error: 'Node is still running' };
     if (rt.setup) return { ok: false, error: 'worktree setup is running' };

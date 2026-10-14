@@ -61,6 +61,9 @@ export function inScope(m: Mgr, caller: string, target: string): boolean {
 
 // ---- delivery ----
 
+/** A target whose harness takes messages only through its mod's inbox (Pi): receipts come from its explicit ack, and a claim is a native submission. */
+const nativeInbox = (v: NodeView | undefined): boolean => !!v && adapterFor(v).capabilities.inbox;
+
 /** `steer`: the target's turn is interrupted for this message, so it goes ahead of the queue and its envelope says so. */
 interface Entry { id: string; from: string; to: string; label: string; replyTo: string | null; text: string; steer?: boolean; timer?: NodeJS.Timeout }
 /**
@@ -103,7 +106,7 @@ function stateOf(m: Mgr): State {
     if (ev.hook_event_name !== 'UserPromptSubmit') return;
     // Pi receipts must come from its exact native acceptance + explicit /ack, not a hook substring.
     // A late prompt from a retired claim must never revive its sender's delivery status.
-    if (m.view(id)?.harness === 'pi') return;
+    if (nativeInbox(m.view(id))) return;
     const prompt = String(ev.prompt ?? '');
     for (const i of [...(st.inbox.get(id) ?? [])]) if (prompt.includes(i.msg.text.split('\n', 1)[0])) ack(m, id, i.msg.id);
   });
@@ -293,7 +296,7 @@ function armInbox(m: Mgr, s: State, i: InboxItem): void {
   const arm = (ms: number) => {
     i.timer = setTimeout(() => {
       if (!s.inbox.get(i.to)?.includes(i)) return;
-      if (i.claimed && m.view(i.to)?.harness === 'pi') {
+      if (i.claimed && nativeInbox(m.view(i.to))) {
         const remaining = (i.claimedAt ?? i.msg.enqueuedAt) + PI_CONFIRM_MS - Date.now();
         if (remaining > 0) return arm(remaining);
         unconfirmed(m, i.to, i.msg.id);
@@ -304,7 +307,7 @@ function armInbox(m: Mgr, s: State, i: InboxItem): void {
     }, ms);
     i.timer.unref();
   };
-  arm(Math.max(0, (i.claimed && m.view(i.to)?.harness === 'pi'
+  arm(Math.max(0, (i.claimed && nativeInbox(m.view(i.to))
     ? (i.claimedAt ?? i.msg.enqueuedAt) + PI_CONFIRM_MS
     : i.msg.enqueuedAt + QUEUE_TTL_MS) - Date.now()));
 }
@@ -320,7 +323,7 @@ function loadInbox(m: Mgr, s: State, file: string): void {
     for (const i of Array.isArray(data?.items) ? (data.items as InboxItem[]) : []) {
       if (!i?.msg?.id) continue;
       // An old claimed Pi message is ambiguous, not a safe-to-retry expiration.
-      if (Date.now() - i.msg.enqueuedAt >= QUEUE_TTL_MS && !(i.claimed && m.view(i.to)?.harness === 'pi')) continue;
+      if (Date.now() - i.msg.enqueuedAt >= QUEUE_TTL_MS && !(i.claimed && nativeInbox(m.view(i.to)))) continue;
       s.status.set(i.msg.id, { from: i.from, to: i.to, result: { outcome: 'queued', retryable: false, messageId: i.msg.id }, at: i.msg.enqueuedAt });
       addInbox(m, s, i);
     }
@@ -347,10 +350,10 @@ export function claim(m: Mgr, nodeId: string, id: string): boolean {
   const s = stateOf(m);
   const i = s.inbox.get(nodeId)?.find((x) => x.msg.id === id);
   if (!i) return false;
-  if (m.view(nodeId)?.harness === 'pi' && i.claimed) return false; // ambiguous prior owner: never replay
+  if (nativeInbox(m.view(nodeId)) && i.claimed) return false; // ambiguous prior owner: never replay
   i.claimed = true;
   i.claimedAt ??= Date.now();
-  if (m.view(nodeId)?.harness === 'pi') {
+  if (nativeInbox(m.view(nodeId))) {
     // Persist BEFORE returning success: a daemon crash after native submission must not enable replay.
     if (s.inboxFile && !writeInbox(s)) {
       // The mod is told 404 and will not submit, so the message stays queued as before.

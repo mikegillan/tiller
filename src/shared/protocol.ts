@@ -12,7 +12,7 @@ export type Harness = (typeof HARNESSES)[number];
 export const isAgentKind = (kind: NodeKind): boolean => kind !== 'terminal';
 
 /** Which agent CLI runs an agent node; terminals never call this and legacy nodes default to claude. */
-export const harnessFor = ({ harness }: { kind: NodeKind; harness?: Harness }): Harness => harness ?? 'claude';
+export const harnessFor = ({ harness }: { harness?: Harness }): Harness => harness ?? 'claude';
 
 /**
  * Agent status derived from hook events. 'none' is for plain terminals. 'armed' and 'queued' are nodes with no process
@@ -293,7 +293,7 @@ export type ClientMessage =
   | { t: 'input'; id: string; data: string }
   | { t: 'resize'; id: string; cols: number; rows: number }
   | { t: 'select'; id: string }                // clears unread
-  | { t: 'spawn'; kind: NodeKind; harness?: Harness; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; base?: string; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); kind must be claude
+  | { t: 'spawn'; kind: NodeKind; harness?: Harness; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; base?: string; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); the node must run the claude harness
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
   | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.mergeStyle style
   | { t: 'restart'; id: string; prompt?: string } // relaunch with a fresh session: clears context, keeps the node and its children; prompt is its first prompt
