@@ -22,7 +22,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   ws?.terminate();
-  manager.shutdown();
+  await manager.shutdown();
   await server.close();
   rmSync(home, { recursive: true, force: true });
 });

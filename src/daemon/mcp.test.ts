@@ -29,7 +29,7 @@ beforeAll(async () => {
   admin = readFileSync(join(home, 'admin-token'), 'utf8');
 });
 afterAll(async () => {
-  manager.shutdown();
+  await manager.shutdown();
   server.closeAllConnections();
   await new Promise((r) => server.close(r));
   rmSync(home, { recursive: true, force: true });

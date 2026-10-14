@@ -64,7 +64,7 @@ describe('findDaemon', () => {
 describe('spawn-or-reuse with a real manager', () => {
   let home = '';
   let m: NodeManager;
-  afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
+  afterEach(async () => { await m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   it('reuses the orchestrator for the realpath of cwd, spawns none for a new dir', async () => {
     home = mkdtempSync(join(tmpdir(), 'tl-'));

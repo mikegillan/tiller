@@ -88,7 +88,7 @@ describe('presets', () => {
 
 describe('spawn with a preset', () => {
   let m: NodeManager | undefined;
-  afterEach(() => { m?.shutdown(); m = undefined; });
+  afterEach(async () => { await m?.shutdown(); m = undefined; });
 
   it('records the preset fields and passes them to claude; explicit arguments win over the preset, which wins over config roles', async () => {
     const home = tmp(), proj = tmp(), bin = join(home, 'bin');
