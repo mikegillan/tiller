@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { briefOf, history } from './archive.js';
 import { NodeManager } from './manager.js';
+import { flushEvents } from './sessions.js';
 import { nodeTranscript, parseMessages, parseTranscript, readMessages, renderMessage, TAIL_BYTES } from './transcript.js';
 
 const line = (o: object) => JSON.stringify(o);
@@ -75,7 +76,7 @@ describe('briefOf', () => {
 describe('archive, history, follow-up and fork', () => {
   let home = '';
   let m: NodeManager;
-  afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
+  afterEach(async () => { m.shutdown(); await flushEvents(); rmSync(home, { recursive: true, force: true }); }); // flush before the home goes, so no append fails after teardown
 
   /** A manager whose `claude` writes its argv to <node dir>/argv and idles. */
   const setup = () => {
