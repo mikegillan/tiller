@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "identifier": "dev.tiller.app",
   "build": {
+    "beforeBuildCommand": "npm run ui:build",
     "frontendDist": "../ui/dist",
     "devUrl": "http://127.0.0.1:7788"
   },
