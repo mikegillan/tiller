@@ -1,6 +1,6 @@
 // Pi selects its runtime cwd from the session header, not the CLI's launch directory.
 // Own the resumed copy in the current tree so its archive and transcript expire together.
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import type { NodeRecord } from '../shared/protocol.js';
@@ -54,8 +54,9 @@ export function preparePiTranscript(n: NodeRecord, sessionDir: string, resume = 
   const created: string[] = [];
   try {
     for (const { to, raw } of copies) {
-      writeFileSync(to, raw, { flag: 'wx', mode: 0o600 });
+      const fd = openSync(to, 'wx', 0o600); // Once open succeeds, even a partial write belongs to us.
       created.push(to);
+      try { writeFileSync(fd, raw); } finally { closeSync(fd); }
     }
   } catch (err) {
     for (const file of created) rmSync(file, { force: true });

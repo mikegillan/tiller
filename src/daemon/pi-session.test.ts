@@ -1,9 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NodeRecord } from '../shared/protocol.js';
 import { piTranscript, preparePiTranscript } from './pi-session.js';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
+});
 
 let home: string;
 beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'tl-pi-session-')); });
@@ -33,12 +38,46 @@ describe('Pi owned session storage', () => {
     expect(preparePiTranscript({ ...n, transcriptPath: path }, dir)).toBe(path); // idempotent resume
   });
 
+  it('cleans up newly created copies after a write failure without altering source sessions', async () => {
+    const source = join(home, 'old-root', 'current.jsonl'), dir = join(home, 'new-root');
+    const raw = fixture('/removed');
+    write(source, raw); write(join(dirname(source), 'previous.jsonl'), raw);
+    const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+    vi.mocked(writeFileSync)
+      .mockImplementationOnce(actual.writeFileSync) // Current copy succeeds.
+      .mockImplementationOnce((file) => {
+        actual.writeFileSync(file, 'partial');
+        throw new Error('simulated copy write failure');
+      });
+    const n = { ...node(source), previousSessions: ['previous'] };
+    expect(() => preparePiTranscript(n, dir, true)).toThrow('simulated copy write failure');
+    expect(existsSync(piTranscript(dir, n.id, 'current'))).toBe(false);
+    expect(existsSync(piTranscript(dir, n.id, 'previous'))).toBe(false);
+    expect(readFileSync(source, 'utf8')).toBe(raw);
+    expect(readFileSync(join(dirname(source), 'previous.jsonl'), 'utf8')).toBe(raw);
+    expect(preparePiTranscript(n, dir, true)).toBe(piTranscript(dir, n.id, 'current')); // Retry is safe.
+  });
+
   it('repairs an owned header cwd on resume without rewriting entries or copying again', () => {
     const dir = join(home, 'root'), n = node();
     const path = piTranscript(dir, n.id, n.sessionId!);
     write(path, fixture('/removed'));
     expect(preparePiTranscript({ ...n, transcriptPath: path }, dir)).toBe(path);
     expect(JSON.parse(readFileSync(path, 'utf8').split('\n')[0]).cwd).toBe(home);
+  });
+
+  it('keeps the owned transcript intact and removes the temp file if cwd repair fails mid-write', async () => {
+    const dir = join(home, 'root'), n = node();
+    const path = piTranscript(dir, n.id, n.sessionId!), raw = fixture('/removed');
+    write(path, raw);
+    const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+    vi.mocked(writeFileSync).mockImplementationOnce((file) => {
+      actual.writeFileSync(file, 'partial');
+      throw new Error('simulated partial write');
+    });
+    expect(() => preparePiTranscript({ ...n, transcriptPath: path }, dir, true)).toThrow('simulated partial write');
+    expect(readFileSync(path, 'utf8')).toBe(raw);
+    expect(readdirSync(dirname(path))).toEqual(['current.jsonl']);
   });
 
   it('adopts recorded history when restarting a legacy cross-root record into a fresh empty session', () => {
