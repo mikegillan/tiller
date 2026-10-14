@@ -17,12 +17,14 @@ import { formatEvent, listSessions, parseSince, readEvents, sessionDir, type Ses
 import { fmtAge } from '../shared/format.js';
 import type { Harness, NodeKind } from '../shared/protocol.js';
 import { mainCheckout, runCommands, WORKTREES_DIR } from './worktree.js';
-import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, waitForDaemon, type OrchestratorCandidate } from './up.js';
+import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, upDir, waitForDaemon, type OrchestratorCandidate } from './up.js';
 
-const usage = () => `tl: control tiller. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
+const usage = () => `tl: control tiller. With no arguments, start the daemon if needed and open the app; tl . opens it on this directory.
 
-  tl [up|app] [--new] [--title T] [--prompt P] [--harness claude|pi]  start daemon if needed; open the app on (or create) this directory's
-                                                      orchestrator; --harness picks which agent CLI (default claude)
+  tl [up|app]                                         start the daemon if needed and open the app on the existing sessions
+  tl [up|app] PATH [--new] [--title T] [--prompt P] [--harness claude|pi]  open the app on (or create) PATH's orchestrator;
+                                                      --harness picks which agent CLI (default claude); without up/app, PATH
+                                                      must start with . / or ~; any of these flags without a PATH means .
   tl status | stop                                    show or stop the daemon (tld runs it in the foreground); stop also means
                                                       the nodes are not resumed on the next start
   tl reload                                           restart the daemon on the current code and resume the nodes that were live
@@ -99,11 +101,11 @@ async function call(tool: string, args: Record<string, unknown>, print = true, s
 
 const APP = join(dirname(dirname(import.meta.dirname)), 'src-tauri/target/release/bundle/macos/Tiller.app');
 // Cold start: the app reads --node. Already running: `open` only activates it, so callers also post `select`.
-const openApp = (port: number, node: string) =>
-  spawnSync('open', ['--env', `TL_HOME=${home}`, '--env', `TL_PORT=${port}`, '-a', APP, '--args', '--node', node]); // same daemon as this CLI
+const openApp = (port: number, node?: string) =>
+  spawnSync('open', ['--env', `TL_HOME=${home}`, '--env', `TL_PORT=${port}`, '-a', APP, ...(node ? ['--args', '--node', node] : [])]); // same daemon as this CLI
 
 const argv = process.argv.slice(2);
-const [cmd, ...rest] = argv[0]?.startsWith('-') ? ['up', ...argv] : argv; // `tl --new` means `tl up --new`
+const [cmd, ...rest] = /^[-./~]/.test(argv[0] ?? '') ? ['up', ...argv] : argv; // `tl --new` and `tl .` mean `tl up --new` and `tl up .`
 const { values: f, positionals: pos } = parseArgs({
   args: rest, allowPositionals: true,
   options: {
@@ -274,9 +276,17 @@ switch (cmd) {
   case undefined:
   case 'up':
   case 'app': {
+    if (pos.length > 1) fail(usage());
+    let cwd: string | undefined;
+    try { cwd = upDir(pos[0], !!(f.new || f.title || f.prompt || f.harness), process.cwd()); } catch (e) { fail((e as Error).message); }
     const port = daemonPort();
     if (!(await findDaemon(port))) await startDaemon(home, port).catch((e: Error) => fail(e.message));
-    const cwd = realpathSync(process.cwd());
+    if (!cwd) {
+      if (existsSync(APP)) { openApp(port); break; }
+      console.log('app not built: run npm run app:build');
+      spawnSync('open', [`http://127.0.0.1:${port}/?k=${adminToken()}`]);
+      break;
+    }
     const harness: Harness = f.harness === 'pi' ? 'pi' : 'claude';
     const all = f.new ? [] : (((await call('list_nodes', {}, false)).data ?? []) as any[]);
     const existing = pickOrchestrator(all, cwd, false, harness);

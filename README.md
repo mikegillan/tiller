@@ -30,7 +30,7 @@ Tiller is a local daemon that runs several agent CLI sessions (Claude Code or Pi
 
 ## Use
 
-- `cd ~/some/repo && tl` starts the daemon if it is not running, finds, resumes or creates the orchestrator for that directory, and opens the app on it (or the browser UI when the app is not built). `tl --new` always starts a fresh orchestrator.
+- `tl` starts the daemon if it is not running and opens the app on the existing sessions (or the browser UI when the app is not built), like `code`. `tl .` or `tl ~/some/repo` (like `code .`) also finds, resumes or creates the orchestrator for that directory and opens the app on it. Without `up` or `app` in front, the path must start with `.`, `/` or `~`. `tl --new` always starts a fresh orchestrator, for the current directory unless a path is given.
 - `cd ~/some/repo && tl --harness pi` uses Pi instead of Claude Code; the spawn dialog also offers Pi. Claude Code is not needed for a Pi-only tree.
 - `tl stop` shuts the daemon down and closes every node; the nodes are not resumed on the next start.
 - `tl reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
