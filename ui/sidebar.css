@@ -55,3 +55,22 @@ button.caret:hover { background: var(--surface-2); color: var(--fg); }
 
 .sidefoot { display: flex; gap: 8px; padding: 8px; border-top: 1px solid var(--line); }
 .sidefoot .btn { flex: 1; justify-content: center; }
+
+/* History: closed nodes in place of the tree. */
+.history { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.hsearch { display: grid; gap: 8px; padding: 8px; border-bottom: 1px solid var(--line); }
+.hsearch input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+.hsearch input:focus { outline: none; border-color: var(--accent); }
+.hlist { flex: 1; overflow: auto; padding: 4px 0; }
+.arch { display: block; width: 100%; padding: 4px 8px 6px; border: 0; background: none; color: inherit; font: inherit; text-align: left; }
+.arch:hover { background: var(--hover); }
+.arch.sel { background: var(--sel); }
+.arch .meta, .arch .line { padding-left: 22px; }
+.arch .meta .branch { max-width: 30ch; }
+.arch .line { display: block; overflow: hidden; color: var(--dim); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.glyph { flex: none; width: 14px; text-align: center; font-weight: 700; color: var(--dim); }
+.glyph.succeeded { color: var(--done); }
+.glyph.failed { color: var(--bad); }
+.sidefoot .btn.hist { flex: none; }
+.sidefoot .btn.on { border-color: var(--accent); color: var(--accent); }
+.dot.cmd { border-radius: 2px; background: var(--accent); }

@@ -12,6 +12,8 @@ const PATHS = {
   search: 'M11 4a7 7 0 100 14 7 7 0 000-14zM16 16l4 4',
   merge: 'M7 4v16M7 8a7 7 0 007 7h5M16 12l3 3-3 3',
   bell: 'M6 16v-5a6 6 0 0112 0v5l2 2H4l2-2zM10 21h4',
+  fork: 'M6 4v4a4 4 0 004 4h4a4 4 0 014 4v4M18 4v4a4 4 0 01-4 4M6 20v-4',
+  history: 'M12 4a8 8 0 100 16 8 8 0 000-16zM12 8v4l3 2',
   bellOff: 'M6 16v-5a6 6 0 0112 0v5l2 2H4l2-2zM10 21h4M3 3l18 18',
 } as const;
 

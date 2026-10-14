@@ -107,10 +107,63 @@ function RestartDialog({ id }: { id: string }) {
   );
 }
 
+type Fork = Extract<Dialog, { kind: 'fork' }>;
+
+/** What the follow-up dialog sends: the archived node's session continues as a new live node. */
+export const followupMsg = (id: string, prompt: string): ClientMessage => ({ t: 'followup', id, prompt });
+
+/** What the fork dialog sends: a Claude node in the source's directory that starts from its conversation. */
+export const forkMsg = (d: Fork, title: string, prompt: string): ClientMessage => ({
+  t: 'spawn', kind: 'claude', title: title.trim() || `fork of ${d.title}`, cwd: d.cwd, parentId: d.parentId, fork: d.from,
+  ...(prompt.trim() ? { prompt } : {}),
+});
+
+function FollowupDialog({ id, title }: { id: string; title: string }) {
+  const [prompt, setPrompt] = useState('');
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    send(followupMsg(id, prompt));
+    expectSpawn();
+    close();
+  };
+  return (
+    <Modal title={`Follow up on ${title}`} onClose={close}>
+      <form className="form" onSubmit={submit}>
+        <p>Its last session continues as a new node, starting on this prompt.</p>
+        <label>Prompt<textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} required autoFocus /></label>
+        <div className="btns"><button type="button" className="btn" onClick={close}>Cancel</button><button type="submit" className="btn primary" disabled={!prompt.trim()}>Follow up</button></div>
+      </form>
+    </Modal>
+  );
+}
+
+function ForkDialog({ d }: { d: Fork }) {
+  const [title, setTitle] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    send(forkMsg(d, title, prompt));
+    expectSpawn();
+    close();
+  };
+  return (
+    <Modal title={`Fork ${d.title}`} onClose={close}>
+      <form className="form" onSubmit={submit}>
+        <p>A new Claude node in <code>{d.cwd}</code> starts with a copy of this conversation; the original is not changed.</p>
+        <label>Title<input placeholder={`fork of ${d.title}`} value={title} onChange={(e) => setTitle(e.target.value)} autoFocus /></label>
+        <label>Prompt<textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional" /></label>
+        <div className="btns"><button type="button" className="btn" onClick={close}>Cancel</button><button type="submit" className="btn primary">Fork</button></div>
+      </form>
+    </Modal>
+  );
+}
+
 export function Dialogs() {
   const d = useStore((s) => s.dialog);
   if (d?.kind === 'spawn') return <SpawnDialog d={d} />;
   if (d?.kind === 'kill') return <KillDialog id={d.id} />;
   if (d?.kind === 'restart') return <RestartDialog id={d.id} />;
+  if (d?.kind === 'followup') return <FollowupDialog id={d.id} title={d.title} />;
+  if (d?.kind === 'fork') return <ForkDialog d={d} />;
   return null;
 }

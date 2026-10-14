@@ -2,6 +2,7 @@
 //   node ui/mock-server.mjs            ws on :7789; also serves ui/dist at http://127.0.0.1:7789/?k=mock when it has been built
 // Mutations (spawn, close, restart, rename, resume, prune, select, merge, mute, dnd) work in memory; a confirm request arrives
 // 15 s after connecting. diff on a worktree node returns a made-up diff; send logs the text and replies queued.
+// history, transcript, followup and spawn with fork answer from the fake archive below; o8-d and the archived "auth refactor" have two sessions.
 // spawn with isolation "worktree" fakes a worktree; a plain close of a worktree node whose title contains "dirty" is refused, as the daemon would.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -67,6 +68,50 @@ const FAKE_DIFF = [
   { path: 'ui/icon.png', status: 'added', additions: 0, deletions: 0, binary: true },
 ];
 
+// Closed nodes, newest first, as the daemon's archive.jsonl would hold them.
+const archive = [
+  { id: 'a-css', rootId: 'o8', parentId: 'o8-ui', title: 'css tokens', cwd: '/Users/scott/workspace/orchestr8/ui', ...HAIKU, role: 'worker', sessionId: '3b1f9c20-aa11-4c55-9d0e-1f2e3d4c5b6a',
+    prompt: 'Move every hard-coded colour in ui/*.css into theme.css variables.', brief: 'Moved 14 colours into theme.css variables; light theme checked. Succeeded.',
+    lastAssistantMessage: 'All colours now come from theme.css.', outcome: { outcome: 'succeeded', summary: 'Moved 14 colours into theme.css variables.', changedFiles: ['ui/theme.css', 'ui/layout.css'], at: now - 30 * MIN },
+    spentUsd: 0.12, createdAt: now - 2 * 3600_000, closedAt: now - 30 * MIN },
+  { id: 'a-auth', rootId: 'o8', parentId: 'o8', title: 'auth refactor', cwd: '/Users/scott/workspace/orchestr8/.claude/worktrees/a-auth', ...OPUS, role: 'worker',
+    sessionId: '9f8e7d6c-1111-2222-3333-444455556666', previousSessions: ['5a4b3c2d-7777-8888-9999-000011112222'], branch: 'o8/a-auth', branchFate: 'kept',
+    prompt: 'Replace the token check in the WebSocket handshake with a constant-time compare and add tests.', brief: 'Token check is constant-time with tests; merge failed on a conflict in server.ts. Failed.',
+    lastAssistantMessage: 'The merge stopped on a conflict in src/daemon/server.ts.', outcome: { outcome: 'failed', summary: 'Merge conflict in src/daemon/server.ts.', openQuestions: ['Rebase on main or merge by hand?'], at: now - 3 * 3600_000 },
+    spentUsd: 2.41, createdAt: now - 26 * 3600_000, closedAt: now - 3 * 3600_000 },
+  { id: 'a-probe', rootId: 'o8', parentId: 'o8', title: 'probe: xterm webgl', cwd: '/Users/scott/workspace/orchestr8', ...SONNET, sessionId: 'c0ffee00-1234-5678-9abc-def012345678',
+    branch: 'o8/a-probe', branchFate: 'discarded',
+    prompt: 'Does the WebGL renderer work in WKWebView?', lastAssistantMessage: 'No: WKWebView loses the WebGL context on sleep; the DOM renderer is the safe choice.',
+    spentUsd: 0.64, createdAt: now - 3 * 86400_000, closedAt: now - 2 * 86400_000 },
+  { id: 'a-mig', rootId: 'dc', parentId: 'dc', title: 'db migration dry run', cwd: '/Users/scott/code/dotcms-core', ...OPUS, sessionId: 'deadbeef-0000-1111-2222-333344445555', branch: 'o8/a-mig', branchFate: 'merged', base: 'main',
+    prompt: 'Dry-run the 24.10 schema migration against the staging dump.', brief: 'Dry run passed on the staging dump in 4 minutes; two slow indexes noted. Succeeded.',
+    outcome: { outcome: 'succeeded', summary: 'Dry run passed.', at: now - 5 * 3600_000 }, spentUsd: 1.9, createdAt: now - 7 * 3600_000, closedAt: now - 5 * 3600_000 },
+];
+
+const LONG = Array.from({ length: 14 }, (_, i) => `${i + 1}. ${['Read the handshake code', 'Wrote the failing test', 'Switched to timingSafeEqual', 'Ran the suite'][i % 4]}: details of step ${i + 1}, which go on long enough to wrap at the pane's width.`).join('\n');
+// A transcript for any Claude node: the current session, or an older one when asked for by id.
+function transcriptFor(id, sessionId) {
+  const live = nodes.get(id), arch = archive.find((a) => a.id === id);
+  if (live?.kind === 'terminal') return { error: `${id} is a terminal; only Claude nodes have a transcript` };
+  if (!live && !arch) return { error: `no live or archived node ${id}` };
+  const ids = arch ? [arch.sessionId, ...(arch.previousSessions ?? [])] : id === 'o8-d' ? ['11112222-aaaa', '33334444-bbbb'] : [`${id}-session`];
+  if (sessionId && !ids.includes(sessionId)) return { error: `no session ${sessionId} on record for ${id}` };
+  const sessions = ids.map((s, i) => ({ sessionId: s, current: i === 0 }));
+  const t0 = (arch?.closedAt ?? now) - 40 * MIN, title = arch?.title ?? live.title;
+  if (sessionId && sessionId !== ids[0]) return { sessions, entries: [
+    { role: 'user', at: t0 - 86400_000, text: `Earlier session of ${title}: start on the handshake.` },
+    { role: 'assistant', at: t0 - 86400_000 + 2 * MIN, text: 'Read the handshake; the token is compared with ===.', tools: ['Read', 'Grep'] },
+  ] };
+  return { sessions, truncated: id === 'a-auth', entries: [
+    { role: 'user', at: t0, text: arch?.prompt ?? `Work on ${title}.` },
+    { role: 'assistant', at: t0 + MIN, text: 'I will look at the current code first.', tools: ['Read', 'Read', 'Grep', 'Bash'] },
+    { role: 'assistant', at: t0 + 6 * MIN, text: `Here is the plan, step by step:\n${LONG}`, tools: ['Edit', 'Edit', 'Bash'] },
+    { role: 'user', text: '--- O8 MESSAGE ---\nfrom: orchestr8\nPlease also cover the reconnect path.\n--- END O8 MESSAGE ---' },
+    { role: 'assistant', at: t0 + 20 * MIN, text: '', tools: ['mcp__orchestr8__report_outcome'] },
+    { role: 'assistant', at: t0 + 21 * MIN, text: arch?.lastAssistantMessage ?? live?.status.lastAssistantMessage ?? 'Done for now.' },
+  ] };
+}
+
 const clients = new Set();
 const broadcast = (m) => clients.forEach((c) => c.ws.send(JSON.stringify(m)));
 const touch = (n, patch) => { Object.assign(n.status, patch, { changedAt: Date.now() }); broadcast({ t: 'node', node: n }); };
@@ -113,10 +158,25 @@ wss.on('connection', (ws) => {
         else if (n) { nodes.delete(m.id); broadcast({ t: 'removed', id: m.id }); } break;
       case 'prune': for (const x of [...nodes.values()]) if (x.status.exited && ![...nodes.values()].some((c) => c.parentId === x.id)) { nodes.delete(x.id); broadcast({ t: 'removed', id: x.id }); } break;
       case 'spawn': {
+        if (m.fork) console.log(`spawn ${m.title} forked from ${m.fork}`);
         const id = `n${nodes.size + 1}${Date.now() % 1000}`;
         const worktree = m.isolation === 'worktree' && { repo: m.cwd, path: `${m.cwd}/.claude/worktrees/${id}`, branch: `o8/${id}`, base: 'main', baseSha: '6977f01' };
         const git = worktree && { git: { branch: worktree.branch, base: 'main', ahead: 0, behind: 0, dirty: 0, additions: 0, deletions: 0 } };
         add(id, m.parentId ?? null, m.title, worktree ? worktree.path : m.cwd, m.kind, { model: m.model ?? 'claude-sonnet-5-5', ...git }, { ...(m.role && { role: m.role }), ...(worktree && { worktree }) });
+        broadcast({ t: 'node', node: nodes.get(id) });
+        break;
+      }
+      case 'history': {
+        const q = m.query?.toLowerCase();
+        send({ t: 'history', items: archive.filter((a) => (!m.rootId || a.rootId === m.rootId) && (!q || [a.title, a.prompt, a.lastAssistantMessage, a.brief].some((x) => x?.toLowerCase().includes(q)))) });
+        break;
+      }
+      case 'transcript': send({ t: 'transcript', id: m.id, ...(m.sessionId && { sessionId: m.sessionId }), ...transcriptFor(m.id, m.sessionId) }); break;
+      case 'followup': {
+        const a = archive.find((x) => x.id === m.id);
+        if (!a) { send({ t: 'error', id: m.id, message: `no archived node ${m.id}` }); break; }
+        const id = `n${nodes.size + 1}${Date.now() % 1000}`;
+        add(id, nodes.has(a.parentId) ? a.parentId : null, m.title ?? a.title, a.cwd, 'claude', { model: a.model, activity: m.prompt.slice(0, 60) }, { ...(a.role && { role: a.role }) });
         broadcast({ t: 'node', node: nodes.get(id) });
         break;
       }

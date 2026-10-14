@@ -4,7 +4,7 @@
 [data-app] .app { grid-template-rows: 38px 1fr 24px; }
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
-.titlebar { flex: none; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--surface); display: grid; gap: 4px; }
+.titlebar { container: titlebar / inline-size; flex: none; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--surface); display: grid; gap: 4px; }
 .tb1, .tb2 { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .tb2 { color: var(--dim); font-size: 12px; flex-wrap: wrap; }
 .crumbs { display: flex; align-items: center; gap: 4px; min-width: 0; color: var(--dim); }
@@ -54,7 +54,7 @@
 .statusbar .dnd.on { color: var(--needs); }
 
 /* Diff tab: a worktree node's changes, over the terminal (which stays mounted and measurable underneath). */
-.seg.tabs { grid-template-columns: auto auto; flex: none; }
+.seg.tabs { grid-template-columns: none; grid-auto-flow: column; flex: none; }
 .seg.tabs button { padding: 0 10px; }
 .branchline { font: 12px var(--mono); }
 .counts { white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -93,3 +93,28 @@
 .composer textarea:focus { outline: none; border-color: var(--accent); }
 .composer .btns { margin-top: 8px; }
 .review { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--line); background: var(--surface); color: var(--dim); }
+
+/* Transcript tab and archived nodes: a conversation over the stage, like the Diff tab. */
+.transcript { position: absolute; inset: 0; z-index: 6; overflow: auto; background: var(--bg); }
+.entries { display: grid; gap: 12px; max-width: 860px; padding: 16px; }
+.sesspick { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
+.sesspick select { padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); color: var(--fg); }
+.entry { min-width: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.entry.user { border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
+.entry header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; font-size: 12px; color: var(--dim); }
+.entry .who { font-weight: 600; }
+.entry.user .who { color: var(--accent); }
+.entry time { margin-left: auto; font-variant-numeric: tabular-nums; }
+.entry .text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; user-select: text; }
+.entry .text.clamped { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 8; overflow: hidden; }
+.entry .more { margin-top: 4px; padding: 0; border: 0; background: none; color: var(--accent); font-size: 12px; }
+.entry .tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.chip { padding: 0 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--dim); font: 11px/18px var(--mono); }
+.archhead { display: grid; gap: 6px; padding: 8px 16px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.archhead h1 { margin: 0; min-width: 0; font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archhead .tb1 .btn { flex: none; }
+.archhead .brief { margin: 0; overflow-wrap: anywhere; }
+.archhead .prompt summary { color: var(--dim); font-size: 12px; cursor: pointer; }
+.archhead .prompt div { margin-top: 4px; max-height: 12em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--mono); user-select: text; }
+.archhead .outcome { max-height: none; padding: 8px 0 0; border-bottom: 0; }
+.entries .hint { padding: 0; }

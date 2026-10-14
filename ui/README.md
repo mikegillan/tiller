@@ -11,7 +11,7 @@ React + xterm.js front-end for the orchestr8 daemon. It speaks the WebSocket pro
 
 ## Developing without the daemon
 
-The mock daemon has three sessions (one with a blocked node and a pending command, one with an errored node, one idle), an exited node, and mixed models and context usage. Spawn, rename, resume, close and prune work in memory, and a confirm request arrives 15 seconds after connecting.
+The mock daemon has three sessions (one with a blocked node and a pending command, one with an errored node, one idle), an exited node, and mixed models and context usage. Spawn, rename, resume, close and prune work in memory, and a confirm request arrives 15 seconds after connecting. History has four closed nodes across two trees; every Claude node has a fake transcript ("daemon" and the closed "auth refactor" have two sessions), and follow-up and fork make new nodes.
 
     node ui/mock-server.mjs                                  # ws on :7789, token "mock"
     O8_WS=http://127.0.0.1:7789 npm run ui:dev               # then open the printed URL with ?k=mock

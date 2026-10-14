@@ -1,7 +1,9 @@
 import { useEffect } from 'react';
+import { finished } from '../src/shared/protocol';
 import { Dialogs } from './Dialogs';
 import { DiffPane } from './DiffPane';
 import { ExitedCard } from './ExitedCard';
+import { ArchivePane } from './History';
 import { useDocumentSync } from './hooks';
 import { LastMessagePanel } from './LastMessagePanel';
 import { Palette } from './Palette';
@@ -9,6 +11,7 @@ import { Sidebar, useRows } from './Sidebar';
 import { StatusBar } from './StatusBar';
 import { TerminalPane } from './TerminalPane';
 import { TitleBar } from './TitleBar';
+import { TranscriptPane } from './TranscriptPane';
 import { ConfirmModal, DigestCard, Toasts } from './Toasts';
 import { getState, openDialog, selectNode, useStore } from './store';
 import { IN_APP } from './url';
@@ -21,6 +24,8 @@ export function App() {
   const panel = useStore((s) => s.panel);
   const palette = useStore((s) => s.dialog?.kind === 'palette');
   const diff = useStore((s) => s.diffOpen) && !!node?.worktree;
+  const transcript = useStore((s) => s.transcriptOpen) && node?.kind === 'claude';
+  const archived = useStore((s) => s.archived);
   useDocumentSync();
 
   useEffect(() => {
@@ -42,12 +47,15 @@ export function App() {
       {IN_APP && <div className="dragstrip" data-tauri-drag-region />}
       <Sidebar />
       <main className="main">
-        {node ? <TitleBar node={node} /> : null}
+        {node && !archived ? <TitleBar node={node} /> : null}
         <div className="work">
           <div className="stage">
             <TerminalPane />
-            {diff ? <DiffPane node={node!} /> : node?.status.exited && <ExitedCard node={node} />}
-            {!node && (
+            {archived ? <ArchivePane a={archived} />
+              // Refreshed whenever a turn ends.
+              : transcript ? <TranscriptPane key={node!.id} id={node!.id} refresh={finished(node!.status) ? node!.status.changedAt : 'running'} />
+              : diff ? <DiffPane node={node!} /> : node?.status.exited && <ExitedCard node={node} />}
+            {!node && !archived && (
               <div className="empty">
                 <p>No sessions yet.</p>
                 <button className="btn primary" onClick={() => openDialog({ kind: 'spawn', parentId: null, cwd: '' })}>New session</button>
