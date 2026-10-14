@@ -87,6 +87,7 @@ fn on_tray_menu(app: &AppHandle, id: &str) {
 
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![set_tray])
         .setup(|app| {
             TrayIconBuilder::with_id("tl")

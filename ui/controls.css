@@ -53,6 +53,9 @@
 .form { display: grid; gap: 16px; }
 .form label { display: grid; gap: 4px; font-size: 12px; color: var(--dim); }
 .form input, .form textarea, .form select { padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); resize: vertical; }
+.form .pick { display: flex; gap: 8px; }
+.form .pick input { flex: 1; min-width: 0; }
+.form .pick .btn { height: auto; }
 .form label.check { grid-template-columns: auto 1fr; align-items: center; column-gap: 8px; font-size: 13px; color: var(--fg); }
 .form label.check small { grid-column: 2; font-size: 12px; color: var(--dim); }
 .form input:focus, .form textarea:focus, .form select:focus { outline: none; border-color: var(--accent); }
