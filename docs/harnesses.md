@@ -18,7 +18,7 @@ tl new "Pi session" --harness pi --model openai/gpt-5 --prompt "Inspect this rep
 The adapter targets **`@earendil-works/pi-coding-agent` 1.2.x**, which has native HTTP MCP
 registration and the `agent_settled` extension event. At startup it checks Pi's version and the
 APIs it needs. Any other version, including older, newer and prerelease builds, makes the node
-shut down instead of running half-connected. Each new Pi minor release therefore stops Pi nodes
+shut down instead of running half-connected, with the reason in its row's activity. Each new Pi minor release therefore stops Pi nodes
 at startup until the adapter is updated for it.
 
 Pi uses its own provider credentials and subscriptions; Tiller supplies neither. Cost shows as 0
@@ -54,11 +54,13 @@ Tiller owns Pi's session lifecycle. Use Tiller's controls, not Pi's `/new`, `/re
 
 ## Messages
 
-Messages to a Pi node go through the adapter's inbox bridge, never terminal paste. A message
-counts as delivered only when Pi starts a turn whose prompt equals the sent text exactly. An
-extension that rewrites input would therefore leave deliveries unconfirmed, and they would
-retire after 60 seconds. A retired message is reported as `stalled` and not retryable, because
-Pi may still run it late. Inspect the node (for example, for missing credentials) and do not
+Messages to a Pi node go through the adapter's inbox bridge, never terminal paste. The bridge
+takes a message only while Pi is idle; until then it stays queued and the sender can withdraw it.
+A steer aborts the running turn and goes ahead of the queue once Pi is idle. A message counts as
+delivered only when Pi starts a turn whose prompt equals the sent text exactly. An extension that
+rewrites input would therefore leave deliveries unconfirmed, and they would retire after 60
+seconds. A retired message is reported as `stalled` and not retryable, because Pi may still run
+it late. Inspect the node (for example, for missing credentials) and do not
 resend automatically. The adapter README has the [full delivery
 protocol](../adapters/pi/README.md#inbox-claim-ack-steer).
 
@@ -109,12 +111,13 @@ Coordination stays on the existing interfaces:
   Bearer <node token>` and `X-TL-Node: <id>`. Never use the human/admin token in an agent adapter.
 - **Lifecycle:** authenticated `POST /hook` and `POST /mod-event` feed the shared reducer.
 - **Delivery:** `GET /inbox`, `POST /claim`, native prompt submission, then `POST /ack` only on
-  observed acceptance. A busy agent leaves ordinary messages unclaimed/withdrawable; a steer
-  aborts safely and submits once idle. A fire-and-forget CLI API return is not delivery proof.
+  observed acceptance, or `POST /release` for a claim that was never submitted. A busy agent
+  leaves messages unclaimed and withdrawable; a steer aborts the turn and is claimed once idle.
+  A fire-and-forget CLI API return is not delivery proof.
 
 To add Codex/OpenCode/another CLI: add its harness identifier and adapter, provide an equivalent
 lifecycle/inbox bridge using that CLI's native API, and supply a transcript decoder. Declare
-unsupported capabilities and reject unsupported restrictions. Do not duplicate the MCP tools
+unsupported capabilities, and reject unsupported restrictions in the adapter's `validate`. Do not duplicate the MCP tools
 or implement arbitrary executable configuration as a shortcut.
 
 See [the Pi adapter](../adapters/pi/README.md) for protocol mapping, compatibility and tests.
