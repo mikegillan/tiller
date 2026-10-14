@@ -1,6 +1,7 @@
 // Spawn presets: <cwd>/.tiller/agents/<name>.md, else <home>/agents/<name>.md. Read fresh on every call.
 // Frontmatter uses Claude agent-definition fields (model, tools, disallowedTools, permissionMode, maxTurns) plus
 // tiller's effort, isolation and role; the body replaces the role prompt text.
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { z } from 'zod';
@@ -108,10 +109,29 @@ You answer a question by reading code, documents and the web. You have no shell 
 `,
 } as const;
 
-/** Writes the built-in presets into <home>/agents, never overwriting a file the user has edited. */
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+
+/**
+ * Writes the built-in presets into <home>/agents. <home>/agents/.builtin.json records a hash of what tiller last
+ * wrote, so a file that still matches it is refreshed when the built-in changes, and a file the user edited stays.
+ */
 export function ensurePresets(home: string): void {
-  mkdirSync(join(home, 'agents'), { recursive: true });
+  const dir = join(home, 'agents'), recordPath = join(dir, '.builtin.json');
+  mkdirSync(dir, { recursive: true });
+  let record: Record<string, string> = {};
+  try { record = JSON.parse(readFileSync(recordPath, 'utf8')); } catch { /* no record yet */ }
   for (const [name, text] of Object.entries(DEFAULT_PRESETS)) {
-    try { writeFileSync(join(home, 'agents', `${name}.md`), text, { flag: 'wx' }); } catch { /* exists: keep the user's edits */ }
+    const path = join(dir, `${name}.md`);
+    let current: string | undefined;
+    try { current = readFileSync(path, 'utf8'); } catch { /* missing */ }
+    if (current !== text) {
+      if (current !== undefined) {
+        if (sha256(current) !== record[name]) continue; // edited, or written before the record existed: keep it
+        console.error(`tiller: refreshed built-in preset ${path}`);
+      }
+      writeFileSync(path, text);
+    }
+    record[name] = sha256(text);
   }
+  writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`);
 }

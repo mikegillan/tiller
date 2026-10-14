@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,7 @@ import { DEFAULT_PRESETS, ensurePresets, listPresets, loadPreset } from './prese
 const dirs: string[] = [];
 const tmp = () => { const d = realpathSync(mkdtempSync(join(tmpdir(), 'tl-presets-'))); dirs.push(d); return d; };
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 const put = (dir: string, name: string, text: string) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, `${name}.md`), text); };
 
 const GREETER = `---
@@ -45,16 +47,34 @@ describe('presets', () => {
     expect(() => loadPreset('bad', repo, home)).toThrow(/effort/);
   });
 
-  it('writes the built-in presets once and never overwrites them', () => {
+  it('writes the built-in presets and records what it wrote', () => {
     const home = tmp();
     ensurePresets(home);
     expect(readFileSync(join(home, 'agents', 'reviewer.md'), 'utf8')).toBe(DEFAULT_PRESETS.reviewer);
+    expect(JSON.parse(readFileSync(join(home, 'agents', '.builtin.json'), 'utf8'))).toEqual({ reviewer: sha256(DEFAULT_PRESETS.reviewer), researcher: sha256(DEFAULT_PRESETS.researcher) });
     expect(loadPreset('reviewer', home, home)).toMatchObject({ disallowedTools: ['Edit', 'Write', 'NotebookEdit'], isolation: 'none', effort: 'medium' });
     expect(loadPreset('reviewer', home, home)!.permissionMode).toBeUndefined();
     expect(loadPreset('researcher', home, home).tools).toEqual(['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch']);
-    writeFileSync(join(home, 'agents', 'reviewer.md'), 'mine');
+  });
+
+  it('refreshes an unedited built-in file, and keeps an edited file or one with no record', () => {
+    const home = tmp(), reviewer = join(home, 'agents', 'reviewer.md'), record = join(home, 'agents', '.builtin.json');
+    const old = '---\npermissionMode: default\n---\nold reviewer';
+    put(join(home, 'agents'), 'reviewer', old);
+    writeFileSync(record, JSON.stringify({ reviewer: sha256(old) }));
     ensurePresets(home);
-    expect(readFileSync(join(home, 'agents', 'reviewer.md'), 'utf8')).toBe('mine');
+    expect(readFileSync(reviewer, 'utf8')).toBe(DEFAULT_PRESETS.reviewer);
+    expect(JSON.parse(readFileSync(record, 'utf8')).reviewer).toBe(sha256(DEFAULT_PRESETS.reviewer));
+
+    writeFileSync(reviewer, 'mine');
+    ensurePresets(home);
+    expect(readFileSync(reviewer, 'utf8')).toBe('mine');
+    expect(JSON.parse(readFileSync(record, 'utf8')).reviewer).toBe(sha256(DEFAULT_PRESETS.reviewer));
+
+    const fresh = tmp();
+    put(join(fresh, 'agents'), 'reviewer', old);
+    ensurePresets(fresh);
+    expect(readFileSync(join(fresh, 'agents', 'reviewer.md'), 'utf8')).toBe(old);
   });
 
   it('passes the tool lists as a session agent, keeps the tiller tools, and appends the body as the role', () => {
