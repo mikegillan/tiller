@@ -6,8 +6,7 @@
   "bin": {
     "tl": "./bin/tl",
     "tld": "./bin/tld",
-    "tl-app": "./bin/tl-app",
-    "tl-mux": "./bin/tl-mux"
+    "tl-app": "./bin/tl-app"
   },
   "engines": {
     "node": ">=24"

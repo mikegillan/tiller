@@ -1,6 +1,5 @@
 // Thin client for the daemon's POST /api/<tool>. Inside a node it uses TL_NODE_ID / TL_TOKEN_FILE / TL_ENDPOINT;
 // outside it acts as `human` with the admin token in <home>/admin-token.
-import { mux } from '../client/mux.js';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -21,15 +20,13 @@ import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, waitF
 const usage = () => `tl: control tiller. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
 
   tl [up|app] [--new] [--title T] [--prompt P]        start daemon if needed; open the app on (or create) this directory's orchestrator
-  tl mux [--new] [--title T] [--prompt P]             the same, in the terminal multiplexer (also: tl-mux)
   tl status | stop                                    show or stop the daemon (tld runs it in the foreground); stop also means
                                                       the nodes are not resumed on the next start
   tl reload                                           restart the daemon on the current code and resume the nodes that were live
   tl autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
-  tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--worktree]  start a Claude node and attach to it in the terminal
+  tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--worktree]  start a Claude node and show it in the app
   tl ps | list                                        show nodes
   tl usage                                            show account-level Claude usage (5-hour and 7-day windows) as nodes last reported it
-  tl attach <id>                                      open the sidebar client on a node (Ctrl-\\ ? for keys)
   tl select <id>                                      show a node in the app (opens the app if it is built)
   tl resume <id>                                      relaunch an exited Claude node
   tl mute <id> | unmute <id>                          stop or restart OS notifications for one node
@@ -137,14 +134,12 @@ switch (cmd) {
   case 'ps':
     for (const n of (await call('list_nodes', {}, false)).data ?? []) console.log([n.id, n.state, n.title, n.parentId ?? '-', n.age].join('\t'));
     break;
-  case 'attach':
-    if (!pos[0]) fail(usage());
-    process.exit(await mux(pos[0], { port: daemonPort(), token: adminToken() }));
-    break;
   case 'new': {
     if (!pos[0]) fail(usage());
     const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, effort: f.effort, role: f.role, isolation: isolation(), preset: f.preset }, false);
-    process.exit(await mux(data.nodeId, { port: daemonPort(), token: adminToken() }));
+    console.log(`started ${pos.join(' ')} (${data.nodeId})`);
+    await call('select', { nodeId: data.nodeId }, false);
+    if (existsSync(APP)) openApp(daemonPort(), data.nodeId);
     break;
   }
   case 'prompts':
@@ -259,8 +254,7 @@ switch (cmd) {
     break;
   case undefined:
   case 'up':
-  case 'app':
-  case 'mux': {
+  case 'app': {
     const port = daemonPort();
     if (!(await findDaemon(port))) await startDaemon(home, port).catch((e: Error) => fail(e.message));
     const cwd = realpathSync(process.cwd());
@@ -281,7 +275,6 @@ switch (cmd) {
       console.log(`started ${title} (${id})`);
     }
     const target = id;
-    if (cmd === 'mux') process.exit(await mux(target, { port, token: adminToken() }));
     if (existsSync(APP)) {
       openApp(port, target);
       await call('select', { nodeId: target }, false);

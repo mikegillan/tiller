@@ -25,8 +25,7 @@ export interface WorktreeCheck { dirty: string[]; unmerged: string[]; sharing: s
 
 /**
  * Why closing a worktree node must not go ahead, or undefined. Another live node working inside the tree always
- * refuses; uncommitted files or unmerged commits refuse unless the close says keep or discard. Short and action first:
- * the mux cuts it to 60 characters.
+ * refuses; uncommitted files or unmerged commits refuse unless the close says keep or discard. Short and action first.
  */
 export function closeRefusal(c: WorktreeCheck, mode?: 'keep' | 'discard'): string | undefined {
   const unsafe = !mode && (c.dirty.length > 0 || c.unmerged.length > 0);

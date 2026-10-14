@@ -32,7 +32,7 @@ const MIME: Record<string, string> = {
 const id = z.string().min(1);
 const size = z.number().int().min(1).max(1000);
 const clientMessage = z.discriminatedUnion('t', [
-  z.object({ t: z.literal('auth'), token: z.string(), client: z.enum(['app', 'browser', 'mux']).optional() }),
+  z.object({ t: z.literal('auth'), token: z.string(), client: z.enum(['app', 'browser']).optional() }),
   z.object({ t: z.literal('visibility'), focused: z.boolean() }),
   z.object({ t: z.literal('attach'), id, cols: size, rows: size }),
   z.object({ t: z.literal('detach'), id }),
@@ -69,7 +69,7 @@ export interface DaemonServer {
   close(): Promise<void>;
 }
 
-interface Client { ws: WebSocket; authed: boolean; attached: Set<string>; kind?: 'app' | 'browser' | 'mux'; focused: boolean; selected?: string }
+interface Client { ws: WebSocket; authed: boolean; attached: Set<string>; kind?: 'app' | 'browser'; focused: boolean; selected?: string }
 
 export async function startServer(manager: NodeManager, opts: { port?: number } = {}): Promise<DaemonServer> {
   const clients = new Set<Client>();
@@ -125,7 +125,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
         const wasAway = !anyFocused();
         const regained = m.focused && !c.focused;
         c.focused = m.focused;
-        if (regained && wasAway && awaySince !== undefined && c.kind !== 'mux') {
+        if (regained && wasAway && awaySince !== undefined) {
           const since = awaySince;
           if (Date.now() - since > loadConfig(null, manager.home).daemon.digestAfterMinutes * 60_000) {
             const items = await manager.digest(since);
@@ -181,7 +181,6 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       clearTimeout(authTimer);
       clients.delete(c);
       if (c.focused) noteAway();
-      if (c.authed && c.kind === 'app' && !appConnected()) broadcast({ t: 'clients', app: false });
     });
     ws.on('message', (raw) => {
       let msg: ClientMessage;
@@ -197,8 +196,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
           c.authed = true;
           c.kind = msg.client;
           clearTimeout(authTimer);
-          sendTo(c, { t: 'snapshot', nodes: manager.list(), appConnected: appConnected(), usage: manager.usage, dnd });
-          if (c.kind === 'app') broadcast({ t: 'clients', app: true });
+          sendTo(c, { t: 'snapshot', nodes: manager.list(), usage: manager.usage, dnd });
         } else {
           ws.close(4401, 'auth required');
         }

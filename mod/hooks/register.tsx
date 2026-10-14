@@ -9,7 +9,7 @@ import { changes } from './notify'
 // tiller per-node mod. Inert unless TL_NODE_ID is set. Contract: src/shared/protocol.ts "Mod-facing HTTP API".
 const kids = atom({ plugin: 'tiller', key: 'children' } as const, [] as Child[])
 const pend = atom({ plugin: 'tiller', key: 'pending' } as const, 0)
-// True while any tiller client (app, browser, mux) is attached: its sidebar makes everything the mod draws redundant.
+// True while any tiller client (app or browser) is attached: its sidebar makes everything the mod draws redundant.
 const quietAtom = atom({ plugin: 'tiller', key: 'quiet' } as const, false)
 let quiet = false
 let ctx: Ctx | undefined

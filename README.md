@@ -7,7 +7,7 @@
 
 # tiller
 
-Tiller (formerly orchestr8) is a local daemon that runs several Claude Code sessions as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser, and `tl-mux` is a multiplexer for the terminal. A small Claude Code mod (a plugin loaded into each node) delivers messages and adds a few slash commands.
+Tiller (formerly orchestr8) is a local daemon that runs several Claude Code sessions as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser. A small Claude Code mod (a plugin loaded into each node) delivers messages and adds a few slash commands.
 
 ## Requirements
 
@@ -19,12 +19,11 @@ Tiller (formerly orchestr8) is a local daemon that runs several Claude Code sess
 
     npm install && npm link
 
-This puts `tl` (the client), `tld` (the daemon in the foreground), `tl-mux` (the terminal multiplexer) and `tl-app` (the native app) on your PATH.
+This puts `tl` (the client), `tld` (the daemon in the foreground) and `tl-app` (the native app) on your PATH.
 
 ## Use
 
 - `cd ~/some/repo && tl` starts the daemon if it is not running, finds, resumes or creates the orchestrator for that directory, and opens the app on it (or the browser UI when the app is not built). `tl --new` always starts a fresh orchestrator.
-- `tl mux` (or `tl-mux`) does the same and attaches the terminal multiplexer instead.
 - `tl stop` shuts the daemon down and closes every node; the nodes are not resumed on the next start.
 - `tl reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
 - `tl autostart on|off|status` manages a launchd agent that starts the daemon at login and again after a crash.
@@ -53,5 +52,5 @@ Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the nod
 - [docs/agent-roles.md](docs/agent-roles.md): role prompts, presets, outcomes and the completion gate.
 - [docs/worktrees.md](docs/worktrees.md): running workers in their own git worktrees and merging their work.
 - [docs/sessions.md](docs/sessions.md): session directories, the event log, restart and resume.
-- [docs/frontends.md](docs/frontends.md): the app, the browser UI, the multiplexer, the in-session band and notifications.
+- [docs/frontends.md](docs/frontends.md): the app, the browser UI, the in-session band and notifications.
 - [PLAN.md](PLAN.md): the original design rationale; [docs/design/](docs/design/) holds the design documents for later features.

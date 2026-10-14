@@ -37,7 +37,7 @@ it('a history reply replaces the items', () => {
 });
 
 it('a failed spawn stops the wait, so the next node someone else spawns is not selected', () => {
-  applyServer({ t: 'snapshot', nodes: [mk('r', null, 1)], appConnected: false });
+  applyServer({ t: 'snapshot', nodes: [mk('r', null, 1)] });
   expectSpawn();
   applyServer({ t: 'error', message: 'fork: no session on record' });
   applyServer({ t: 'node', node: mk('other', 'r', 2) });

@@ -29,7 +29,7 @@ afterEach(async () => {
 
 const adminToken = () => readFileSync(join(home, 'admin-token'), 'utf8');
 
-async function connect(token = adminToken(), client?: 'app' | 'browser' | 'mux'): Promise<void> {
+async function connect(token = adminToken(), client?: 'app' | 'browser'): Promise<void> {
   ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
   ws.on('message', (raw) => seen.push(JSON.parse(raw.toString())));
   await new Promise((ok, fail) => { ws!.once('open', ok); ws!.once('error', fail); });
@@ -241,8 +241,7 @@ describe('POST /hook', () => {
 describe('client tracking', () => {
   it('counts a watcher only while it has the node selected and its window focused; reports the app', async () => {
     await connect(adminToken(), 'app');
-    const snap = await until(() => seen.find((m) => m.t === 'snapshot'));
-    expect(snap).toMatchObject({ appConnected: true });
+    await until(() => (server.appConnected() ? true : undefined));
     const id = (await manager.spawn({ kind: 'terminal', title: 'sh', cwd: tmpdir() })).id;
     const watching = (n: number) => until(() => (server.watchers(id) === n ? true : undefined));
     send({ t: 'select', id });

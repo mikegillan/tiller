@@ -22,9 +22,9 @@ When the app or a browser tab regains focus after more than `daemon.digestAfterM
 
 ## Restarting a node
 
-`tl restart <id>` (also the Restart action in the app and the multiplexer) kills a node's process and relaunches it under a new Claude session id, so a Claude node starts with an empty context while keeping its id, title, directory, model, effort, role and children. The previous session ids are kept on the node record as `previousSessions` (the newest 10). `--prompt T` (or the text field in the app's Restart dialog) gives the restarted node a first prompt; without one, a node whose tree has a `handoff.md` is told to read it first. Agents cannot restart nodes.
+`tl restart <id>` (also the Restart action in the app) kills a node's process and relaunches it under a new Claude session id, so a Claude node starts with an empty context while keeping its id, title, directory, model, effort, role and children. The previous session ids are kept on the node record as `previousSessions` (the newest 10). `--prompt T` (or the text field in the app's Restart dialog) gives the restarted node a first prompt; without one, a node whose tree has a `handoff.md` is told to read it first. Agents cannot restart nodes.
 
-Orchestrators are protected from being closed by accident. Agents cannot close them, the app and the multiplexer offer Restart instead of Kill for them, and `tl kill <id>` on a root refuses with a hint; `tl kill --force <id>` overrides that.
+Orchestrators are protected from being closed by accident. Agents cannot close them, the app offers Restart instead of Kill for them, and `tl kill <id>` on a root refuses with a hint; `tl kill --force <id>` overrides that.
 
 `tl resume <id>` relaunches an exited Claude node with its previous conversation (`claude --resume`).
 
@@ -58,4 +58,4 @@ After merging, from the main checkout:
 2. Without autostart: run `kill N`, where N is the pid from `curl -s http://127.0.0.1:7788/health`, then `bin/tl reload`, which starts `bin/tld`, moves the home first, and resumes the nodes.
 3. Check with `bin/tl status` (home `~/.tiller`) and `bin/tl autostart status`.
 
-Then rebuild the app with `npm run app:build`: it is now `Tiller.app` with the identifier `dev.tiller.app`, so its window state and stored key start fresh, and the old `orchestr8.app` bundle can be deleted. If the CLI was installed with `npm link`, run `npm link` again so `tl`, `tld`, `tl-app` and `tl-mux` are on the PATH; the old `o8` links then dangle and can be removed. Worktree branches made before the rename keep their `o8/` names and still merge and close normally, but `tl worktrees` only lists kept branches under the new `tl/` prefix, and worktrees orphaned before the move carry the old marker and home, so they are not cleaned automatically.
+Then rebuild the app with `npm run app:build`: it is now `Tiller.app` with the identifier `dev.tiller.app`, so its window state and stored key start fresh, and the old `orchestr8.app` bundle can be deleted. If the CLI was installed with `npm link`, run `npm link` again so `tl`, `tld` and `tl-app` are on the PATH; the old `o8` links then dangle and can be removed. Worktree branches made before the rename keep their `o8/` names and still merge and close normally, but `tl worktrees` only lists kept branches under the new `tl/` prefix, and worktrees orphaned before the move carry the old marker and home, so they are not cleaned automatically.
