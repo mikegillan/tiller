@@ -24,18 +24,19 @@ export function HistoryPanel() {
   const session = useStore((s) => s.session);
   const shown = useStore((s) => s.archived?.id);
   const connected = useStore((s) => s.connected);
+  const removals = useStore((s) => s.removals);
   const now = useNow();
   const [q, setQ] = useState('');
   const [all, setAll] = useState(false);
   const rootId = all ? undefined : session ?? undefined;
   const query = q.trim();
 
-  // Typing is debounced; opening, clearing the box or switching scope asks at once.
+  // Debounced, so typing and a batch close (several removals) each ask once.
   useEffect(() => {
     if (!connected) return;
-    const timer = setTimeout(() => send({ t: 'history', ...(rootId && { rootId }), ...(query && { query }) }), query ? 250 : 0);
+    const timer = setTimeout(() => send({ t: 'history', ...(rootId && { rootId }), ...(query && { query }) }), 250);
     return () => clearTimeout(timer);
-  }, [rootId, query, connected]);
+  }, [rootId, query, connected, removals]);
 
   return (
     <div className="history">

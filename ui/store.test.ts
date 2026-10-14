@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
-import { applyServer, diffRequested, getState, transcriptRequested } from './store';
+import { mk } from './fixtures';
+import { applyServer, diffRequested, expectSpawn, getState, transcriptRequested } from './store';
 
 it('the diff panel shows the diff reply\'s own failure, not another error for the same node', () => {
   diffRequested('a');
@@ -33,4 +34,12 @@ it('a history reply replaces the items', () => {
   applyServer({ t: 'history', items: [item('x'), item('y')] });
   applyServer({ t: 'history', items: [item('z')] });
   expect(getState().history.map((a) => a.id)).toEqual(['z']);
+});
+
+it('a failed spawn stops the wait, so the next node someone else spawns is not selected', () => {
+  applyServer({ t: 'snapshot', nodes: [mk('r', null, 1)], appConnected: false });
+  expectSpawn();
+  applyServer({ t: 'error', message: 'fork: no session on record' });
+  applyServer({ t: 'node', node: mk('other', 'r', 2) });
+  expect(getState().selected).toBe('r');
 });
