@@ -2,3 +2,4 @@ node_modules/
 .tiller-dev/
 ui/dist/
 src-tauri/target/
+.DS_Store
