@@ -35,6 +35,8 @@ Tiller is a local daemon that runs several Claude Code sessions as child process
 - `tl reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
 - `tl autostart on|off|status` manages a launchd agent that starts the daemon at login and again after a crash.
 
+Workers that edit code in parallel get their own git worktrees, each on a branch forked from a base branch. The base is a task branch, one per task, named after the repo's convention (`tl spawn --base feature/x`, or `base` on the spawn tool); when none is given and the checkout is on a protected branch (`main`, `master` or the remote's default), tiller makes one named `tl/<slug>` from the worker's title. Merges go into that base and never into a protected branch, so you push the task branch and open a pull request yourself. See [docs/worktrees.md](docs/worktrees.md).
+
 `tl help` lists every command and flag.
 
 ## Where files live
@@ -45,12 +47,12 @@ Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the nod
 
 Tiller reads two JSON files, both optional: a per-repo file at `<repo>/.tiller/config.json`, which you commit so everyone who runs tiller in that repo gets the same behaviour, and a global file at `~/.tiller/config.json` for your own defaults across repos. Each key resolves on its own: the repo file wins over the global file, which wins over the built-in default. Keys in the `daemon` group (resume, retention, node caps) are daemon-wide and are read from the global file only. Both files are re-read on every use, so an edit applies without restarting the daemon. `tl config` prints the effective value of every key for the current directory and which file it came from.
 
-A typical repo file sets the models for each role, gives workers their own worktrees, defines the check that must pass before a worker may report success, and lets the orchestrator close finished workers without asking:
+A typical repo file sets the models for each role, gives workers their own worktrees with task branches named in the repo's convention, defines the check that must pass before a worker may report success, and lets the orchestrator close finished workers without asking:
 
 ```json
 {
   "roles": { "orchestrator": { "model": "opus", "effort": "high" }, "worker": { "model": "sonnet", "effort": "medium" } },
-  "worktrees": { "isolation": "worktree", "setup": ["npm ci"] },
+  "worktrees": { "isolation": "worktree", "taskBranch": "feature/{slug}", "setup": ["npm ci"] },
   "gate": { "command": "npm test" },
   "approvals": { "close": "done" }
 }
