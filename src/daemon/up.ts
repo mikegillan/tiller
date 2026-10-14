@@ -1,7 +1,8 @@
 // Client-side helpers for `tl` / `tl up`: find or start the daemon, pick the orchestrator for a directory.
 import { spawn } from 'node:child_process';
-import { mkdirSync, openSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { harnessFor, isAgentKind, type Harness, type NodeKind } from '../shared/protocol.js';
@@ -38,6 +39,19 @@ export async function waitForDaemon(port: number, log: string, waitMs = 15_000):
   }
   const tail = readFileSync(log, 'utf8').split('\n').slice(-20).join('\n');
   throw new Error(`daemon did not come up on port ${port}; last log lines:\n${tail}`);
+}
+
+/**
+ * The directory `tl up` works on, as a realpath: `path` (relative to `cwd`, `~` for the home directory), else `cwd`
+ * when a directory-only flag was given, else undefined (just open the app). Throws when it is not a directory.
+ */
+export function upDir(path: string | undefined, dirFlag: boolean, cwd: string, home = homedir()): string | undefined {
+  if (path === undefined && !dirFlag) return undefined;
+  const p = resolve(cwd, (path ?? '.').replace(/^~(?=$|\/)/, home));
+  let real: string;
+  try { real = realpathSync(p); } catch { throw new Error(`no such directory: ${p}`); }
+  if (!statSync(real).isDirectory()) throw new Error(`not a directory: ${p}`);
+  return real;
 }
 
 export interface OrchestratorCandidate { id: string; title: string; kind: string; harness?: Harness; parentId: string | null; cwd: string; exited?: boolean; createdAt: number }
