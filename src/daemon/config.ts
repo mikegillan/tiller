@@ -30,7 +30,7 @@ const ConfigFile = z.object({
    * branchPrefix: a worktree's branch is <prefix><nodeId>. include: gitignored files to copy in; absent means .worktreeinclude.
    * mergeStyle: how the merge verb brings a branch into its base.
    * setup, teardown: shell commands run in a new worktree before launch, and in a worktree before it is removed.
-   * protected: branches merge refuses as a base (origin's default branch counts too). A worker spawned without a base
+   * protected: branches merge refuses as a base (origin's default branch counts too; [] protects nothing). A worker spawned without a base
    * from one of them, or from a detached HEAD, gets a new base branch named by taskBranch, {slug} from its title.
    */
   worktrees: z.object({

@@ -30,7 +30,7 @@ The layer column says where a key may be set: "project, home" means either file,
 | `worktrees.mergeStyle` | `merge`, `squash`, `ff-only` | `merge` | project, home | How the merge verb brings a branch into its base. |
 | `worktrees.setup` | list of shell commands | `[]` | project, home | Run in a new worktree before the agent starts. |
 | `worktrees.teardown` | list of shell commands | `[]` | project, home | Run in a worktree before tiller removes it. |
-| `worktrees.protected` | list of branch names | `["main", "master"]` | project, home | Branches a merge never goes into; the remote's default branch counts too. A worker spawned from one without a base gets a task branch. |
+| `worktrees.protected` | list of branch names | `["main", "master"]` | project, home | Branches a merge never goes into; the remote's default branch counts too, unless the list is set to `[]`, which protects nothing. A worker spawned from one without a base gets a task branch. |
 | `worktrees.taskBranch` | string containing `{slug}` | `tl/{slug}` | project, home | Name of the task branch made for such a worker; `{slug}` is its title in lower case with dashes. |
 | `gate.command` | shell command | none | project, home | A check that must pass before a worker's `succeeded` report is recorded; no gate when unset. |
 | `gate.retries` | integer, 0 or more | `2` | project, home | Further failed gate runs allowed before the outcome is recorded as failed. |
