@@ -3,7 +3,7 @@
 //   node run.mjs [--out DIR]
 // Each run uses a fresh scratch directory and a freshly made sample repo. The daemon is stopped by pid at the end.
 import { spawn, spawnSync } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -87,6 +87,8 @@ if (port === 7788) throw new Error('refusing the live daemon port');
 const env = cleanEnv(port);
 mkdirSync(TL_HOME, { recursive: true });
 mkdirSync(OUT, { recursive: true });
+// This run's outputs replace the last run's; anything else in OUT (a run.log, say) is left alone.
+for (const f of readdirSync(OUT)) if (/\.(mp4|png)$/.test(f) || ['full.webm', 'clips.json', 'tl-list.txt'].includes(f)) rmSync(join(OUT, f));
 makeSampleRepo(SAMPLE);
 log(`scratch ${SCRATCH}, sample repo ${SAMPLE}, port ${port}`);
 
@@ -97,7 +99,8 @@ log(`daemon pid ${daemon.pid}, log ${join(SCRATCH, 'daemon.log')}`);
 
 const marks = []; // { beat, start, end, notes } in ms on the video's clock
 const stills = [];
-let browser;
+const failures = [];
+let browser, ctx, page;
 try {
   const tokenFile = join(TL_HOME, 'admin-token');
   if (!(await until('daemon admin token', 30_000, () => existsSync(tokenFile) && readFileSync(tokenFile, 'utf8').trim()))) throw new Error('daemon did not start');
@@ -105,11 +108,11 @@ try {
   await watch(port, token);
 
   browser = await chromium.launch();
-  const ctx = await browser.newContext({
+  ctx = await browser.newContext({
     viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 2, colorScheme: 'dark',
     recordVideo: { dir: SCRATCH, size: { width: 1920, height: 1080 } },
   });
-  const page = await ctx.newPage();
+  page = await ctx.newPage();
   const v0 = Date.now(); // the video's clock starts with the page
   const vt = (ms = Date.now()) => Math.max(0, ms - v0);
   const still = async (name) => { const path = join(OUT, `${name}.png`); await page.screenshot({ path }); stills.push(`${name}.png`); log(`still ${name}.png`); };
@@ -119,6 +122,14 @@ try {
   const panelOpen = async (on) => {
     const b = page.getByRole('button', { name: 'Toggle last message panel' });
     if ((await b.getAttribute('aria-pressed')) !== String(on)) await b.click();
+  };
+  /** Runs one beat after the tree exists; a failure is logged with a still and the run goes on to the next beat. */
+  const beat = async (name, fn) => {
+    try { await fn(); } catch (e) {
+      failures.push(`${name}: ${e.message.split('\n')[0]}`);
+      log(`beat ${name} failed: ${e.message}`);
+      await still(`${name}-error`).catch(() => {});
+    }
   };
 
   await page.goto(`http://127.0.0.1:${port}/?k=${token}`);
@@ -147,7 +158,7 @@ try {
   if (asksTrust(launched)) {
     log('answering the folder-trust dialog');
     notes10 = 'Includes Claude\'s folder-trust dialog being accepted (first run on this sample path); trim it. ';
-    await page.locator('.xterm').first().click();
+    await page.locator('.term.show').click();
     await page.keyboard.press('Enter');
   }
   await until('orchestrator working', 90_000, () => nodes.get(orch)?.status.state === 'working');
@@ -167,7 +178,7 @@ try {
   // 30: a worker finishes and its outcome shows.
   const doneId = await until('a worker outcome', 900_000, () => workers.find((id) => nodes.get(id)?.outcome));
   let diffId;
-  if (doneId) {
+  if (doneId) await beat('30-watch', async () => {
     start = Date.now();
     await select(doneId);
     await panelOpen(true);
@@ -175,14 +186,14 @@ try {
     await still('30-outcome');
     mark('30-watch', start, `"${nodes.get(doneId)?.title}" reported ${nodes.get(doneId)?.outcome?.outcome}; last-message panel shows its outcome.`);
     diffId = doneId;
-  }
+  });
 
   // 40: review its diff and send a line comment back.
   diffId = [diffId, ...workers].find((id) => {
     const n = id && nodes.get(id);
     return n?.worktree && n.status.git && n.status.git.ahead + n.status.git.dirty > 0;
   });
-  if (diffId) {
+  if (diffId) await beat('40-diff', async () => {
     start = Date.now();
     await select(diffId);
     await panelOpen(false);
@@ -191,7 +202,7 @@ try {
     await sleep(2500);
     const src = page.locator('nav.files .file', { hasText: 'src/cli.js' });
     if (await src.count()) { await src.first().click(); await sleep(1500); }
-    const added = page.locator('.dl.add');
+    const added = page.locator((await page.locator('.dl.add').count()) ? '.dl.add' : '.dl.ctx');
     await added.nth(Math.min(2, (await added.count()) - 1)).click();
     await page.getByLabel('Comment').pressSequentially(COMMENT, { delay: 35 });
     await sleep(600);
@@ -201,21 +212,21 @@ try {
     await page.getByRole('button', { name: /^Send \d+ comment/ }).click();
     await sleep(4000);
     mark('40-diff', start, `Diff of "${nodes.get(diffId)?.title}", one line comment added and sent.`);
-  } else log('no worker with changes to diff');
+  }); else log('no worker with changes to diff');
 
   // 50: the reviewer.
   const reviewer = await until('a reviewer node', 600_000, () => [...nodes.values()].find(isReviewer)?.id);
-  if (reviewer) {
+  if (reviewer) await beat('50-review', async () => {
     start = Date.now();
     await page.locator('.seg.tabs').getByRole('button', { name: 'Terminal' }).click().catch(() => {});
     await select(reviewer);
     await sleep(8000);
     await still('50-review');
     mark('50-review', start, `Reviewer "${nodes.get(reviewer)?.title}" (preset ${nodes.get(reviewer)?.preset ?? 'none'}) at work.`);
-  }
+  });
 
   // 55: merges, and the tree shrinks as workers close.
-  await select(orch);
+  await select(orch).catch(() => {});
   const firstClose = await until('a worker to close', 1_200_000, () => workers.find((id) => removedAt.has(id)));
   if (firstClose) {
     start = removedAt.get(firstClose) - 4000;
@@ -228,31 +239,41 @@ try {
   // 60: history.
   await until('orchestrator turn to end', 600_000, () => finished(nodes.get(orch)) && children(orch).length === 0);
   await sleep(2000);
-  start = Date.now();
-  await page.getByRole('button', { name: 'History' }).click();
-  await page.locator('.arch').first().waitFor({ timeout: 15_000 });
-  await sleep(3000);
-  await still('60-history-list');
-  await page.locator('.arch', { has: page.locator('.branch') }).first().click();
-  await sleep(3000);
-  await still('60-history-node');
-  await page.mouse.move(1100, 700);
-  await page.mouse.wheel(0, 600);
-  await sleep(3000);
-  mark('60-history', start, 'History panel, then one closed worker with its brief, branch fate line and transcript.');
+  await beat('60-history', async () => {
+    start = Date.now();
+    await page.getByRole('button', { name: 'History' }).click();
+    await page.locator('.arch').first().waitFor({ timeout: 15_000 });
+    await sleep(3000);
+    await still('60-history-list');
+    await page.locator('.arch', { has: page.locator('.branch') }).first().click();
+    await sleep(3000);
+    await still('60-history-node');
+    await page.mouse.move(1100, 700);
+    await page.mouse.wheel(0, 600);
+    await sleep(3000);
+    mark('60-history', start, 'History panel, then one closed worker with its brief, branch fate line and transcript.');
+  });
 
   // The orchestrator's final state, for the end of the story.
-  start = Date.now();
-  await page.getByRole('button', { name: 'History' }).click();
-  await select(orch);
-  await panelOpen(true);
-  await sleep(5000);
-  await still('70-final');
-  mark('70-final', start, 'The orchestrator with its final message in the last-message panel.');
-
-  await ctx.close();
-  renameSync(await page.video().path(), join(OUT, 'full.webm'));
+  await beat('70-final', async () => {
+    start = Date.now();
+    const history = page.getByRole('button', { name: 'History' });
+    if ((await history.getAttribute('aria-pressed')) === 'true') await history.click();
+    await select(orch);
+    await panelOpen(true);
+    await sleep(5000);
+    await still('70-final');
+    mark('70-final', start, 'The orchestrator with its final message in the last-message panel.');
+  });
+} catch (e) {
+  failures.push(`fatal: ${e.message.split('\n')[0]}`);
+  log(`run stopped early: ${e.stack}`);
+  process.exitCode = 1;
 } finally {
+  // Closing the context writes the video, so a broken run still yields the beats it reached.
+  await ctx?.close().catch((e) => log(`closing the browser context: ${e.message}`));
+  const video = await page?.video()?.path().catch(() => undefined);
+  if (video && existsSync(video)) renameSync(video, join(OUT, 'full.webm'));
   await browser?.close();
   ws?.close();
   const tl = spawnSync(join(ROOT, 'bin/tl'), ['list'], { env, encoding: 'utf8' });
@@ -273,5 +294,5 @@ for (const m of marks) {
   clips.push({ beat: m.beat, file, durationMs: m.end - m.start, startInFullMs: m.start, notes: m.notes });
 }
 const totalUsd = [...spend.values()].reduce((a, b) => a + b, 0);
-writeFileSync(join(OUT, 'clips.json'), JSON.stringify({ clips, stills, full: 'full.webm', totalUsd: Number(totalUsd.toFixed(2)), recordedAt: new Date(t0).toISOString() }, null, 2) + '\n');
+writeFileSync(join(OUT, 'clips.json'), JSON.stringify({ clips, stills, failures, full: 'full.webm', totalUsd: Number(totalUsd.toFixed(2)), recordedAt: new Date(t0).toISOString() }, null, 2) + '\n');
 log(`wrote ${clips.length} clips and clips.json to ${OUT}; agent spend $${totalUsd.toFixed(2)}`);
