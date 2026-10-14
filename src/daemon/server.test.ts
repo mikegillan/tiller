@@ -167,6 +167,21 @@ describe('POST /hook', () => {
     expect(inbox(manager, root.id)).toEqual([]);
   });
 
+  it('/release hands a never-submitted claim back to the queue, 404 once it is not claimed', async () => {
+    const root = manager.registry.create({ parentId: null, kind: 'agent', harness: 'pi', title: 'pi', cwd: home, lastActiveAt: Date.now() });
+    manager.runtimes.set(root.id, { status: { state: 'done', changedAt: Date.now() } });
+    const r = await deliver(manager, 'human', root.id, 'A');
+    const call = (path: string) => fetch(`${manager.endpoint}${path}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${manager.tokenFor(root.id)}`, 'X-TL-Node': root.id, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: r.messageId }),
+    });
+    expect((await call('/claim')).status).toBe(204);
+    expect((await call('/release')).status).toBe(204);
+    expect((await call('/release')).status).toBe(404);
+    expect(inbox(manager, root.id)).toEqual([expect.not.objectContaining({ claimed: true })]);
+    expect(messageStatus(manager, 'human', r.messageId!)?.outcome).toBe('queued');
+    expect((await call('/claim')).status).toBe(204); // claimable again
+  });
+
   it('mod-event rateLimits: keeps the newest report from any node, broadcasts it, drops a malformed one', async () => {
     const a = (await manager.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir() }));
     const b = (await manager.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir() }));

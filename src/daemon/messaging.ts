@@ -286,9 +286,13 @@ function addInbox(m: Mgr, s: State, i: InboxItem): void {
   const q = s.inbox.get(i.to) ?? [];
   s.inbox.set(i.to, q);
   q.push(i);
+  armInbox(m, s, i);
+}
+
+function armInbox(m: Mgr, s: State, i: InboxItem): void {
   const arm = (ms: number) => {
     i.timer = setTimeout(() => {
-      if (!q.includes(i)) return;
+      if (!s.inbox.get(i.to)?.includes(i)) return;
       if (i.claimed && m.view(i.to)?.harness === 'pi') {
         const remaining = (i.claimedAt ?? i.msg.enqueuedAt) + PI_CONFIRM_MS - Date.now();
         if (remaining > 0) return arm(remaining);
@@ -348,13 +352,34 @@ export function claim(m: Mgr, nodeId: string, id: string): boolean {
   i.claimedAt ??= Date.now();
   if (m.view(nodeId)?.harness === 'pi') {
     // Persist BEFORE returning success: a daemon crash after native submission must not enable replay.
-    const persisted = !s.inboxFile || writeInbox(s);
+    if (s.inboxFile && !writeInbox(s)) {
+      // The mod is told 404 and will not submit, so the message stays queued as before.
+      delete i.claimed;
+      delete i.claimedAt;
+      return false;
+    }
     clearTimeout(i.timer);
     i.timer = setTimeout(() => unconfirmed(m, nodeId, id), PI_CONFIRM_MS);
     i.timer.unref();
-    return persisted;
+    return true;
   }
   saveInbox(s);
+  return true;
+}
+
+/**
+ * POST /release: the mod claimed the message but never submitted it (the target became busy first), so it goes back
+ * in the queue, withdrawable again and retryable when its TTL ends. False if it is not a claimed message of that node.
+ */
+export function release(m: Mgr, nodeId: string, id: string): boolean {
+  const s = stateOf(m);
+  const i = s.inbox.get(nodeId)?.find((x) => x.msg.id === id);
+  if (!i?.claimed) return false;
+  delete i.claimed;
+  delete i.claimedAt;
+  clearTimeout(i.timer);
+  armInbox(m, s, i);
+  saveInbox(s); // a crash before the save leaves it claimed, which retires as ambiguous: never a replay
   return true;
 }
 

@@ -324,6 +324,7 @@ export interface SendResult { outcome: SendOutcome; retryable: boolean; detail?:
 /** `steer`: abort the running turn and submit now; otherwise the mod holds it until no turn runs, so it can be withdrawn. */
 export interface InboxMessage { id: string; from: string; text: string; enqueuedAt: number; steer?: true; claimed?: true }
 /** POST /claim { id } → 204, or 404 if it was withdrawn or expired. Sent just before $.prompt.submit; a claimed message can no longer be withdrawn. */
+/** POST /release { id } → 204, or 404 if it is no longer a claimed message of this node. Hands back a claim that was never submitted: queued, withdrawable and retryable again. */
 /** POST /ack { id } → 204. Sent only on native prompt acceptance (the turn started). */
 /** POST /unconfirmed { id } → 204. Retires this node's claimed prompt as stalled/nonretryable, never delivered. */
 /** POST /mod-event { event, payload } → 204. */

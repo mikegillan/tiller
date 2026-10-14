@@ -55,6 +55,12 @@ describe("TillerClient", () => {
     expect(await client(async () => response(204)).claim("here")).toBe(true);
   });
 
+  it("maps a release 404 to false and 2xx to true", async () => {
+    expect(await client(async () => response(404)).release("gone")).toBe(false);
+    expect(await client(async () => response(204)).release("here")).toBe(true);
+    await expect(client(async () => response(500, "boom")).release("x")).rejects.toBeInstanceOf(TillerHttpError);
+  });
+
   it("throws a TillerHttpError on other claim failures", async () => {
     await expect(client(async () => response(500, "boom")).claim("x")).rejects.toBeInstanceOf(
       TillerHttpError,

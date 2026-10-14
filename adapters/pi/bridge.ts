@@ -3,10 +3,12 @@
  *
  * Design notes:
  * - Never overlaps polls: `pollOnce()` returns immediately while another run is in flight.
- * - Only the *immediate next* message is ever claimed. Everything behind it stays in the daemon
- *   (unclaimed), so its sender can still withdraw it.
- * - A steer message is claimed while Pi is busy, Pi's running turn is aborted once, and the
- *   message is delivered once Pi reports idle. At most one steer is held at a time.
+ * - Only the *immediate next* message is ever claimed, and only while Pi is idle. Everything else
+ *   stays in the daemon (unclaimed), so its sender can still withdraw it.
+ * - A steer message aborts Pi's running turn once while it stays unclaimed; once Pi reports idle
+ *   it is claimed ahead of the queue and delivered.
+ * - A claim that could not be submitted because Pi became busy is released back to the daemon,
+ *   which keeps it queued and retryable: it never reached Pi, so it is not ambiguous.
  * - `sendUserMessage` is fire-and-forget in Pi: a void return is not evidence that Pi accepted
  *   the prompt. It can still reject the input asynchronously, or consume it without ever starting
  *   a run. The bridge therefore tracks two distinct states:
@@ -38,6 +40,8 @@ export interface TillerClientLike {
   ack(id: string): Promise<void>;
   /** Retire an ambiguous claim without acknowledging delivery. Idempotent. */
   unconfirmed(id: string): Promise<void>;
+  /** Hand back a claim that was never submitted. False if the daemon no longer has it. */
+  release(id: string): Promise<boolean>;
 }
 
 export interface TillerBridgeDeps {
@@ -77,8 +81,6 @@ interface HeldMessage extends InboxMessage {
   /** A matching `before_agent_start` confirmed Pi accepted this prompt. */
   accepted: boolean;
   acking: boolean;
-  /** The running turn was aborted once for this steer; never abort again on later polls. */
-  steerAborted: boolean;
   /** Consecutive inbox polls where a submitted-unaccepted message was absent. */
   inboxMisses: number;
 }
@@ -100,6 +102,8 @@ export class TillerBridge {
   /** Guard stale inbox snapshots/late acceptance after retirement. Framed prompts contain unique ids. */
   private readonly retired = new Set<string>();
   private readonly held: HeldMessage[] = [];
+  /** Steers the running turn was aborted for once; never abort again on later polls. */
+  private readonly steersAborted = new Set<string>();
   private timer: unknown;
   private polling = false;
   private delivering = false;
@@ -182,10 +186,6 @@ export class TillerBridge {
     return this.retired.has(id) || this.held.some((message) => message.id === id);
   }
 
-  private hasSteerHeld(): boolean {
-    return this.held.some((message) => message.steer);
-  }
-
   private async claim(message: InboxMessage): Promise<boolean> {
     try {
       return await this.deps.client.claim(message.id);
@@ -196,9 +196,9 @@ export class TillerBridge {
   }
 
   /** Abort the running turn for a steer, but only once: later polls must not re-abort. */
-  private abortForSteer(message: HeldMessage): void {
-    if (message.steerAborted) return;
-    message.steerAborted = true;
+  private abortForSteer(id: string): void {
+    if (this.steersAborted.has(id)) return;
+    this.steersAborted.add(id);
     try {
       this.deps.abort();
     } catch (error) {
@@ -207,7 +207,7 @@ export class TillerBridge {
   }
 
   /**
-   * Claim at most one message: while idle the immediate next one, while busy a single steer.
+   * Claim at most one message, and only while idle: steers first, then the immediate next one.
    * Messages left behind stay in the daemon and remain withdrawable.
    */
   private async pollInbox(): Promise<void> {
@@ -235,44 +235,31 @@ export class TillerBridge {
       return;
     }
 
-    if (this.deps.isIdle()) {
-      for (const message of messages) {
-        if (this.isKnown(message.id)) continue;
-        // Reloaded native claims are ambiguous: never submit them again.
-        if (message.claimed) {
-          await this.retire(this.newHeld(message));
-          continue;
-        }
-        if (!(await this.claim(message))) {
-          if (this.stopped) return;
-          continue; // withdrawn/expired: the next message is now the immediate one
-        }
-        if (this.stopped) return;
-        const held = this.newHeld(message);
-        this.held.push(held);
-        // Pi can become busy during the claim round-trip. A steer claimed from the idle branch
-        // must still abort exactly once; a non-steer simply waits for idle.
-        if (message.steer && !this.deps.isIdle()) this.abortForSteer(held);
-        return;
-      }
+    if (!this.deps.isIdle()) {
+      // Busy: everything waits unclaimed in the daemon. A steer aborts the running turn once and
+      // is claimed when Pi reports idle, so its sender can withdraw it until then.
+      const steer = messages.find((message) => message.steer && !message.claimed && !this.isKnown(message.id));
+      if (steer) this.abortForSteer(steer.id);
       return;
     }
 
-    // Busy: a non-steer waits in the daemon. A steer jumps the queue, but only one at a time.
-    if (this.hasSteerHeld()) return;
-    const steer = messages.find((message) => message.steer && !this.isKnown(message.id));
-    if (!steer) return;
-    if (steer.claimed) {
-      await this.retire(this.newHeld(steer));
+    const steers = messages.filter((message) => message.steer);
+    for (const message of [...steers, ...messages.filter((message) => !message.steer)]) {
+      if (this.isKnown(message.id)) continue;
+      // Reloaded native claims are ambiguous: never submit them again.
+      if (message.claimed) {
+        await this.retire(this.newHeld(message));
+        continue;
+      }
+      if (!(await this.claim(message))) {
+        if (this.stopped) return;
+        continue; // withdrawn/expired: the next message is now the immediate one
+      }
+      if (this.stopped) return;
+      // Submitted by the flush that follows, or released if Pi became busy during the claim.
+      this.held.push(this.newHeld(message));
       return;
     }
-    if (!(await this.claim(steer))) return;
-    if (this.stopped) return;
-    const held = this.newHeld(steer);
-    this.held.push(held);
-    // Recheck after the claim round-trip: if Pi went idle, the flush below submits it; if it is
-    // still busy, abort once. `steerAborted` stops later polls from aborting again.
-    if (!this.deps.isIdle()) this.abortForSteer(held);
   }
 
   private newHeld(message: InboxMessage): HeldMessage {
@@ -283,7 +270,6 @@ export class TillerBridge {
       submitted: false,
       accepted: false,
       acking: false,
-      steerAborted: false,
       inboxMisses: 0,
     };
   }
@@ -300,13 +286,18 @@ export class TillerBridge {
         await this.retryAck(message);
         return;
       }
-      if (message.retiring || this.now() - message.claimedAt >= this.confirmationTimeoutMs) {
+      if (message.retiring || (message.submitted && this.now() - message.claimedAt >= this.confirmationTimeoutMs)) {
         await this.retire(message);
         return;
       }
       if (message.submitted) return; // awaiting acceptance: ambiguous, so never resubmit
-      if (!this.deps.isIdle()) return;
-      await this.submit(message);
+      if (this.deps.isIdle()) {
+        await this.submit(message);
+        return;
+      }
+      // Pi became busy before submission: hand the claim back, and abort once for a steer.
+      if (message.steer) this.abortForSteer(message.id);
+      await this.release(message);
     } finally {
       this.delivering = false;
       this.deps.onPending?.(this.pendingCount);
@@ -337,6 +328,18 @@ export class TillerBridge {
     }
     // A void return is not acceptance. The message stays submitted until a matching
     // `before_agent_start` (via `confirmAccepted`) or the daemon drops it.
+  }
+
+  /** Return a never-submitted claim to the daemon's queue. A failure keeps it for a later retry. */
+  private async release(message: HeldMessage): Promise<void> {
+    try {
+      await this.deps.client.release(message.id); // false: the daemon already dropped it
+    } catch (error) {
+      this.deps.onError?.(error, "release");
+      return;
+    }
+    const at = this.held.indexOf(message);
+    if (at >= 0) this.held.splice(at, 1);
   }
 
   /** Retirement is a distinct terminal state; a late acceptance cannot turn it into delivery. */
