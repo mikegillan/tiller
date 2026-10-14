@@ -19,5 +19,8 @@
   },
   "limits": {
     "stallMinutes": 10
+  },
+  "worktrees": {
+    "protected": []
   }
 }
