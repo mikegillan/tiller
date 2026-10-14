@@ -4,7 +4,7 @@ All front ends are clients of the same daemon, so closing one never stops the ag
 
 ## The native app (macOS)
 
-The app is a small Tauri v2 shell that hosts the browser UI in a native window and shows the number of blocked or waiting nodes as the Dock badge. To build it you need Rust through Homebrew's rustup, with `export PATH=/opt/homebrew/opt/rustup/bin:$PATH` in the shell that builds it, and a built UI (`npm run ui:build`).
+The app is a small Tauri v2 shell that hosts the browser UI in a native window and shows the number of blocked or waiting nodes as the Dock badge. To build it you need the Xcode Command Line Tools and Rust through Homebrew's rustup (how to install both is in the [README](../README.md)), with `export PATH=/opt/homebrew/opt/rustup/bin:$PATH` in the shell that builds it. The build runs `npm run ui:build` first, so the app always ships the current UI.
 
     npm run app:build    # unsigned src-tauri/target/release/bundle/macos/Tiller.app
     bin/tl-app           # opens that app, or runs `npm run app:dev` if it is not built

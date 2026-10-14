@@ -11,15 +11,22 @@ Tiller is a local daemon that runs several Claude Code sessions as child process
 
 ## Requirements
 
+- macOS with the Xcode Command Line Tools (`xcode-select --install`); the native app is built with Tauri, which needs them.
 - Node 24 and the `claude` CLI (Claude Code) on your PATH.
+- Rust, installed through Homebrew's rustup:
+
+      brew install rustup
+      /opt/homebrew/opt/rustup/bin/rustup-init -y
+
+  Homebrew's rustup is keg-only, so `cargo` is not on your PATH by default. `bin/tl-app` adds `/opt/homebrew/opt/rustup/bin` itself; to run `npm run app:build` or `cargo` from your own shell, add that directory to your PATH (for example `export PATH=/opt/homebrew/opt/rustup/bin:$PATH` in `~/.zshrc`).
 - Optional: `terminal-notifier` (`brew install terminal-notifier`), so clicking a macOS notification selects the node.
-- For the native app only: Rust through Homebrew's rustup (see [docs/frontends.md](docs/frontends.md)).
 
 ## Install
 
     npm install && npm link
+    npm run app:build
 
-This puts `tl` (the client), `tld` (the daemon in the foreground) and `tl-app` (the native app) on your PATH.
+`npm install && npm link` puts `tl` (the client), `tld` (the daemon in the foreground) and `tl-app` (the native app) on your PATH. `npm run app:build` builds the browser UI and then the unsigned app, `src-tauri/target/release/bundle/macos/Tiller.app`; the first build compiles the Rust dependencies and takes a few minutes. Without a built app, `tl` opens the browser UI instead, and `tl-app` runs the app in dev mode. Rebuild the app after pulling changes to `ui/` or `src-tauri/`.
 
 ## Use
 
