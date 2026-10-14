@@ -16,7 +16,7 @@ describe('spawnMsg', () => {
 
   it('sends a pi agent with harness pi and the agent fields', () => {
     expect(spawnMsg({ parentId: 'p' }, form('pi', { role: 'worker', defaultRole: 'orchestrator', isolate: true, prompt: 'go' })))
-      .toEqual({ t: 'spawn', kind: 'agent', harness: 'pi', title: 'agent', cwd: '/repo', parentId: 'p', prompt: 'go', role: 'worker', isolation: 'worktree' });
+      .toEqual({ t: 'spawn', kind: 'agent', harness: 'pi', title: 'pi', cwd: '/repo', parentId: 'p', prompt: 'go', role: 'worker', isolation: 'worktree' });
   });
 
   it('sends a terminal with no harness and no agent-only fields', () => {

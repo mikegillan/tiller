@@ -1,4 +1,4 @@
-import { harnessFor, NEEDS_YOU_STATES, type NodeView } from '../src/shared/protocol';
+import { harnessFor, isAgentKind, NEEDS_YOU_STATES, type NodeView } from '../src/shared/protocol';
 
 /** armed: waiting on spawn dependencies; queued: waiting on limits.maxWorking. Neither has a process yet. */
 export type StatusKind = 'working' | 'needs' | 'done' | 'errored' | 'exited' | 'unknown' | 'armed' | 'queued';
@@ -17,8 +17,8 @@ export const KIND_LABEL: Record<StatusKind, string> = {
   working: 'working', needs: 'needs you', done: 'done', errored: 'errored', exited: 'exited', unknown: 'idle', armed: 'armed', queued: 'queued',
 };
 
-/** The short tag shown for a node: a Pi agent reads "pi", everything else its kind (a legacy claude node reads "claude"). */
-export const kindTag = (n: Pick<NodeView, 'kind' | 'harness'>): string => (harnessFor(n) === 'pi' ? 'pi' : n.kind);
+/** The short tag shown for a node: an agent reads its harness ("claude" or "pi"), a terminal "terminal". */
+export const kindTag = (n: Pick<NodeView, 'kind' | 'harness'>): string => (isAgentKind(n.kind) ? harnessFor(n) : 'terminal');
 
 export type Nodes = Record<string, NodeView>;
 
