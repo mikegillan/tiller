@@ -262,14 +262,27 @@ describe('NodeManager harness delegation and lifecycle', () => {
     expect(await pi(parent.id)).toMatchObject({ harness: 'pi' });
   });
 
-  it('loads an unlaunched/restored Claude preset from the parent project, not the child project', async () => {
-    const project = join(home, 'project'), childProject = join(home, 'other');
-    for (const dir of [project, childProject]) mkdirSync(join(dir, '.tiller', 'agents'), { recursive: true });
-    writeFileSync(join(project, '.tiller', 'agents', 'limited.md'), '---\ntools: Read\n---\nLimited.');
-    writeFileSync(join(childProject, '.tiller', 'agents', 'limited.md'), 'Prompt only.');
-    const parent = await claude({ cwd: project, preset: 'limited', permissionMode: 'bypassPermissions' });
-    delete m.runtimes.get(parent.id)!.launchedPreset;
-    await expect(pi(parent.id, { cwd: childProject, preset: 'limited' })).rejects.toThrow(/no preset tools/);
+  it('fails closed for restored Claude preset parents until a new launch establishes the exact restrictions', async () => {
+    const file = join(home, 'agents', 'limited.md');
+    writeFileSync(file, '---\ntools: Read\n---\nLimited.');
+    const parent = await claude({ preset: 'limited', permissionMode: 'bypassPermissions' });
+    await m.shutdown();
+    m = new NodeManager({ home, shell: '/bin/sh' }); // restored record, no launch snapshot
+    expect(m.runtimes.get(parent.id)!.launchedPreset).toBeUndefined();
+    writeFileSync(file, 'Now only a prompt.'); // cannot establish what the previous CLI was restricted to
+    await expect(pi(parent.id)).rejects.toThrow(/preset restrictions are unknown/);
+    rmSync(file);
+    await expect(pi(parent.id)).rejects.toThrow(/preset restrictions are unknown/);
+    expect(await pi(parent.id, { byHuman: true })).toMatchObject({ harness: 'pi' });
+    writeFileSync(file, 'Now only a prompt.');
+    expect(m.restart(parent.id)).toEqual({ ok: true });
+    expect(await pi(parent.id)).toMatchObject({ harness: 'pi' });
+  });
+
+  it('also rejects an unlaunched Claude prompt-only preset because its launch restrictions are unknown', async () => {
+    const parent = await claude({ preset: 'plain', permissionMode: 'bypassPermissions' });
+    delete m.runtimes.get(parent.id)!.launchedPreset; // armed/unlaunched runtime has no trustworthy snapshot
+    await expect(pi(parent.id)).rejects.toThrow(/preset restrictions are unknown/);
   });
 
   it('requires a known unrestricted agent parent for nonhuman Pi requests', async () => {

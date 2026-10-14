@@ -348,7 +348,12 @@ export class NodeManager extends EventEmitter {
     if (adapter?.id === 'pi' && !req.byHuman && !(parent && isAgentKind(parent.kind) && harnessFor(parent) === 'pi')) {
       const rt = parent ? this.runtimes.get(parent.id) : undefined;
       const mode = rt?.status?.permissionMode ?? parent?.permissionMode;
-      const preset = rt?.launchedPreset ?? (parent?.preset ? loadPreset(parent.preset, this.projectDir(parent), this.home) : {});
+      // A restored/armed node has no launch snapshot. Its preset file may have changed since the old process;
+      // do not infer that process's restrictions from today's file. A successful launch establishes the snapshot.
+      if (parent?.preset && !rt?.launchedPreset) {
+        throw new Error('refused: Claude preset restrictions are unknown until the parent launches; only the human may spawn Pi');
+      }
+      const preset = rt?.launchedPreset ?? {};
       const restricted = preset.tools !== undefined || preset.disallowedTools !== undefined || preset.maxTurns !== undefined;
       if (!parent || !isAgentKind(parent.kind) || mode !== 'bypassPermissions' || restricted) {
         throw new Error('refused: only the human or an unrestricted agent parent may spawn Pi; Claude requires effective permissionMode bypassPermissions and no preset tools, disallowedTools or maxTurns restrictions');
