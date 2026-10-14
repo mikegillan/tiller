@@ -598,7 +598,7 @@ export class NodeManager extends EventEmitter {
         this.usage = { rateLimits, nodeId, at: now };
         this.emit('usage', this.usage);
       }
-      if (cost) this.addSpend(nodeId, cost.usd, prev.costUsd, now);
+      if (cost) this.addSpend(nodeId, cost.usd, now);
       if (cost && now - (rt.lastCostEvent ?? 0) >= COST_EVENT_MS) {
         rt.lastCostEvent = now;
         this.logEvent(nodeId, 'cost', { usd: cost.usd, ...(context ? { contextPct: context.percent } : {}) });
@@ -807,15 +807,17 @@ export class NodeManager extends EventEmitter {
 
   /**
    * Add to the record's spend what the session spent since its last measure. A session's cost counts from zero, so a
-   * figure below the last one means a new session (restart or resume) and counts whole.
+   * different session id or a figure below the last one means a new session (restart) and counts whole. The last figure
+   * is kept on the record so a session resumed after a daemon restart is not counted again.
    */
-  private addSpend(id: string, usd: number, last: number | undefined, now: number): void {
+  private addSpend(id: string, usd: number, now: number): void {
     const rec = this.registry.get(id);
+    if (!rec) return;
+    const last = rec.lastCost?.sessionId === rec.sessionId ? rec.lastCost?.usd : undefined;
     const delta = last !== undefined && usd >= last ? usd - last : usd;
-    if (!rec || !(delta > 0)) return;
     const day = dayKey(now);
     const today = rec.spentToday?.day === day ? rec.spentToday.usd : 0;
-    this.registry.update(id, { spentUsd: (rec.spentUsd ?? 0) + delta, spentToday: { day, usd: today + delta } });
+    this.registry.update(id, { spentUsd: (rec.spentUsd ?? 0) + delta, spentToday: { day, usd: today + delta }, lastCost: { sessionId: rec.sessionId, usd } });
   }
 
   private sweepStale(): void {
