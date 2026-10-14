@@ -744,7 +744,10 @@ export class NodeManager extends EventEmitter {
         rt.lastCostEvent = now;
         this.logEvent(nodeId, 'cost', { usd: cost.usd, ...(context ? { contextPct: context.percent } : {}) });
       }
-      this.setStatus(nodeId, { ...prev, contextPct: context?.percent ?? prev.contextPct, contextTokens: context?.tokens ?? prev.contextTokens, contextWindow: context?.window ?? prev.contextWindow, costUsd: cost?.usd ?? prev.costUsd });
+      this.setStatus(nodeId, { ...prev,
+        ...('model' in ev.payload && typeof ev.payload.model === 'string' ? { model: ev.payload.model } : {}),
+        contextPct: context?.percent ?? prev.contextPct, contextTokens: context?.tokens ?? prev.contextTokens, contextWindow: context?.window ?? prev.contextWindow, costUsd: cost?.usd ?? prev.costUsd,
+      });
     }
   }
 

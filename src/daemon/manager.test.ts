@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { launchArgs } from './launch.js';
+import { findArchived } from './archive.js';
 import { NodeManager } from './manager.js';
 import { PtySession } from './pty.js';
 import type { NodeStatus } from '../shared/protocol.js';
@@ -334,6 +335,22 @@ describe('NodeManager harness delegation and lifecycle', () => {
     expect(m.runtimes.get(id)).toMatchObject({ starting: false, lastHookAt: expect.any(Number), turnStart: expect.any(Number) });
     m.applyModEvent(id, { event: 'turn.complete', payload: { answer: 'Finished.', durationMs: 10, isAborted: false, turnId: 'pi-id', reason: 'answer' } });
     expect(m.view(id)!.status).toMatchObject({ state: 'done', lastAssistantMessage: 'Finished.' });
+  });
+
+  it.each(['unknown', 'done', 'working'] as const)('records model-select measurements without changing %s state, including on archive', async (state) => {
+    const { id } = await pi(undefined, { byHuman: true, model: 'old-provider/model' });
+    const prev: NodeStatus = Object.freeze({ state, changedAt: 1, model: 'old-provider/model', lastAssistantMessage: 'answer', activity: 'old activity' });
+    m.setStatus(id, prev, false);
+    // Idle model selection need not start another turn before the new model is archived.
+    const payload = { model: 'new-provider/model', context: undefined };
+    m.applyModEvent(id, { event: 'session.measure', payload });
+    expect(m.view(id)!.status).toMatchObject({ state, changedAt: 1, model: 'new-provider/model', lastAssistantMessage: 'answer', activity: 'old activity' });
+    expect(prev.model).toBe('old-provider/model');
+    expect(m.runtimes.get(id)!.turnStart).toBeUndefined();
+    m.applyModEvent(id, { event: 'session.measure', payload: { cost: { usd: 0.5 } } });
+    expect(m.view(id)!.status).toMatchObject({ state, changedAt: 1, model: 'new-provider/model' });
+    await m.close(id, true);
+    expect(await findArchived(home, id)).toMatchObject({ model: 'new-provider/model' });
   });
 
   it.each([
