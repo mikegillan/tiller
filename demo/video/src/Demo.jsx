@@ -44,11 +44,12 @@ const ClipScene = ({ beat, clip }) => {
   let at = 0;
   const parts = planBeat(beat, clip.seconds).map((s) => ({ ...s, at: (at += s.frames) - s.frames }));
   const current = parts.findLast((p) => frame >= p.at);
-  const scale = beat.zoom ? interpolate(frame, [0, total], [1, 1.15]) : 1;
+  const { origin = 'center', from: zoomFrom = 1, to: zoomTo = 1.15 } = beat.zoom ?? { to: 1 };
+  const scale = interpolate(frame, [0, total], [zoomFrom, zoomTo]);
   return (
     <AbsoluteFill>
       <Window>
-        <AbsoluteFill style={{ transform: `scale(${scale})`, transformOrigin: beat.zoom }}>
+        <AbsoluteFill style={{ transform: `scale(${scale})`, transformOrigin: origin }}>
           {parts.map((p, i) => (
             // The last part runs to the end of the beat, holding its last frame.
             <Sequence key={p.at} from={p.at} durationInFrames={i === parts.length - 1 ? total - p.at : p.frames}>
@@ -181,12 +182,4 @@ const EndCard = () => (
       <div style={{ fontSize: 22, color: DIM, marginTop: 48 }}>built with tiller</div>
     </AbsoluteFill>
   </FadeIn>
-);
-
-// Stand-in frame for a beat until the real capture lands (see make-placeholders.sh).
-export const Placeholder = ({ label }) => (
-  <AbsoluteFill style={{ ...centred, background: BG, fontFamily: UI_FONT, color: DIM, border: `2px dashed ${LINE}` }}>
-    <div style={{ fontSize: 40 }}>placeholder clip</div>
-    <div style={{ fontSize: 120, fontWeight: 600, color: FG, fontFamily: MONO }}>{label}</div>
-  </AbsoluteFill>
 );
