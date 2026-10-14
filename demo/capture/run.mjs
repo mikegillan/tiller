@@ -51,6 +51,7 @@ let ws;
 function watch(port, token) {
   ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
   ws.on('open', () => ws.send(JSON.stringify({ t: 'auth', token })));
+  ws.on('error', (e) => log(`ws error: ${e.message}`));
   ws.on('message', (raw) => {
     const m = JSON.parse(raw.toString());
     const seen = (n) => { nodes.set(n.id, n); if (n.spentUsd !== undefined) spend.set(n.id, n.spentUsd); };
@@ -93,9 +94,26 @@ makeSampleRepo(SAMPLE);
 log(`scratch ${SCRATCH}, sample repo ${SAMPLE}, port ${port}`);
 
 const daemonLog = createWriteStream(join(SCRATCH, 'daemon.log'));
-const daemon = spawn(join(ROOT, 'node_modules/.bin/tsx'), [join(ROOT, 'src/daemon/index.ts')], { cwd: SCRATCH, env, stdio: ['ignore', 'pipe', 'pipe'] });
+// node with the tsx loader rather than the tsx wrapper, so daemon.pid is the daemon itself.
+const daemon = spawn(process.execPath, ['--import', 'tsx', join(ROOT, 'src/daemon/index.ts')], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
 daemon.stdout.pipe(daemonLog); daemon.stderr.pipe(daemonLog);
 log(`daemon pid ${daemon.pid}, log ${join(SCRATCH, 'daemon.log')}`);
+// Ctrl-C, a closed terminal, a kill or a crash skip the finally below, so stop the daemon by pid here too.
+process.on('exit', () => { if (daemon.exitCode === null && daemon.signalCode === null) daemon.kill('SIGTERM'); });
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => { log(`${sig}: stopping daemon pid ${daemon.pid}`); process.exit(130); });
+}
+
+let token;
+/** POST /api/<tool> as the human. */
+async function api(tool, body) {
+  const r = await fetch(`http://127.0.0.1:${port}/api/${tool}`, {
+    method: 'POST', body: JSON.stringify(body),
+    headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': 'human', 'Content-Type': 'application/json' },
+  });
+  if (!r.ok) throw new Error(`${tool}: HTTP ${r.status}`);
+  return r.json();
+}
 
 const marks = []; // { beat, start, end, notes } in ms on the video's clock
 const stills = [];
@@ -104,7 +122,7 @@ let browser, ctx, page;
 try {
   const tokenFile = join(TL_HOME, 'admin-token');
   if (!(await until('daemon admin token', 30_000, () => existsSync(tokenFile) && readFileSync(tokenFile, 'utf8').trim()))) throw new Error('daemon did not start');
-  const token = readFileSync(tokenFile, 'utf8').trim();
+  token = readFileSync(tokenFile, 'utf8').trim();
   await watch(port, token);
 
   browser = await chromium.launch();
@@ -148,20 +166,34 @@ try {
   await form.getByRole('button', { name: 'Spawn' }).click();
   const orch = await until('orchestrator', 15_000, () => [...nodes.values()].find((n) => n.parentId === null)?.id);
   if (!orch) throw new Error('the orchestrator did not appear');
+  // The dialog sends a role only when it differs from the default for the position (a root is an orchestrator), so
+  // the record's role is absent and derived at launch; the model then comes from roles.orchestrator in the config.
+  const o = nodes.get(orch);
+  log(`spawned ${orch}: role ${o.role ?? '(derived: orchestrator)'}, model ${o.model ?? '(default)'}`);
+  if ((o.role ?? 'orchestrator') !== 'orchestrator' || o.model !== 'sonnet') throw new Error(`spawned record is not an orchestrator on sonnet: role ${o.role}, model ${o.model}`);
+
+  // Until Claude starts its first turn: dump the node's screen every 15 s, and if the folder-trust dialog is up
+  // (it is not once the human has trusted the sample path), select "Yes, I trust this folder" and confirm. Enter on
+  // the default "No, exit" would quit Claude, so Enter is sent only once Yes is selected: its line then starts with
+  // the selection pointer instead of only spaces.
   let notes10 = '';
-  // First run only: Claude asks whether to trust the new folder; answer it in the terminal.
-  const asksTrust = (s) => /Trust dialog/.test(s?.activity ?? '');
-  const launched = await until('orchestrator to start or ask for trust', 60_000, () => {
-    const s = nodes.get(orch)?.status;
-    return (s?.state === 'working' || asksTrust(s)) && s;
-  });
-  if (asksTrust(launched)) {
-    log('answering the folder-trust dialog');
-    notes10 = 'Includes Claude\'s folder-trust dialog being accepted (first run on this sample path); trim it. ';
-    await page.locator('.term.show').click();
-    await page.keyboard.press('Enter');
+  let dumpAt = 0;
+  for (const end = Date.now() + 180_000; nodes.get(orch)?.status.state !== 'working'; await sleep(1000)) {
+    if (Date.now() > end) throw new Error('the orchestrator did not start working within 180 s');
+    // The whole screen: the dialog draws at the top, and the UI makes the terminal taller than a short tail.
+    const screen = (await api('read', { nodeId: orch, what: 'terminal', lines: 300 }).catch(() => ({}))).text ?? '';
+    if (Date.now() - dumpAt >= 15_000) {
+      dumpAt = Date.now();
+      log(`orchestrator state ${nodes.get(orch)?.status.state}; screen:\n${screen.trim()}`);
+      await still(`startup-${Math.round((Date.now() - start) / 1000)}s`);
+    }
+    if (screen.includes('Yes, I trust this folder')) {
+      if (!notes10) log('answering the folder-trust dialog');
+      notes10 = 'Includes Claude\'s folder-trust dialog being accepted; trim it. ';
+      await page.locator('.term.show').click();
+      await page.keyboard.press(/^\s*[^\s\w.]+\s+(\d+\.\s+)?Yes, I trust this folder/m.test(screen) ? 'Enter' : 'ArrowDown');
+    }
   }
-  await until('orchestrator working', 90_000, () => nodes.get(orch)?.status.state === 'working');
   await sleep(6000);
   mark('10-task', start, `${notes10}New session dialog typed and spawned; the orchestrator starts in its terminal.`);
 
