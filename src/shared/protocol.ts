@@ -1,7 +1,18 @@
 // Shared contracts between daemon, UI and the agent-facing API. Keep this file small and stable.
 
-export const NODE_KINDS = ['claude', 'terminal'] as const;
+/** `agent` is any agent harness; the harness field names which one. `terminal` is a plain login shell. */
+export const NODE_KINDS = ['claude', 'agent', 'terminal'] as const;
 export type NodeKind = (typeof NODE_KINDS)[number];
+
+/** The agent CLIs a node can run. A node with an agent kind defaults to claude when it names none (legacy records). */
+export const HARNESSES = ['claude', 'pi'] as const;
+export type Harness = (typeof HARNESSES)[number];
+
+/** An agent node runs an agent harness; a terminal node is a shell with no agent behind it. */
+export const isAgentKind = (kind: NodeKind): boolean => kind !== 'terminal';
+
+/** Which agent CLI runs an agent node; terminals never call this and legacy nodes default to claude. */
+export const harnessFor = ({ harness }: { harness?: Harness }): Harness => harness ?? 'claude';
 
 /**
  * Agent status derived from hook events. 'none' is for plain terminals. 'armed' and 'queued' are nodes with no process
@@ -57,7 +68,7 @@ export interface NodeStatus {
   changedAt: number;
 }
 
-/** Which role prompt a Claude node gets; 'none' means no role section. Default: root = orchestrator, child = worker. */
+/** Which role prompt an agent node gets; 'none' means no role section. Default: root = orchestrator, child = worker. */
 export const ROLES = ['orchestrator', 'worker', 'none'] as const;
 export type Role = (typeof ROLES)[number];
 
@@ -136,6 +147,8 @@ export interface NodeRecord {
   id: string;
   parentId: string | null;
   kind: NodeKind;
+  /** Which agent CLI runs the node. Absent on legacy records and terminals; an agent defaults to claude. */
+  harness?: Harness;
   title: string;
   cwd: string;
   model?: string;
@@ -150,9 +163,9 @@ export interface NodeRecord {
   createdAt: number;
   /** When the node last launched or changed state on a hook; resume on start skips nodes idle longer than daemon.resumeMaxAgeDays. */
   lastActiveAt?: number;
-  /** Claude session id: minted at launch, updated from SessionStart. Persisted so a restarted daemon can offer Resume. */
+  /** Harness session id: minted at launch, updated from SessionStart. Persisted so a restarted daemon can offer Resume. */
   sessionId?: string;
-  /** Claude's transcript file, from SessionStart (or found by resume). Persisted so Resume can find it. */
+  /** Harness transcript file, from SessionStart (or found by resume). Persisted so Resume can find it. */
   transcriptPath?: string;
   /** Session ids from before each restart, oldest first (at most 10), for a later history feature. */
   previousSessions?: string[];
@@ -216,6 +229,8 @@ export interface ArchivedNode {
   parentId: string | null;
   title: string;
   cwd: string;
+  /** Which agent CLI ran the node; absent on legacy records and terminals (default claude). */
+  harness?: Harness;
   model?: string;
   effort?: Effort;
   role?: Role;
@@ -278,7 +293,7 @@ export type ClientMessage =
   | { t: 'input'; id: string; data: string }
   | { t: 'resize'; id: string; cols: number; rows: number }
   | { t: 'select'; id: string }                // clears unread
-  | { t: 'spawn'; kind: NodeKind; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; base?: string; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); kind must be claude
+  | { t: 'spawn'; kind: NodeKind; harness?: Harness; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; base?: string; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); the node must run the claude harness
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
   | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.mergeStyle style
   | { t: 'restart'; id: string; prompt?: string } // relaunch with a fresh session: clears context, keeps the node and its children; prompt is its first prompt
@@ -307,14 +322,16 @@ export interface SendResult { outcome: SendOutcome; retryable: boolean; detail?:
 
 /** GET /inbox → InboxMessage[] (unacked messages for the calling node, oldest first). */
 /** `steer`: abort the running turn and submit now; otherwise the mod holds it until no turn runs, so it can be withdrawn. */
-export interface InboxMessage { id: string; from: string; text: string; enqueuedAt: number; steer?: true }
+export interface InboxMessage { id: string; from: string; text: string; enqueuedAt: number; steer?: true; claimed?: true }
 /** POST /claim { id } → 204, or 404 if it was withdrawn or expired. Sent just before $.prompt.submit; a claimed message can no longer be withdrawn. */
-/** POST /ack { id } → 204. Sent when $.prompt.submit resolved (the turn started). */
+/** POST /release { id } → 204, or 404 if it is no longer a claimed message of this node. Hands back a claim that was never submitted: queued, withdrawable and retryable again. */
+/** POST /ack { id } → 204. Sent only on native prompt acceptance (the turn started). */
+/** POST /unconfirmed { id } → 204. Retires this node's claimed prompt as stalled/nonretryable, never delivered. */
 /** POST /mod-event { event, payload } → 204. */
 export type ModEvent =
   | { event: 'turn.start'; payload: { text: string; turnId: string } }
   | { event: 'turn.complete'; payload: { answer?: string; durationMs: number; isAborted: boolean; turnId: string; reason: 'answer' | 'aborted' | 'refusal' | 'error'; usage?: Record<string, unknown> } }
-  | { event: 'session.measure'; payload: { context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: RateLimit[] } };
+  | { event: 'session.measure'; payload: { model?: string; context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: RateLimit[] } };
 /** POST /focus { id } → 204; the daemon broadcasts `focus` to ws clients (PLAN §14). */
 /** GET /tree → ChildView[]: the calling node's whole tree from its root, depth-first. */
 export interface ChildView {

@@ -7,6 +7,7 @@ import type { GitState, NodeStatus, Worktree } from '../shared/protocol.js';
 import { loadConfig, type MergeStyle } from './config.js';
 import type { NodeManager } from './manager.js';
 import { buildChildEnv } from './pty.js';
+import { tillerTrusts } from './trust.js';
 import { initialState } from './status.js';
 import { count, inside, logError } from './util.js';
 import * as wt from './worktree.js';
@@ -108,7 +109,7 @@ async function createWorktree(m: NodeManager, id: string, prompt: string | undef
     await wt.copyIncluded(repo, path, config.worktrees.include);
     if (!m.registry.get(id)) throw new Error(`${id} was closed while its worktree was being created`);
     m.writeFiles(id);
-    m.runtimes.get(id)!.status = { state: initialState('claude'), changedAt: Date.now() };
+    m.runtimes.get(id)!.status = { state: initialState(m.registry.get(id)!.kind), changedAt: Date.now() };
     const setup = worktreeCommands(m, repo, 'setup');
     if (setup.length) setupThenLaunch(m, id, worktree, setup, prompt); // in the background: it may take minutes
     else m.launch(id, prompt, false);
@@ -322,7 +323,7 @@ async function mergedAt(w: Worktree): Promise<number | undefined> {
 /** The configured setup or teardown commands for a repo, or none when Claude does not trust it (trustPolicy is not auto). */
 export function worktreeCommands(m: NodeManager, repo: string, kind: 'setup' | 'teardown'): string[] {
   const cmds = loadConfig(repo, m.home).worktrees[kind];
-  return cmds.length && trustPolicy(repo, readClaudeJson()) === 'auto' ? cmds : [];
+  return cmds.length && (tillerTrusts(m.home, repo) || trustPolicy(repo, readClaudeJson()) === 'auto') ? cmds : [];
 }
 
 export function worktreeEnv(m: NodeManager, id: string, w: Pick<Worktree, 'repo' | 'path' | 'base'>): Record<string, string> {
@@ -345,7 +346,7 @@ export function setupThenLaunch(m: NodeManager, id: string, w: Worktree, cmds: s
   }).then(() => {
     if (abort.signal.aborted || !m.registry.get(id)) return;
     rt.needsSetup = undefined;
-    rt.status = { state: initialState('claude'), changedAt: Date.now() };
+    rt.status = { state: initialState(m.registry.get(id)!.kind), changedAt: Date.now() };
     m.launch(id, prompt, false);
     m.emitNode(id);
   }).catch((err: Error) => {

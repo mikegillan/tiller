@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { NodeView } from '../src/shared/protocol';
 import { mk } from './fixtures';
-import { flattenSession, insertSorted, statusKind } from './tree';
+import { flattenSession, insertSorted, kindTag, statusKind } from './tree';
 
 const byId = (ns: NodeView[]) => Object.fromEntries(ns.map((n) => [n.id, n]));
 
@@ -40,6 +40,13 @@ describe('tree', () => {
     expect(rows.map((r) => r.node.id)).toEqual(['a', 'c1']);
     expect(rows[1].collapsed).toBe(true);
     expect(rows[1].descendants.map((d) => d.id)).toEqual(['g']);
+  });
+
+  it('kindTag names an agent by its harness and a terminal "terminal"', () => {
+    expect(kindTag({ ...mk('a', null, 0), kind: 'agent', harness: 'pi' })).toBe('pi');
+    expect(kindTag({ ...mk('a', null, 0), kind: 'agent' })).toBe('claude');
+    expect(kindTag(mk('a', null, 0))).toBe('claude');
+    expect(kindTag({ ...mk('a', null, 0), kind: 'terminal' })).toBe('terminal');
   });
 
   it('statusKind maps state and flags', () => {

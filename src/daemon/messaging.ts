@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fmtAge, outcomeLine } from '../shared/format.js';
 import type { InboxMessage, NodeView, SendMode, SendResult } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
+import { adapterFor } from './harness.js';
 import { watching } from './deps.js';
 import type { NodeManager } from './manager.js';
 import { logError } from './util.js';
@@ -14,6 +15,8 @@ const LOOP_MS = 10 * 60_000;
 const RETRY_TEXT = 'Your last turn ended with an error. Continue where you left off.';
 export const QUEUE_CAP = 16;
 export const QUEUE_TTL_MS = 5 * 60_000;
+/** Native Pi sends have no success/error return. Bound ambiguous claims even across adapter reload. */
+export const PI_CONFIRM_MS = 60_000;
 const RECEIPT_MS = 8000;
 const WAITING_NOTICE_MS = 15 * 60_000;
 const RETRY_MS = 1000;
@@ -58,13 +61,16 @@ export function inScope(m: Mgr, caller: string, target: string): boolean {
 
 // ---- delivery ----
 
+/** A target whose harness takes messages only through its mod's inbox (Pi): receipts come from its explicit ack, and a claim is a native submission. */
+const nativeInbox = (v: NodeView | undefined): boolean => !!v && adapterFor(v).capabilities.inbox;
+
 /** `steer`: the target's turn is interrupted for this message, so it goes ahead of the queue and its envelope says so. */
 interface Entry { id: string; from: string; to: string; label: string; replyTo: string | null; text: string; steer?: boolean; timer?: NodeJS.Timeout }
 /**
  * A message waiting in a mod-live node's inbox. `from` is the sender's node id; `msg.from` is the display label.
  * `claimed`: the mod is submitting it, so it can no longer be withdrawn.
  */
-interface InboxItem { to: string; from: string; msg: InboxMessage; claimed?: boolean; timer?: NodeJS.Timeout }
+interface InboxItem { to: string; from: string; msg: InboxMessage; claimed?: boolean; claimedAt?: number; timer?: NodeJS.Timeout }
 interface State {
   /** Mod-live nodes' last inbox poll, and the inbox itself (the queue for those nodes). */
   seen: Map<string, number>;
@@ -98,6 +104,9 @@ function stateOf(m: Mgr): State {
   // it submits drops the callback that would ack, and the reloaded mod then submits the still-queued message again.
   m.on('hook', (id: string, ev: { hook_event_name?: string; prompt?: unknown }) => {
     if (ev.hook_event_name !== 'UserPromptSubmit') return;
+    // Pi receipts must come from its exact native acceptance + explicit /ack, not a hook substring.
+    // A late prompt from a retired claim must never revive its sender's delivery status.
+    if (nativeInbox(m.view(id))) return;
     const prompt = String(ev.prompt ?? '');
     for (const i of [...(st.inbox.get(id) ?? [])]) if (prompt.includes(i.msg.text.split('\n', 1)[0])) ack(m, id, i.msg.id);
   });
@@ -246,14 +255,17 @@ function takeInbox(s: State, to: string, id: string, result: SendResult): InboxI
   return i;
 }
 
-function writeInbox(s: State): void {
+function writeInbox(s: State): boolean {
   clearTimeout(s.saveTimer);
   s.saveTimer = undefined;
   const tmp = `${s.inboxFile}.tmp`;
   try {
-    writeFileSync(tmp, JSON.stringify({ version: 1, items: [...s.inbox.values()].flat().map(({ timer, ...i }) => i) }));
+    writeFileSync(tmp, JSON.stringify({ version: 2, items: [...s.inbox.values()].flat().map(({ timer, ...i }) => i),
+      // Preserve ambiguous terminal outcomes after restart; they must never become retryable expiry.
+      unconfirmed: [...s.status].filter(([, st]) => st.result.outcome === 'stalled' && st.result.detail === UNCONFIRMED_DETAIL) }));
     renameSync(tmp, s.inboxFile!);
-  } catch (err) { logError(err); }
+    return true;
+  } catch (err) { logError(err); return false; }
 }
 
 function saveInbox(s: State): void {
@@ -277,15 +289,27 @@ function addInbox(m: Mgr, s: State, i: InboxItem): void {
   const q = s.inbox.get(i.to) ?? [];
   s.inbox.set(i.to, q);
   q.push(i);
+  armInbox(m, s, i);
+}
+
+function armInbox(m: Mgr, s: State, i: InboxItem): void {
   const arm = (ms: number) => {
     i.timer = setTimeout(() => {
-      if (!q.includes(i)) return;
+      if (!s.inbox.get(i.to)?.includes(i)) return;
+      if (i.claimed && nativeInbox(m.view(i.to))) {
+        const remaining = (i.claimedAt ?? i.msg.enqueuedAt) + PI_CONFIRM_MS - Date.now();
+        if (remaining > 0) return arm(remaining);
+        unconfirmed(m, i.to, i.msg.id);
+        return;
+      }
       if (busy(m.view(i.to)) || (i.claimed && modLive(s, i.to))) return arm(QUEUE_TTL_MS);
       takeInbox(s, i.to, i.msg.id, { outcome: 'expired', retryable: true, detail: 'not picked up by the target within 5 min' });
     }, ms);
     i.timer.unref();
   };
-  arm(Math.max(0, i.msg.enqueuedAt + QUEUE_TTL_MS - Date.now()));
+  arm(Math.max(0, (i.claimed && nativeInbox(m.view(i.to))
+    ? (i.claimedAt ?? i.msg.enqueuedAt) + PI_CONFIRM_MS
+    : i.msg.enqueuedAt + QUEUE_TTL_MS) - Date.now()));
 }
 
 /** Restore queued messages after a daemon restart, dropping those past their TTL. */
@@ -293,8 +317,13 @@ function loadInbox(m: Mgr, s: State, file: string): void {
   s.inboxFile = file;
   try {
     const data = JSON.parse(readFileSync(file, 'utf8'));
+    for (const [id, st] of Array.isArray(data?.unconfirmed) ? data.unconfirmed : []) {
+      if (typeof id === 'string' && st?.result?.outcome === 'stalled' && st.result.detail === UNCONFIRMED_DETAIL && Date.now() - st.at < STATUS_TTL_MS) s.status.set(id, st);
+    }
     for (const i of Array.isArray(data?.items) ? (data.items as InboxItem[]) : []) {
-      if (!i?.msg?.id || Date.now() - i.msg.enqueuedAt >= QUEUE_TTL_MS) continue;
+      if (!i?.msg?.id) continue;
+      // An old claimed Pi message is ambiguous, not a safe-to-retry expiration.
+      if (Date.now() - i.msg.enqueuedAt >= QUEUE_TTL_MS && !(i.claimed && nativeInbox(m.view(i.to)))) continue;
       s.status.set(i.msg.id, { from: i.from, to: i.to, result: { outcome: 'queued', retryable: false, messageId: i.msg.id }, at: i.msg.enqueuedAt });
       addInbox(m, s, i);
     }
@@ -308,7 +337,7 @@ export function markModLive(m: Mgr, nodeId: string): void {
 /** GET /inbox: the node's unacked messages, oldest first. Every poll marks the node mod-live. */
 export function inbox(m: Mgr, nodeId: string): InboxMessage[] {
   markModLive(m, nodeId);
-  return (stateOf(m).inbox.get(nodeId) ?? []).map((i) => i.msg);
+  return (stateOf(m).inbox.get(nodeId) ?? []).map((i) => ({ ...i.msg, ...(i.claimed ? { claimed: true } : {}) }));
 }
 
 /** POST /ack: the mod submitted the message, so it is delivered. False if it is not (or no longer) in that node's inbox. */
@@ -321,9 +350,52 @@ export function claim(m: Mgr, nodeId: string, id: string): boolean {
   const s = stateOf(m);
   const i = s.inbox.get(nodeId)?.find((x) => x.msg.id === id);
   if (!i) return false;
+  if (nativeInbox(m.view(nodeId)) && i.claimed) return false; // ambiguous prior owner: never replay
   i.claimed = true;
+  i.claimedAt ??= Date.now();
+  if (nativeInbox(m.view(nodeId))) {
+    // Persist BEFORE returning success: a daemon crash after native submission must not enable replay.
+    if (s.inboxFile && !writeInbox(s)) {
+      // The mod is told 404 and will not submit, so the message stays queued as before.
+      delete i.claimed;
+      delete i.claimedAt;
+      return false;
+    }
+    clearTimeout(i.timer);
+    i.timer = setTimeout(() => unconfirmed(m, nodeId, id), PI_CONFIRM_MS);
+    i.timer.unref();
+    return true;
+  }
   saveInbox(s);
   return true;
+}
+
+/**
+ * POST /release: the mod claimed the message but never submitted it (the target became busy first), so it goes back
+ * in the queue, withdrawable again and retryable when its TTL ends. False if it is not a claimed message of that node.
+ */
+export function release(m: Mgr, nodeId: string, id: string): boolean {
+  const s = stateOf(m);
+  const i = s.inbox.get(nodeId)?.find((x) => x.msg.id === id);
+  if (!i?.claimed) return false;
+  delete i.claimed;
+  delete i.claimedAt;
+  clearTimeout(i.timer);
+  armInbox(m, s, i);
+  saveInbox(s); // a crash before the save leaves it claimed, which retires as ambiguous: never a replay
+  return true;
+}
+
+const UNCONFIRMED_DETAIL = 'native prompt acceptance was not confirmed; it may still run later; do not resend automatically';
+
+/** Retire only this caller's claimed message. Idempotent; late acknowledgments cannot revive it. */
+export function unconfirmed(m: Mgr, nodeId: string, id: string): boolean {
+  const s = stateOf(m);
+  const i = s.inbox.get(nodeId)?.find((item) => item.msg.id === id);
+  if (!i?.claimed) return false;
+  const retired = !!takeInbox(s, nodeId, id, { outcome: 'stalled', retryable: false, detail: UNCONFIRMED_DETAIL });
+  if (retired && s.inboxFile) writeInbox(s); // persist terminal status before replying, not at debounce
+  return retired;
 }
 
 /** Queue for a mod-live target. */
@@ -388,7 +460,7 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
   const target = m.view(toId);
   if (!target || target.status.exited) return out(gone);
   if (fromId === toId) return refuse('cannot send to yourself');
-  if (target.kind !== 'claude') return refuse('not an agent node; use write for terminals');
+  if (target.kind === 'terminal') return refuse('not an agent node; use write for terminals');
 
   const key = `${fromId}\0${toId}`;
   const wait = (s.last.get(key) ?? -Infinity) + RATE_MS - Date.now();
@@ -412,7 +484,7 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
   // A steer interrupts only a working target; to an idle (or blocked, or waiting) one, "now" is the same as "queue".
   const steer = opts.mode === 'now' && busy(target);
   const entry: Entry = { id, from: fromId, to: toId, label: oneLine(label), replyTo: opts.replyTo === undefined ? fromId : opts.replyTo, text, steer };
-  if (modLive(s, toId)) return out(queueInbox(m, s, entry)); // the mod aborts the turn itself
+  if (modLive(s, toId) || adapterFor(target).capabilities.inbox) return out(queueInbox(m, s, entry)); // the mod aborts the turn itself
   if (steer) {
     // No mod to abort the turn: press Esc as the human would. The manager marks the turn interrupted, which wakes the queue.
     const r = enqueue(m, s, entry, '');

@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { finished } from '../src/shared/protocol';
+import { finished, isAgentKind } from '../src/shared/protocol';
 import { Dialogs } from './Dialogs';
 import { DiffPane } from './DiffPane';
 import { ExitedCard } from './ExitedCard';
@@ -24,7 +24,7 @@ export function App() {
   const panel = useStore((s) => s.panel);
   const palette = useStore((s) => s.dialog?.kind === 'palette');
   const diff = useStore((s) => s.diffOpen) && !!node?.worktree;
-  const transcript = useStore((s) => s.transcriptOpen) && node?.kind === 'claude';
+  const transcript = useStore((s) => s.transcriptOpen) && !!node && isAgentKind(node.kind);
   const archived = useStore((s) => s.archived);
   useDocumentSync();
 
@@ -53,7 +53,7 @@ export function App() {
             <TerminalPane />
             {archived ? <ArchivePane a={archived} />
               // Refreshed whenever a turn ends.
-              : transcript ? <TranscriptPane key={node!.id} id={node!.id} refresh={finished(node!.status) ? node!.status.changedAt : 'running'} />
+              : transcript ? <TranscriptPane key={node!.id} id={node!.id} refresh={finished(node!.status) ? node!.status.changedAt : 'running'} harness={node!.harness} />
               : diff ? <DiffPane node={node!} /> : node?.status.exited && <ExitedCard node={node} />}
             {!node && !archived && (
               <div className="empty">

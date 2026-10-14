@@ -20,7 +20,8 @@ const MARKER = 'tl-node';
 
 export async function git(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS, env?: NodeJS.ProcessEnv): Promise<string> {
   try {
-    return (await run('git', ['-C', cwd, ...args], { timeout, maxBuffer: 64 << 20, env })).stdout;
+    // Background status/diff reads must not take optional index locks from an agent's commit.
+    return (await run('git', ['-C', cwd, ...args], { timeout, maxBuffer: 64 << 20, env: { ...process.env, ...env, GIT_OPTIONAL_LOCKS: '0' } })).stdout;
   } catch (err) {
     const e = err as Error & { stderr?: string };
     throw new Error(`git ${args[0]} failed: ${e.stderr?.trim() || e.message}`);

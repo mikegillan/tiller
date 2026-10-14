@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ClientMessage, NodeKind, Role } from '../src/shared/protocol';
+import { isAgentKind, type ClientMessage, type Harness, type NodeKind, type Role } from '../src/shared/protocol';
 import { send } from './conn';
 import { Modal } from './Modal';
 import { expectSpawn, openDialog, useStore, type Dialog } from './store';
@@ -7,9 +7,34 @@ import { expectSpawn, openDialog, useStore, type Dialog } from './store';
 type Spawn = Extract<Dialog, { kind: 'spawn' }>;
 const close = () => openDialog(null);
 
+type SpawnChoice = 'claude' | 'pi' | 'terminal';
+
+/** The node kind a spawn choice means: a Pi agent, a Claude agent, or a plain terminal. */
+const choiceKind = (choice: SpawnChoice): NodeKind => (choice === 'terminal' ? 'terminal' : choice === 'pi' ? 'agent' : 'claude');
+/** The harness sent for a choice; omitted for claude and terminal so their records keep the legacy shape. */
+const choiceHarness = (choice: SpawnChoice): Harness | undefined => (choice === 'pi' ? 'pi' : undefined);
+
+/** What the spawn dialog sends: kind/harness from the choice, with the agent fields only for agent nodes. */
+export function spawnMsg(
+  d: { parentId: string | null },
+  form: { choice: SpawnChoice; title: string; cwd: string; prompt: string; model: string; role: Role; defaultRole: Role; isolate: boolean },
+): ClientMessage {
+  const kind = choiceKind(form.choice);
+  const agent = isAgentKind(kind);
+  const harness = choiceHarness(form.choice);
+  return {
+    t: 'spawn', kind, ...(harness ? { harness } : {}),
+    title: form.title.trim() || form.choice, cwd: form.cwd.trim(), parentId: d.parentId,
+    ...(agent && form.prompt.trim() ? { prompt: form.prompt } : {}),
+    ...(agent && form.role !== form.defaultRole ? { role: form.role } : {}),
+    ...(agent && form.isolate ? { isolation: 'worktree' as const } : {}),
+    ...(form.model.trim() ? { model: form.model.trim() } : {}),
+  };
+}
+
 function SpawnDialog({ d }: { d: Spawn }) {
   const parent = useStore((s) => (d.parentId ? s.nodes[d.parentId] : undefined));
-  const [kind, setKind] = useState<NodeKind>('claude');
+  const [choice, setChoice] = useState<SpawnChoice>(parent?.harness === 'pi' ? 'pi' : 'claude');
   const [title, setTitle] = useState('');
   const [cwd, setCwd] = useState(d.cwd);
   const [prompt, setPrompt] = useState('');
@@ -17,15 +42,11 @@ function SpawnDialog({ d }: { d: Spawn }) {
   const byPosition: Role = d.parentId ? 'worker' : 'orchestrator';
   const [role, setRole] = useState<Role>(byPosition);
   const [isolate, setIsolate] = useState(false);
+  const kind = choiceKind(choice);
+  const agent = isAgentKind(kind);
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    send({
-      t: 'spawn', kind, title: title.trim() || kind, cwd: cwd.trim(), parentId: d.parentId,
-      ...(kind === 'claude' && prompt.trim() ? { prompt } : {}),
-      ...(kind === 'claude' && role !== byPosition ? { role } : {}),
-      ...(kind === 'claude' && isolate ? { isolation: 'worktree' as const } : {}),
-      ...(model.trim() ? { model: model.trim() } : {}),
-    });
+    send(spawnMsg(d, { choice, title, cwd, prompt, model, role, defaultRole: byPosition, isolate }));
     expectSpawn();
     close();
   };
@@ -33,16 +54,16 @@ function SpawnDialog({ d }: { d: Spawn }) {
     <Modal title={parent ? `New child of ${parent.title}` : 'New session'} onClose={close}>
       <form className="form" onSubmit={submit}>
         <div className="seg" role="radiogroup" aria-label="Kind">
-          {(['claude', 'terminal'] as const).map((k) => (
-            <button type="button" key={k} role="radio" aria-checked={kind === k} className={kind === k ? 'on' : ''} onClick={() => setKind(k)}>{k}</button>
+          {(['claude', 'pi', 'terminal'] as const).map((k) => (
+            <button type="button" key={k} role="radio" aria-checked={choice === k} className={choice === k ? 'on' : ''} onClick={() => setChoice(k)}>{k}</button>
           ))}
         </div>
-        <label>Title<input placeholder={kind} value={title} onChange={(e) => setTitle(e.target.value)} autoFocus /></label>
+        <label>Title<input placeholder={choice} value={title} onChange={(e) => setTitle(e.target.value)} autoFocus /></label>
         <label>Working directory<input className="mono" value={cwd} onChange={(e) => setCwd(e.target.value)} required placeholder="/path/to/project" /></label>
-        {kind === 'claude' && <label>Initial prompt<textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional" /></label>}
+        {agent && <label>Initial prompt<textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional" /></label>}
         <label>Model<input className="mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="Default" /></label>
-        {kind === 'claude' && <label>Role<select value={role} onChange={(e) => setRole(e.target.value as Role)}>{(['orchestrator', 'worker', 'none'] as const).map((r) => <option key={r}>{r}</option>)}</select></label>}
-        {kind === 'claude' && (
+        {agent && <label>Role<select value={role} onChange={(e) => setRole(e.target.value as Role)}>{(['orchestrator', 'worker', 'none'] as const).map((r) => <option key={r}>{r}</option>)}</select></label>}
+        {agent && (
           <label className="check"><input type="checkbox" checked={isolate} onChange={(e) => setIsolate(e.target.checked)} />Isolate in a git worktree
             <small>Its branch is created from the current checkout's HEAD.</small></label>
         )}
@@ -84,20 +105,24 @@ function KillDialog({ id }: { id: string }) {
   );
 }
 
+/** What the restart dialog sends; a first prompt is meaningful for an agent node (Claude or Pi). */
+export const restartMsg = (id: string, kind: NodeKind, prompt: string): ClientMessage =>
+  ({ t: 'restart', id, ...(isAgentKind(kind) && prompt.trim() ? { prompt } : {}) });
+
 function RestartDialog({ id }: { id: string }) {
   const node = useStore((s) => s.nodes[id]);
   const [prompt, setPrompt] = useState('');
   if (!node) return null;
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    send({ t: 'restart', id, ...(node.kind === 'claude' && prompt.trim() ? { prompt } : {}) });
+    send(restartMsg(id, node.kind, prompt));
     close();
   };
   return (
     <Modal title={`Restart ${node.title}?`} onClose={close}>
       <form className="form" onSubmit={submit}>
         <p>Its context is cleared; children are kept.</p>
-        {node.kind === 'claude' && <label>First prompt<textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional: by default it is pointed at its handoff.md, if there is one" /></label>}
+        {isAgentKind(node.kind) && <label>First prompt<textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional: by default it is pointed at its handoff.md, if there is one" /></label>}
         <div className="btns">
           <button type="button" className="btn" autoFocus onClick={close}>Cancel</button>
           <button type="submit" className="btn primary">Restart</button>

@@ -2,10 +2,10 @@ import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NodeStatus, NodeView } from '../shared/protocol.js';
 import { classify, composerTextOf } from './pty.js';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ack, claim, deliver, flushInbox, inbox, messageStatus, startNotices, withdraw, type Mgr } from './messaging.js';
+import { ack, claim, deliver, flushInbox, inbox, messageStatus, PI_CONFIRM_MS, QUEUE_TTL_MS, release, startNotices, unconfirmed, withdraw, type Mgr } from './messaging.js';
 
 const PROMPT = ['some output', '────────────────── n-b', '❯ ', '──────────────────'];
 
@@ -257,6 +257,82 @@ describe('queue', () => {
 });
 
 describe('mod inbox', () => {
+  it('bounds claimed Pi messages despite live polls/busy state; late hook/ack cannot report delivered', async () => {
+    Object.assign(m.nodes.get('b')!, { kind: 'agent', harness: 'pi' });
+    const r = await deliver(m.mgr, 'a', 'b', 'unaccepted native send');
+    const [msg] = inbox(m.mgr, 'b');
+    expect(claim(m.mgr, 'b', msg.id)).toBe(true);
+    expect(claim(m.mgr, 'b', msg.id)).toBe(false);
+    m.set('b', { state: 'working' });
+    for (let i = 0; i < 60; i++) {
+      inbox(m.mgr, 'b');
+      await vi.advanceTimersByTimeAsync(PI_CONFIRM_MS / 60);
+    }
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'stalled', retryable: false, detail: expect.stringContaining('may still run') });
+    expect(inbox(m.mgr, 'b')).toEqual([]);
+    m.emit('hook', 'b', { hook_event_name: 'UserPromptSubmit', prompt: msg.text });
+    expect(ack(m.mgr, 'b', msg.id)).toBe(false);
+    expect(messageStatus(m.mgr, 'a', msg.id)?.outcome).toBe('stalled');
+    const b = await deliver(m.mgr, 'p', 'b', 'later B', { mode: 'now' });
+    expect(claim(m.mgr, 'b', b.messageId!)).toBe(true);
+  });
+
+  it('a released Pi claim is queued, withdrawable and retryable again, never stalled', async () => {
+    Object.assign(m.nodes.get('b')!, { kind: 'agent', harness: 'pi' });
+    m.set('b', { state: 'working' });
+    const r = await deliver(m.mgr, 'a', 'b', 'claimed just as Pi became busy');
+    expect(release(m.mgr, 'b', r.messageId!)).toBe(false); // not claimed
+    expect(claim(m.mgr, 'b', r.messageId!)).toBe(true);
+    expect(release(m.mgr, 'p', r.messageId!)).toBe(false); // no cross-node mutation
+    expect(release(m.mgr, 'b', r.messageId!)).toBe(true);
+    expect(inbox(m.mgr, 'b')).toEqual([expect.not.objectContaining({ claimed: true })]);
+    await vi.advanceTimersByTimeAsync(PI_CONFIRM_MS + 1000); // the claim lease no longer applies
+    expect(messageStatus(m.mgr, 'a', r.messageId!)?.outcome).toBe('queued');
+    m.set('b', { state: 'done', doneSource: 'stop' });
+    await vi.advanceTimersByTimeAsync(QUEUE_TTL_MS);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'expired', retryable: true });
+    const w = await deliver(m.mgr, 'p', 'b', 'withdraw me after a release');
+    expect(claim(m.mgr, 'b', w.messageId!)).toBe(true);
+    expect(release(m.mgr, 'b', w.messageId!)).toBe(true);
+    await expect(withdraw(m.mgr, 'p', w.messageId!)).resolves.toMatchObject({ result: { outcome: 'withdrawn' } });
+  });
+
+  it('a Pi claim that cannot be persisted is refused and stays queued, not retired', async () => {
+    Object.assign(m.nodes.get('b')!, { kind: 'agent', harness: 'pi' });
+    const home = join(tmpdir(), `tlinbox-missing-${process.pid}`, 'nope'); // never created, so every write fails
+    const mh = Object.assign(Object.create(m), { home }) as Mgr;
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await deliver(mh, 'a', 'b', 'claim persist fails');
+    expect(claim(mh, 'b', r.messageId!)).toBe(false);
+    quiet.mockRestore();
+    expect(inbox(mh, 'b')).toEqual([expect.not.objectContaining({ claimed: true })]);
+    await vi.advanceTimersByTimeAsync(PI_CONFIRM_MS + 1000);
+    expect(messageStatus(mh, 'a', r.messageId!)?.outcome).toBe('queued');
+  });
+
+  it('retires only the caller claimed message, preserves status and prevents replay across restart', async () => {
+    Object.assign(m.nodes.get('b')!, { kind: 'agent', harness: 'pi' });
+    const home = mkdtempSync(join(tmpdir(), 'tlinbox-pi-'));
+    try {
+      const withHome = (): Mgr => Object.assign(Object.create(m), { home }) as Mgr;
+      const m1 = withHome();
+      const r = await deliver(m1, 'a', 'b', 'native A');
+      expect(unconfirmed(m1, 'b', r.messageId!)).toBe(false); // not yet claimed
+      expect(claim(m1, 'b', r.messageId!)).toBe(true);
+      // Claim is saved before /claim returns, no debounce window can allow replay.
+      const m2 = withHome();
+      expect(inbox(m2, 'b')[0]).toMatchObject({ id: r.messageId, claimed: true });
+      expect(claim(m2, 'b', r.messageId!)).toBe(false);
+      expect(unconfirmed(m2, 'p', r.messageId!)).toBe(false); // no cross-node mutation
+      expect(unconfirmed(m2, 'b', r.messageId!)).toBe(true);
+      flushInbox(m2);
+      const m3 = withHome();
+      expect(inbox(m3, 'b')).toEqual([]);
+      expect(messageStatus(m3, 'a', r.messageId!)).toMatchObject({ outcome: 'stalled', retryable: false });
+      expect(ack(m3, 'b', r.messageId!)).toBe(false);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   beforeEach(() => { inbox(m.mgr, 'b'); }); // b's mod polls
 
   it('queues for a mod-live target without pasting; the inbox lists it; ack resolves it as delivered', async () => {
@@ -337,6 +413,26 @@ describe('mod inbox', () => {
     const r = await deliver(m.mgr, 'p', 'b', 'stale mod');
     expect(r.outcome).toBe('delivered');
     expect(m.sessions.get('b')!.pasted).toHaveLength(1);
+  });
+
+  it('reload drops stale claimed Claude items exactly as before but retires stale Pi claims honestly', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tlinbox-stale-claims-'));
+    try {
+      m.add('pi', 'p');
+      Object.assign(m.nodes.get('pi')!, { kind: 'agent', harness: 'pi' });
+      m.set('b', { state: 'working' }); // old code must not renew a restored stale Claude claim
+      const enqueuedAt = Date.now() - QUEUE_TTL_MS - 1;
+      writeFileSync(join(home, 'inbox.json'), JSON.stringify({ version: 1, items: ['b', 'pi'].map((to) => ({
+        to, from: 'a', claimed: true, msg: { id: `old-${to}`, from: 'a', text: to, enqueuedAt },
+      })) }));
+      const restarted = Object.assign(Object.create(m), { home }) as Mgr;
+      expect(inbox(restarted, 'b')).toEqual([]);
+      expect(messageStatus(restarted, 'a', 'old-b')).toBeUndefined();
+      expect(inbox(restarted, 'pi')).toMatchObject([{ id: 'old-pi', claimed: true }]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(inbox(restarted, 'pi')).toEqual([]);
+      expect(messageStatus(restarted, 'a', 'old-pi')).toMatchObject({ outcome: 'stalled', retryable: false });
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   it('survives a restart; entries past their TTL are dropped', async () => {

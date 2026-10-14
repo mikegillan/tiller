@@ -6,6 +6,7 @@ import { WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import { NodeManager } from './manager.js';
 import { startServer, type DaemonServer } from './server.js';
+import { deliver, inbox, messageStatus } from './messaging.js';
 
 let home: string;
 let manager: NodeManager;
@@ -143,6 +144,42 @@ describe('POST /hook', () => {
       { id: parent.id, title: 'boss', depth: 0, self: true, parentId: null },
       { id: kid.id, title: 'kid', depth: 1, contextPct: 50 },
     ]);
+  });
+
+  it('/unconfirmed authenticates node identity and never acknowledges a retired native prompt', async () => {
+    const root = manager.registry.create({ parentId: null, kind: 'agent', harness: 'pi', title: 'pi', cwd: home, lastActiveAt: Date.now() });
+    const other = manager.registry.create({ parentId: root.id, kind: 'agent', harness: 'pi', title: 'other', cwd: home, lastActiveAt: Date.now() });
+    manager.runtimes.set(root.id, { status: { state: 'done', changedAt: Date.now() } });
+    manager.runtimes.set(other.id, { status: { state: 'done', changedAt: Date.now() } });
+    const r = await deliver(manager, 'human', root.id, 'A');
+    const call = (path: string, id = root.id, token = manager.tokenFor(id)) => fetch(`${manager.endpoint}${path}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': id, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: r.messageId }),
+    });
+    expect((await call('/claim')).status).toBe(204);
+    expect((await call('/unconfirmed', root.id, 'wrong')).status).toBe(401);
+    expect((await call('/unconfirmed', root.id, manager.tokenFor(other.id))).status).toBe(401);
+    expect((await call('/unconfirmed', other.id)).status).toBe(204); // scoped idempotent no-op
+    expect(inbox(manager, root.id)).toHaveLength(1);
+    expect((await call('/unconfirmed')).status).toBe(204);
+    expect((await call('/unconfirmed')).status).toBe(204);
+    expect((await call('/ack')).status).toBe(204); // late ack no-op
+    expect(messageStatus(manager, 'human', r.messageId!)).toMatchObject({ outcome: 'stalled', retryable: false });
+    expect(inbox(manager, root.id)).toEqual([]);
+  });
+
+  it('/release hands a never-submitted claim back to the queue, 404 once it is not claimed', async () => {
+    const root = manager.registry.create({ parentId: null, kind: 'agent', harness: 'pi', title: 'pi', cwd: home, lastActiveAt: Date.now() });
+    manager.runtimes.set(root.id, { status: { state: 'done', changedAt: Date.now() } });
+    const r = await deliver(manager, 'human', root.id, 'A');
+    const call = (path: string) => fetch(`${manager.endpoint}${path}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${manager.tokenFor(root.id)}`, 'X-TL-Node': root.id, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: r.messageId }),
+    });
+    expect((await call('/claim')).status).toBe(204);
+    expect((await call('/release')).status).toBe(204);
+    expect((await call('/release')).status).toBe(404);
+    expect(inbox(manager, root.id)).toEqual([expect.not.objectContaining({ claimed: true })]);
+    expect(messageStatus(manager, 'human', r.messageId!)?.outcome).toBe('queued');
+    expect((await call('/claim')).status).toBe(204); // claimable again
   });
 
   it('mod-event rateLimits: keeps the newest report from any node, broadcasts it, drops a malformed one', async () => {

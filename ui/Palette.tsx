@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { NodeView } from '../src/shared/protocol';
+import { harnessFor, isAgentKind, type NodeView } from '../src/shared/protocol';
 import { StateDot } from './Bits';
 import { cwdBase } from './format';
 import { Modal } from './Modal';
@@ -25,7 +25,7 @@ export function Palette() {
   // Commands follow the nodes; each opens its own view or dialog in place of the palette.
   const cmds = [
     { key: 'cmd:history', title: historyOpen ? 'Hide history' : 'History', sub: 'closed nodes: read, follow up or fork', run: () => { toggleHistory(); close(); } },
-    ...(cur?.kind === 'claude' ? [{ key: 'cmd:fork', title: `Fork ${cur.title}…`, sub: 'new node from its conversation', run: () => openDialog({ kind: 'fork', from: cur.id, title: cur.title, cwd: cur.cwd, parentId: cur.parentId }) }] : []),
+    ...(cur && isAgentKind(cur.kind) && harnessFor(cur) === 'claude' ? [{ key: 'cmd:fork', title: `Fork ${cur.title}…`, sub: 'new node from its conversation', run: () => openDialog({ kind: 'fork', from: cur.id, title: cur.title, cwd: cur.cwd, parentId: cur.parentId }) }] : []),
   ].filter((c) => `${c.title} ${c.sub}`.toLowerCase().includes(needle));
   const hits: Array<{ key: string; title: string; sub: string; n?: NodeView; run: () => void }> = [...nodeHits, ...cmds];
   const onKey = (e: React.KeyboardEvent) => {

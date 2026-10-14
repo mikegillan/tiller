@@ -35,11 +35,21 @@ export function briefOf(a: Omit<ArchivedNode, 'brief'>): string | undefined {
   return (head.length > room ? `${head.slice(0, room - 1)}…` : head) + tail;
 }
 
+/** Pi reports a bare model id; keep a matching explicit provider qualifier for reliable CLI replay. */
+function archiveModel(rec: NodeRecord, status?: NodeStatus): string | undefined {
+  const model = status?.model;
+  if (rec.harness !== 'pi') return model ?? rec.model;
+  if (!model || model === 'unknown') return rec.model;
+  if (rec.model?.includes('/') && rec.model.slice(rec.model.indexOf('/') + 1) === model) return rec.model;
+  return model;
+}
+
 /** The archive line for a node being closed. */
 export function archivedOf(rec: NodeRecord, status: NodeStatus | undefined, outcome: Outcome | undefined, rootId: string, fate: BranchFate, closedAt = Date.now()): ArchivedNode {
   const a: Omit<ArchivedNode, 'brief'> = {
-    id: rec.id, rootId, parentId: rec.parentId, title: rec.title, cwd: rec.cwd, model: status?.model ?? rec.model, effort: rec.effort,
-    role: roleFor(rec.role, rec.parentId), prompt: rec.prompt, sessionId: rec.sessionId, previousSessions: rec.previousSessions,
+    id: rec.id, rootId, parentId: rec.parentId, title: rec.title, cwd: rec.cwd, model: archiveModel(rec, status), effort: rec.effort,
+    role: roleFor(rec.role, rec.parentId), ...(rec.harness && rec.harness !== 'claude' ? { harness: rec.harness } : {}),
+    prompt: rec.prompt, sessionId: rec.sessionId, previousSessions: rec.previousSessions,
     transcriptPath: rec.transcriptPath, lastAssistantMessage: status?.lastAssistantMessage, outcome, spentUsd: rec.spentUsd, lastCost: rec.lastCost,
     branch: rec.worktree?.branch, ...fate, createdAt: rec.createdAt, closedAt,
   };

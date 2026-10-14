@@ -8,23 +8,27 @@ import { configEntries } from './config.js';
 import { gateFor } from './manager.js';
 import { promptPath } from './launch.js';
 import { listPresets } from './presets.js';
-import { SPAWN_FIELDS } from './spawnfields.js';
+import { SPAWN_FIELDS, spawnKind } from './spawnfields.js';
+import { setProjectTrust } from './trust.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
 import { agentStatus, install, kickstart, LABEL, TLD, plistPath, uninstall } from './autostart.js';
 import { buildChildEnv, loginShellPath } from './pty.js';
 import { formatEvent, listSessions, parseSince, readEvents, sessionDir, type SessionEvent } from './sessions.js';
 import { fmtAge } from '../shared/format.js';
+import type { Harness, NodeKind } from '../shared/protocol.js';
 import { mainCheckout, runCommands, WORKTREES_DIR } from './worktree.js';
 import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, waitForDaemon, type OrchestratorCandidate } from './up.js';
 
 const usage = () => `tl: control tiller. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
 
-  tl [up|app] [--new] [--title T] [--prompt P]        start daemon if needed; open the app on (or create) this directory's orchestrator
+  tl [up|app] [--new] [--title T] [--prompt P] [--harness claude|pi]  start daemon if needed; open the app on (or create) this directory's
+                                                      orchestrator; --harness picks which agent CLI (default claude)
   tl status | stop                                    show or stop the daemon (tld runs it in the foreground); stop also means
                                                       the nodes are not resumed on the next start
   tl reload                                           restart the daemon on the current code and resume the nodes that were live
   tl autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
-  tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--worktree [--base B]]  start a Claude node and show it in the app
+  tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--harness claude|pi] [--worktree [--base B]]
+                                                      start an agent node and show it in the app; --harness pi starts a Pi node
   tl ps | list                                        show nodes
   tl usage                                            show account-level Claude usage (5-hour and 7-day windows) as nodes last reported it
   tl select <id>                                      show a node in the app (opens the app if it is built)
@@ -48,14 +52,16 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
                                                       title, first prompt or last message
   tl transcript <id> [--session SID]                  a live or closed node's conversation; SID picks one of its earlier sessions
   tl followup <id> --prompt P [--title T]             continue a closed node's session as a new node that starts on P
-  tl spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree [--base B]] [--preset NAME] [--request-id ID]
+  tl spawn --kind claude|agent|terminal [--harness claude|pi] --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree [--base B]] [--preset NAME] [--request-id ID]
            [--after ID,ID] [--after-success ID,ID] [--now] [--fork ID]
-                                                      --after / --after-success arm the node until those finish a turn or report
+                                                      --harness pi implies --kind agent when --kind is omitted; --after / --after-success
+                                                      arm the node until those finish a turn or report
                                                       succeeded; --now launches past daemon.maxWorking instead of queueing;
                                                       --fork starts from a copy of a live or closed node's conversation (cwd: its);
                                                       --base names the branch the worktree forks from and merges into
   tl prompts                                          show the role prompt files and any override for this directory
   tl presets [--cwd P]                                list the spawn presets in effect for a directory and the file each comes from
+  tl trust [--cwd P] | untrust [--cwd P]             allow or revoke repo setup/teardown and completion-gate commands (human only)
   tl config [--cwd P]                                 show the effective config for a directory and which file each key came from
   tl gate [--cwd P]                                   run the configured completion gate command once in a directory and print the result
   tl worktrees [--cwd P]                            list node worktrees, orphans and kept branches for this repo
@@ -102,7 +108,7 @@ const { values: f, positionals: pos } = parseArgs({
   args: rest, allowPositionals: true,
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
-    'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
+    'permission-mode': { type: 'string' }, role: { type: 'string' }, harness: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
     worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' }, preset: { type: 'string' },
     after: { type: 'string', multiple: true }, 'after-success': { type: 'string', multiple: true }, now: { type: 'boolean' },
     fork: { type: 'string' }, root: { type: 'string' }, session: { type: 'string' }, base: { type: 'string' },
@@ -111,6 +117,7 @@ const { values: f, positionals: pos } = parseArgs({
 /** `--after a,b --after c` as [a, b, c]; undefined when absent. */
 const ids = (v: string[] | undefined) => v?.flatMap((x) => x.split(',')).map((x) => x.trim()).filter(Boolean);
 
+if (f.harness && !['claude', 'pi'].includes(f.harness)) fail(`unknown harness: ${f.harness} (expected claude or pi)`);
 const isolation = () => (f.worktree ? 'worktree' : undefined);
 
 /**
@@ -137,7 +144,8 @@ switch (cmd) {
     break;
   case 'new': {
     if (!pos[0]) fail(usage());
-    const { data } = await call('spawn', { kind: 'claude', title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, effort: f.effort, role: f.role, isolation: isolation(), base: f.base, preset: f.preset }, false);
+    const harness: Harness | undefined = f.harness === 'pi' ? 'pi' : undefined;
+    const { data } = await call('spawn', { kind: harness ? 'agent' : 'claude', ...(harness ? { harness } : {}), title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, effort: f.effort, role: f.role, isolation: isolation(), base: f.base, preset: f.preset }, false);
     console.log(`started ${pos.join(' ')} (${data.nodeId})`);
     await call('select', { nodeId: data.nodeId }, false);
     if (existsSync(APP)) openApp(daemonPort(), data.nodeId);
@@ -156,6 +164,15 @@ switch (cmd) {
       console.log([p.name, p.source, fields].join('\t'));
     }
     break;
+  case 'trust':
+  case 'untrust': {
+    if (process.env.TL_NODE_ID) fail('trust is a human-only operation; run it outside a Tiller node');
+    const dir = realpathSync(resolve(f.cwd ?? process.cwd()));
+    setProjectTrust(home, dir, cmd === 'trust');
+    console.log(`${cmd === 'trust' ? 'trusted' : 'untrusted'} ${dir} for Tiller repo commands`);
+    if (cmd === 'untrust') console.log('Legacy Claude trust, if present, still applies.');
+    break;
+  }
   case 'config':
     for (const [k, { value, source }] of Object.entries(configEntries(realpathSync(resolve(f.cwd ?? process.cwd())), home))) {
       const unset = k.startsWith('roles.') ? '(claude default)' : k === 'worktrees.include' ? '(.worktreeinclude)' : '(none)';
@@ -206,7 +223,8 @@ switch (cmd) {
     // Each spawn field from its kebab-case flag; isolation, cwd and the id lists from tl's own spellings.
     const flag = (k: string) => (f as Record<string, unknown>)[k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)];
     const args = Object.fromEntries([...Object.keys(SPAWN_FIELDS), 'permissionMode', 'requestId'].map((k) => [k, flag(k)]));
-    await call('spawn', { ...args, cwd: f.cwd ?? (f.fork ? undefined : process.cwd()), isolation: isolation(), after: ids(f.after), afterSuccess: ids(f['after-success']) });
+    const kind = spawnKind(f.kind as NodeKind | undefined, f.harness as Harness | undefined);
+    await call('spawn', { ...args, kind, cwd: f.cwd ?? (f.fork ? undefined : process.cwd()), isolation: isolation(), after: ids(f.after), afterSuccess: ids(f['after-success']) });
     break;
   }
   case 'diff':
@@ -259,9 +277,10 @@ switch (cmd) {
     const port = daemonPort();
     if (!(await findDaemon(port))) await startDaemon(home, port).catch((e: Error) => fail(e.message));
     const cwd = realpathSync(process.cwd());
+    const harness: Harness = f.harness === 'pi' ? 'pi' : 'claude';
     const all = f.new ? [] : (((await call('list_nodes', {}, false)).data ?? []) as any[]);
-    const existing = pickOrchestrator(all, cwd);
-    const dead = existing ? undefined : pickOrchestrator(all, cwd, true);
+    const existing = pickOrchestrator(all, cwd, false, harness);
+    const dead = existing ? undefined : pickOrchestrator(all, cwd, true, harness);
     let id: string | undefined;
     if (existing) { console.log(`reattaching to ${existing.title} (${existing.id})`); id = existing.id; }
     else if (dead) {
@@ -272,7 +291,7 @@ switch (cmd) {
     }
     if (!id) {
       const title = f.title ?? basename(cwd);
-      id = (await call('spawn', { kind: 'claude', title, cwd, prompt: f.prompt }, false)).data.nodeId as string;
+      id = (await call('spawn', { kind: harness === 'pi' ? 'agent' : 'claude', ...(harness === 'pi' ? { harness } : {}), title, cwd, prompt: f.prompt }, false)).data.nodeId as string;
       console.log(`started ${title} (${id})`);
     }
     const target = id;

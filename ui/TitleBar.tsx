@@ -1,11 +1,11 @@
-import type { NodeView } from '../src/shared/protocol';
+import { isAgentKind, type NodeView } from '../src/shared/protocol';
 import { ActionButtons } from './ActionButtons';
 import { NodeMeta, StateDot } from './Bits';
 import { Icon } from './icons';
 import { RenameInput } from './RenameInput';
 import { ancestry } from './sessions';
 import { selectNode, showPane, togglePanel, useStore } from './store';
-import { KIND_LABEL, statusKind } from './tree';
+import { KIND_LABEL, kindTag, statusKind } from './tree';
 
 function Breadcrumb({ node }: { node: NodeView }) {
   const nodes = useStore((s) => s.nodes);
@@ -27,11 +27,11 @@ function Breadcrumb({ node }: { node: NodeView }) {
 export function TitleBar({ node }: { node: NodeView }) {
   const panel = useStore((s) => s.panel);
   const diff = useStore((s) => s.diffOpen) && !!node.worktree;
-  const transcript = useStore((s) => s.transcriptOpen) && node.kind === 'claude';
+  const transcript = useStore((s) => s.transcriptOpen) && isAgentKind(node.kind);
   const tabs = [
     { key: 'terminal', label: 'Terminal', on: !diff && !transcript, show: true },
     { key: 'diff', label: 'Diff', on: diff, show: !!node.worktree },
-    { key: 'transcript', label: 'Transcript', on: transcript, show: node.kind === 'claude' },
+    { key: 'transcript', label: 'Transcript', on: transcript, show: isAgentKind(node.kind) },
   ] as const;
   const kind = statusKind(node);
   const s = node.status;
@@ -55,7 +55,7 @@ export function TitleBar({ node }: { node: NodeView }) {
       </div>
       <div className="tb2">
         <span className="cwd" title={node.cwd}>{node.cwd}</span>
-        <span className="tag">{node.kind}</span>
+        <span className="tag">{kindTag(node)}</span>
         {s.permissionMode && s.permissionMode !== 'default' && <span className="tag">{s.permissionMode}</span>}
         <NodeMeta node={node} detail />
       </div>

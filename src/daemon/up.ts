@@ -4,6 +4,7 @@ import { mkdirSync, openSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { harnessFor, isAgentKind, type Harness, type NodeKind } from '../shared/protocol.js';
 
 export interface Health { ok: true; pid: number; home: string; version: string }
 
@@ -39,12 +40,19 @@ export async function waitForDaemon(port: number, log: string, waitMs = 15_000):
   throw new Error(`daemon did not come up on port ${port}; last log lines:\n${tail}`);
 }
 
-export interface OrchestratorCandidate { id: string; title: string; kind: string; parentId: string | null; cwd: string; exited?: boolean; createdAt: number }
+export interface OrchestratorCandidate { id: string; title: string; kind: string; harness?: Harness; parentId: string | null; cwd: string; exited?: boolean; createdAt: number }
 
-/** The newest top-level Claude node for `cwd` (already a realpath): live ones when `exited` is false, exited ones (resumable) when true. */
-export function pickOrchestrator<T extends OrchestratorCandidate>(nodes: T[], cwd: string, exited = false): T | undefined {
+/** Whether a candidate is an agent node on `harness` (legacy records without a harness are claude). */
+const onHarness = (n: OrchestratorCandidate, harness: Harness) =>
+  isAgentKind(n.kind as NodeKind) && harnessFor(n) === harness;
+
+/**
+ * The newest top-level agent node for `cwd` (already a realpath) on `harness` (default claude): live ones when
+ * `exited` is false, exited ones (resumable) when true.
+ */
+export function pickOrchestrator<T extends OrchestratorCandidate>(nodes: T[], cwd: string, exited = false, harness: Harness = 'claude'): T | undefined {
   return nodes
-    .filter((n) => n.kind === 'claude' && n.parentId === null && n.cwd === cwd && !!n.exited === exited)
+    .filter((n) => onHarness(n, harness) && n.parentId === null && n.cwd === cwd && !!n.exited === exited)
     .sort((a, b) => b.createdAt - a.createdAt)[0];
 }
 

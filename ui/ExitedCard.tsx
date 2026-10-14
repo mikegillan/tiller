@@ -12,6 +12,7 @@ export function ExitedCard({ node }: { node: NodeView }) {
       <div className="card">
         <h2>{node.title} has exited</h2>
         <p>The process is no longer running. Resume continues the session where it left off.</p>
+        {node.status.errored && node.status.activity && <p>{node.status.activity}</p>}
         {node.status.git && <p className="branchline">⎇ {node.status.git.branch} <DiffCounts git={node.status.git} /></p>}
         {node.outcome && <OutcomeDetails o={node.outcome} />}
         <div className="btns">

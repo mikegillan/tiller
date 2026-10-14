@@ -78,14 +78,14 @@ export function ArchivePane({ a }: { a: ArchivedNode }) {
   const now = useNow();
   const fork = () => openDialog({ kind: 'fork', from: a.id, title: a.title, cwd: a.cwd, parentId: a.parentId && getState().nodes[a.parentId] ? a.parentId : null });
   return (
-    <TranscriptPane key={a.id} id={a.id}>
+    <TranscriptPane key={a.id} id={a.id} harness={a.harness}>
       <header className="archhead">
         <div className="tb1">
           <h1 title={a.title}>{a.title}</h1>
           <span className="tag" title={new Date(a.closedAt).toLocaleString()}>closed {fmtAge(now - a.closedAt)} ago</span>
           <span className="spacer" />
           <button className="btn" onClick={() => openDialog({ kind: 'followup', id: a.id, title: a.title })}><Icon name="play" size={14} />Follow up…</button>
-          <button className="btn" onClick={fork}><Icon name="fork" size={14} />Fork…</button>
+          {(a.harness ?? 'claude') === 'claude' && <button className="btn" onClick={fork}><Icon name="fork" size={14} />Fork…</button>}
           <button className="btn icon" title="Close" aria-label="Close archived node" onClick={() => viewArchived(null)}><Icon name="x" size={14} /></button>
         </div>
         <div className="tb2">

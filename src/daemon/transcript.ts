@@ -1,10 +1,12 @@
-// Claude's transcript files (one JSON object per line, <sessionId>.jsonl in a per-project directory under ~/.claude/projects),
-// read as the user and assistant messages of a conversation.
+// A harness's transcript file, read as the user and assistant messages of a conversation.
+// Claude keeps one JSON object per line in <sessionId>.jsonl under ~/.claude/projects.
+// Pi keeps JSONL entries in <treeSessionDir>/agents/<nodeId>/<sessionId>.jsonl,
+// with a tree of id/parentId entries whose active branch is the current conversation.
 import { existsSync, realpathSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { Transcript, TranscriptEntry } from '../shared/protocol.js';
+import type { Harness, Transcript, TranscriptEntry } from '../shared/protocol.js';
 
 /** The most recent messages a transcript read returns. */
 export const MAX_ENTRIES = 2000;
@@ -13,7 +15,16 @@ export const TAIL_BYTES = 8 << 20;
 
 /** One user or assistant message with its text and tool calls in content order. */
 export interface Message { role: 'user' | 'assistant'; at?: number; parts: Array<{ text: string } | { tool: string }> }
-type Node = { cwd: string; sessionId?: string; previousSessions?: string[]; transcriptPath?: string };
+type Node = { cwd: string; sessionId?: string; previousSessions?: string[]; transcriptPath?: string; harness?: Harness };
+
+/** A parsed JSONL line, as either harness writes it. Unknown fields are ignored. */
+type Entry = {
+  type?: unknown;
+  id?: unknown;
+  parentId?: unknown;
+  timestamp?: unknown;
+  message?: { role?: unknown; content?: unknown; timestamp?: unknown };
+};
 
 /** Fallback for where Claude keeps a session's transcript: the real path of cwd with every non-alphanumeric character replaced by -. */
 export function transcriptFor(cwd: string, sessionId: string): string {
@@ -22,18 +33,80 @@ export function transcriptFor(cwd: string, sessionId: string): string {
   return join(homedir(), '.claude', 'projects', real.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`);
 }
 
-/** The user and assistant messages of a transcript file's text. Tool results and lines with neither text nor tool calls are dropped. */
-export function parseMessages(raw: string): Message[] {
-  return raw.split('\n').flatMap((line) => {
-    let e: { type?: string; timestamp?: unknown; message?: { content?: unknown } };
-    try { e = JSON.parse(line); } catch { return []; }
-    if (e?.type !== 'user' && e?.type !== 'assistant') return [];
-    const c = e.message?.content;
-    const blocks: Array<{ type?: string; text?: string; name?: string }> = typeof c === 'string' ? [{ type: 'text', text: c }] : Array.isArray(c) ? c : [];
-    const parts = blocks.flatMap((b): Message['parts'] => (b?.type === 'text' && b.text?.trim() ? [{ text: b.text.trim() }] : b?.type === 'tool_use' && b.name ? [{ tool: b.name }] : []));
+/** JSON.parse each non-empty line, dropping malformed lines and non-objects. */
+function parseLines(raw: string): Entry[] {
+  return raw.split('\n').flatMap((line): Entry[] => {
+    if (!line.trim()) return [];
+    try {
+      const e: unknown = JSON.parse(line);
+      return e && typeof e === 'object' && !Array.isArray(e) ? [e as Entry] : [];
+    } catch { return []; }
+  });
+}
+
+/** Claude content blocks: a string, or an array of text / tool_use blocks. */
+function claudeParts(content: unknown): Message['parts'] {
+  const blocks: Array<{ type?: unknown; text?: unknown; name?: unknown }> = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : [];
+  return blocks.flatMap((b): Message['parts'] => (b?.type === 'text' && typeof b.text === 'string' && b.text.trim() ? [{ text: b.text.trim() }] : b?.type === 'tool_use' && typeof b.name === 'string' ? [{ tool: b.name }] : []));
+}
+
+/** Pi content blocks: a string, or an array of TextContent / ToolCall blocks (image and thinking blocks are dropped). */
+function piParts(content: unknown): Message['parts'] {
+  const blocks: Array<{ type?: unknown; text?: unknown; name?: unknown }> = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : [];
+  return blocks.flatMap((b): Message['parts'] => (b?.type === 'text' && typeof b.text === 'string' && b.text.trim() ? [{ text: b.text.trim() }] : b?.type === 'toolCall' && typeof b.name === 'string' ? [{ tool: b.name }] : []));
+}
+
+/** A Pi message timestamp (Unix ms) with the ISO entry timestamp as a fallback. */
+function piAt(e: Entry): number | undefined {
+  const t = e.message?.timestamp;
+  if (typeof t === 'number' && Number.isFinite(t)) return t;
+  if (typeof e.timestamp === 'string') {
+    const at = Date.parse(e.timestamp);
+    if (!Number.isNaN(at)) return at;
+  }
+  return undefined;
+}
+
+/**
+ * The entries on Pi's active branch, oldest first. Pi stores a tree with id/parentId; the current
+ * leaf is the last entry and abandoned branches are its siblings. A v1 (linear) file has no ids,
+ * so every entry is active. Compaction and other state entries stay on the path but yield no message.
+ */
+function piActiveBranch(entries: Entry[]): Entry[] {
+  const tree = entries.filter((e) => e.type !== 'session' && typeof e.id === 'string' && 'parentId' in e);
+  if (!tree.length) return entries;
+  const byId = new Map<string, Entry>();
+  for (const e of tree) byId.set(e.id as string, e);
+  const leaf = tree[tree.length - 1];
+  const path: Entry[] = [];
+  const seen = new Set<string>();
+  for (let cur: Entry | undefined = leaf; cur && typeof cur.id === 'string' && !seen.has(cur.id);) {
+    seen.add(cur.id);
+    path.push(cur);
+    cur = cur.parentId ? byId.get(String(cur.parentId)) : undefined;
+  }
+  return path.reverse();
+}
+
+/** The user and assistant messages of a transcript file's text, as `harness` wrote them. Tool results and lines with neither text nor tool calls are dropped. */
+export function parseMessages(raw: string, harness: Harness = 'claude'): Message[] {
+  const entries = parseLines(raw);
+  if (harness !== 'pi') {
+    return entries.flatMap((e): Message[] => {
+      if (e.type !== 'user' && e.type !== 'assistant') return [];
+      const parts = claudeParts(e.message?.content);
+      if (!parts.length) return [];
+      const at = typeof e.timestamp === 'string' ? Date.parse(e.timestamp) : NaN;
+      return [{ role: e.type, parts, ...(Number.isNaN(at) ? {} : { at }) }];
+    });
+  }
+  return piActiveBranch(entries).flatMap((e): Message[] => {
+    const role = e.type === 'message' ? e.message?.role : undefined;
+    if (role !== 'user' && role !== 'assistant') return [];
+    const parts = piParts(e.message?.content);
     if (!parts.length) return [];
-    const at = typeof e.timestamp === 'string' ? Date.parse(e.timestamp) : NaN;
-    return [{ role: e.type, parts, ...(Number.isNaN(at) ? {} : { at }) }];
+    const at = piAt(e);
+    return [{ role, parts, ...(at === undefined ? {} : { at }) }];
   });
 }
 
@@ -43,13 +116,13 @@ export function toEntry(m: Message): TranscriptEntry {
   return { role: m.role, ...(m.at !== undefined ? { at: m.at } : {}), text, ...(tools.length ? { tools } : {}) };
 }
 
-export const parseTranscript = (raw: string): TranscriptEntry[] => parseMessages(raw).map(toEntry);
+export const parseTranscript = (raw: string, harness: Harness = 'claude'): TranscriptEntry[] => parseMessages(raw, harness).map(toEntry);
 
 /** One message as text, as `tl read` prints it: tool calls become a "[tool: name]" marker where they occur. */
 export const renderMessage = (m: Message): string => `${m.role}: ${m.parts.map((p) => ('text' in p ? p.text : `[tool: ${p.tool}]`)).join('\n')}`;
 
 /** The last MAX_ENTRIES messages of a transcript file, reading at most its last TAIL_BYTES. */
-export async function readMessages(path: string): Promise<{ messages: Message[]; truncated: boolean }> {
+export async function readMessages(path: string, harness: Harness = 'claude'): Promise<{ messages: Message[]; truncated: boolean }> {
   const f = await open(path, 'r');
   try {
     const { size } = await f.stat();
@@ -58,7 +131,7 @@ export async function readMessages(path: string): Promise<{ messages: Message[];
     await f.read(buf, 0, buf.length, start);
     let raw = buf.toString('utf8');
     if (start > 0) raw = raw.slice(raw.indexOf('\n') + 1); // the first line is cut
-    const all = parseMessages(raw);
+    const all = parseMessages(raw, harness);
     return { messages: all.slice(-MAX_ENTRIES), truncated: start > 0 || all.length > MAX_ENTRIES };
   } finally {
     await f.close();
@@ -67,17 +140,21 @@ export async function readMessages(path: string): Promise<{ messages: Message[];
 
 /**
  * A node's messages in session `sessionId` (default: its current one). A previous session's file sits next to the
- * current one: Claude keeps every session of a project in one directory.
+ * current one: both harnesses keep every session of a node in one directory, named `<Tiller-sessionId>.jsonl`.
+ * Claude's path is derivable from its cwd, so it falls back to that; Pi is launched with an explicit
+ * `--session <treeSessionDir>/agents/<nodeId>/<Tiller-sessionId>.jsonl` and needs the path on record.
  */
 export async function sessionMessages(n: Node, sessionId?: string): Promise<{ messages: Message[]; truncated: boolean; sessions: Transcript['sessions'] }> {
   if (!n.sessionId) throw new Error('no session on record');
+  const harness = n.harness ?? 'claude';
+  if (harness === 'pi' && !n.transcriptPath) throw new Error('a Pi node needs its transcript path on record');
   const current = n.transcriptPath ?? transcriptFor(n.cwd, n.sessionId);
   const sessions = [n.sessionId, ...[...(n.previousSessions ?? [])].reverse()].map((s) => ({ sessionId: s, current: s === n.sessionId }));
   const sid = sessionId ?? n.sessionId;
   if (!sessions.some((s) => s.sessionId === sid)) throw new Error(`no session ${sid} on record for this node`);
   const path = sid === n.sessionId ? current : join(dirname(current), `${sid}.jsonl`);
   if (!existsSync(path)) throw new Error(`the transcript of session ${sid} is gone (${path})`);
-  return { ...(await readMessages(path)), sessions };
+  return { ...(await readMessages(path, harness)), sessions };
 }
 
 export async function nodeTranscript(n: Node, sessionId?: string): Promise<Transcript> {

@@ -112,7 +112,7 @@ export function createNotifier(d: NotifierDeps): (n: NotifyEvent) => void {
     const tree = d.tree(n.id);
     const root = tree[0] ?? node;
     if (d.config(n.id).treeDoneSummary) {
-      const agents = tree.filter((v) => v.kind === 'claude'); // a plain terminal never finishes
+      const agents = tree.filter((v) => v.kind !== 'terminal'); // a plain terminal never finishes
       if (!agents.length || !agents.every((v) => finished(v.status))) announced.delete(root.id);
       // An exit after the tree was announced (a node quitting once done) is not a new finish.
       else if (n.kind !== 'needsYou' && (n.kind !== 'exited' || !announced.has(root.id))) {
@@ -120,7 +120,7 @@ export function createNotifier(d: NotifierDeps): (n: NotifyEvent) => void {
         const bad = agents.filter(failed).length;
         post(root.id, 'done', 'tree', { title: root.title, body: `tree ${root.title} finished: ${agents.length - bad} succeeded, ${bad} failed` }, now);
       }
-      if ((n.kind === 'done' || n.kind === 'exited') && node.kind === 'claude') return log(`notify ${n.id} ${n.kind}: suppressed (treeDoneSummary)`);
+      if ((n.kind === 'done' || n.kind === 'exited') && node.kind !== 'terminal') return log(`notify ${n.id} ${n.kind}: suppressed (treeDoneSummary)`);
     }
     post(n.id, n.kind, n.kind, content(node, n.kind, root.title), now);
   };

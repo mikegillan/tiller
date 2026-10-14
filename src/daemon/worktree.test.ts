@@ -74,7 +74,7 @@ describe('worktree nodes', () => {
 
   it('refuses a terminal, a cwd outside git, a repo with no commits and an untrusted repo, leaving nothing behind', async () => {
     setup();
-    await expect(m.spawn({ kind: 'terminal', title: 't', cwd: repo, isolation: 'worktree' })).rejects.toThrow(/claude nodes only/);
+    await expect(m.spawn({ kind: 'terminal', title: 't', cwd: repo, isolation: 'worktree' })).rejects.toThrow(/agent nodes only/);
     await expect(spawnW({ cwd: join(home, 'bin') })).rejects.toThrow(/not inside a git work tree/);
     const empty = join(home, 'empty');
     mkdirSync(empty);
