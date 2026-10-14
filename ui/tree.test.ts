@@ -42,8 +42,9 @@ describe('tree', () => {
     expect(rows[1].descendants.map((d) => d.id)).toEqual(['g']);
   });
 
-  it('kindTag names a Pi agent "pi" and keeps claude and terminal as they are', () => {
+  it('kindTag names an agent by its harness and a terminal "terminal"', () => {
     expect(kindTag({ ...mk('a', null, 0), kind: 'agent', harness: 'pi' })).toBe('pi');
+    expect(kindTag({ ...mk('a', null, 0), kind: 'agent' })).toBe('claude');
     expect(kindTag(mk('a', null, 0))).toBe('claude');
     expect(kindTag({ ...mk('a', null, 0), kind: 'terminal' })).toBe('terminal');
   });

@@ -24,7 +24,7 @@ export function spawnMsg(
   const harness = choiceHarness(form.choice);
   return {
     t: 'spawn', kind, ...(harness ? { harness } : {}),
-    title: form.title.trim() || kind, cwd: form.cwd.trim(), parentId: d.parentId,
+    title: form.title.trim() || form.choice, cwd: form.cwd.trim(), parentId: d.parentId,
     ...(agent && form.prompt.trim() ? { prompt: form.prompt } : {}),
     ...(agent && form.role !== form.defaultRole ? { role: form.role } : {}),
     ...(agent && form.isolate ? { isolation: 'worktree' as const } : {}),
@@ -58,7 +58,7 @@ function SpawnDialog({ d }: { d: Spawn }) {
             <button type="button" key={k} role="radio" aria-checked={choice === k} className={choice === k ? 'on' : ''} onClick={() => setChoice(k)}>{k}</button>
           ))}
         </div>
-        <label>Title<input placeholder={kind} value={title} onChange={(e) => setTitle(e.target.value)} autoFocus /></label>
+        <label>Title<input placeholder={choice} value={title} onChange={(e) => setTitle(e.target.value)} autoFocus /></label>
         <label>Working directory<input className="mono" value={cwd} onChange={(e) => setCwd(e.target.value)} required placeholder="/path/to/project" /></label>
         {agent && <label>Initial prompt<textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional" /></label>}
         <label>Model<input className="mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="Default" /></label>
