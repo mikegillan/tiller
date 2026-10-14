@@ -59,6 +59,8 @@ export interface State {
   history: ArchivedNode[];
   /** The closed node shown in the main pane, over the selected live node. */
   archived: ArchivedNode | null;
+  /** Counts `removed` messages, so an open history asks again when a node is closed. */
+  removals: number;
 }
 
 const stored = (() => { try { return localStorage.getItem('o8.panel') === '1'; } catch { return false; } })();
@@ -66,7 +68,7 @@ const stored = (() => { try { return localStorage.getItem('o8.panel') === '1'; }
 let state: State = {
   nodes: {}, order: [], selected: null, session: null, opened: [], collapsed: [], toasts: [], confirms: [],
   connected: false, retry: 0, panel: stored, dialog: null, renaming: null, awaitSpawn: false, diffOpen: false, diff: null, comments: [],
-  transcriptOpen: false, transcript: null, historyOpen: false, history: [], archived: null,
+  transcriptOpen: false, transcript: null, historyOpen: false, history: [], archived: null, removals: 0,
 };
 const subs = new Set<() => void>();
 let toastSeq = 0;
@@ -162,7 +164,7 @@ export function applyServer(m: ServerMessage) {
         const order = without(s.order, m.id);
         const base = { ...s, opened: without(s.opened, m.id) };
         const next = s.selected !== m.id ? s.selected : gone?.parentId && nodes[gone.parentId] ? gone.parentId : pickInitial(nodes, order);
-        return { order, opened: base.opened, ...choose(base, nodes, next) };
+        return { order, opened: base.opened, removals: s.removals + 1, ...choose(base, nodes, next) };
       });
     case 'focus':
       return update((s) => ((m.from === 'human' || s.selected === m.from) && s.nodes[m.id] ? choose(s, s.nodes, m.id) : {}));
@@ -194,6 +196,8 @@ export function applyServer(m: ServerMessage) {
       return toast(outcome === 'queued' ? `Queued for ${title}; it arrives when the node is idle` : `Sent to ${title}`, m.id, 'ok');
     }
     case 'error':
+      // A spawn or follow-up that failed answers only with an error: stop waiting, or the next node anyone spawns gets selected.
+      if (state.awaitSpawn) update(() => ({ awaitSpawn: false }));
       return toast(m.message, m.id, 'bad');
     case 'digest':
       return update(() => ({ digest: { since: m.since, items: m.items } }));
