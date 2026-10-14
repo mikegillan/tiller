@@ -126,6 +126,18 @@ describe('archive, history, follow-up and fork', () => {
     await expect(m.followup('n-nope', 'x')).rejects.toThrow('no archived node n-nope');
   });
 
+  it('a follow-up does not count the resumed session\'s earlier spend again', async () => {
+    setup();
+    const a = await started('worker', null, 'task');
+    const measure = (id: string, usd: number) => m.applyModEvent(id, { event: 'session.measure', payload: { cost: { usd } } });
+    measure(a, 0.5);
+    measure(a, 0.8);
+    await m.close(a, true);
+    const f = await m.followup(a, 'more');
+    measure(f.id, 1.0); // the resumed session's counter carries on from 0.8
+    expect(m.view(f.id)!.spentUsd).toBeCloseTo(0.2);
+  });
+
   it('forks a live or archived node with --fork-session under a new session id; refuses one that has not started', async () => {
     setup();
     const root = await started('root', null);
