@@ -110,6 +110,8 @@ export interface LaunchInput {
   sessionId: string;
   /** Relaunch with `--resume <sessionId>` instead of minting `--session-id`. */
   resume?: boolean;
+  /** Start from a copy of this session's conversation: `--resume <forkSession> --fork-session`, under sessionId. */
+  forkSession?: string;
   prompt?: string;
   model?: string;
   effort?: string;
@@ -132,7 +134,8 @@ export function claudeLaunch(i: LaunchInput): LaunchSpec {
 }
 
 export function launchArgs(i: LaunchInput): string[] {
-  const args = i.resume ? ['--resume', i.sessionId] : ['--session-id', i.sessionId];
+  const args = i.forkSession ? ['--resume', i.forkSession, '--fork-session', '--session-id', i.sessionId]
+    : i.resume ? ['--resume', i.sessionId] : ['--session-id', i.sessionId];
   args.push('--name', i.title);
   if (i.model) args.push('--model', i.model);
   if (i.effort) args.push('--effort', i.effort);
@@ -146,7 +149,7 @@ export function launchArgs(i: LaunchInput): string[] {
     '--mcp-config', join(i.nodeDir, 'mcp.json'), '--strict-mcp-config',
     '--append-system-prompt', systemPrompt(i),
   );
-  if (i.prompt && !i.resume) args.push('--', i.prompt); // `--`: a prompt starting with `-` is not an option
+  if (i.prompt) args.push('--', i.prompt); // `--`: a prompt starting with `-` is not an option; on --resume it starts the next turn
   return args;
 }
 

@@ -46,11 +46,16 @@ const usage = () => `o8: control orchestr8. With no arguments, start the daemon 
   o8 diff <id> [--stat]                               what a worktree node changed since it branched, committed or not
   o8 send [--now] <id> "text"                         --now interrupts the target's turn if it is working (a steer)
   o8 withdraw <messageId>                             take back a queued message that has not been delivered yet
-  o8 read <id> [summary|transcript|terminal] [--lines N]
+  o8 read <id> [summary|transcript|terminal] [--lines N]   (summary and transcript also read a closed node)
+  o8 history [--root ID] [QUERY]                      closed Claude nodes, newest first, of one tree or all; QUERY filters by
+                                                      title, first prompt or last message
+  o8 transcript <id> [--session SID]                  a live or closed node's conversation; SID picks one of its earlier sessions
+  o8 followup <id> --prompt P [--title T]             continue a closed node's session as a new node that starts on P
   o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--preset NAME] [--request-id ID]
-           [--after ID,ID] [--after-success ID,ID] [--now]
+           [--after ID,ID] [--after-success ID,ID] [--now] [--fork ID]
                                                       --after / --after-success arm the node until those finish a turn or report
-                                                      succeeded; --now launches past daemon.maxWorking instead of queueing
+                                                      succeeded; --now launches past daemon.maxWorking instead of queueing;
+                                                      --fork starts from a copy of a live or closed node's conversation (cwd: its)
   o8 prompts                                          show the role prompt files and any override for this directory
   o8 presets [--cwd P]                                list the spawn presets in effect for a directory and the file each comes from
   o8 config [--cwd P]                                 show the effective config for a directory and which file each key came from
@@ -102,6 +107,7 @@ const { values: f, positionals: pos } = parseArgs({
     'permission-mode': { type: 'string' }, role: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
     worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' }, preset: { type: 'string' },
     after: { type: 'string', multiple: true }, 'after-success': { type: 'string', multiple: true }, now: { type: 'boolean' },
+    fork: { type: 'string' }, root: { type: 'string' }, session: { type: 'string' },
   },
 });
 /** `--after a,b --after c` as [a, b, c]; undefined when absent. */
@@ -204,7 +210,7 @@ switch (cmd) {
     // Each spawn field from its kebab-case flag; isolation, cwd and the id lists from o8's own spellings.
     const flag = (k: string) => (f as Record<string, unknown>)[k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)];
     const args = Object.fromEntries([...Object.keys(SPAWN_FIELDS), 'permissionMode', 'requestId'].map((k) => [k, flag(k)]));
-    await call('spawn', { ...args, cwd: f.cwd ?? process.cwd(), isolation: isolation(), after: ids(f.after), afterSuccess: ids(f['after-success']) });
+    await call('spawn', { ...args, cwd: f.cwd ?? (f.fork ? undefined : process.cwd()), isolation: isolation(), after: ids(f.after), afterSuccess: ids(f['after-success']) });
     break;
   }
   case 'diff':
@@ -222,6 +228,17 @@ switch (cmd) {
   case 'read':
     if (!pos[0]) fail(usage());
     await call('read', { nodeId: pos[0], what: pos[1] ?? 'summary', lines: f.lines ? Number(f.lines) : undefined });
+    break;
+  case 'history':
+    await call('history', { rootId: f.root, query: pos.join(' ') || undefined });
+    break;
+  case 'transcript':
+    if (!pos[0]) fail(usage());
+    await call('transcript', { nodeId: pos[0], sessionId: f.session });
+    break;
+  case 'followup':
+    if (!pos[0] || !f.prompt) fail(usage());
+    await call('followup', { nodeId: pos[0], prompt: f.prompt, title: f.title });
     break;
   case 'close':
   case 'kill':

@@ -78,12 +78,13 @@ export type SessionEvent = { ts: number; type: string; id: string; title?: strin
 const writes = new Map<string, Promise<void>>();
 
 /** Append one JSON line, in call order per file, without blocking the caller. A failed write is logged and dropped. */
-export function appendEvent(dir: string, ev: SessionEvent): void {
-  const file = eventsFile(dir);
-  const next = (writes.get(file) ?? Promise.resolve()).then(() => appendFile(file, `${JSON.stringify(ev)}\n`)).catch(logError);
+export function appendLine(file: string, value: unknown): void {
+  const next = (writes.get(file) ?? Promise.resolve()).then(() => appendFile(file, `${JSON.stringify(value)}\n`)).catch(logError);
   writes.set(file, next);
   void next.then(() => { if (writes.get(file) === next) writes.delete(file); });
 }
+
+export const appendEvent = (dir: string, ev: SessionEvent): void => appendLine(eventsFile(dir), ev);
 
 /** Resolves once every pending append has landed (for tests and shutdown). */
 export const flushEvents = async (): Promise<void> => { await Promise.all(writes.values()); };

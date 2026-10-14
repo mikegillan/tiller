@@ -1,30 +1,32 @@
 import { fmtAge, outcomeLine, shortEffort, shortModel, usageLine } from '../shared/format.js';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import type http from 'node:http';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { dndActive, EFFORTS, finished, ISOLATIONS, NODE_KINDS, ROLES, type Diff, type Dnd, type NodeView, type Outcome } from '../shared/protocol.js';
+import { dndActive, EFFORTS, finished, ISOLATIONS, NODE_KINDS, ROLES, type ArchivedNode, type Diff, type Dnd, type NodeView, type Outcome } from '../shared/protocol.js';
 import { fmtUsd, subtreeSpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { loadConfig, type Config } from './config.js';
 import { ADMIN_TOKEN_FILE } from './home.js';
+import { findArchived, history } from './archive.js';
 import { notifyWhen } from './deps.js';
 import type { NodeManager } from './manager.js';
 import { closeRefusal, type WorktreeReport } from './worktree-lifecycle.js';
 import { MAX_PATCH_BYTES, MergeConflict } from './worktree.js';
 import { PERMISSION_MODES } from './presets.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
+import { readTranscript, renderEntry } from './transcript.js';
 import { DAEMON, deliver, HUMAN, inScope, isDescendant, messageStatus, QUEUE_CAP, QUEUE_TTL_MS, RATE_MS, startNotices, withdraw } from './messaging.js';
 import { logError, PREVIEW_CHARS, readBody, safeEqual } from './util.js';
 
 const MAX_WRITE_CHARS = 2000;
 const IDEMPOTENCY_MS = 24 * 3600_000;
 const TRANSCRIPT_CAP = 200_000;
+const HISTORY_LINES = 50;
 
 /** dnd sets do not disturb when `on` is given, and returns it. */
 interface Ctx { manager: NodeManager; confirm: (text: string) => Promise<boolean>; focus: (from: string, id: string) => void; dnd: (on?: boolean, minutes?: number) => Dnd; caller: string }
@@ -77,7 +79,6 @@ function tree(nodes: ReturnType<typeof summarize>[]): string {
   }).join('\n') || '(no nodes)';
 }
 
-/** One user/assistant transcript entry as text; tool calls become a one-line marker, tool results vanish. */
 /** `o8 worktrees` output: one section per kind, with the commits and files a clean removed. */
 function worktreeText(r: WorktreeReport): string {
   const unmerged = (n: number) => (n ? `, ${n} unmerged commit(s)` : '');
@@ -103,16 +104,6 @@ function diffText(d: Diff, stat: boolean): string {
   return [head, ...body, ...tail].join('\n');
 }
 
-function renderEntry(line: string): string | undefined {
-  let e: { type?: string; message?: { content?: unknown } };
-  try { e = JSON.parse(line); } catch { return undefined; }
-  if (e?.type !== 'user' && e?.type !== 'assistant') return undefined;
-  const c = e.message?.content;
-  const blocks: Array<{ type?: string; text?: string; name?: string }> = typeof c === 'string' ? [{ type: 'text', text: c }] : Array.isArray(c) ? c : [];
-  const text = blocks.flatMap((b) => (b?.type === 'text' && b.text ? [b.text] : b?.type === 'tool_use' ? [`[tool: ${b.name}]`] : [])).join('\n').trim();
-  return text ? `${e.type}: ${text}` : undefined;
-}
-
 function requireNode(m: NodeManager, id: string): NodeView {
   const v = m.view(id);
   if (!v) throw new Error(`no such node: ${id}`);
@@ -123,6 +114,23 @@ function requireScope(c: Ctx, id: string): NodeView {
   const v = requireNode(c.manager, id);
   if (!inScope(c.manager, c.caller, id)) throw new Error(`refused: ${id} is outside your lineage (self, ancestors, siblings, descendants)`);
   return v;
+}
+
+/** The root of the caller's tree, as the archive records it (the topmost registered ancestor). */
+const rootOf = (c: Ctx) => (c.manager.registry.lineage(c.caller).at(-1) ?? { id: c.caller }).id;
+
+/** An archived node of the caller's own tree; any tree for the human. */
+async function requireArchived(c: Ctx, id: string): Promise<ArchivedNode> {
+  const a = await findArchived(c.manager.home, id);
+  if (!a) throw new Error(`no such node: ${id}`);
+  if (c.caller !== HUMAN && a.rootId !== rootOf(c)) throw new Error(`refused: archived node ${id} is not of your own tree`);
+  return a;
+}
+
+/** `n-x "title" closed 2h ago: succeeded: ... (merged into main) ⎇ o8/n-x $0.42` for the history tool. */
+function historyLine(a: ArchivedNode, now: number): string {
+  const age = fmtAge(now - a.closedAt);
+  return [`${a.id} "${a.title}" closed ${age === 'now' ? 'just now' : `${age} ago`}${a.brief ? `: ${a.brief}` : ''}`, a.branch && `⎇ ${a.branch}`, a.spentUsd && fmtUsd(a.spentUsd)].filter(Boolean).join(' ');
 }
 
 const requireOwned = (c: Ctx, id: string, allowSelf: boolean): NodeView => {
@@ -176,20 +184,25 @@ const tools = {
     }),
 
   spawn: tool(
-    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `model` and `effort` to use the defaults for the role from the project config, if any. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. isolation "worktree" (claude nodes only) gives the child its own git worktree at <main checkout>/.claude/worktrees/<id> on a new branch from the HEAD of the checkout `cwd` is in, which needs a repo with a commit that Claude already trusts, and the reply then carries worktree { path, branch, base }. Omitting isolation uses the project config (default "none"), so a child whose cwd is inside an existing worktree shares that tree. `preset` names a spawn preset (.orchestr8/agents/<name>.md in the main checkout of `cwd`, else ~/.orchestr8/agents/<name>.md; built-in: "reviewer", "researcher"): it sets the role text, model, effort, permissionMode, isolation and tool restrictions, and any argument you pass overrides it. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error. `after` and `afterSuccess` (node ids in your scope) create the node armed, with no process yet: it launches by itself, exactly as this spawn would, once each `after` node has finished a turn that began after this spawn (or has exited), and each `afterSuccess` node has reported succeeded through report_outcome (gate passed, when one is configured). A failed report blocks it and you get a message; close it to drop it. When the daemon config sets daemon.maxWorking and that many claude nodes are working, a new node is queued instead and launched in creation order as others stop. The reply then has state "armed" or "queued" and what it waits on.',
-    { ...SPAWN_FIELDS, permissionMode: z.enum(PERMISSION_MODES).optional(), requestId: z.string().optional() },
-    async (c, { requestId, ...req }) => {
+    'Open a new node as a child of yourself and return its id. kind "claude" starts a Claude Code agent that begins working on `prompt`; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. Omit `model` and `effort` to use the defaults for the role from the project config, if any. Omit `permissionMode` to inherit your own mode (recommended); pass one only when the child should be more restricted. isolation "worktree" (claude nodes only) gives the child its own git worktree at <main checkout>/.claude/worktrees/<id> on a new branch from the HEAD of the checkout `cwd` is in, which needs a repo with a commit that Claude already trusts, and the reply then carries worktree { path, branch, base }. Omitting isolation uses the project config (default "none"), so a child whose cwd is inside an existing worktree shares that tree. `preset` names a spawn preset (.orchestr8/agents/<name>.md in the main checkout of `cwd`, else ~/.orchestr8/agents/<name>.md; built-in: "reviewer", "researcher"): it sets the role text, model, effort, permissionMode, isolation and tool restrictions, and any argument you pass overrides it. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error. `after` and `afterSuccess` (node ids in your scope) create the node armed, with no process yet: it launches by itself, exactly as this spawn would, once each `after` node has finished a turn that began after this spawn (or has exited), and each `afterSuccess` node has reported succeeded through report_outcome (gate passed, when one is configured). A failed report blocks it and you get a message; close it to drop it. When the daemon config sets daemon.maxWorking and that many claude nodes are working, a new node is queued instead and launched in creation order as others stop. The reply then has state "armed" or "queued" and what it waits on. `fork` (kind "claude") starts the node from a copy of another node\'s conversation, then `prompt`: a node in your scope, or a closed node of your tree (see history); `cwd` then defaults to that node\'s.',
+    { ...SPAWN_FIELDS, cwd: SPAWN_FIELDS.cwd.optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), requestId: z.string().optional() },
+    async (c, { requestId, cwd, ...req }) => {
       if (req.now && c.caller !== HUMAN) throw new Error('refused: only the human may bypass daemon.maxWorking with now');
+      if (!cwd && !req.fork) throw new Error('cwd is required unless you fork');
+      if (req.fork && c.caller !== HUMAN) {
+        if (c.manager.registry.get(req.fork)) requireScope(c, req.fork);
+        else await requireArchived(c, req.fork);
+      }
       const now = Date.now();
       for (const [k, v] of spawned) if (now - v.at > IDEMPOTENCY_MS) spawned.delete(k);
       const key = `${c.caller}\0${requestId}`;
-      const args = JSON.stringify(req);
+      const args = JSON.stringify({ cwd, ...req });
       const prior = requestId ? spawned.get(key) : undefined;
       if (prior) {
         if (prior.args !== args) throw new Error(`requestId ${requestId} was already used with different arguments`);
         return { data: { ...(prior.result as object), replayed: true } };
       }
-      const view = await c.manager.spawn({ ...req, parentId: c.caller === HUMAN ? null : c.caller, byHuman: c.caller === HUMAN });
+      const view = await c.manager.spawn({ ...req, cwd: cwd ?? '', parentId: c.caller === HUMAN ? null : c.caller, byHuman: c.caller === HUMAN });
       const w = view.worktree;
       const held = view.status.state === 'armed' || view.status.state === 'queued' ? { state: view.status.state, waiting: view.status.activity } : {};
       const result = w ? { nodeId: view.id, worktree: { path: w.path, branch: w.branch, base: w.base } } : { nodeId: view.id, ...held };
@@ -226,10 +239,10 @@ const tools = {
     }),
 
   read: tool(
-    'Read another node (yourself, your ancestors, siblings or descendants). what "summary" returns the last `lines` (default 30) user and assistant messages of a Claude node\'s conversation, with tool calls reduced to a "[tool: name]" marker; "transcript" returns the whole conversation (capped at the most recent 200 KB); "terminal" returns the last `lines` (default 60) rows of the node\'s screen and works for terminal nodes too.',
+    'Read another node (yourself, your ancestors, siblings or descendants). what "summary" returns the last `lines` (default 30) user and assistant messages of a Claude node\'s conversation, with tool calls reduced to a "[tool: name]" marker; "transcript" returns the whole conversation (capped at the most recent 200 KB); "terminal" returns the last `lines` (default 60) rows of the node\'s screen and works for terminal nodes too. Summary and transcript also take a closed node of your tree (see history).',
     { nodeId: z.string().min(1), what: z.enum(['summary', 'transcript', 'terminal']), lines: z.number().int().min(1).max(5000).optional() },
     async (c, a) => {
-      const v = requireScope(c, a.nodeId);
+      const v = c.manager.registry.get(a.nodeId) || a.what === 'terminal' ? requireScope(c, a.nodeId) : await requireArchived(c, a.nodeId);
       if (a.what === 'terminal') {
         const s = c.manager.session(a.nodeId);
         if (!s) throw new Error('node has no running process');
@@ -238,10 +251,33 @@ const tools = {
       }
       const path = v.transcriptPath;
       if (!path) throw new Error('node has no transcript yet (not a Claude node, or it has not started); try what: "terminal"');
-      const entries = (await readFile(path, 'utf8')).split('\n').flatMap((l) => renderEntry(l) ?? []);
+      const entries = (await readTranscript(path)).map(renderEntry);
       if (a.what === 'summary') return { text: entries.slice(-(a.lines ?? 30)).join('\n\n') };
       return { text: entries.join('\n\n').slice(-TRANSCRIPT_CAP) };
     }),
+
+  history: tool(
+    `List the closed Claude nodes of your tree, newest first, one line each: id, title, when it closed, a one-line brief of what it did and how it ended (with its branch's fate), branch and spend. \`query\` keeps those whose title, first prompt or last message contains it. Read one with read, continue its work by spawning with fork. At most ${HISTORY_LINES} lines. \`rootId\` picks a tree for the human only.`,
+    { query: z.string().optional(), rootId: z.string().min(1).optional() },
+    async (c, a) => {
+      const items = await history(c.manager.home, { rootId: c.caller === HUMAN ? a.rootId : rootOf(c), query: a.query });
+      const now = Date.now(), more = items.length - HISTORY_LINES;
+      return { text: [...items.slice(0, HISTORY_LINES).map((x) => historyLine(x, now)), ...(more > 0 ? [`(${more} more; narrow with query)`] : [])].join('\n') || '(no closed nodes)' };
+    }),
+
+  transcript: tool(
+    'A live or closed Claude node\'s conversation in one of its sessions (default: the current one), as read "transcript" prints it, with its session ids. Only the human may call this.',
+    { nodeId: z.string().min(1), sessionId: z.string().min(1).optional() },
+    async (c, a) => {
+      const t = await c.manager.transcript(a.nodeId, a.sessionId);
+      const head = `sessions: ${t.sessions.map((s) => s.sessionId + (s.current ? ' (current)' : '')).join(', ')}${t.truncated ? `; older entries cut, showing the last ${t.entries.length}` : ''}`;
+      return { text: [head, ...t.entries.map(renderEntry)].join('\n\n') };
+    }, true),
+
+  followup: tool(
+    'Continue a closed Claude node\'s session as a new live node (claude --resume) that starts on `prompt`, with its title (unless `title`), model, effort and role, under its parent when that is still live. Only the human may call this.',
+    { nodeId: z.string().min(1), prompt: z.string().min(1), title: z.string().min(1).optional() },
+    async (c, a) => ({ data: { nodeId: (await c.manager.followup(a.nodeId, a.prompt, a.title)).id } }), true),
 
   write: tool(
     'Type raw keystrokes into another node\'s terminal (yourself, ancestors, siblings or descendants), for example to answer a prompt in a terminal node or press Enter. The human must approve each call in the UI; if they decline or nobody is watching you get {ok:false, reason:"denied"}. Text is limited to 2000 characters. For talking to an agent node use send, which is safer.',

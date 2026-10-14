@@ -11,6 +11,7 @@ import type { ClientMessage, Dnd, ServerMessage, Usage } from '../shared/protoco
 import { loadConfig } from './config.js';
 import { DEFAULT_PORT } from './home.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
+import { history } from './archive.js';
 import { mountMcp } from './mcp.js';
 import { modApi } from './modapi.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
@@ -47,6 +48,9 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('rename'), id, title: z.string() }),
   z.object({ t: z.literal('confirm'), confirmId: z.string(), ok: z.boolean() }),
   z.object({ t: z.literal('diff'), id }),
+  z.object({ t: z.literal('transcript'), id, sessionId: id.optional() }),
+  z.object({ t: z.literal('history'), rootId: id.optional(), query: z.string().optional() }),
+  z.object({ t: z.literal('followup'), id, prompt: z.string().min(1), title: z.string().min(1).optional() }),
   z.object({ t: z.literal('send'), id, text: z.string().min(1), mode: z.enum(['queue', 'now']).optional() }),
   z.object({ t: z.literal('mute'), id, muted: z.boolean() }),
   z.object({ t: z.literal('dnd'), on: z.boolean(), minutes: z.number().positive().max(7 * 24 * 60).optional() }),
@@ -152,6 +156,13 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       case 'prune': await manager.prune(); return;
       case 'rename': manager.rename(m.id, m.title); return;
       case 'confirm': pendingConfirms.get(m.confirmId)?.(m.ok); return;
+      case 'transcript': {
+        const r = await manager.transcript(m.id, m.sessionId).catch((err: Error) => ({ error: err.message }));
+        sendTo(c, { t: 'transcript', id: m.id, ...(m.sessionId ? { sessionId: m.sessionId } : {}), ...r });
+        return;
+      }
+      case 'history': sendTo(c, { t: 'history', items: await history(manager.home, { rootId: m.rootId, query: m.query }) }); return;
+      case 'followup': await manager.followup(m.id, m.prompt, m.title); return;
       case 'diff': sendTo(c, { t: 'diff', id: m.id, ...(await manager.diff(m.id).catch((err: Error) => ({ error: err.message }))) }); return;
       case 'send': sendTo(c, { t: 'sent', id: m.id, result: await deliver(manager, HUMAN, m.id, m.text, { mode: m.mode }) }); return;
       case 'mute':

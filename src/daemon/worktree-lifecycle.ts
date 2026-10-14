@@ -166,7 +166,8 @@ export async function closeWorktreeNode(m: NodeManager, id: string, title: strin
       m.setStatus(id, { ...rt.status!, exited: true, activity: (err as Error).message, changedAt: Date.now() }, false);
       throw err;
     }
-    m.closed(id, note);
+    // A plain close got here only with the branch merged (closeRefusal and removeWorktree check it); keep notes a kept branch.
+    m.closed(id, note, note ? { branchFate: 'kept' } : mode === 'discard' ? { branchFate: 'discarded' } : { branchFate: 'merged', base: w.base });
     return note;
   } finally {
     rt.busy = undefined;

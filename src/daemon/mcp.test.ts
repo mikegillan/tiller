@@ -110,6 +110,38 @@ describe('mcp api', () => {
     answer = true;
   });
 
+  it('fork, read and history reach a closed node only in the caller\'s own tree; fork of a live node needs scope', async () => {
+    const tok = (id: string) => manager.tokenFor(id);
+    const transcript = join(home, 'archived.jsonl');
+    writeFileSync(transcript, `${JSON.stringify({ type: 'user', message: { content: 'hello there' } })}\n`);
+    /** A started Claude node under `parentId`, closed: no claude process is launched. */
+    const archived = (parentId: string, title: string) => {
+      const id = manager.registry.create({ parentId, kind: 'claude', title, cwd: tmpdir(), prompt: `${title} task`, sessionId: `s-${title}`, transcriptPath: transcript }).id;
+      manager.runtimes.set(id, {});
+      manager.closed(id);
+      return id;
+    };
+    const rootA = (await spawnT('treeA')).body.data.nodeId as string;
+    const kidA = (await spawnT('kidA', rootA, tok(rootA))).body.data.nodeId as string;
+    const rootB = (await spawnT('treeB')).body.data.nodeId as string;
+    const kidB = (await spawnT('kidB', rootB, tok(rootB))).body.data.nodeId as string;
+    const oldA = archived(rootA, 'old-a'), oldB = archived(rootB, 'old-b');
+    const fork = (from: string) => api('spawn', { kind: 'claude', title: 'f', fork: from }, kidA, tok(kidA));
+    expect((await fork(kidB)).body.error).toMatch(/outside your lineage/);
+    expect((await fork(oldB)).body.error).toBe(`refused: archived node ${oldB} is not of your own tree`);
+    expect((await api('spawn', { kind: 'claude', title: 'f' }, kidA, tok(kidA))).body.error).toMatch(/cwd is required unless you fork/);
+    expect((await api('read', { nodeId: oldA, what: 'summary' }, kidA, tok(kidA))).body.text).toBe('user: hello there');
+    expect((await api('read', { nodeId: oldB, what: 'summary' }, kidA, tok(kidA))).status).toBe(400);
+    const mine = (await api('history', { rootId: rootB }, kidA, tok(kidA))).body.text!; // an agent always gets its own tree
+    expect(mine).toMatch(new RegExp(`^${oldA} "old-a" closed just now: old-a task$`));
+    const all = (await api('history', { query: 'old-' })).body.text!;
+    expect(all).toContain(oldA);
+    expect(all).toContain(oldB);
+    expect((await api('transcript', { nodeId: oldB })).body.text).toBe('sessions: s-old-b (current)\n\nuser: hello there');
+    expect((await api('followup', { nodeId: oldA, prompt: 'x' }, kidA, tok(kidA))).body.error).toBe('followup is only for the human');
+    for (const id of [kidA, kidB, rootA, rootB]) await manager.close(id, true); // the shared manager's maxLiveNodes
+  });
+
   it('approvals.close in the caller\'s project config skips the confirm only as configured', async () => {
     const proj = join(home, 'proj');
     mkdirSync(join(proj, '.orchestr8'), { recursive: true });
@@ -310,12 +342,12 @@ describe('mcp api', () => {
       return c;
     };
     const human = await connect('human', admin);
-    expect((await human.listTools()).tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'dnd', 'list_nodes', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'withdraw', 'worktrees', 'write']);
+    expect((await human.listTools()).tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'dnd', 'followup', 'history', 'list_nodes', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'transcript', 'withdraw', 'worktrees', 'write']);
     await human.close();
     const client = await connect(id, manager.tokenFor(id));
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'list_nodes', 'merge', 'message_status', 'notify_when', 'read', 'rename', 'report_outcome', 'send', 'spawn', 'withdraw', 'write']);
-    expect(tools.find((t) => t.name === 'spawn')!.inputSchema.required).toEqual(['kind', 'title', 'cwd']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'history', 'list_nodes', 'merge', 'message_status', 'notify_when', 'read', 'rename', 'report_outcome', 'send', 'spawn', 'withdraw', 'write']);
+    expect(tools.find((t) => t.name === 'spawn')!.inputSchema.required).toEqual(['kind', 'title']); // cwd defaults to a fork source's
     const r = (await client.callTool({ name: 'report_outcome', arguments: { outcome: 'succeeded' } })) as { content: Array<{ text: string }> };
     expect(r.content[0].text).toBe('{"ok":true}');
     await client.close();
