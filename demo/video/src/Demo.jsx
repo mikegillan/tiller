@@ -1,5 +1,5 @@
-import { AbsoluteFill, Freeze, Img, interpolate, OffthreadVideo, Sequence, staticFile, useCurrentFrame } from 'remotion';
-import { BEATS, FPS, planBeat } from './beats.js';
+import { AbsoluteFill, Easing, Freeze, Img, interpolate, OffthreadVideo, Sequence, staticFile, useCurrentFrame } from 'remotion';
+import { BEATS, cropFor, FPS, planBeat } from './beats.js';
 
 // Colours from ui/theme.css (dark), plus the brand violet.
 const CANVAS = '#0f0e14';
@@ -12,12 +12,17 @@ const ACCENT = '#a78bfa';
 const UI_FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
 const MONO = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
 
-// The capture is 1920x1080; shown at 80% in a window, which leaves a band below for captions.
-const CONTENT_W = 1536;
-const CONTENT_H = 864;
+// The capture is 1920x1080; shown at 94% in a window that nearly fills the canvas, with the
+// caption over its lower third.
+const CONTENT_W = 1808;
+const CONTENT_H = 1017;
 const TITLE_BAR = 36;
-const WINDOW_TOP = 36;
+const WINDOW_TOP = Math.round((1080 - CONTENT_H - TITLE_BAR) / 2);
+const K = CONTENT_W / 1920; // capture pixels to window pixels
+const CAPTION_BOTTOM = 84;
 
+const FADE = 8; // highlight fade, about 250 ms
+const EASE_IN = 9; // crop ease-in and caption fade, 300 ms
 const clamp = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' };
 
 export const Demo = ({ clips }) => {
@@ -44,12 +49,30 @@ const ClipScene = ({ beat, clip }) => {
   let at = 0;
   const parts = planBeat(beat, clip.seconds).map((s) => ({ ...s, at: (at += s.frames) - s.frames }));
   const current = parts.findLast((p) => frame >= p.at);
-  const { origin = 'center', from: zoomFrom = 1, to: zoomTo = 1.15 } = beat.zoom ?? { to: 1 };
-  const scale = interpolate(frame, [0, total], [zoomFrom, zoomTo]);
+
+  // A highlight fades in, and fades out unless it cropped: a crop cuts straight back.
+  const highlight = (beat.highlights ?? []).find(
+    (h) => frame >= h.from * FPS && frame < h.to * FPS + (h.crop ? 0 : FADE),
+  );
+  let crop = { scale: 1, tx: 0, ty: 0 };
+  let opacity = 0;
+  let rect;
+  if (highlight) {
+    const start = highlight.from * FPS;
+    const end = highlight.to * FPS;
+    rect = highlight.rect.map((v) => v * K);
+    opacity = interpolate(frame, [start, start + FADE, end, end + FADE], [0, 1, 1, 0], clamp);
+    if (highlight.crop) {
+      const target = cropFor(rect, CONTENT_W, CONTENT_H);
+      const p = interpolate(frame, [start, start + EASE_IN], [0, 1], { ...clamp, easing: Easing.inOut(Easing.cubic) });
+      crop = { scale: 1 + (target.scale - 1) * p, tx: target.tx * p, ty: target.ty * p };
+    }
+  }
+
   return (
     <AbsoluteFill>
       <Window>
-        <AbsoluteFill style={{ transform: `scale(${scale})`, transformOrigin: origin }}>
+        <AbsoluteFill style={{ transform: `translate(${crop.tx}px, ${crop.ty}px) scale(${crop.scale})`, transformOrigin: '0 0' }}>
           {parts.map((p, i) => (
             // The last part runs to the end of the beat, holding its last frame.
             <Sequence key={p.at} from={p.at} durationInFrames={i === parts.length - 1 ? total - p.at : p.frames}>
@@ -64,11 +87,37 @@ const ClipScene = ({ beat, clip }) => {
               </Freeze>
             </Sequence>
           ))}
+          {rect && <Highlight rect={rect} opacity={opacity} scale={crop.scale} />}
         </AbsoluteFill>
         {current && current.speed > 1 && frame < current.at + current.frames && <SpeedBadge speed={current.speed} />}
       </Window>
-      <Caption text={beat.caption} at={beat.captionAt ?? 0.6} seconds={beat.captionSeconds ?? 4} />
+      <Caption text={beat.caption} total={total} top={(beat.highlights ?? []).some(underCaption)} />
     </AbsoluteFill>
+  );
+};
+
+// Whether an uncropped highlight would reach into the caption's place at the bottom, so the
+// caption should sit at the top for that beat instead.
+const underCaption = (h) => !h.crop && WINDOW_TOP + TITLE_BAR + (h.rect[1] + h.rect[3]) * K > 1080 - CAPTION_BOTTOM - 90;
+
+// A violet outline with a soft glow; its huge spread shadow dims everything else to 70%. It sits
+// inside the cropped layer, so its sizes are divided by the crop scale to stay constant on screen.
+const Highlight = ({ rect: [x, y, w, h], opacity, scale }) => {
+  const pad = 6 / scale;
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: x - pad,
+        top: y - pad,
+        width: w + 2 * pad,
+        height: h + 2 * pad,
+        borderRadius: 8 / scale,
+        border: `${2 / scale}px solid ${ACCENT}`,
+        boxShadow: `0 0 ${18 / scale}px ${2 / scale}px rgb(167 139 250 / 0.55), 0 0 0 4000px rgb(0 0 0 / 0.3)`,
+        opacity,
+      }}
+    />
   );
 };
 
@@ -129,29 +178,27 @@ const SpeedBadge = ({ speed }) => (
   </div>
 );
 
-const Caption = ({ text, at, seconds }) => {
+// Shown for the whole beat; fading out at its end and in at the next beat's start makes the
+// crossfade between sections.
+const Caption = ({ text, total, top }) => {
   const frame = useCurrentFrame();
-  const start = at * FPS;
-  const end = start + seconds * FPS;
-  const opacity = interpolate(frame, [start, start + 12, end - 12, end], [0, 1, 1, 0], clamp);
+  const opacity = interpolate(frame, [0, EASE_IN, total - EASE_IN, total], [0, 1, 1, 0], clamp);
+  const place = top ? { top: WINDOW_TOP + TITLE_BAR + 72 } : { bottom: CAPTION_BOTTOM };
   return (
-    <div
-      style={{
-        position: 'absolute',
-        left: 0,
-        right: 0,
-        top: WINDOW_TOP + TITLE_BAR + CONTENT_H,
-        bottom: 0,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: 36,
-        fontWeight: 500,
-        opacity,
-        transform: `translateY(${(1 - opacity) * 8}px)`,
-      }}
-    >
-      {text}
+    <div style={{ position: 'absolute', left: 0, right: 0, ...place, display: 'flex', justifyContent: 'center', opacity }}>
+      <div
+        style={{
+          padding: '14px 30px',
+          borderRadius: 12,
+          background: 'rgb(15 14 20 / 0.88)',
+          border: `1px solid ${LINE}`,
+          boxShadow: '0 12px 40px rgb(0 0 0 / 0.5)',
+          fontSize: 36,
+          fontWeight: 500,
+        }}
+      >
+        {text}
+      </div>
     </div>
   );
 };

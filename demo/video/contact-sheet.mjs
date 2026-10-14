@@ -1,14 +1,15 @@
 // One frame per scene from the rendered cut, tiled 4 across: node contact-sheet.mjs <video.mp4> <sheet.png>
-// Clip scenes are sampled mid-caption so the sheet shows the wording too.
+// Scenes are sampled in the middle of their first highlight, or of the scene when it has none.
 import { execFileSync } from 'node:child_process';
-import { BEATS, FPS, isCard } from './src/beats.js';
+import { BEATS, FPS } from './src/beats.js';
 
 const [video, sheet] = process.argv.slice(2);
 if (!video || !sheet) throw new Error('usage: node contact-sheet.mjs <video.mp4> <sheet.png>');
 
 let start = 0;
 const frames = BEATS.map((b) => {
-  const at = isCard(b) ? b.seconds / 2 : (b.captionAt ?? 0.6) + (b.captionSeconds ?? 4) / 2;
+  const h = b.highlights?.[0];
+  const at = h ? (h.from + h.to) / 2 : b.seconds / 2;
   const frame = start + Math.round(at * FPS);
   start += b.seconds * FPS;
   return frame;

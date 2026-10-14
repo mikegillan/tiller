@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { planBeat } from './beats.js';
+import { cropFor, planBeat } from './beats.js';
+
+test('a crop centres its rect, but never shows past the frame edges', () => {
+  // A 1000x500 frame at 1.6x is 1600x800: offsets range from -600 to 0 across, -300 to 0 down.
+  assert.deepEqual(cropFor([450, 200, 100, 100], 1000, 500), { scale: 1.6, tx: -300, ty: -150 });
+  assert.deepEqual(cropFor([0, 0, 10, 10], 1000, 500), { scale: 1.6, tx: 0, ty: 0 });
+  assert.deepEqual(cropFor([990, 490, 10, 10], 1000, 500), { scale: 1.6, tx: -600, ty: -300 });
+});
 
 test('a long wait plays whole at a whole-number speed, then holds the last frame', () => {
   // 40s into 15s needs 2.67x, so 3x: 40 / 3 = 13.33s = 400 frames, 50 frames of hold.
