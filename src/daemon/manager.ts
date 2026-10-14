@@ -815,6 +815,7 @@ export class NodeManager extends EventEmitter {
     if (!rec) return;
     const last = rec.lastCost?.sessionId === rec.sessionId ? rec.lastCost?.usd : undefined;
     const delta = last !== undefined && usd >= last ? usd - last : usd;
+    if (!(delta > 0)) return; // nothing new: lastCost already holds this figure, or a fresh session has spent nothing yet
     const day = dayKey(now);
     const today = rec.spentToday?.day === day ? rec.spentToday.usd : 0;
     this.registry.update(id, { spentUsd: (rec.spentUsd ?? 0) + delta, spentToday: { day, usd: today + delta }, lastCost: { sessionId: rec.sessionId, usd } });
