@@ -28,6 +28,16 @@ Orchestrators are protected from being closed by accident. Agents cannot close t
 
 `o8 resume <id>` relaunches an exited Claude node with its previous conversation (`claude --resume`).
 
+## History, follow-up and fork
+
+Closing a Claude node (close, kill, prune, or closing its root) appends one line for it to `archive.jsonl` in the tree's session directory: its title, directory, model, effort, role, first prompt, session ids, transcript path, last message, reported outcome, spend, and for a worktree node its branch with what close did to it (merged into its base, kept with a WIP commit, or discarded). A one-line `brief` (at most 200 characters) sums up what the node did and how it ended, from its outcome's summary or note, else its last message, else its first prompt, followed by the branch's fate. Terminal nodes are not archived. The archive goes with the session directory when the sweep deletes it.
+
+`o8 history [--root ID] [QUERY]` lists the closed nodes, newest first, of one tree or all, keeping those whose title, first prompt or last message contains QUERY. The agents' `history` tool lists their own tree's in the same terse form, so an orchestrator can find a closed worker; its `read` tool reads a closed node of its own tree too. `o8 transcript <id> [--session SID]` prints a live or closed node's conversation; SID picks one of its earlier sessions, read from the same directory as the current transcript, since Claude keeps every session of a project there.
+
+`o8 followup <id> --prompt P [--title T]` continues a closed node's session as a new node (`claude --resume <session> -- P`), with the same title unless T is given, and the same model, effort and role. It goes under the closed node's parent while that is live, else it becomes a root; it starts in the closed node's directory, or in the main checkout when that was a worktree since removed. The new node records `followupOf`.
+
+`o8 spawn --fork ID ...` (the `fork` argument of the spawn tool) starts a new Claude node from a copy of another node's conversation (`claude --resume <session> --fork-session --session-id <new>`), then gives it the prompt; the source keeps its own session. The source may be live or closed, but must have started a session; an agent may fork only a node in its scope or a closed node of its own tree. The directory defaults to the source's, and the new node records `forkOf`.
+
 ## Resume on daemon start
 
 The daemon records which nodes are live in `state.json`. When it starts, after a crash, a kill, a reboot or `o8 reload`, it resumes them, parents first. It skips nodes that no longer exist, nodes whose worktree is missing and nodes idle for more than `daemon.resumeMaxAgeDays` (default 3), and logs one summary line. Setting `daemon.resumeOnStart` to false turns this off. `o8 stop` is the "do not come back" switch: it clears the live set, so the next start resumes nothing.

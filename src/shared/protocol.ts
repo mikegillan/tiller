@@ -164,6 +164,12 @@ export interface NodeRecord {
   muted?: boolean;
   /** Set while the node is armed or queued; cleared when it launches. */
   pending?: Pending;
+  /** The first prompt it was spawned with, kept for the archive. */
+  prompt?: string;
+  /** The node whose conversation this one was forked from (spawn fork): live or archived. */
+  forkOf?: string;
+  /** The archived node whose session this one continues (followup). */
+  followupOf?: string;
 }
 
 /** Do not disturb: while on (and before `until`, when set) the daemon sends no OS notifications. Not persisted. */

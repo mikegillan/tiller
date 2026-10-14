@@ -1,0 +1,66 @@
+// <sessionDir>/archive.jsonl: one ArchivedNode per closed Claude node, so it can be found, read, followed up or forked
+// later. The sessions sweep deletes it with the rest of the directory.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { outcomeLine } from '../shared/format.js';
+import type { ArchivedNode, NodeRecord, NodeStatus, Outcome } from '../shared/protocol.js';
+import { roleFor } from './launch.js';
+import { appendLine, flushEvents, listSessions } from './sessions.js';
+
+const ARCHIVE = 'archive.jsonl';
+const BRIEF_CHARS = 200;
+
+/** What close decided about a worktree node's branch; empty for a node without one. */
+export type BranchFate = Pick<ArchivedNode, 'branchFate' | 'base'>;
+
+const firstLine = (s?: string) => s?.split('\n').map((l) => l.trim()).find(Boolean);
+const firstSentence = (s?: string) => {
+  const t = s?.replace(/\s+/g, ' ').trim();
+  return t && (/^.*?[.!?](?=\s|$)/.exec(t)?.[0] ?? t);
+};
+const FATE_TEXT = { merged: (base?: string) => `merged into ${base ?? 'its base'}`, kept: () => 'branch kept, unmerged', discarded: () => 'branch discarded' };
+
+/**
+ * One line of at most 200 characters on what the node did and how it ended: the outcome ("succeeded: ...") with its
+ * summary's first sentence or its note, else the first line of its last message, else of its first prompt; then what
+ * became of its branch.
+ */
+export function briefOf(a: Omit<ArchivedNode, 'brief'>): string | undefined {
+  const o = a.outcome;
+  const text = firstSentence(o?.summary) || o?.note || firstLine(a.lastAssistantMessage) || firstLine(a.prompt);
+  const head = o ? outcomeLine({ outcome: o.outcome, gate: o.gate, summary: text }) : text?.replace(/\s+/g, ' ');
+  const tail = a.branchFate ? ` (${FATE_TEXT[a.branchFate](a.base)})` : '';
+  if (!head) return tail.trim() || undefined;
+  const room = BRIEF_CHARS - tail.length;
+  return (head.length > room ? `${head.slice(0, room - 1)}…` : head) + tail;
+}
+
+/** The archive line for a node being closed. */
+export function archivedOf(rec: NodeRecord, status: NodeStatus | undefined, outcome: Outcome | undefined, rootId: string, fate: BranchFate, closedAt = Date.now()): ArchivedNode {
+  const a: Omit<ArchivedNode, 'brief'> = {
+    id: rec.id, rootId, parentId: rec.parentId, title: rec.title, cwd: rec.cwd, model: status?.model ?? rec.model, effort: rec.effort,
+    role: roleFor(rec.role, rec.parentId), prompt: rec.prompt, sessionId: rec.sessionId, previousSessions: rec.previousSessions,
+    transcriptPath: rec.transcriptPath, lastAssistantMessage: status?.lastAssistantMessage, outcome, spentUsd: rec.spentUsd,
+    branch: rec.worktree?.branch, ...fate, createdAt: rec.createdAt, closedAt,
+  };
+  return { ...a, brief: briefOf(a) };
+}
+
+export const archiveNode = (dir: string, a: ArchivedNode): void => appendLine(join(dir, ARCHIVE), a);
+
+function readArchive(dir: string): ArchivedNode[] {
+  let raw: string;
+  try { raw = readFileSync(join(dir, ARCHIVE), 'utf8'); } catch { return []; }
+  return raw.split('\n').flatMap((l) => { try { return l ? [JSON.parse(l) as ArchivedNode] : []; } catch { return []; } });
+}
+
+/** Archived nodes, newest closed first: of one tree when rootId is given, and with `query` in title, prompt or last message (any case). */
+export async function history(home: string, f: { rootId?: string; query?: string } = {}): Promise<ArchivedNode[]> {
+  await flushEvents(); // archive lines still being written
+  const q = f.query?.toLowerCase();
+  const hit = (a: ArchivedNode) => !q || [a.title, a.prompt, a.lastAssistantMessage].some((s) => s?.toLowerCase().includes(q));
+  // prune: reads every archive on each call; keep an index by id if trees and lookups grow large.
+  return listSessions(home).filter((s) => !f.rootId || s.rootId === f.rootId).flatMap((s) => readArchive(s.dir)).filter(hit).sort((a, b) => b.closedAt - a.closedAt);
+}
+
+export const findArchived = async (home: string, id: string): Promise<ArchivedNode | undefined> => (await history(home)).find((a) => a.id === id);

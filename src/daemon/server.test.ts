@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -75,6 +75,23 @@ describe('websocket', () => {
     send({ t: 'close', id, force: true });
     await until(() => seen.find((m) => m.t === 'removed' && m.id === id));
     expect(manager.list()).toEqual([]);
+  });
+
+  it('replies to history and transcript for a closed Claude node, and with an error for an unknown one', async () => {
+    const transcriptPath = join(home, 't.jsonl');
+    writeFileSync(transcriptPath, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } })}\n`);
+    const id = manager.registry.create({ parentId: null, kind: 'claude', title: 'old', cwd: home, prompt: 'build it', sessionId: 's1', transcriptPath }).id;
+    manager.runtimes.set(id, {});
+    mkdirSync(manager.sessionDirOf(id), { recursive: true }); // made at launch; this node never launched
+    manager.closed(id);
+    await connect();
+    send({ t: 'history', query: 'BUILD' });
+    const h = await until(() => seen.find((m) => m.t === 'history'));
+    expect(h).toMatchObject({ items: [{ id, rootId: id, title: 'old', prompt: 'build it', brief: 'build it' }] });
+    send({ t: 'transcript', id });
+    expect(await until(() => seen.find((m) => m.t === 'transcript'))).toEqual({ t: 'transcript', id, entries: [{ role: 'assistant', text: 'done' }], sessions: [{ sessionId: 's1', current: true }] });
+    send({ t: 'transcript', id: 'n-nope' });
+    expect(await until(() => seen.find((m) => m.t === 'transcript' && m.id === 'n-nope'))).toEqual({ t: 'transcript', id: 'n-nope', error: 'no such node: n-nope' });
   });
 });
 
