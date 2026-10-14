@@ -1,9 +1,11 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { launchArgs } from './launch.js';
 import { NodeManager } from './manager.js';
+import { PtySession } from './pty.js';
+import type { NodeStatus } from '../shared/protocol.js';
 import { trustPolicy } from './worktree-lifecycle.js';
 
 describe('trustPolicy', () => {
@@ -179,6 +181,192 @@ describe('NodeManager restart', () => {
     expect(rec.sessionId).not.toBe('s0');
     expect(rec.previousSessions).toHaveLength(10);
     expect(rec.previousSessions!.at(-1)).toBe([...first][10]);
+  });
+});
+
+// Controlled PTY callbacks exercise manager policy/lifecycle without launching either CLI or making model requests.
+describe('NodeManager harness delegation and lifecycle', () => {
+  let home: string;
+  let m: NodeManager;
+  let exit: (code: number) => void;
+  let output: (data: string) => void;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'tl-policy-'));
+    m = new NodeManager({ home, shell: '/bin/sh' });
+    vi.spyOn(PtySession, 'spawn').mockImplementation(() => ({
+      // No real process or trust watcher: callbacks are driven by the tests below.
+      exited: true, kill() {},
+      onData(cb: typeof output) { output = cb; }, onExit(cb: typeof exit) { exit = cb; },
+    } as unknown as PtySession));
+    writeFileSync(join(home, 'agents', 'plain.md'), 'Prompt only.');
+  });
+  afterEach(async () => { await m.shutdown(); vi.restoreAllMocks(); rmSync(home, { recursive: true, force: true }); });
+  const pi = (parentId?: string, extra = {}) => m.spawn({ kind: 'agent', harness: 'pi', title: 'Pi', cwd: home, parentId, ...extra });
+  const claude = (extra = {}) => m.spawn({ kind: 'claude', title: 'Claude', cwd: home, byHuman: true, ...extra });
+
+  it('allows explicit human Pi selection, including beneath a restricted Claude parent', async () => {
+    expect(await pi(undefined, { byHuman: true })).toMatchObject({ harness: 'pi', permissionMode: undefined });
+    const parent = await claude({ permissionMode: 'plan', preset: 'reviewer' });
+    expect(await pi(parent.id, { byHuman: true })).toMatchObject({ harness: 'pi', permissionMode: undefined });
+    // Human selection does not silently discard unsupported requested restrictions.
+    await expect(pi(parent.id, { byHuman: true, permissionMode: 'plan' })).rejects.toThrow(/does not support Claude permissionMode/);
+    await expect(pi(parent.id, { byHuman: true, preset: 'reviewer' })).rejects.toThrow(/does not support Claude preset/);
+  });
+
+  it('allows Pi parents and inherits their harness, not a Claude permission_mode hook field', async () => {
+    const parent = await pi(undefined, { byHuman: true, preset: 'plain' });
+    m.applyHook(parent.id, { hook_event_name: 'UserPromptSubmit', permission_mode: 'plan' });
+    rmSync(join(home, 'agents', 'plain.md')); // not a restriction; the running Pi remains unrestricted delegation
+    delete m.runtimes.get(parent.id)!.launchedPreset; // also irrelevant for a restored Pi parent
+    expect(await m.spawn({ kind: 'agent', title: 'child', cwd: home, parentId: parent.id })).toMatchObject({ harness: 'pi', permissionMode: undefined });
+  });
+
+  it.each([undefined, 'plain'])('allows bypassPermissions Claude without restrictive preset (%s)', async (preset) => {
+    const parent = await claude({ permissionMode: 'bypassPermissions', preset });
+    expect(await pi(parent.id, { preset: 'plain' })).toMatchObject({ harness: 'pi', permissionMode: undefined });
+  });
+
+  it.each([undefined, 'default', 'plan', 'acceptEdits', 'auto'])('refuses Claude mode %s before allocating a Pi node', async (permissionMode) => {
+    const parent = await claude({ permissionMode });
+    const count = m.list().length;
+    // A child's explicit mode/prompt-only preset must not override the parent's restriction for Pi delegation.
+    for (const extra of [{}, { preset: 'plain' }, { permissionMode: 'bypassPermissions' }]) {
+      await expect(pi(parent.id, extra)).rejects.toThrow(/unrestricted agent parent/);
+    }
+    expect(m.list()).toHaveLength(count);
+    expect(m.runtimes.size).toBe(count);
+  });
+
+  it('checks effective live mode rather than a stale stored or preset mode', async () => {
+    writeFileSync(join(home, 'agents', 'mode.md'), '---\npermissionMode: plan\n---\nPlan.');
+    const parent = await claude({ preset: 'mode', permissionMode: 'bypassPermissions' });
+    m.applyHook(parent.id, { hook_event_name: 'UserPromptSubmit', permission_mode: 'plan' });
+    m.registry.update(parent.id, { permissionMode: 'bypassPermissions' }); // deliberately stale record
+    await expect(pi(parent.id)).rejects.toThrow(/unrestricted agent parent/);
+    m.applyHook(parent.id, { hook_event_name: 'UserPromptSubmit', permission_mode: 'bypassPermissions' });
+    m.registry.update(parent.id, { permissionMode: 'plan' });
+    expect(await pi(parent.id)).toMatchObject({ harness: 'pi' });
+  });
+
+  it.each(['tools: Read', 'tools: []', 'disallowedTools: Write', 'disallowedTools: []', 'maxTurns: 1'])('refuses launched Claude preset restriction %s, even if its file is removed', async (restriction) => {
+    const file = join(home, 'agents', 'limited.md');
+    writeFileSync(file, `---\n${restriction}\n---\nLimited.`);
+    const parent = await claude({ permissionMode: 'bypassPermissions', preset: 'limited' });
+    writeFileSync(file, 'Now only a prompt.');
+    await expect(pi(parent.id, { preset: 'plain' })).rejects.toThrow(/no preset tools/);
+    rmSync(file);
+    await expect(pi(parent.id)).rejects.toThrow(/no preset tools/);
+    expect(await pi(parent.id, { byHuman: true })).toMatchObject({ harness: 'pi' });
+    writeFileSync(file, 'Now only a prompt.');
+    expect(m.restart(parent.id)).toEqual({ ok: true }); // a new launch really did drop the old restrictions
+    expect(await pi(parent.id)).toMatchObject({ harness: 'pi' });
+  });
+
+  it('loads an unlaunched/restored Claude preset from the parent project, not the child project', async () => {
+    const project = join(home, 'project'), childProject = join(home, 'other');
+    for (const dir of [project, childProject]) mkdirSync(join(dir, '.tiller', 'agents'), { recursive: true });
+    writeFileSync(join(project, '.tiller', 'agents', 'limited.md'), '---\ntools: Read\n---\nLimited.');
+    writeFileSync(join(childProject, '.tiller', 'agents', 'limited.md'), 'Prompt only.');
+    const parent = await claude({ cwd: project, preset: 'limited', permissionMode: 'bypassPermissions' });
+    delete m.runtimes.get(parent.id)!.launchedPreset;
+    await expect(pi(parent.id, { cwd: childProject, preset: 'limited' })).rejects.toThrow(/no preset tools/);
+  });
+
+  it('requires a known unrestricted agent parent for nonhuman Pi requests', async () => {
+    await expect(pi()).rejects.toThrow(/only the human/);
+    await expect(pi('missing')).rejects.toThrow(/only the human/);
+    const parent = await m.spawn({ kind: 'terminal', title: 'terminal', cwd: home, permissionMode: 'bypassPermissions', byHuman: true });
+    await expect(pi(parent.id)).rejects.toThrow(/only the human/);
+  });
+
+  it('preserves Claude inheritance and explicit override policy; allowed Pi delegation still rejects a requested mode', async () => {
+    const parent = await claude({ permissionMode: 'plan' });
+    expect(await claude({ parentId: parent.id, byHuman: false })).toMatchObject({ permissionMode: 'plan' });
+    expect(await claude({ parentId: parent.id, byHuman: false, permissionMode: 'acceptEdits' })).toMatchObject({ permissionMode: 'acceptEdits' });
+    await expect(claude({ parentId: parent.id, byHuman: false, permissionMode: 'bypassPermissions' })).rejects.toThrow(/only the human/);
+    m.applyHook(parent.id, { hook_event_name: 'UserPromptSubmit', permission_mode: 'bypassPermissions' });
+    await expect(pi(parent.id, { permissionMode: 'plan' })).rejects.toThrow(/does not support Claude permissionMode/);
+    await expect(pi(parent.id, { permissionMode: 'bypassPermissions' })).rejects.toThrow(/only the human/);
+  });
+
+  it.each(['claude', 'agent'] as const)('ignores %s Claude mod turn.start before hooks and after tool, dialog and completion events', async (kind) => {
+    const { id } = await claude({ kind, prompt: 'work' });
+    const modStart = () => m.applyModEvent(id, { event: 'turn.start', payload: { text: 'work', turnId: 'mod-id' } });
+    const unchanged = () => {
+      const prev = m.view(id)!.status;
+      const rt = m.runtimes.get(id)!;
+      const before = { lastHookAt: rt.lastHookAt, turnStart: rt.turnStart, starting: rt.starting };
+      modStart();
+      expect(m.view(id)!.status).toBe(prev);
+      expect({ lastHookAt: rt.lastHookAt, turnStart: rt.turnStart, starting: rt.starting }).toEqual(before);
+    };
+    unchanged(); // no mod-start transition even before UserPromptSubmit
+    m.applyHook(id, { hook_event_name: 'UserPromptSubmit', prompt_id: 'hook-id' });
+    m.applyHook(id, { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '/a.ts' } });
+    unchanged();
+    m.applyHook(id, { hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
+    unchanged(); // cannot clear a blocked dialog
+    m.applyModEvent(id, { event: 'turn.complete', payload: { answer: 'Finished.', durationMs: 10, isAborted: false, turnId: 'mod-id', reason: 'answer' } });
+    unchanged(); // cannot resurrect an ended turn or discard its answer
+    expect(m.view(id)!.status).toMatchObject({ state: 'done', promptId: 'hook-id', lastAssistantMessage: 'Finished.' });
+  });
+
+  it('accepts Pi native turn.start as a turn boundary and settles normally', async () => {
+    const { id } = await pi(undefined, { byHuman: true, prompt: 'work' });
+    m.setStatus(id, { state: 'done', changedAt: 1, errored: true, lastAssistantMessage: 'old' }, false);
+    m.applyModEvent(id, { event: 'turn.start', payload: { text: 'work', turnId: 'pi-id' } });
+    expect(m.view(id)!.status).toMatchObject({ state: 'working', promptId: 'pi-id' });
+    expect(m.view(id)!.status.errored).toBeUndefined();
+    expect(m.view(id)!.status.lastAssistantMessage).toBeUndefined();
+    expect(m.runtimes.get(id)).toMatchObject({ starting: false, lastHookAt: expect.any(Number), turnStart: expect.any(Number) });
+    m.applyModEvent(id, { event: 'turn.complete', payload: { answer: 'Finished.', durationMs: 10, isAborted: false, turnId: 'pi-id', reason: 'answer' } });
+    expect(m.view(id)!.status).toMatchObject({ state: 'done', lastAssistantMessage: 'Finished.' });
+  });
+
+  it.each([
+    ['terminal', undefined], ['claude', undefined], ['agent', 'claude'], ['agent', 'pi'],
+  ] as const)('keeps %s/%s exit semantics and does not mutate previous status', async (kind, harness) => {
+    const { id } = await m.spawn({ kind, harness, title: 'exit', cwd: home, byHuman: true });
+    const prev: NodeStatus = Object.freeze({ state: kind === 'terminal' ? 'none' : 'unknown', exited: true, changedAt: 1, activity: 'previous activity' });
+    m.setStatus(id, prev, false); // ptyExited returns this exact status when it is already marked exited
+    output('\u001b[31mError: launch failed\u001b[0m\r\n');
+    exit(7);
+    expect(prev).toEqual({ state: kind === 'terminal' ? 'none' : 'unknown', exited: true, changedAt: 1, activity: 'previous activity' });
+    if (harness === 'pi') {
+      expect(m.view(id)!.status).toMatchObject({ exited: true, errored: true, activity: 'Error: launch failed' });
+      expect(m.view(id)!.status).not.toBe(prev);
+    } else expect(m.view(id)!.status).toBe(prev);
+  });
+
+  it.each([0, 3])('reports Pi exit %s immutably, with generic error fallback and clean activity clearing', async (code) => {
+    const { id } = await pi(undefined, { byHuman: true });
+    const prev: NodeStatus = Object.freeze({ state: 'done', exited: true, changedAt: 1, activity: 'old' });
+    m.setStatus(id, prev, false);
+    output('ordinary output\r\n');
+    exit(code);
+    expect(m.view(id)!.status).toMatchObject({ exited: true, activity: code ? 'Process exited with code 3' : undefined });
+    expect(m.view(id)!.status.errored).toBe(code ? true : undefined);
+    expect(prev.activity).toBe('old');
+    expect(m.view(id)!.status).not.toBe(prev);
+  });
+
+  it('finishes an active Pi on a failing PTY exit without mutating its working status', async () => {
+    const { id } = await pi(undefined, { byHuman: true });
+    const prev: NodeStatus = Object.freeze({ state: 'working', changedAt: 1, activity: 'tool running' });
+    m.setStatus(id, prev, false);
+    exit(3);
+    expect(m.view(id)!.status).toMatchObject({ state: 'done', doneSource: 'exit', exited: true, errored: true, activity: 'Process exited with code 3' });
+    expect(prev).toEqual({ state: 'working', changedAt: 1, activity: 'tool running' });
+  });
+
+  it.each(['terminal', 'claude', 'agent'] as const)('preserves active %s exit transition without adding errors', async (kind) => {
+    const { id } = await m.spawn({ kind, title: 'exit', cwd: home, byHuman: true });
+    const prev: NodeStatus = Object.freeze({ state: 'working', changedAt: 1, activity: 'doing work', interrupted: true });
+    m.setStatus(id, prev, false);
+    exit(3);
+    expect(m.view(id)!.status).toMatchObject({ state: 'done', doneSource: 'exit', exited: true, interrupted: true, activity: undefined });
+    expect(m.view(id)!.status.errored).toBeUndefined();
+    expect(prev).toMatchObject({ state: 'working', activity: 'doing work' });
   });
 });
 
