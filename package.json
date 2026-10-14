@@ -15,7 +15,7 @@
     "daemon": "tsx src/daemon/index.ts",
     "tl": "tsx src/daemon/cli.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p adapters/pi/tsconfig.json",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true",
     "ui:dev": "vite --config ui/vite.config.ts",
     "ui:build": "vite build --config ui/vite.config.ts",

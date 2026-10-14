@@ -1,7 +1,7 @@
 // Dependency launches (spawn after / afterSuccess), the daemon.maxWorking queue, and notify_when: when a set of nodes
 // counts as finished, and holding a node back until then.
 import { outcomeLine } from '../shared/format.js';
-import type { AgentState, Isolation, NodeView, Pending } from '../shared/protocol.js';
+import { isAgentKind, type AgentState, type Isolation, type NodeView, type Pending } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
 import type { NodeManager, NodeRuntime, SpawnRequest } from './manager.js';
 import { DAEMON, deliver } from './messaging.js';
@@ -40,7 +40,7 @@ export function checkDeps(m: Mgr, p: Pending, since: number): { met: string[]; u
 /** Claude nodes working now, or launched with a prompt whose first turn has not begun. */
 function workingCount(m: NodeManager): number {
   const working = (rt?: NodeRuntime) => !!rt && (!!rt.starting || (!!rt.session && rt.status?.state === 'working'));
-  return m.registry.list().filter((n) => n.kind === 'claude' && working(m.runtimes.get(n.id))).length;
+  return m.registry.list().filter((n) => isAgentKind(n.kind) && working(m.runtimes.get(n.id))).length;
 }
 
 /**
@@ -50,7 +50,7 @@ function workingCount(m: NodeManager): number {
 export function arm(m: NodeManager, id: string, req: SpawnRequest, isolation: Isolation): boolean {
   const after = req.after ?? [], afterSuccess = req.afterSuccess ?? [];
   const max = loadConfig(null, m.home).daemon.maxWorking;
-  const queue = req.kind === 'claude' && !req.now && max > 0 && (workingCount(m) >= max || m.list().some((v) => v.status.state === 'queued'));
+  const queue = isAgentKind(req.kind) && !req.now && max > 0 && (workingCount(m) >= max || m.list().some((v) => v.status.state === 'queued'));
   if (!after.length && !afterSuccess.length && !queue) return false;
   const rec = m.registry.update(id, { pending: { after, afterSuccess, met: [], prompt: req.prompt, isolation, ...(req.base ? { base: req.base } : {}), ...(req.now ? { now: true } : {}) } })!;
   m.runtimes.get(id)!.status = { state: 'armed', changedAt: Date.now() };
@@ -87,12 +87,12 @@ function schedule(m: NodeManager): void {
     const max = loadConfig(null, m.home).daemon.maxWorking;
     let state: AgentState = 'armed', activity: string;
     if (unmet.length) activity = blocked ? `blocked by ${blocked}` : `after ${unmet.join(', ')}`;
-    else if (rec.kind === 'claude' && !p.now && max > 0 && working >= max) {
+    else if (isAgentKind(rec.kind) && !p.now && max > 0 && working >= max) {
       state = 'queued';
       activity = `queued: ${working} working, daemon.maxWorking ${max}`;
     } else {
       release(m, rec.id);
-      if (rec.kind === 'claude') working++;
+      if (isAgentKind(rec.kind)) working++;
       continue;
     }
     const cur = rt.status!;

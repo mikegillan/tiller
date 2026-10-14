@@ -1,13 +1,16 @@
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { stripVTControlCharacters } from 'node:util';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { NEEDS_YOU_STATES, type ArchivedNode, type Diff, type DigestItem, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
+import { harnessFor, isAgentKind, NEEDS_YOU_STATES, type Harness, type ArchivedNode, type Diff, type DigestItem, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { loadConfig, type Config, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
-import { claudeLaunch, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput, type LaunchSpec } from './launch.js';
+import { roleFor, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
+import { adapterFor } from './harness.js';
+import { tillerTrusts } from './trust.js';
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
@@ -20,7 +23,7 @@ import * as wt from './worktree.js';
 import { addWorktree, closeWorktreeNode, mergeWorktree, readClaudeJson, refreshGit, refreshGitSoon, setMissing, setupThenLaunch, trustedForWorktree, trustPolicy, worktreeCheck, worktreeCommands, worktreeEnv, worktrees, type WorktreeCheck, type WorktreeReport } from './worktree-lifecycle.js';
 import { appendEvent, buildDigest, ensureSession, flushEvents, handoffPrompt, listSessions, markClosed, readEvents, sessionDir, sweepSessions } from './sessions.js';
 import { archivedOf, archiveNode, findArchived, type BranchFate } from './archive.js';
-import { nodeTranscript, transcriptFor } from './transcript.js';
+import { nodeTranscript } from './transcript.js';
 import { initialState, interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
 
 const MAX_PREVIOUS_SESSIONS = 10;
@@ -47,11 +50,12 @@ function usableCwd(cwd: string): string | undefined {
 /** The completion gate configured for `dir`, when Claude trusts that directory, as for worktree setup. `tl gate` uses it too. */
 export function gateFor(dir: string, home: string): Config['gate'] {
   const gate = loadConfig(dir, home).gate;
-  return gate && trustPolicy(dir, readClaudeJson()) === 'auto' ? gate : undefined;
+  return gate && (tillerTrusts(home, dir) || trustPolicy(dir, readClaudeJson()) === 'auto') ? gate : undefined;
 }
 
 export interface SpawnRequest {
   kind: NodeKind;
+  harness?: Harness;
   title: string;
   cwd: string;
   prompt?: string;
@@ -265,7 +269,17 @@ export class NodeManager extends EventEmitter {
 
   /** Delete the session directories that daemon.sessionsKeepDays has expired; returns their root ids. */
   sweepSessions(): string[] {
-    return sweepSessions(this.home, new Set(this.registry.list().map((n) => n.id)), loadConfig(null, this.home).daemon.sessionsKeepDays);
+    const protectedRoots = new Set<string>();
+    const sessionsRoot = resolve(this.home, 'sessions');
+    for (const n of this.registry.list()) {
+      protectedRoots.add(n.id);
+      protectedRoots.add(this.rootIdOf(n.id));
+      // An archived follow-up may still write to its old root's Pi conversation file.
+      if (n.transcriptPath && inside(resolve(n.transcriptPath), sessionsRoot)) {
+        protectedRoots.add(relative(sessionsRoot, resolve(n.transcriptPath)).split(sep)[0]!);
+      }
+    }
+    return sweepSessions(this.home, protectedRoots, loadConfig(null, this.home).daemon.sessionsKeepDays);
   }
 
   // ---- lifecycle ----
@@ -309,19 +323,31 @@ export class NodeManager extends EventEmitter {
    * and be trusted by Claude. Any failure removes the worktree and branch and discards the record.
    */
   async spawn(req: SpawnRequest): Promise<NodeView> {
+    if (req.kind === 'terminal' && req.harness) throw new Error('terminal nodes cannot select a harness');
+    if (req.kind === 'claude' && req.harness && req.harness !== 'claude') throw new Error('use kind "agent" for a non-Claude harness');
+    // Generic agent children inherit their parent's CLI unless explicitly selected.
+    if (req.kind === 'agent' && !req.harness && req.parentId) {
+      const parent = this.registry.get(req.parentId);
+      if (parent && isAgentKind(parent.kind)) req = { ...req, harness: harnessFor(parent) };
+    }
+    const adapter = isAgentKind(req.kind) ? adapterFor(req) : undefined;
     const from = req.fork ? await this.forkSource(req) : undefined;
     if (from) req = { ...req, cwd: from.cwd };
     const parentId = req.parentId ?? null, dir = this.projectDir(req);
     const config = loadConfig(dir, this.home);
-    if (req.preset && req.kind !== 'claude') throw new Error('a preset is for claude nodes only');
+    if (req.preset && !adapter) throw new Error('a preset is for agent nodes only');
     const p: Partial<Preset> = req.preset ? loadPreset(req.preset, dir, this.home) : {};
     const role = req.role ?? p.role, isOrchestrator = roleFor(role, parentId) === 'orchestrator';
-    const defaults = req.kind === 'claude' ? config.roles[isOrchestrator ? 'orchestrator' : 'worker'] : {};
-    const inherited = req.byHuman || !parentId ? undefined : this.runtimes.get(parentId)?.status?.permissionMode ?? this.registry.get(parentId)?.permissionMode;
+    // Legacy role defaults name Claude models; other CLIs keep their own defaults unless explicitly configured by a preset/request.
+    const defaults = adapter?.id === 'claude' ? config.roles[isOrchestrator ? 'orchestrator' : 'worker'] : {};
+    const parent = parentId ? this.registry.get(parentId) : undefined;
+    const inherited = req.byHuman || !parent || adapter?.id === 'pi' || (adapter && harnessFor(parent) !== adapter.id)
+      ? undefined : this.runtimes.get(parentId!)?.status?.permissionMode ?? parent.permissionMode;
     const permissionMode = req.permissionMode ?? p.permissionMode ?? (inherited === 'bypassPermissions' ? undefined : inherited);
     if (permissionMode === 'bypassPermissions' && !req.byHuman) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
-    const isolation = req.isolation ?? p.isolation ?? (req.kind !== 'claude' || isOrchestrator ? 'none' : config.worktrees.isolation);
-    if (isolation === 'worktree' && req.kind !== 'claude') throw new Error('isolation "worktree" is for claude nodes only');
+    adapter?.validate({ permissionMode, preset: p });
+    const isolation = req.isolation ?? p.isolation ?? (!adapter || isOrchestrator ? 'none' : config.worktrees.isolation);
+    if (isolation === 'worktree' && !adapter) throw new Error('isolation "worktree" is for agent nodes only');
     this.checkLimits(req, config.limits);
     this.checkDependencies(req);
     if (req.base && isolation !== 'worktree') throw new Error('base is for isolation "worktree" only');
@@ -329,14 +355,15 @@ export class NodeManager extends EventEmitter {
     if (isolation === 'worktree') {
       const repo = await wt.mainCheckout(req.cwd);
       head = await wt.headInfo(req.cwd);
-      if (!trustedForWorktree(repo, readClaudeJson())) throw new Error(`refusing isolation "worktree": Claude does not trust ${repo} yet; run claude once in ${repo} to trust it`);
+      if (adapter?.id === 'claude' && !trustedForWorktree(repo, readClaudeJson())) throw new Error(`refusing isolation "worktree": Claude does not trust ${repo} yet; run claude once in ${repo} to trust it`);
       const protectedBranches = await wt.protectedBranches(repo, config.worktrees.protected);
       base = await wt.pickBase(req.cwd, head, { requested: req.base, protected: protectedBranches, pattern: config.worktrees.taskBranch, title: req.title });
     }
     const rec = this.registry.create({ // the resolved fields, so restart keeps them
-      parentId, kind: req.kind, title: req.title, cwd: req.cwd,
+      parentId, kind: req.kind, ...(req.harness ? { harness: req.harness } : {}), title: req.title, cwd: req.cwd,
       model: req.model ?? p.model ?? defaults.model, effort: req.effort ?? p.effort ?? defaults.effort, permissionMode, role, preset: req.preset,
-      sessionId: req.kind === 'claude' ? req.followup?.sessionId ?? randomUUID() : undefined,
+      sessionId: adapter ? req.followup?.sessionId ?? randomUUID() : undefined,
+      ...(req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
       rootId: parentId ? this.rootIdOf(parentId) : undefined,
       prompt: req.prompt, forkOf: req.fork, forkSession: from?.sessionId, followupOf: req.followup?.id,
       // A follow-up's resumed session keeps counting its cost from where the archived node's last measure left it.
@@ -366,9 +393,11 @@ export class NodeManager extends EventEmitter {
    * its cwd: the one asked for, else the source's, either falling back to the main checkout for a removed worktree.
    */
   private async forkSource(req: SpawnRequest): Promise<{ sessionId: string; cwd: string }> {
-    if (req.kind !== 'claude') throw new Error('fork is for claude nodes only');
+    if (!isAgentKind(req.kind)) throw new Error('fork is for agent nodes only');
+    if (!adapterFor(req).capabilities.fork) throw new Error('this harness does not support session forking');
     const src = this.registry.get(req.fork!) ?? await findArchived(this.home, req.fork!, req.parentId ? this.rootIdOf(req.parentId) : undefined);
     if (!src) throw new Error(`no such node to fork: ${req.fork}`);
+    if ((src.harness ?? 'claude') !== harnessFor(req)) throw new Error('cannot fork a session across harnesses');
     // transcriptPath comes with SessionStart: without it the session has not started and there is nothing to fork.
     if (!src.sessionId || !src.transcriptPath) throw new Error(`refused: ${req.fork} has no Claude session yet to fork`);
     const want = req.cwd || src.cwd, cwd = usableCwd(want);
@@ -392,7 +421,7 @@ export class NodeManager extends EventEmitter {
     const cwd = usableCwd(a.cwd);
     if (!cwd) throw new Error(`refused: ${a.cwd} no longer exists`);
     const parentId = a.parentId && this.registry.get(a.parentId) ? a.parentId : null;
-    return this.spawn({ kind: 'claude', title: title || a.title, cwd, prompt, model: a.model, effort: a.effort, role: a.role, parentId, isolation: 'none', byHuman: true, followup: a });
+    return this.spawn({ kind: a.harness === 'pi' ? 'agent' : 'claude', ...(a.harness ? { harness: a.harness } : {}), title: title || a.title, cwd, prompt, model: a.model, effort: a.effort, role: a.role, parentId, isolation: 'none', byHuman: true, followup: a });
   }
 
   /** A live or archived Claude node's conversation in one of its sessions (default: the current one). */
@@ -437,7 +466,7 @@ export class NodeManager extends EventEmitter {
   async resume(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
     const rec = this.registry.get(id);
     if (!rec) return { ok: false, error: 'No such node' };
-    if (rec.kind !== 'claude') return { ok: false, error: 'Only Claude nodes can be resumed' };
+    if (!isAgentKind(rec.kind) || !adapterFor(rec).capabilities.resume) return { ok: false, error: 'Only resumable agent nodes can be resumed' };
     const rt = this.runtimes.get(id)!;
     if (rt.session) return { ok: false, error: 'Node is still running' };
     if (rt.setup) return { ok: false, error: 'worktree setup is running' };
@@ -453,8 +482,8 @@ export class NodeManager extends EventEmitter {
     const status = rt.status!;
     const { sessionId } = rec;
     if (!sessionId) return { ok: false, error: 'No session to resume' };
-    const transcript = rec.transcriptPath ?? transcriptFor(rec.cwd, sessionId);
-    if (!existsSync(transcript)) return { ok: false, error: `No conversation to resume (missing ${transcript})` };
+    const transcript = adapterFor(rec).transcript(rec, this.sessionDirOf(id));
+    if (!transcript || !existsSync(transcript)) return { ok: false, error: `No conversation to resume (missing ${transcript})` };
     rt.lastHookAt = undefined;
     try {
       this.writeFiles(id); // the port, and so the endpoint in mcp.json, may have changed since the node was created
@@ -490,13 +519,15 @@ export class NodeManager extends EventEmitter {
     const old = rec.sessionId;
     this.kill(id);
     rt.lastHookAt = undefined;
-    const sessionId = rec.kind === 'claude' ? randomUUID() : undefined;
-    this.registry.update(id, { sessionId, transcriptPath: undefined, previousSessions: [...(rec.previousSessions ?? []), ...(old ? [old] : [])].slice(-MAX_PREVIOUS_SESSIONS) });
+    const sessionId = isAgentKind(rec.kind) ? randomUUID() : undefined;
+    const transcriptPath = isAgentKind(rec.kind) && adapterFor(rec).id === 'pi' && rec.transcriptPath && sessionId
+      ? join(dirname(rec.transcriptPath), `${sessionId}.jsonl`) : undefined;
+    this.registry.update(id, { sessionId, transcriptPath, previousSessions: [...(rec.previousSessions ?? []), ...(old ? [old] : [])].slice(-MAX_PREVIOUS_SESSIONS) });
     rt.status = { state: initialState(rec.kind), activity: 'restarting', changedAt: Date.now() };
     try {
       this.writeFiles(id);
       this.emit('data', id, '\x1bc'); // reset attached screens before the new process draws
-      const first = rec.kind === 'claude' ? prompt || handoffPrompt(this.sessionDirOf(id)) : undefined;
+      const first = isAgentKind(rec.kind) ? prompt || handoffPrompt(this.sessionDirOf(id)) : undefined;
       if (rec.worktree && rt.needsSetup) setupThenLaunch(this, id, rec.worktree, worktreeCommands(this, rec.worktree.repo, 'setup'), prompt || rt.needsSetup.prompt);
       else this.launch(id, first, false);
       this.logEvent(id, 'restart', { sessionId, ...(first ? { prompt: first } : {}) });
@@ -532,7 +563,7 @@ export class NodeManager extends EventEmitter {
     this.logEvent(id, 'close', note ? { note } : {});
     const rec = this.registry.get(id), rt = this.runtimes.get(id);
     // Every launch sets lastActiveAt; a node that never launched has no conversation (nor a session directory) to keep.
-    if (rec?.kind === 'claude' && rec.lastActiveAt !== undefined) archiveNode(this.sessionDirOf(id), archivedOf(rec, rt?.status, rt?.outcome, this.rootIdOf(id), fate));
+    if (rec && isAgentKind(rec.kind) && rec.lastActiveAt !== undefined) archiveNode(this.sessionDirOf(id), archivedOf(rec, rt?.status, rt?.outcome, this.rootIdOf(id), fate));
     if (rec?.parentId === null) markClosed(this.home, id);
     this.discard(id);
     this.emit('removed', id);
@@ -660,15 +691,25 @@ export class NodeManager extends EventEmitter {
     else if (e === 'PostToolUse' && GIT_EDIT_TOOLS.includes(String(event.tool_name)) && rec.worktree) refreshGitSoon(this, nodeId);
   }
 
-  /** Apply an event from the node's mod. turn.start carries nothing we need. */
+  /** Lifecycle events from a harness bridge; starts and final settlement drive the shared state machine. */
   applyModEvent(nodeId: string, ev: ModEvent): void {
     const rt = this.runtimes.get(nodeId), prev = rt?.status;
     if (!rt || !prev) return;
     const now = Date.now();
     if (process.env.TL_DEBUG) console.log(`${new Date(now).toISOString().slice(11, 23)} mod ${nodeId.slice(0, 6)} ${ev.event} ${JSON.stringify(ev.payload).slice(0, 300)}`);
-    if (ev.event === 'turn.complete') {
+    if (ev.event === 'turn.start') {
+      rt.lastHookAt = now;
+      rt.turnStart = now;
+      rt.starting = false;
+      this.setStatus(nodeId, reduce(prev, { hook_event_name: 'UserPromptSubmit', prompt_id: ev.payload.turnId }, now));
+    } else if (ev.event === 'turn.complete') {
+      rt.lastHookAt = now;
+      rt.starting = false;
       const model = ev.payload.usage?.model;
-      const base = typeof model === 'string' && model !== prev.model ? { ...prev, model } : prev;
+      const base = { ...prev,
+        ...(typeof model === 'string' ? { model } : {}),
+        ...(typeof ev.payload.answer === 'string' ? { lastAssistantMessage: ev.payload.answer } : {}),
+      };
       this.setStatus(nodeId, turnComplete(base, now, ev.payload));
       refreshGit(this, nodeId).catch(logError);
     } else if (ev.event === 'session.measure') {
@@ -833,29 +874,42 @@ export class NodeManager extends EventEmitter {
     const input: LaunchInput = {
       nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path,
       title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, sessionId: rec.sessionId ?? '',
-      resume, forkSession, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
+      resume, forkSession, transcriptPath: rec.transcriptPath, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
       preset: rec.preset ? loadPreset(rec.preset, this.projectDir(rec), this.home) : undefined,
     };
-    const spec: LaunchSpec = rec.kind === 'claude' ? claudeLaunch(input) : terminalLaunch(input, this.shell);
-    const cwd = rec.worktree?.repo ?? rec.cwd; // claude adopts the worktree itself through --worktree, or re-enters it on --resume
+    const adapter = isAgentKind(rec.kind) ? adapterFor(rec) : undefined;
+    const spec = adapter ? adapter.launch(input) : terminalLaunch(input, this.shell);
+    const cwd = adapter ? adapter.cwd(rec) : rec.cwd;
+    if (adapter?.id === 'pi') this.registry.update(id, { transcriptPath: adapter.transcript(rec, sessionDir) });
     const s = PtySession.spawn({ ...spec, cwd, ...DEFAULT_SIZE });
     const rt = this.runtimes.get(id)!;
     rt.session = s;
-    if (rec.kind === 'claude' && prompt) rt.starting = true;
+    if (adapter && prompt) rt.starting = true;
     this.registry.update(id, { lastActiveAt: Date.now(), forkSession: undefined });
     this.liveChanged();
-    s.onData((d) => this.emit('data', id, d));
-    s.onExit(() => {
+    let outputTail = '';
+    s.onData((d) => {
+      outputTail = (outputTail + d).slice(-8192);
+      this.emit('data', id, d);
+    });
+    s.onExit((code) => {
       if (rt.session !== s) return;
       rt.session = undefined;
       rt.starting = false;
       this.liveChanged();
       this.markUnread(id);
-      this.setStatus(id, ptyExited(rt.status!, Date.now()), false);
+      const status = ptyExited(rt.status!, Date.now());
+      if (code !== 0) {
+        const lines = stripVTControlCharacters(outputTail).split(/[\r\n]+/).map((line) => line.trim());
+        const error = lines.findLast((line) => /^Error:/i.test(line));
+        status.errored = true;
+        status.activity = error?.slice(0, 300) ?? `Process exited with code ${code}`;
+      } else status.activity = undefined;
+      this.setStatus(id, status, false);
       this.emit('notify', { id, kind: 'exited', title: rec.title } satisfies NotifyEvent);
       refreshGit(this, id).catch(logError);
     });
-    if (rec.kind === 'claude') this.watchTrust(id, s, cwd).catch(logError);
+    if (adapter?.id === 'claude') this.watchTrust(id, s, cwd).catch(logError);
   }
 
   /**

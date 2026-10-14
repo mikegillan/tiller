@@ -7,12 +7,12 @@
 
 # tiller
 
-Tiller is a local daemon that runs several Claude Code sessions as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser. A small Claude Code mod (a plugin loaded into each node) delivers messages and adds a few slash commands.
+Tiller is a local daemon that runs several agent CLI sessions (Claude Code or Pi) as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser. A Claude Code mod or Pi extension loaded into each agent node delivers messages and reports lifecycle events.
 
 ## Requirements
 
 - macOS with the Xcode Command Line Tools (`xcode-select --install`); the native app is built with Tauri, which needs them.
-- Node 24 and the `claude` CLI (Claude Code) on your PATH.
+- Node 24 and your chosen agent CLI on your PATH: `claude` (Claude Code), or compatible `pi` (`@earendil-works/pi-coding-agent` 1.2.x). See [docs/harnesses.md](docs/harnesses.md) for Pi setup and limitations.
 - Rust, installed through Homebrew's rustup:
 
       brew install rustup
@@ -30,6 +30,7 @@ Tiller is a local daemon that runs several Claude Code sessions as child process
 
 ## Use
 
+- `cd ~/some/repo && tl --harness pi` uses Pi instead of Claude Code; the spawn dialog also offers Pi. Claude Code is not needed for a Pi-only tree.
 - `cd ~/some/repo && tl` starts the daemon if it is not running, finds, resumes or creates the orchestrator for that directory, and opens the app on it (or the browser UI when the app is not built). `tl --new` always starts a fresh orchestrator.
 - `tl stop` shuts the daemon down and closes every node; the nodes are not resumed on the next start.
 - `tl reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
@@ -74,6 +75,7 @@ The same two levels hold for the text tiller gives agents: a repo can override t
 ## Documentation
 
 - [docs/config.md](docs/config.md): every config key, its default and which file it is read from.
+- [docs/harnesses.md](docs/harnesses.md): harness adapters, Pi usage, compatibility and repository trust.
 - [docs/messaging.md](docs/messaging.md): how messages between nodes are queued, delivered, steered and limited.
 - [docs/agent-roles.md](docs/agent-roles.md): role prompts, presets, outcomes and the completion gate.
 - [docs/worktrees.md](docs/worktrees.md): running workers in their own git worktrees and merging their work.

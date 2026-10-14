@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fmtAge, outcomeLine } from '../shared/format.js';
 import type { InboxMessage, NodeView, SendMode, SendResult } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
+import { adapterFor } from './harness.js';
 import { watching } from './deps.js';
 import type { NodeManager } from './manager.js';
 import { logError } from './util.js';
@@ -388,7 +389,7 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
   const target = m.view(toId);
   if (!target || target.status.exited) return out(gone);
   if (fromId === toId) return refuse('cannot send to yourself');
-  if (target.kind !== 'claude') return refuse('not an agent node; use write for terminals');
+  if (target.kind === 'terminal') return refuse('not an agent node; use write for terminals');
 
   const key = `${fromId}\0${toId}`;
   const wait = (s.last.get(key) ?? -Infinity) + RATE_MS - Date.now();
@@ -412,7 +413,7 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
   // A steer interrupts only a working target; to an idle (or blocked, or waiting) one, "now" is the same as "queue".
   const steer = opts.mode === 'now' && busy(target);
   const entry: Entry = { id, from: fromId, to: toId, label: oneLine(label), replyTo: opts.replyTo === undefined ? fromId : opts.replyTo, text, steer };
-  if (modLive(s, toId)) return out(queueInbox(m, s, entry)); // the mod aborts the turn itself
+  if (modLive(s, toId) || adapterFor(target).capabilities.inbox) return out(queueInbox(m, s, entry)); // the mod aborts the turn itself
   if (steer) {
     // No mod to abort the turn: press Esc as the human would. The manager marks the turn interrupted, which wakes the queue.
     const r = enqueue(m, s, entry, '');

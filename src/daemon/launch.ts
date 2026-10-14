@@ -110,6 +110,8 @@ export interface LaunchInput {
   cwd: string;
   role?: Role;
   sessionId: string;
+  /** A harness's persisted conversation path, including archived follow-ups. */
+  transcriptPath?: string;
   /** Relaunch with `--resume <sessionId>` instead of minting `--session-id`. */
   resume?: boolean;
   /** Start from a copy of this session's conversation: `--resume <forkSession> --fork-session`, under sessionId. */
@@ -171,7 +173,7 @@ export function terminalLaunch(i: LaunchInput, shell: string): LaunchSpec {
   return { file: shell, args: ['-l'], env: nodeEnv(i) };
 }
 
-function nodeEnv(i: LaunchInput): Record<string, string> {
+export function nodeEnv(i: LaunchInput): Record<string, string> {
   return buildChildEnv({
     PATH: i.path,
     TL_NODE_ID: i.nodeId,

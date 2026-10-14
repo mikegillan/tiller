@@ -12,7 +12,7 @@ const DONE_HOLDOFF_MS = 3000;
 const STALE_MS = 20 * 60 * 1000;
 
 /** A node's state before any hook arrives: a Claude node is unknown until SessionStart; a terminal has no agent state. */
-export const initialState = (kind: NodeKind): AgentState => (kind === 'claude' ? 'unknown' : 'none');
+export const initialState = (kind: NodeKind): AgentState => (kind === 'terminal' ? 'none' : 'unknown');
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 

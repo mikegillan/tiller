@@ -150,6 +150,19 @@ describe('NodeManager restart', () => {
     expect(m.view(root.id)).toBeDefined();
   });
 
+  it('surfaces CLI startup errors after spawn and restart instead of leaving activity at restarting', async () => {
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
+    const bin = join(home, 'bin'); mkdirSync(bin);
+    writeFileSync(join(bin, 'pi'), '#!/bin/sh\nprintf "\\033[31mError: Model not found\\033[0m\\n"\nexit 1\n');
+    chmodSync(join(bin, 'pi'), 0o755);
+    m = new NodeManager({ home, path: `${bin}:/usr/bin:/bin` });
+    const { id } = await m.spawn({ kind: 'agent', harness: 'pi', title: 'bad model', cwd: home, byHuman: true });
+    const failed = { exited: true, errored: true, activity: 'Error: Model not found' };
+    await expect.poll(() => m.view(id)?.status).toMatchObject(failed);
+    expect(m.restart(id)).toEqual({ ok: true });
+    await expect.poll(() => m.view(id)?.status).toMatchObject(failed);
+  });
+
   it('gives a Claude node a new session id and keeps at most 10 old ones', () => {
     home = mkdtempSync(join(tmpdir(), 'tl-'));
     m = new NodeManager({ home, shell: '/bin/sh' });

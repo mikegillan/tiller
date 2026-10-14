@@ -19,6 +19,24 @@ describe('pickOrchestrator', () => {
   });
 });
 
+describe('pickOrchestrator harness', () => {
+  it('defaults to claude and ignores pi nodes', () => {
+    const nodes = [node({ id: 'pi', kind: 'agent', harness: 'pi' }), node({ id: 'claude' })];
+    expect(pickOrchestrator(nodes, '/repo')?.id).toBe('claude');
+    expect(pickOrchestrator(nodes, '/repo', false, 'pi')?.id).toBe('pi');
+  });
+  it('treats a legacy claude root with no harness as claude and never as pi', () => {
+    const nodes = [node({ id: 'legacy' })];
+    expect(pickOrchestrator(nodes, '/repo')?.id).toBe('legacy');
+    expect(pickOrchestrator(nodes, '/repo', false, 'pi')).toBeUndefined();
+  });
+  it('filters exited roots by harness too', () => {
+    const nodes = [node({ id: 'livePi', kind: 'agent', harness: 'pi' }), node({ id: 'deadPi', kind: 'agent', harness: 'pi', exited: true })];
+    expect(pickOrchestrator(nodes, '/repo', true, 'pi')?.id).toBe('deadPi');
+    expect(pickOrchestrator(nodes, '/repo', true, 'claude')).toBeUndefined();
+  });
+});
+
 describe('pickOrchestrator, exited', () => {
   it('returns the newest exited root only when asked', () => {
     const nodes = [node({ id: 'live' }), node({ id: 'd1', exited: true, createdAt: 2 }), node({ id: 'd2', exited: true, createdAt: 9 }), node({ id: 'kid', exited: true, parentId: 'p', createdAt: 99 })];

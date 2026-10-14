@@ -28,6 +28,11 @@ describe('transcript', () => {
     expect(html).toContain('Show more');
   });
 
+  it('labels the assistant by harness, Claude by default and Pi for a pi node', () => {
+    expect(render(data)).toContain('<span class="who">Claude</span>');
+    expect(renderToStaticMarkup(<TranscriptView data={data} onSession={() => {}} harness="pi" />)).toContain('<span class="who">Pi</span>');
+  });
+
   it('shows the session picker only with more than one session, current first and others by short id', () => {
     expect(render(data)).not.toContain('<select');
     const html = render({ ...data, sessions: [...data.sessions, { sessionId: '5a4b3c2d-7777-8888', current: false }] });

@@ -2,9 +2,10 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { briefOf, history } from './archive.js';
+import { archivedOf, briefOf, history } from './archive.js';
 import { NodeManager } from './manager.js';
-import { nodeTranscript, parseMessages, parseTranscript, readMessages, renderMessage, TAIL_BYTES } from './transcript.js';
+import { nodeTranscript, parseMessages, parseTranscript, readMessages, renderMessage, sessionMessages, TAIL_BYTES } from './transcript.js';
+import type { NodeRecord } from '../shared/protocol.js';
 
 const line = (o: object) => JSON.stringify(o);
 const FIXTURE = [
@@ -14,6 +15,27 @@ const FIXTURE = [
   line({ type: 'summary', summary: 'x' }), // not a message
   'not json',
   line({ type: 'assistant', message: { content: [{ type: 'text', text: 'Fixed.' }] } }),
+].join('\n');
+
+// A Pi session file: a header, then id/parentId message entries. `message.timestamp` is Unix ms.
+const PI_FIXTURE = [
+  line({ type: 'session', version: 3, id: 'uuid', timestamp: '2026-10-13T10:00:00.000Z', cwd: '/x' }),
+  line({ type: 'message', id: 'm1', parentId: null, timestamp: '2026-10-13T10:00:01.000Z', message: { role: 'user', content: 'fix the bug', timestamp: 1000 } }),
+  line({ type: 'message', id: 'm2', parentId: 'm1', timestamp: '2026-10-13T10:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Looking.' }, { type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'ls' } }], timestamp: 2000 } }),
+  line({ type: 'message', id: 'm3', parentId: 'm2', timestamp: '2026-10-13T10:00:03.000Z', message: { role: 'toolResult', toolCallId: 't1', toolName: 'bash', content: [{ type: 'text', text: 'ok' }], isError: false, timestamp: 2500 } }),
+  'not json',
+  'null',
+  line({ type: 'message', id: 'm4', parentId: 'm3', timestamp: '2026-10-13T10:00:04.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Fixed.' }], timestamp: 3000 } }),
+].join('\n');
+
+// The last entry is the active leaf; `c`/`d` hang off `b` and are abandoned.
+const PI_BRANCH = [
+  line({ type: 'session', version: 3, id: 'uuid', timestamp: '2026-10-13T10:00:00.000Z', cwd: '/x' }),
+  line({ type: 'message', id: 'a', parentId: null, message: { role: 'user', content: 'hello', timestamp: 1 } }),
+  line({ type: 'message', id: 'b', parentId: 'a', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }], timestamp: 2 } }),
+  line({ type: 'message', id: 'c', parentId: 'b', message: { role: 'user', content: 'abandoned', timestamp: 3 } }),
+  line({ type: 'message', id: 'd', parentId: 'c', message: { role: 'assistant', content: [{ type: 'text', text: 'abandoned reply' }], timestamp: 4 } }),
+  line({ type: 'message', id: 'e', parentId: 'b', message: { role: 'user', content: 'active', timestamp: 5 } }),
 ].join('\n');
 
 describe('transcript', () => {
@@ -36,6 +58,37 @@ describe('transcript', () => {
     expect((await nodeTranscript(n, 'old2')).entries).toEqual([{ role: 'user', text: 'earlier' }]);
     await expect(nodeTranscript(n, 'old1')).rejects.toThrow(/session old1 is gone/);
     await expect(nodeTranscript(n, 'other')).rejects.toThrow(/no session other on record/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reads Pi messages with text and tool calls, honoring the active branch and dropping malformed lines', () => {
+    expect(parseTranscript(PI_FIXTURE, 'pi')).toEqual([
+      { role: 'user', text: 'fix the bug', at: 1000 },
+      { role: 'assistant', text: 'Looking.', at: 2000, tools: ['bash'] },
+      { role: 'assistant', text: 'Fixed.', at: 3000 },
+    ]);
+    expect(parseTranscript(PI_BRANCH, 'pi')).toEqual([
+      { role: 'user', text: 'hello', at: 1 },
+      { role: 'assistant', text: 'hi', at: 2 },
+      { role: 'user', text: 'active', at: 5 },
+    ]);
+    expect(parseTranscript(PI_FIXTURE)).toEqual([]); // the Claude parser does not see Pi message entries
+  });
+
+  it('reads a previous Pi session beside the current one, and needs the current path on record', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tl-pi-'));
+    const sessions = join(dir, 'sessions');
+    mkdirSync(sessions);
+    // The file is named for the daemon's Tiller session id; the Pi header UUID may differ.
+    writeFileSync(join(sessions, 'cur.jsonl'), PI_FIXTURE);
+    writeFileSync(join(sessions, 'old2.jsonl'), line({ type: 'message', id: 'o', parentId: null, message: { role: 'user', content: 'earlier', timestamp: 7 } }));
+    const n = { cwd: '/nowhere', harness: 'pi' as const, sessionId: 'cur', previousSessions: ['old1', 'old2'], transcriptPath: join(sessions, 'cur.jsonl') };
+    const t = await nodeTranscript(n);
+    expect(t.sessions).toEqual([{ sessionId: 'cur', current: true }, { sessionId: 'old2', current: false }, { sessionId: 'old1', current: false }]);
+    expect(t.entries).toHaveLength(3);
+    expect((await nodeTranscript(n, 'old2')).entries).toEqual([{ role: 'user', text: 'earlier', at: 7 }]);
+    await expect(nodeTranscript(n, 'old1')).rejects.toThrow(/session old1 is gone/);
+    await expect(sessionMessages({ cwd: '/home/someone', harness: 'pi', sessionId: 'cur' })).rejects.toThrow(/Pi node needs its transcript path/);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -69,6 +122,15 @@ describe('briefOf', () => {
     const long = briefOf({ ...base, lastAssistantMessage: 'x'.repeat(500), branchFate: 'kept' })!;
     expect(long).toHaveLength(200);
     expect(long.endsWith('… (branch kept, unmerged)')).toBe(true);
+  });
+});
+
+describe('archivedOf harness', () => {
+  const rec: NodeRecord = { id: 'n-1', parentId: null, kind: 'claude', title: 't', cwd: '/', createdAt: 0 };
+  it('records a nonlegacy harness and leaves the legacy default unset', () => {
+    expect(archivedOf({ ...rec, harness: 'pi' }, undefined, undefined, 'n-1', {})).toMatchObject({ id: 'n-1', harness: 'pi' });
+    expect(archivedOf({ ...rec, harness: 'claude' }, undefined, undefined, 'n-1', {})).not.toHaveProperty('harness');
+    expect(archivedOf(rec, undefined, undefined, 'n-1', {})).not.toHaveProperty('harness');
   });
 });
 
@@ -211,6 +273,6 @@ describe('archive, history, follow-up and fork', () => {
     expect(await argv(g.id)).toContain(`--resume ${srcSid} --fork-session`);
     const fresh = (await m.spawn({ kind: 'claude', title: 'fresh', cwd: home, parentId: root, byHuman: true })).id;
     await expect(m.spawn({ kind: 'claude', title: 'x', cwd: '', fork: fresh, byHuman: true })).rejects.toThrow(/has no Claude session yet/);
-    await expect(m.spawn({ kind: 'terminal', title: 'x', cwd: '', fork: src, byHuman: true })).rejects.toThrow(/claude nodes only/);
+    await expect(m.spawn({ kind: 'terminal', title: 'x', cwd: '', fork: src, byHuman: true })).rejects.toThrow(/agent nodes only/);
   });
 });

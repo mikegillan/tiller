@@ -1,0 +1,185 @@
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { adapterFor, claudeAdapter, piAdapter } from './harness.js';
+import { claudeLaunch, type LaunchInput } from './launch.js';
+import { NodeManager } from './manager.js';
+import { startServer, type DaemonServer } from './server.js';
+import { deliver, HUMAN, messageStatus } from './messaging.js';
+import { setProjectTrust, tillerTrusts } from './trust.js';
+
+let home: string;
+let manager: NodeManager | undefined;
+let server: DaemonServer | undefined;
+beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'tl-harness-')); });
+afterEach(async () => { await manager?.shutdown(); await server?.close(); manager = undefined; server = undefined; vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }); });
+const input = (): LaunchInput => ({ nodeId: 'n-test', nodeDir: join(home, 'nodes', 'n-test'), endpoint: 'http://127.0.0.1:1', path: '/usr/bin:/bin', title: 'test', parentId: null, home, cwd: home, sessionId: 'session-1', sessionDir: join(home, 'sessions', 'root') });
+
+describe('harness boundary', () => {
+  it('preserves the Claude command line and resolves legacy records', () => {
+    expect(adapterFor({ kind: 'claude' })).toBe(claudeAdapter);
+    expect(claudeAdapter.launch(input())).toEqual(claudeLaunch(input()));
+    expect(adapterFor({ kind: 'agent', harness: 'pi' })).toBe(piAdapter);
+  });
+  it('launches interactive Pi with a persistent session, extension, role prompt and node identity', () => {
+    const i = { ...input(), model: 'openai/test', effort: 'high', prompt: '-task' };
+    const spec = piAdapter.launch(i);
+    expect(spec.file).toBe('pi');
+    expect(spec.args).toContain('--thinking');
+    expect(spec.args).not.toContain('--permission-mode');
+    expect(spec.args).not.toContain('--worktree');
+    expect(spec.args.slice(-2)).toEqual(['--', '-task']);
+    expect(spec.args[spec.args.indexOf('--session') + 1]).toBe(join(i.sessionDir!, 'agents', i.nodeId, 'session-1.jsonl'));
+    expect(spec.env).toMatchObject({ TL_NODE_ID: i.nodeId, TL_SESSION_ID: i.sessionId, TL_HARNESS: 'pi', TL_TOKEN_FILE: join(i.nodeDir, 'token') });
+    expect(spec.args[spec.args.indexOf('--append-system-prompt') + 1]).toContain('You are the orchestrator');
+  });
+  it('fails closed on unsupported restrictions and forking', () => {
+    expect(() => piAdapter.launch({ ...input(), permissionMode: 'plan' })).toThrow(/permissionMode/);
+    for (const preset of [{ tools: [] }, { disallowedTools: ['Bash'] }, { maxTurns: 1 }]) {
+      expect(() => piAdapter.validate({ preset })).toThrow(/preset tools/);
+    }
+    expect(() => piAdapter.launch({ ...input(), forkSession: 'old' })).toThrow(/forking/);
+  });
+  it('uses an archived session path when resuming', () => {
+    const i = { ...input(), resume: true, transcriptPath: join(home, 'old', 'session.jsonl') };
+    expect(piAdapter.launch(i).args.slice(0, 2)).toEqual(['--session', i.transcriptPath]);
+  });
+});
+
+// A fake Pi CLI loads the REAL extension and uses the REAL daemon HTTP API, but never calls a model.
+// This checks launch env, lifecycle/status, MCP config/auth, inbox receipts and persisted sessions together.
+function fakePi(): string {
+  const bin = join(home, 'bin'); mkdirSync(bin);
+  const extension = fileURLToPath(new URL('../../adapters/pi/index.ts', import.meta.url));
+  writeFileSync(join(bin, 'pi'), `#!${process.execPath} --experimental-transform-types
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+import extension from ${JSON.stringify(extension)};
+const args = process.argv.slice(2), path = args[args.indexOf('--session') + 1];
+if (!existsSync(path)) writeFileSync(path, JSON.stringify({ type: 'session', id: 'pi-native-id', version: 3, cwd: process.cwd() }) + '\\n');
+process.stdout.write('\\r\\n'.repeat(100));
+const handlers = new Map(); let busy = false, index = 0;
+const ctx = { isIdle: () => !busy, abort: () => { busy = false; }, shutdown: () => process.exit(1), model: { id: 'fake-pi' },
+ sessionManager: { getSessionId: () => 'pi-native-id', getSessionFile: () => path, getEntries: () => [] },
+ ui: { notify() {} } };
+const emit = async (name, event = {}) => { for (const fn of handlers.get(name) ?? []) await fn(event, ctx); };
+const pi = { on(name, fn) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); return () => {}; },
+ registerMcpServer(name, config) { console.log('MCP_READY ' + JSON.stringify({name, url: config.url, node: config.headers['X-TL-Node']})); },
+ unregisterMcpServer() {}, sendUserMessage(text) { busy = true; void run(text); } };
+async function run(text) {
+ await emit('before_agent_start', { messageType: 'user', prompt: text }); await emit('agent_start');
+ const user = 'u' + ++index; appendFileSync(path, JSON.stringify({ type: 'message', id: user, parentId: index === 1 ? null : 'a' + (index-1), message: { role: 'user', content: text } }) + '\\n');
+ const message = { role: 'assistant', content: [{ type: 'text', text: 'Pi received: ' + text }], stopReason: 'stop' };
+ appendFileSync(path, JSON.stringify({ type: 'message', id: 'a' + index, parentId: user, message }) + '\\n');
+ await emit('turn_end', { turnIndex: 0, message }); await emit('agent_end', { messages: [message] });
+ busy = false; await emit('agent_settled', { aborted: false });
+ console.log('PROCESSED');
+}
+extension(pi); await emit('session_start', { reason: 'startup' }); console.log('READY cwd=' + process.cwd());
+process.on('SIGTERM', async () => { await emit('session_shutdown', { reason: 'quit' }); process.exit(0); });
+setInterval(() => {}, 1000);
+`);
+  chmodSync(join(bin, 'pi'), 0o755);
+  return `${bin}:/usr/bin:/bin`;
+}
+
+async function setup(): Promise<void> {
+  vi.stubEnv('TL_PI_POLL_MS', '100');
+  manager = new NodeManager({ home: join(home, 'tl'), path: fakePi() });
+  server = await startServer(manager, { port: 0 });
+}
+const ready = async (id: string) => {
+  await expect.poll(() => manager!.session(id)?.screenTail(30).join('\n'), { timeout: 5000 }).toContain('READY cwd=');
+};
+
+describe('Pi node integration', () => {
+  it('launches without Claude, receives a daemon message, and keeps transcripts after close', async () => {
+    await setup();
+    const n = await manager!.spawn({ kind: 'agent', harness: 'pi', title: 'Pi', cwd: home, byHuman: true });
+    await ready(n.id);
+    expect(manager!.view(n.id)?.sessionId).toBe(n.sessionId); // not Pi's header UUID
+    const sent = await deliver(manager!, HUMAN, n.id, 'hello from Tiller');
+    expect(sent.outcome).toBe('queued');
+    await expect.poll(() => messageStatus(manager!, HUMAN, sent.messageId!)?.outcome).toBe('delivered');
+    await expect.poll(() => manager!.view(n.id)?.status.state).toBe('done');
+    expect(manager!.view(n.id)?.status.lastAssistantMessage).toContain('hello from Tiller');
+    expect((await manager!.transcript(n.id)).entries.map(e => e.text).join('\n')).toContain('hello from Tiller');
+    const path = manager!.view(n.id)!.transcriptPath!;
+    await manager!.close(n.id, true);
+    expect(existsSync(manager!.nodeDir(n.id))).toBe(false);
+    expect(existsSync(path)).toBe(true);
+    expect((await manager!.transcript(n.id)).entries).toHaveLength(2);
+    const next = await manager!.followup(n.id, 'next'); await ready(next.id);
+    expect(next.harness).toBe('pi');
+    expect(next.transcriptPath).toBe(path);
+    const oldMeta = join(manager!.sessionDirOf(n.id), 'meta.json');
+    const meta = JSON.parse(readFileSync(oldMeta, 'utf8'));
+    writeFileSync(oldMeta, JSON.stringify({ ...meta, closedAt: Date.now() - 100 * 86_400_000 }));
+    expect(manager!.sweepSessions()).not.toContain(n.id);
+    expect(existsSync(path)).toBe(true);
+    expect(manager!.restart(next.id).ok).toBe(true); await ready(next.id);
+    const record = manager!.view(next.id)!;
+    expect(record.previousSessions).toContain(n.sessionId);
+    expect((await manager!.transcript(next.id, n.sessionId)).entries).toHaveLength(2);
+  });
+
+  it('keeps Pi defaults instead of importing Claude role models/effort, but honors explicit overrides', async () => {
+    await setup();
+    mkdirSync(join(home, '.tiller'));
+    writeFileSync(join(home, '.tiller', 'config.json'), JSON.stringify({ roles: {
+      orchestrator: { model: 'claude-mythos-5-1', effort: 'high' },
+      worker: { model: 'claude-opus-5-5', effort: 'medium' },
+    } }));
+    const parent = await manager!.spawn({ kind: 'agent', harness: 'pi', title: 'Pi', cwd: home, byHuman: true }); await ready(parent.id);
+    const child = await manager!.spawn({ kind: 'agent', title: 'worker', cwd: home, parentId: parent.id }); await ready(child.id);
+    for (const node of [parent, child]) {
+      expect(node.model).toBeUndefined();
+      expect(node.effort).toBeUndefined();
+    }
+    const explicit = await manager!.spawn({ kind: 'agent', harness: 'pi', title: 'explicit', cwd: home, model: 'openai/test', effort: 'low', byHuman: true });
+    await ready(explicit.id);
+    expect(explicit).toMatchObject({ model: 'openai/test', effort: 'low' });
+  });
+
+  it('inherits Pi for agent children but never imports Claude permission modes', async () => {
+    await setup();
+    const parent = await manager!.spawn({ kind: 'agent', harness: 'pi', title: 'Pi', cwd: home, byHuman: true }); await ready(parent.id);
+    manager!.applyHook(parent.id, { hook_event_name: 'UserPromptSubmit', permission_mode: 'auto' });
+    const child = await manager!.spawn({ kind: 'agent', title: 'child', cwd: home, parentId: parent.id }); await ready(child.id);
+    expect(child.harness).toBe('pi'); expect(child.permissionMode).toBeUndefined();
+    const count = manager!.list().length;
+    await expect(manager!.spawn({ kind: 'agent', harness: 'pi', title: 'restricted', cwd: home, permissionMode: 'plan', byHuman: true })).rejects.toThrow(/permissionMode/);
+    await expect(manager!.spawn({ kind: 'agent', harness: 'pi', title: 'fork', cwd: home, fork: parent.id })).rejects.toThrow(/forking/);
+    await expect(manager!.spawn({ kind: 'claude', harness: 'pi', title: 'bad', cwd: home })).rejects.toThrow(/kind "agent"/);
+    expect(manager!.list()).toHaveLength(count);
+  });
+
+  it('resumes the exact Pi session and starts inside its managed worktree without Claude trust', async () => {
+    await setup();
+    const repo = join(home, 'repo'); mkdirSync(repo);
+    execFileSync('git', ['init', '-q', repo]);
+    execFileSync('git', ['-C', repo, '-c', 'user.name=Tiller Test', '-c', 'user.email=tiller@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'initial']);
+    const n = await manager!.spawn({ kind: 'agent', harness: 'pi', title: 'worker', cwd: repo, isolation: 'worktree', byHuman: true }); await ready(n.id);
+    expect(manager!.session(n.id)?.screenTail(30).join('\n')).toContain(n.worktree!.path);
+    const path = manager!.view(n.id)!.transcriptPath!;
+    manager!.session(n.id)!.kill();
+    await expect.poll(() => manager!.view(n.id)?.status.exited).toBe(true);
+    expect(await manager!.resume(n.id)).toEqual({ ok: true }); await ready(n.id);
+    expect(manager!.view(n.id)?.transcriptPath).toBe(path);
+    expect(readFileSync(path, 'utf8')).toContain('pi-native-id');
+    await manager!.close(n.id, true, 'discard');
+  });
+});
+
+describe('Tiller repository trust', () => {
+  it('is explicit, matches ancestors but not siblings, and can be revoked', () => {
+    expect(tillerTrusts(home, home)).toBe(false);
+    setProjectTrust(home, join(home, 'project'), true);
+    expect(tillerTrusts(home, join(home, 'project', 'subdir'))).toBe(true);
+    expect(tillerTrusts(home, join(home, 'project-other'))).toBe(false);
+    setProjectTrust(home, join(home, 'project'), false);
+    expect(tillerTrusts(home, join(home, 'project'))).toBe(false);
+  });
+});

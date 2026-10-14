@@ -39,7 +39,8 @@ export function briefOf(a: Omit<ArchivedNode, 'brief'>): string | undefined {
 export function archivedOf(rec: NodeRecord, status: NodeStatus | undefined, outcome: Outcome | undefined, rootId: string, fate: BranchFate, closedAt = Date.now()): ArchivedNode {
   const a: Omit<ArchivedNode, 'brief'> = {
     id: rec.id, rootId, parentId: rec.parentId, title: rec.title, cwd: rec.cwd, model: status?.model ?? rec.model, effort: rec.effort,
-    role: roleFor(rec.role, rec.parentId), prompt: rec.prompt, sessionId: rec.sessionId, previousSessions: rec.previousSessions,
+    role: roleFor(rec.role, rec.parentId), ...(rec.harness && rec.harness !== 'claude' ? { harness: rec.harness } : {}),
+    prompt: rec.prompt, sessionId: rec.sessionId, previousSessions: rec.previousSessions,
     transcriptPath: rec.transcriptPath, lastAssistantMessage: status?.lastAssistantMessage, outcome, spentUsd: rec.spentUsd, lastCost: rec.lastCost,
     branch: rec.worktree?.branch, ...fate, createdAt: rec.createdAt, closedAt,
   };

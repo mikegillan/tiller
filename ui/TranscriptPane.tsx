@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import type { Transcript, TranscriptEntry } from '../src/shared/protocol';
+import type { Harness, Transcript, TranscriptEntry } from '../src/shared/protocol';
 import { send } from './conn';
 import { transcriptRequested, useStore } from './store';
 
@@ -14,13 +14,13 @@ export function fmtWhen(at: number, now = Date.now()): string {
     : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function Entry({ e }: { e: TranscriptEntry }) {
+function Entry({ e, assistantName }: { e: TranscriptEntry; assistantName: string }) {
   const [open, setOpen] = useState(false);
   const long = e.text.length > LONG_CHARS || e.text.split('\n').length > LONG_LINES;
   return (
     <article className={`entry ${e.role}`}>
       <header>
-        <span className="who">{e.role === 'user' ? 'User' : 'Claude'}</span>
+        <span className="who">{e.role === 'user' ? 'User' : assistantName}</span>
         {e.at !== undefined && <time dateTime={new Date(e.at).toISOString()}>{fmtWhen(e.at)}</time>}
       </header>
       {e.text && <div className={`text${long && !open ? ' clamped' : ''}`}>{e.text}</div>}
@@ -31,7 +31,8 @@ function Entry({ e }: { e: TranscriptEntry }) {
 }
 
 /** A conversation as a timeline; a session picker (current first) when there is more than one session. `sessionId` undefined is the current one. */
-export function TranscriptView({ data, sessionId, onSession }: { data: Transcript; sessionId?: string; onSession: (id: string | undefined) => void }) {
+export function TranscriptView({ data, sessionId, onSession, harness = 'claude' }: { data: Transcript; sessionId?: string; onSession: (id: string | undefined) => void; harness?: Harness }) {
+  const assistantName = harness === 'pi' ? 'Pi' : 'Claude';
   return (
     <>
       {data.sessions.length > 1 && (
@@ -42,7 +43,7 @@ export function TranscriptView({ data, sessionId, onSession }: { data: Transcrip
         </label>
       )}
       {data.truncated && <p className="hint">Older messages are not shown.</p>}
-      {data.entries.map((e, i) => <Entry key={i} e={e} />)}
+      {data.entries.map((e, i) => <Entry key={i} e={e} assistantName={assistantName} />)}
       {!data.entries.length && <p className="hint">No messages in this session.</p>}
     </>
   );
@@ -52,7 +53,7 @@ export function TranscriptView({ data, sessionId, onSession }: { data: Transcrip
  * A live or archived node's conversation over the stage; `children` go above it. Asks on open, on reconnect, on a session
  * change and whenever `refresh` changes. Key it by node id so the session choice resets.
  */
-export function TranscriptPane({ id, refresh, children }: { id: string; refresh?: unknown; children?: ReactNode }) {
+export function TranscriptPane({ id, refresh, harness, children }: { id: string; refresh?: unknown; harness?: Harness; children?: ReactNode }) {
   const [sessionId, setSessionId] = useState<string>();
   const t = useStore((s) => (s.transcript?.id === id && s.transcript.sessionId === sessionId ? s.transcript : undefined));
   const connected = useStore((s) => s.connected);
@@ -78,7 +79,7 @@ export function TranscriptPane({ id, refresh, children }: { id: string; refresh?
       <div className="entries">
         {t?.error ? <p className="hint">{t.error}</p>
           : !t?.data ? <p className="hint">Loading transcript…</p>
-          : <TranscriptView data={t.data} sessionId={sessionId} onSession={setSessionId} />}
+          : <TranscriptView data={t.data} sessionId={sessionId} onSession={setSessionId} harness={harness} />}
       </div>
     </div>
   );
