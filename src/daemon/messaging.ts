@@ -316,7 +316,7 @@ function loadInbox(m: Mgr, s: State, file: string): void {
     for (const i of Array.isArray(data?.items) ? (data.items as InboxItem[]) : []) {
       if (!i?.msg?.id) continue;
       // An old claimed Pi message is ambiguous, not a safe-to-retry expiration.
-      if (!i.claimed && Date.now() - i.msg.enqueuedAt >= QUEUE_TTL_MS) continue;
+      if (Date.now() - i.msg.enqueuedAt >= QUEUE_TTL_MS && !(i.claimed && m.view(i.to)?.harness === 'pi')) continue;
       s.status.set(i.msg.id, { from: i.from, to: i.to, result: { outcome: 'queued', retryable: false, messageId: i.msg.id }, at: i.msg.enqueuedAt });
       addInbox(m, s, i);
     }

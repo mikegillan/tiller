@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -166,6 +166,24 @@ describe("tiller pi extension", () => {
     await pi.emit("session_shutdown", { reason: "quit" });
   });
 
+  it("bounds MCP server/tool names with at least 16 chars of future provider-name headroom", async () => {
+    setBaseEnv();
+    process.env.TL_NODE_ID = "n-abcdefgh-extra-long-future-node-id";
+    stubFetch();
+    const pi = fakePi();
+    tillerPiExtension(pi.api);
+    await pi.emit("session_start", { reason: "startup" });
+    const name = pi.mcp[0].name;
+    expect(name).toMatch(/^tl_abcdefgh_[a-f0-9]{12}$/);
+    expect(name.length).toBeLessThanOrEqual(24);
+    const source = readFileSync(new URL("../../src/daemon/mcp.ts", import.meta.url), "utf8");
+    const toolNames = [...source.matchAll(/^  ([a-z_]+): tool\(/gm)].map((match) => match[1]);
+    expect(toolNames.length).toBeGreaterThan(20);
+    const longest = toolNames.reduce((a, b) => a.length >= b.length ? a : b);
+    expect(`mcp__${name}__${longest}`.length).toBeLessThanOrEqual(64 - 16);
+    await pi.emit("session_shutdown", { reason: "quit" });
+  });
+
   it("reports provider-qualified runtime model switches including idle selections", async () => {
     setBaseEnv();
     const calls = stubFetch();
@@ -196,7 +214,7 @@ describe("tiller pi extension", () => {
     await tick();
 
     expect(pi.mcp[0]).toMatchObject({
-      name: expect.stringMatching(/^tiller_n_1_[a-f0-9]{24}$/),
+      name: expect.stringMatching(/^tl_1_[a-f0-9]{12}$/),
       config: {
         type: "http",
         url: "http://127.0.0.1:7777/mcp",

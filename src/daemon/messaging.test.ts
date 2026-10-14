@@ -2,10 +2,10 @@ import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NodeStatus, NodeView } from '../shared/protocol.js';
 import { classify, composerTextOf } from './pty.js';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ack, claim, deliver, flushInbox, inbox, messageStatus, PI_CONFIRM_MS, startNotices, unconfirmed, withdraw, type Mgr } from './messaging.js';
+import { ack, claim, deliver, flushInbox, inbox, messageStatus, PI_CONFIRM_MS, QUEUE_TTL_MS, startNotices, unconfirmed, withdraw, type Mgr } from './messaging.js';
 
 const PROMPT = ['some output', '────────────────── n-b', '❯ ', '──────────────────'];
 
@@ -380,6 +380,26 @@ describe('mod inbox', () => {
     const r = await deliver(m.mgr, 'p', 'b', 'stale mod');
     expect(r.outcome).toBe('delivered');
     expect(m.sessions.get('b')!.pasted).toHaveLength(1);
+  });
+
+  it('reload drops stale claimed Claude items exactly as before but retires stale Pi claims honestly', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tlinbox-stale-claims-'));
+    try {
+      m.add('pi', 'p');
+      Object.assign(m.nodes.get('pi')!, { kind: 'agent', harness: 'pi' });
+      m.set('b', { state: 'working' }); // old code must not renew a restored stale Claude claim
+      const enqueuedAt = Date.now() - QUEUE_TTL_MS - 1;
+      writeFileSync(join(home, 'inbox.json'), JSON.stringify({ version: 1, items: ['b', 'pi'].map((to) => ({
+        to, from: 'a', claimed: true, msg: { id: `old-${to}`, from: 'a', text: to, enqueuedAt },
+      })) }));
+      const restarted = Object.assign(Object.create(m), { home }) as Mgr;
+      expect(inbox(restarted, 'b')).toEqual([]);
+      expect(messageStatus(restarted, 'a', 'old-b')).toBeUndefined();
+      expect(inbox(restarted, 'pi')).toMatchObject([{ id: 'old-pi', claimed: true }]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(inbox(restarted, 'pi')).toEqual([]);
+      expect(messageStatus(restarted, 'a', 'old-pi')).toMatchObject({ outcome: 'stalled', retryable: false });
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   it('survives a restart; entries past their TTL are dropped', async () => {

@@ -11,7 +11,7 @@
  * activate the bridge if it sees any of them.
  */
 
-export const TILLER_MCP_NAME = "tiller";
+export const TILLER_MCP_NAME = "tl";
 export const DEFAULT_POLL_INTERVAL_MS = 1000;
 export const MIN_POLL_INTERVAL_MS = 100;
 
@@ -132,7 +132,8 @@ export function parseBridgeConfig(
         (nonEmpty(env.TL_PI_HOOK_TOOLS) ?? "").toLowerCase(),
       ),
       exposure: exposure as McpExposure,
-      mcpName: `${TILLER_MCP_NAME}_${nodeId.replace(/[^a-zA-Z0-9_]/g, "_")}`,
+      // Bound the prefix so mcp__<server>__<tool> leaves provider tool-name headroom.
+      mcpName: `${TILLER_MCP_NAME}_${nodeId.replace(/^n[-_]/, "").replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 8)}`,
     },
   };
 }

@@ -25,7 +25,7 @@ describe("parseBridgeConfig", () => {
       pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
       hookTools: false,
       exposure: "direct",
-      mcpName: "tiller_n_abc123",
+      mcpName: "tl_abc123",
     });
   });
 

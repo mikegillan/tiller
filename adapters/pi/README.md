@@ -89,7 +89,7 @@ All calls use `Authorization: Bearer <token>` and `X-TL-Node: <nodeId>`.
 | Pi event / API | Tiller call | Notes |
 |---|---|---|
 | `session_start` | `POST /hook` `SessionStart` | `session_id` (`TL_SESSION_ID`), `transcript_path` (from `--session`), `model`. |
-| `session_start` | `pi.registerMcpServer("tiller_<node>_<random>", …)` | HTTP MCP at `<endpoint>/mcp`, node-scoped headers. Fresh names prevent ordinary `mcp.json` entries named `tiller` from silently overriding the registration. |
+| `session_start` | `pi.registerMcpServer("tl_<node-prefix>_<random>", …)` | HTTP MCP at `<endpoint>/mcp`, node-scoped headers. Fresh compact names (<=24 characters, 48-bit random suffix) prevent ordinary `mcp.json` entries named `tiller` from silently overriding the registration and leave provider tool-name headroom. |
 | `before_agent_start` (`user`) | `POST /hook` `UserPromptSubmit` | The actual prompt Pi accepted; also the only source of bridge acceptance, so a void `sendUserMessage` return is never treated as delivered. |
 | `agent_start` | `POST /mod-event` `turn.start` | Once per run (`{ text, turnId }`, informational), not per model turn. |
 | `turn_end` | `POST /mod-event` `session.measure` | Context usage + cumulative session cost. |
@@ -126,7 +126,10 @@ compaction failure, and consumed input therefore need not throw or start a run. 
 exact matching `before_agent_start` confirms acceptance and permits `/ack`; ack failures retry
 only the receipt. Pi does not use the daemon's Claude substring-hook acknowledgment.
 
-A claim without confirmation retires within **60 seconds**, independently of inbox TTL renewal.
+A claim without confirmation retires within **60 seconds from claim**, independently of inbox TTL
+renewal. The lease starts **before native submission**: a busy steer whose abort/compaction never
+reaches idle can consume its whole lease without any `sendUserMessage` call. It still retires
+conservatively as unconfirmed/nonretryable; this protocol does not prove cancellation or delivery.
 The bridge uses `/unconfirmed`; the daemon also bounds Pi claims if the adapter stops polling.
 Retirement removes the claim and reports `stalled`, `retryable: false`, with an explicit warning
 that the prompt may still run later. **Do not resend automatically.** Later messages, including

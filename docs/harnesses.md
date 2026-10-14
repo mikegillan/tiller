@@ -95,8 +95,10 @@ Coordination stays on the existing interfaces:
 
 Pi requires its native inbox bridge, so messages are queued there even before its first poll;
 Tiller never tries Claude-composer terminal-paste heuristics on a Pi node. Claimed messages
-without confirmed acceptance retire after 60 seconds as `stalled`, nonretryable, rather than being
-resent or falsely delivered. `/unconfirmed` releases the queue even while inbox TTL is renewed.
+without confirmed acceptance retire after 60 seconds from claim as `stalled`, nonretryable, rather
+than being resent or falsely delivered. A busy steer's abort/compaction can consume that lease
+before any native submission; retirement remains conservative and guarantees neither cancellation
+nor delivery. `/unconfirmed` releases the queue even while inbox TTL is renewed.
 Inspect the node (for example, missing credentials) and **do not resend automatically**: the old
 prompt may still run late. Reload/restart never replays an inherited native claim. Pi MCP server
 names are fresh and node-scoped to avoid silent overrides by file-configured `tiller` entries.

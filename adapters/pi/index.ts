@@ -261,7 +261,7 @@ export default function tillerPiExtension(
     config = parsed.config;
     // File MCP entries silently override extension registrations. Use a fresh node-scoped name
     // each runtime: ordinary `tiller` (or an old runtime's entry) cannot shadow authenticated tools.
-    config.mcpName += `_${randomBytes(12).toString("hex")}`;
+    config.mcpName += `_${randomBytes(6).toString("hex")}`; // 48-bit entropy; full server name <=24 chars
     currentModel = modelOf(ctx);
     lastUserText = "";
     lastTurnIndex = 0;

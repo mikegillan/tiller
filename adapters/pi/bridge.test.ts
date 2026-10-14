@@ -206,6 +206,28 @@ describe("TillerBridge inbox", () => {
     expect(h.events).toEqual(["abort", "submit:s", "send:now"]);
   });
 
+  it("retires an unsent busy steer when abort/compaction consumes its claim lease", async () => {
+    let now = 0;
+    const h = harness({ now: () => now });
+    h.setBusy(true);
+    h.client.inboxBatches.push([msg("s", "stop", true)]);
+    await h.bridge.pollOnce();
+    expect(h.events).toEqual(["abort"]);
+    // Pi never became idle, so no native submission occurred. Retirement stays conservative:
+    // do not release/replay an uncertain claim or promise that abort cancelled native work.
+    now = 60_001;
+    h.client.inboxBatches.push([msg("s", "stop", true), msg("b")]);
+    await h.bridge.pollOnce();
+    expect(h.client.unconfirmedIds).toEqual(["s"]);
+    expect(h.client.acks).toEqual([]);
+    expect(h.events).toEqual(["abort"]);
+    expect(h.bridge.pendingCount).toBe(0);
+    h.setBusy(false);
+    h.client.inboxBatches.push([msg("b")]);
+    await h.bridge.pollOnce();
+    expect(h.events).toEqual(["abort", "submit:b", "send:b"]);
+  });
+
   it("claims at most one steer at a time", async () => {
     const h = harness();
     h.setBusy(true);
