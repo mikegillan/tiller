@@ -8,11 +8,11 @@ describe('loadConfig', () => {
   let dir = '';
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
   const setup = (project: string | undefined, home: string | undefined) => {
-    dir = mkdtempSync(join(tmpdir(), 'o8-cfg-'));
+    dir = mkdtempSync(join(tmpdir(), 'tl-cfg-'));
     const cwd = join(dir, 'repo'), homeDir = join(dir, 'home');
-    mkdirSync(join(cwd, '.orchestr8'), { recursive: true });
+    mkdirSync(join(cwd, '.tiller'), { recursive: true });
     mkdirSync(homeDir);
-    if (project !== undefined) writeFileSync(join(cwd, '.orchestr8', 'config.json'), project);
+    if (project !== undefined) writeFileSync(join(cwd, '.tiller', 'config.json'), project);
     if (home !== undefined) writeFileSync(join(homeDir, 'config.json'), home);
     return { cwd, homeDir };
   };
@@ -22,10 +22,10 @@ describe('loadConfig', () => {
       JSON.stringify({ roles: { worker: { model: 'haiku' } }, worktrees: { include: ['.env'], mergeStyle: 'squash' }, gate: { command: 'npm test' }, limits: { maxChildren: 2 }, notifications: { kinds: { done: 'silent' } } }),
       JSON.stringify({ roles: { worker: { model: 'sonnet', effort: 'high' }, orchestrator: { model: 'opus' } }, approvals: { close: 'done' }, worktrees: { isolation: 'worktree', include: ['x'], setup: ['npm ci'] }, gate: { command: 'make', retries: 5 }, daemon: { resumeMaxAgeDays: 7, digestAfterMinutes: 30, maxWorking: 4 }, limits: { maxChildren: 5, stallMinutes: 2 }, notifications: { kinds: { done: 'sound', exited: 'silent' }, quietHours: '22:00-07:00' } }),
     );
-    const proj = join(cwd, '.orchestr8', 'config.json'), home = join(homeDir, 'config.json');
+    const proj = join(cwd, '.tiller', 'config.json'), home = join(homeDir, 'config.json');
     expect(loadConfig(cwd, homeDir)).toEqual({
       roles: { orchestrator: { model: 'opus' }, worker: { model: 'haiku', effort: 'high' } }, approvals: { close: 'done', merge: false },
-      worktrees: { isolation: 'worktree', branchPrefix: 'o8/', include: ['.env'], mergeStyle: 'squash', setup: ['npm ci'], teardown: [] }, // include replaces the home list whole
+      worktrees: { isolation: 'worktree', branchPrefix: 'tl/', include: ['.env'], mergeStyle: 'squash', setup: ['npm ci'], teardown: [] }, // include replaces the home list whole
       gate: { command: 'npm test', retries: 5, timeoutMinutes: 10 }, // each gate key resolves on its own
       daemon: { resumeOnStart: true, resumeMaxAgeDays: 7, sessionsKeepDays: 14, digestAfterMinutes: 30, maxLiveNodes: 20, maxWorking: 4 },
       limits: { maxDepth: 3, maxChildren: 2, stallMinutes: 2, maxMessagesPer10Min: 20 },
@@ -48,7 +48,7 @@ describe('loadConfig', () => {
   it('defaults to no model, never and no gate when there are no files', () => {
     const { cwd, homeDir } = setup(undefined, undefined);
     const c = loadConfig(cwd, homeDir);
-    expect(c).toMatchObject({ roles: { orchestrator: {}, worker: {} }, approvals: { close: 'never', merge: false }, worktrees: { isolation: 'none', branchPrefix: 'o8/' }, daemon: { resumeOnStart: true, resumeMaxAgeDays: 3 } });
+    expect(c).toMatchObject({ roles: { orchestrator: {}, worker: {} }, approvals: { close: 'never', merge: false }, worktrees: { isolation: 'none', branchPrefix: 'tl/' }, daemon: { resumeOnStart: true, resumeMaxAgeDays: 3 } });
     expect(c.worktrees.include).toBeUndefined();
     expect(c.gate).toBeUndefined();
   });

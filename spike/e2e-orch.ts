@@ -1,14 +1,14 @@
 // Manual end-to-end check of agent-to-agent messaging with real Claude nodes (costs a little API usage).
-//   O8_HOME=/tmp/o8-orch O8_PORT=7797 O8_DEBUG=1 npx tsx src/daemon/index.ts > /tmp/o8-orch/daemon.log 2>&1 &
-//   O8_PORT=7797 O8_TOKEN=<the ?k= value in the daemon log> npx tsx spike/e2e-orch.ts
+//   TL_HOME=/tmp/tl-orch TL_PORT=7797 TL_DEBUG=1 npx tsx src/daemon/index.ts > /tmp/tl-orch/daemon.log 2>&1 &
+//   TL_PORT=7797 TL_TOKEN=<the ?k= value in the daemon log> npx tsx spike/e2e-orch.ts
 // An "orchestrator" node spawns a "worker", messages it, and reports the worker's reply. Exits non-zero on failure.
 import { readFileSync } from 'node:fs';
 import { WebSocket } from 'ws';
 import type { ClientMessage, NodeView, ServerMessage } from '../src/shared/protocol.js';
 
-const PORT = process.env.O8_PORT ?? '7797';
-const HOME = process.env.O8_HOME ?? '/tmp/o8-orch';
-const TOKEN = process.env.O8_TOKEN ?? '';
+const PORT = process.env.TL_PORT ?? '7797';
+const HOME = process.env.TL_HOME ?? '/tmp/tl-orch';
+const TOKEN = process.env.TL_TOKEN ?? '';
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const t0 = Date.now();
 const log = (s: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1).padStart(6)}s] ${s}`);
@@ -16,7 +16,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let failures = 0;
 const check = (ok: boolean, what: string) => { if (!ok) failures++; log(`${ok ? 'PASS' : 'FAIL'} ${what}`); };
 
-const PROMPT = "Using the orchestr8 MCP tools: 1) call list_nodes. 2) spawn a claude child titled 'worker' with cwd " + REPO + " and the prompt 'Wait for a message, then do what it says.' 3) wait about 10 seconds, then send the worker this text: 'Reply to me with the single word PINEAPPLE using the send tool.' 4) call message_status on the messageId until it is delivered or 60 seconds pass. 5) When you receive the worker's reply, call read with what=summary on the worker, then reply to the user with exactly one line: ORCH DONE <the word the worker sent> <delivered|stalled|other>. Do not ask the user for confirmation at any step.";
+const PROMPT = "Using the tiller MCP tools: 1) call list_nodes. 2) spawn a claude child titled 'worker' with cwd " + REPO + " and the prompt 'Wait for a message, then do what it says.' 3) wait about 10 seconds, then send the worker this text: 'Reply to me with the single word PINEAPPLE using the send tool.' 4) call message_status on the messageId until it is delivered or 60 seconds pass. 5) When you receive the worker's reply, call read with what=summary on the worker, then reply to the user with exactly one line: ORCH DONE <the word the worker sent> <delivered|stalled|other>. Do not ask the user for confirmation at any step.";
 
 const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
 const nodes = new Map<string, NodeView>();
@@ -53,7 +53,7 @@ async function waitFor<T>(what: string, ms: number, probe: () => T | undefined |
 
 async function api(tool: string, body: object): Promise<any> {
   const token = readFileSync(`${HOME}/admin-token`, 'utf8');
-  const r = await fetch(`http://127.0.0.1:${PORT}/api/${tool}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': 'human', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/${tool}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': 'human', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   return r.json();
 }
 

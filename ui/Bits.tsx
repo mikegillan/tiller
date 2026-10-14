@@ -35,7 +35,7 @@ export const Counts = ({ of: x, title }: { of: { additions: number; deletions: n
 export const DiffCounts = ({ git: g }: { git: GitState }) =>
   <Counts of={g} title={`${g.additions} line(s) added and ${g.deletions} removed since the branch left ${g.base}, committed or not`} />;
 
-/** `⎇ o8/n-3f2a · +42 −18 · ↑2 · ●1 · opus 5.5 · high · [bar] 42% · $0.42 · Σ$3.10`; null when the node reports none of it. `subtree`: spend with descendants. */
+/** `⎇ tl/n-3f2a · +42 −18 · ↑2 · ●1 · opus 5.5 · high · [bar] 42% · $0.42 · Σ$3.10`; null when the node reports none of it. `subtree`: spend with descendants. */
 export function NodeMeta({ node, detail, subtree }: { node: NodeView; detail?: boolean; subtree?: number }) {
   const s = node.status, wt = node.worktree, g = s.git;
   const model = shortModel(s.model ?? node.model);

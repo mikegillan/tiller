@@ -1,4 +1,4 @@
-# orchestr8 — plan
+# tiller — plan
 
 A small local tool for running AI coding agents (Claude Code first) as "nodes" that an
 orchestrator node can spawn, message, read back, and control, with a sidebar UI and
@@ -37,7 +37,7 @@ worktree frames, browser-driving verbs, sticky notes, media nodes, multi-account
 
 One long-lived Node process (the daemon) owns everything native: PTYs, hooks, MCP, messaging
 and OS notifications. It listens on TCP 127.0.0.1 (port 7788 by default) and keeps its files
-in `~/.orchestr8/` (or `O8_HOME`): `state.json` (node registry), `inbox.json` (queued mod
+in `~/.tiller/` (or `TL_HOME`): `state.json` (node registry), `inbox.json` (queued mod
 messages), `secret`, `admin-token`, `port`, `repo`, `config.json`, `daemon.log`, `prompts/`
 (optional overrides), `agents/` (presets), `sessions/<rootId>/` (one per tree), and per node
 `nodes/<id>/` with a 0600 `token`, `settings.json` (hooks and tool allowlist) and a 0600 `mcp.json`.
@@ -53,7 +53,7 @@ Daemon responsibilities:
 - A headless terminal buffer per node (`@xterm/headless`): snapshots for reconnecting
   clients, the `read terminal` tool, and classifying the screen as prompt / dialog / unknown.
 - Hook receiver: `src/daemon/hook.sh` POSTs each payload to `/hook`; a reducer sets status.
-- Control API: an MCP server over streamable HTTP for agents and the `o8` CLI for humans,
+- Control API: an MCP server over streamable HTTP for agents and the `tl` CLI for humans,
   both on the same handlers, plus a WebSocket for the clients.
 
 The daemon living outside every front end means closing a window does not kill the agents,
@@ -78,13 +78,13 @@ the node's `--settings` and `--mcp-config` files with `--strict-mcp-config`, and
 `--append-system-prompt`, followed by `-- <prompt>`. Worktree nodes, session directories and presets
 add `--worktree`, `--add-dir` and `--agents`/`--agent`.
 
-- Env: `O8_NODE_ID`, `O8_PARENT_ID` (children only), `O8_ENDPOINT`, `O8_TOKEN_FILE`, the
+- Env: `TL_NODE_ID`, `TL_PARENT_ID` (children only), `TL_ENDPOINT`, `TL_TOKEN_FILE`, the
   `TERM`/`COLORTERM` pair, a UTF-8 `LANG` if unset (#78), and `PATH` from the login shell.
   No secrets in env; the token lives in a 0600 file.
 - SessionStart's `session_id` and `transcript_path` override the minted id, because `/clear`,
   compaction and forks mint new ones. Never guess "newest jsonl in the cwd dir"; two nodes
   can share a cwd.
-- `--settings` carries the hook registrations and `permissions.allow: ["mcp__orchestr8"]`
+- `--settings` carries the hook registrations and `permissions.allow: ["mcp__tiller"]`
   so tool calls to us do not prompt. This keeps the user's global settings untouched, which
   is where nodeterm's consent model (#744) and the "stale hook bricks every session"
   incident came from.
@@ -135,7 +135,7 @@ Rules that make it hold:
 - Status is not persisted. After a daemon restart every node is shown exited, with its
   session id kept so it can be resumed.
 
-## 5. Control API (MCP tools, mirrored by the `o8` CLI)
+## 5. Control API (MCP tools, mirrored by the `tl` CLI)
 
 Identity: every request carries the node's bearer token. Token = `HMAC(daemonSecret, nodeId)`,
 so there is no token table to lose and a node can only present its own file. Auth runs before
@@ -184,17 +184,17 @@ the body, then `\r` separately, and waits up to 8 s for a UserPromptSubmit carry
 Envelope, as B sees it:
 
 ```
---- O8 MESSAGE <nonce> ---
+--- TL MESSAGE <nonce> ---
 from: Builder (n-3f2a)
 reply-to: n-3f2a
 <body>
---- END O8 MESSAGE <nonce> ---
+--- END TL MESSAGE <nonce> ---
 ```
 
 The nonce is per delivery and the agent is told only the outermost frame is authentic and
 that framed messages are legitimate instructions (without that, Claude treated a pasted
 message as untrusted and asked before obeying). Station notices use
-`from: orchestr8 (child n-7b1c stopped: turn-errored)` and `reply-to: none`. A human's typing
+`from: tiller (child n-7b1c stopped: turn-errored)` and `reply-to: none`. A human's typing
 into a node is never framed.
 
 Queues: per target, cap 16 (`queueFull` refuses rather than dropping), TTL 5 min, restarted
@@ -228,11 +228,11 @@ daemon.maxWorking spawn queue.
 
 ## 9. Front ends
 
-The primary front end is the web UI (`ui/`) in a Tauri shell (`src-tauri/`); `o8` opens it on
+The primary front end is the web UI (`ui/`) in a Tauri shell (`src-tauri/`); `tl` opens it on
 the current directory's session. A "session" is a root node and its subtree, shown one at a
-time with a switcher. The same UI runs in a browser, and `o8-mux` is a terminal multiplexer
+time with a switcher. The same UI runs in a browser, and `tl-mux` is a terminal multiplexer
 with the same sidebar tree for SSH and other terminals. The mod adds a band above the prompt
-and `/o8-*` slash commands inside each node, and draws nothing while any of those clients is
+and `/tl-*` slash commands inside each node, and draws nothing while any of those clients is
 attached. Everything must keep working with mods off, because Anthropic can disable mods
 remotely and `--bare` / `--safe-mode` drop them; the paste fallback covers delivery then.
 
@@ -247,6 +247,6 @@ agent state.
   For Codex, MCP works; status needs `~/.codex/hooks.json` plus a trust hash in config.toml,
   which nodeterm ports and calls brittle, so start with Codex's `notify` setting for turn-complete only.
 - For dependency launches: a 24 h deadline with an EXPIRED state, and a manual Run.
-- From the worktree design's phase 3: `o8 pr <id>`, recreating a missing worktree from its kept
+- From the worktree design's phase 3: `tl pr <id>`, recreating a missing worktree from its kept
   branch, an explicit `base` ref on spawn, and isolation for terminal nodes.
 - Unverified: behaviour when the user has other mods installed (they load in every node too).

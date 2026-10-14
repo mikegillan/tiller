@@ -1,4 +1,4 @@
-// Per-project settings: <cwd>/.orchestr8/config.json, then <home>/config.json, then built-in defaults. Read fresh on every call.
+// Per-project settings: <cwd>/.tiller/config.json, then <home>/config.json, then built-in defaults. Read fresh on every call.
 // The `daemon` group holds daemon-wide settings and comes from the home file only.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -97,7 +97,7 @@ export type Key = keyof Flat;
 const DEFAULTS = {
   'roles.orchestrator.model': undefined, 'roles.orchestrator.effort': undefined, 'roles.worker.model': undefined, 'roles.worker.effort': undefined,
   'approvals.close': 'never', 'approvals.merge': false,
-  'worktrees.isolation': 'none', 'worktrees.branchPrefix': 'o8/', 'worktrees.include': undefined, 'worktrees.mergeStyle': 'merge', 'worktrees.setup': [], 'worktrees.teardown': [],
+  'worktrees.isolation': 'none', 'worktrees.branchPrefix': 'tl/', 'worktrees.include': undefined, 'worktrees.mergeStyle': 'merge', 'worktrees.setup': [], 'worktrees.teardown': [],
   'gate.command': undefined, 'gate.retries': 2, 'gate.timeoutMinutes': 10,
   'daemon.resumeOnStart': true, 'daemon.resumeMaxAgeDays': 3, 'daemon.sessionsKeepDays': 14, 'daemon.digestAfterMinutes': 10, 'daemon.maxLiveNodes': 20, 'daemon.maxWorking': 0,
   'notifications.kinds.needsYou': 'sound', 'notifications.kinds.errored': 'sound', 'notifications.kinds.done': 'banner', 'notifications.kinds.exited': 'banner',
@@ -118,11 +118,11 @@ export type Notifications = Resolved['notifications'];
 export type Config = Omit<Resolved, 'gate'> & { gate?: Resolved['gate'] & { command: string } };
 
 /** The project file for `cwd` (none when null), then the home file; earlier wins. */
-export const configPaths = (cwd: string | null, home = homeDir()): string[] => [...(cwd === null ? [] : [join(cwd, '.orchestr8', 'config.json')]), join(home, 'config.json')];
+export const configPaths = (cwd: string | null, home = homeDir()): string[] => [...(cwd === null ? [] : [join(cwd, '.tiller', 'config.json')]), join(home, 'config.json')];
 
 const warned = new Set<string>();
 const warn = (path: string, msg: string) => {
-  if (!warned.has(`${path}\0${msg}`)) { warned.add(`${path}\0${msg}`); console.error(`orchestr8: ignoring in ${path}: ${msg}`); }
+  if (!warned.has(`${path}\0${msg}`)) { warned.add(`${path}\0${msg}`); console.error(`tiller: ignoring in ${path}: ${msg}`); }
 };
 const get = (o: unknown, path: PropertyKey[]): any => path.reduce<any>((x, k) => x?.[k], o);
 

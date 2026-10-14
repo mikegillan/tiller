@@ -29,8 +29,8 @@ describe('pickOrchestrator, exited', () => {
 
 describe('humanEnv', () => {
   it('drops the node identity and keeps home, port and the rest', () => {
-    const env = { O8_NODE_ID: 'n-1', O8_TOKEN_FILE: '/t', O8_ENDPOINT: 'http://x', O8_HOME: '/h', O8_PORT: '9', PATH: '/bin' };
-    expect(humanEnv(env)).toEqual({ O8_HOME: '/h', O8_PORT: '9', PATH: '/bin' });
+    const env = { TL_NODE_ID: 'n-1', TL_TOKEN_FILE: '/t', TL_ENDPOINT: 'http://x', TL_HOME: '/h', TL_PORT: '9', PATH: '/bin' };
+    expect(humanEnv(env)).toEqual({ TL_HOME: '/h', TL_PORT: '9', PATH: '/bin' });
   });
 });
 
@@ -67,7 +67,7 @@ describe('spawn-or-reuse with a real manager', () => {
   afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   it('reuses the orchestrator for the realpath of cwd, spawns none for a new dir', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
     const dir = realpathSync(tmpdir()); // /var -> /private/var on macOS
     const v = (await m.spawn({ kind: 'terminal', title: 'orch', cwd: dir, parentId: null }));

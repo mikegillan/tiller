@@ -1,15 +1,15 @@
 // Manual end-to-end check of the real Claude Code launch path (costs a little API usage).
 //   npm run ui:build
-//   O8_HOME=/tmp/o8-e2e O8_PORT=7799 npx tsx src/daemon/index.ts > /tmp/o8-e2e/daemon.log &
-//   O8_TOKEN=<the ?k= value in the daemon log> npx tsx spike/e2e.ts
-// Exits non-zero if any assertion fails. Run it against a fresh O8_HOME.
+//   TL_HOME=/tmp/tl-e2e TL_PORT=7799 npx tsx src/daemon/index.ts > /tmp/tl-e2e/daemon.log &
+//   TL_TOKEN=<the ?k= value in the daemon log> npx tsx spike/e2e.ts
+// Exits non-zero if any assertion fails. Run it against a fresh TL_HOME.
 import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
 import { WebSocket } from 'ws';
 import type { ClientMessage, NodeView, ServerMessage } from '../src/shared/protocol.js';
 
-const PORT = process.env.O8_PORT ?? '7799';
-const HOME = process.env.O8_HOME ?? '/tmp/o8-e2e';
-const TOKEN = process.env.O8_TOKEN ?? '';
+const PORT = process.env.TL_PORT ?? '7799';
+const HOME = process.env.TL_HOME ?? '/tmp/tl-e2e';
+const TOKEN = process.env.TL_TOKEN ?? '';
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const t0 = Date.now();
 const log = (s: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1).padStart(6)}s] ${s}`);
@@ -82,7 +82,7 @@ async function main(): Promise<void> {
 
   // c: untrusted cwd
   log('--- c: untrusted cwd');
-  const tmp = mkdtempSync('/tmp/o8-untrusted-');
+  const tmp = mkdtempSync('/tmp/tl-untrusted-');
   mark = history.length;
   const n2 = await spawn('e2e-trust', tmp, 'Reply with exactly: TRUST OK');
   check(!!(await waitFor('blocked', 25_000, () => state(n2) === 'blocked' && nodes.get(n2)!.status.activity === 'Trust dialog: answer it in the terminal')), 'n2 blocked with trust activity');

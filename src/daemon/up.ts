@@ -1,6 +1,7 @@
-// Client-side helpers for `o8` / `o8 up`: find or start the daemon, pick the orchestrator for a directory.
+// Client-side helpers for `tl` / `tl up`: find or start the daemon, pick the orchestrator for a directory.
 import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, readFileSync } from 'node:fs';
+import { migrateHome } from './home.js';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -18,16 +19,17 @@ export async function findDaemon(port: number, timeoutMs = 500): Promise<Health 
 
 /** Run bin/<name> detached (survives this process and its terminal) with output appended to <home>/daemon.log; returns the log path. */
 function detach(name: string, args: string[], home: string, port: number, env: NodeJS.ProcessEnv = process.env): string {
+  migrateHome(home); // before the log below creates the home
   mkdirSync(home, { recursive: true });
   const log = join(home, 'daemon.log');
   const fd = openSync(log, 'a');
   const bin = fileURLToPath(new URL(`../../bin/${name}`, import.meta.url));
-  spawn(bin, args, { detached: true, stdio: ['ignore', fd, fd], env: { ...env, O8_HOME: home, O8_PORT: String(port) } }).unref();
+  spawn(bin, args, { detached: true, stdio: ['ignore', fd, fd], env: { ...env, TL_HOME: home, TL_PORT: String(port) } }).unref();
   return log;
 }
 
-/** Start bin/o8d detached, then wait for /health. Throws with the log tail on failure. */
-export const startDaemon = (home: string, port: number, waitMs = 15_000): Promise<Health> => waitForDaemon(port, detach('o8d', [], home, port), waitMs);
+/** Start bin/tld detached, then wait for /health. Throws with the log tail on failure. */
+export const startDaemon = (home: string, port: number, waitMs = 15_000): Promise<Health> => waitForDaemon(port, detach('tld', [], home, port), waitMs);
 
 /** Wait for a daemon that is starting, with its output in `log`, to answer /health. Throws with the log tail on failure. */
 export async function waitForDaemon(port: number, log: string, waitMs = 15_000): Promise<Health> {
@@ -48,11 +50,11 @@ export function pickOrchestrator<T extends OrchestratorCandidate>(nodes: T[], cw
     .sort((a, b) => b.createdAt - a.createdAt)[0];
 }
 
-/** `env` without a node's identity, so the CLI acts as the human and finds the daemon by O8_HOME and O8_PORT. */
+/** `env` without a node's identity, so the CLI acts as the human and finds the daemon by TL_HOME and TL_PORT. */
 export function humanEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const { O8_NODE_ID, O8_TOKEN_FILE, O8_ENDPOINT, ...rest } = env;
+  const { TL_NODE_ID, TL_TOKEN_FILE, TL_ENDPOINT, ...rest } = env;
   return rest;
 }
 
-/** Hand `o8 reload` to a detached `o8 reload --detached`, which outlives the terminal of the node that ran it. */
-export const spawnReload = (home: string, port: number): string => detach('o8', ['reload', '--detached'], home, port, humanEnv(process.env));
+/** Hand `tl reload` to a detached `tl reload --detached`, which outlives the terminal of the node that ran it. */
+export const spawnReload = (home: string, port: number): string => detach('tl', ['reload', '--detached'], home, port, humanEnv(process.env));

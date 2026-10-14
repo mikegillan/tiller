@@ -197,7 +197,7 @@ async function removeWorktree(m: NodeManager, id: string, title: string, w: Work
   }
   if (mode === 'keep' && (await wt.dirtyFiles(w.path)).length) {
     await wt.git(w.path, ['add', '-A']);
-    await wt.git(w.path, ['commit', '-q', '--no-verify', '-m', `WIP: orchestr8 node "${title}" (${id})`]);
+    await wt.git(w.path, ['commit', '-q', '--no-verify', '-m', `WIP: tiller node "${title}" (${id})`]);
   } else if (!mode) {
     const c = (await worktreeCheck(m, id))!; // again: the agent may have written something before it died
     if (c.dirty.length || c.unmerged.length) throw new Error(`worktree kept: changed during close (${c.dirty.length} uncommitted file(s), ${c.unmerged.length} unmerged commit(s))`);
@@ -320,7 +320,7 @@ export function worktreeCommands(m: NodeManager, repo: string, kind: 'setup' | '
 }
 
 export function worktreeEnv(m: NodeManager, id: string, w: Pick<Worktree, 'repo' | 'path' | 'base'>): Record<string, string> {
-  return buildChildEnv({ PATH: m.path, O8_NODE_ID: id, O8_WORKTREE: w.path, O8_REPO: w.repo, O8_BASE: w.base });
+  return buildChildEnv({ PATH: m.path, TL_NODE_ID: id, TL_WORKTREE: w.path, TL_REPO: w.repo, TL_BASE: w.base });
 }
 
 /**

@@ -107,7 +107,7 @@ function blockedNotice(m: NodeManager, id: string, blocked: string): void {
   m.logEvent(id, 'block', { by: blocked });
   if (!rec.parentId) return;
   const text = `${id} "${rec.title}" will not launch: blocked by ${blocked}. It launches if that node later reports succeeded; close it to drop it.`;
-  deliver(m, DAEMON, rec.parentId, text, { fromLabel: `orchestr8 (armed ${id} blocked)`, replyTo: null }).catch(logError);
+  deliver(m, DAEMON, rec.parentId, text, { fromLabel: `tiller (armed ${id} blocked)`, replyTo: null }).catch(logError);
 }
 
 /** Launch a held node as its spawn would have. A failure drops it and tells its parent. */
@@ -118,7 +118,7 @@ function release(m: NodeManager, id: string): void {
   const fail = (err: Error) => {
     if (!m.registry.get(id)) return;
     m.logEvent(id, 'launch-failed', { error: err.message });
-    if (rec.parentId) deliver(m, DAEMON, rec.parentId, `${id} "${rec.title}" failed to launch and was removed: ${err.message}`, { fromLabel: `orchestr8 (armed ${id} failed)`, replyTo: null }).catch(logError);
+    if (rec.parentId) deliver(m, DAEMON, rec.parentId, `${id} "${rec.title}" failed to launch and was removed: ${err.message}`, { fromLabel: `tiller (armed ${id} failed)`, replyTo: null }).catch(logError);
     m.discard(id);
     m.emit('removed', id);
   };
@@ -170,7 +170,7 @@ function check(m: Mgr & Pick<NodeManager, 'on'>, all: Map<string, Watch>, key: s
   if (w.when === 'all' ? done.length < w.ids.length : !done.length) return;
   all.delete(key);
   const text = `${done.length} of ${w.ids.length} finished:\n${w.ids.map((id) => line(m, id)).join('\n')}`;
-  deliver(m as NodeManager, DAEMON, w.caller, text, { fromLabel: `orchestr8 (notify_when ${w.when} of ${w.of})`, replyTo: null }).catch(logError);
+  deliver(m as NodeManager, DAEMON, w.caller, text, { fromLabel: `tiller (notify_when ${w.when} of ${w.of})`, replyTo: null }).catch(logError);
 }
 
 /** Whether `caller` has a pending notify_when that covers `id`. */

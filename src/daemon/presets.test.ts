@@ -8,7 +8,7 @@ import { NodeManager } from './manager.js';
 import { DEFAULT_PRESETS, ensurePresets, listPresets, loadPreset } from './presets.js';
 
 const dirs: string[] = [];
-const tmp = () => { const d = realpathSync(mkdtempSync(join(tmpdir(), 'o8-presets-'))); dirs.push(d); return d; };
+const tmp = () => { const d = realpathSync(mkdtempSync(join(tmpdir(), 'tl-presets-'))); dirs.push(d); return d; };
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 const put = (dir: string, name: string, text: string) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, `${name}.md`), text); };
 
@@ -34,10 +34,10 @@ describe('presets', () => {
     const home = tmp(), repo = tmp();
     put(join(home, 'agents'), 'greeter', '---\nmodel: opus\n---\nhome body');
     expect(loadPreset('greeter', repo, home)).toMatchObject({ model: 'opus', body: 'home body', source: join(home, 'agents', 'greeter.md') });
-    put(join(repo, '.orchestr8', 'agents'), 'greeter', GREETER);
+    put(join(repo, '.tiller', 'agents'), 'greeter', GREETER);
     expect(loadPreset('greeter', repo, home)).toEqual({
       name: 'greeter', model: 'haiku', effort: 'low', permissionMode: 'plan', tools: ['Read', 'Grep'], disallowedTools: ['Edit', 'Write'], maxTurns: 5,
-      body: '# Greeter\n\nSay marmalade.', source: join(repo, '.orchestr8', 'agents', 'greeter.md'),
+      body: '# Greeter\n\nSay marmalade.', source: join(repo, '.tiller', 'agents', 'greeter.md'),
     });
     expect(() => loadPreset('nope', repo, home)).toThrow(/no preset "nope"/);
     expect(() => loadPreset('../x', repo, home)).toThrow(/invalid preset name/);
@@ -57,7 +57,7 @@ describe('presets', () => {
     expect(readFileSync(join(home, 'agents', 'reviewer.md'), 'utf8')).toBe('mine');
   });
 
-  it('passes the tool lists as a session agent, keeps the orchestr8 tools, and appends the body as the role', () => {
+  it('passes the tool lists as a session agent, keeps the tiller tools, and appends the body as the role', () => {
     const home = tmp();
     put(join(home, 'agents'), 'greeter', GREETER);
     const preset = loadPreset('greeter', home, home);
@@ -65,23 +65,23 @@ describe('presets', () => {
     const args = launchArgs({ ...base, preset });
     expect(args[args.indexOf('--agent') + 1]).toBe('greeter');
     expect(JSON.parse(args[args.indexOf('--agents') + 1])).toEqual({
-      greeter: { description: 'orchestr8 preset greeter', prompt: '', tools: ['Read', 'Grep', 'mcp__orchestr8'], disallowedTools: ['Edit', 'Write'], maxTurns: 5 },
+      greeter: { description: 'tiller preset greeter', prompt: '', tools: ['Read', 'Grep', 'mcp__tiller'], disallowedTools: ['Edit', 'Write'], maxTurns: 5 },
     });
     expect(systemPrompt({ ...base, preset })).toMatch(/# Role\n# Greeter\n\nSay marmalade\.$/);
     expect(launchArgs({ ...base, preset: { name: 'plain', body: '', source: '' } })).not.toContain('--agent');
   });
 
-  it('o8 presets lists the presets in effect with their source file', () => {
+  it('tl presets lists the presets in effect with their source file', () => {
     const home = tmp(), repo = tmp();
     ensurePresets(home);
-    put(join(repo, '.orchestr8', 'agents'), 'reviewer', GREETER);
+    put(join(repo, '.tiller', 'agents'), 'reviewer', GREETER);
     put(join(home, 'agents'), 'broken', '---\nisolation: sideways\n---\n');
-    const r = spawnSync(join(import.meta.dirname, '../../bin/o8'), ['presets', '--cwd', repo], { env: { ...process.env, O8_HOME: home }, encoding: 'utf8' });
+    const r = spawnSync(join(import.meta.dirname, '../../bin/tl'), ['presets', '--cwd', repo], { env: { ...process.env, TL_HOME: home }, encoding: 'utf8' });
     expect(r.stderr).toBe('');
     const lines = r.stdout.trim().split('\n').map((l) => l.split('\t'));
     expect(lines.map((l) => l[0])).toEqual(['broken', 'researcher', 'reviewer']);
     expect(lines[0][2]).toMatch(/^error: invalid preset .*isolation/);
-    expect(lines[2]).toEqual(['reviewer', join(repo, '.orchestr8', 'agents', 'reviewer.md'), 'model=haiku effort=low permissionMode=plan tools=Read,Grep disallowedTools=Edit,Write maxTurns=5']);
+    expect(lines[2]).toEqual(['reviewer', join(repo, '.tiller', 'agents', 'reviewer.md'), 'model=haiku effort=low permissionMode=plan tools=Read,Grep disallowedTools=Edit,Write maxTurns=5']);
     expect(listPresets(repo, home).map((p) => p.name)).toEqual(['broken', 'researcher', 'reviewer']);
   });
 });
@@ -97,7 +97,7 @@ describe('spawn with a preset', () => {
     writeFileSync(join(bin, 'claude'), '#!/bin/sh\nfor a in "$@"; do case "$prev" in --settings) out="$(dirname "$a")/argv";; esac; prev="$a"; done\nprintf "%s\\n" "$@" > "$out"\nsleep 5\n');
     chmodSync(join(bin, 'claude'), 0o755);
     writeFileSync(join(home, 'config.json'), JSON.stringify({ roles: { worker: { model: 'sonnet', effort: 'high' } } }));
-    put(join(proj, '.orchestr8', 'agents'), 'greeter', GREETER);
+    put(join(proj, '.tiller', 'agents'), 'greeter', GREETER);
     m = new NodeManager({ home, shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
     const spawn = async (req: { model?: string; permissionMode?: string; preset?: string }) => m!.registry.get((await m!.spawn({ kind: 'claude', title: 'c', cwd: proj, parentId: 'p', ...req })).id)!;
 

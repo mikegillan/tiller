@@ -19,13 +19,13 @@ type TauriWindow = { __TAURI_INTERNALS__?: { invoke: (cmd: string, args: object)
 export const toggleDnd = () => send(dndActive(getState().dnd, Date.now()) ? { t: 'dnd', on: false } : { t: 'dnd', on: true, minutes: 60 });
 
 /** What the app's menu bar item calls on a click (src-tauri/src/lib.rs on_tray_menu). */
-(window as { __o8tray?: (action: string, id?: string) => void }).__o8tray = (action, id) => {
+(window as { __tltray?: (action: string, id?: string) => void }).__tltray = (action, id) => {
   if (action === 'select' && id) selectNode(id);
   else if (action === 'dnd') toggleDnd();
 };
 
 /**
- * "(2) orchestr8" in the document title (and the Dock badge and menu bar item in the app) while nodes need you; keeps
+ * "(2) tiller" in the document title (and the Dock badge and menu bar item in the app) while nodes need you; keeps
  * ?node= in step with the selection.
  */
 export function useDocumentSync() {

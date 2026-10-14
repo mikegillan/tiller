@@ -7,7 +7,7 @@ import type { Notifications, NotifyLevel } from './config.js';
 import type { NotifyEvent } from './manager.js';
 
 const THROTTLE_MS = 5000;
-const APP_BUNDLE = 'dev.orchestr8.app';
+const APP_BUNDLE = 'dev.tiller.app';
 
 export interface Content { title: string; subtitle?: string; body: string; sound: boolean }
 

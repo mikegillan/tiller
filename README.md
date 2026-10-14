@@ -1,6 +1,6 @@
-# orchestr8
+# tiller
 
-orchestr8 is a local daemon that runs several Claude Code sessions as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser, and `o8-mux` is a multiplexer for the terminal. A small Claude Code mod (a plugin loaded into each node) delivers messages and adds a few slash commands.
+Tiller (formerly orchestr8) is a local daemon that runs several Claude Code sessions as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser, and `tl-mux` is a multiplexer for the terminal. A small Claude Code mod (a plugin loaded into each node) delivers messages and adds a few slash commands.
 
 ## Requirements
 
@@ -12,28 +12,28 @@ orchestr8 is a local daemon that runs several Claude Code sessions as child proc
 
     npm install && npm link
 
-This puts `o8` (the client), `o8d` (the daemon in the foreground), `o8-mux` (the terminal multiplexer) and `o8-app` (the native app) on your PATH.
+This puts `tl` (the client), `tld` (the daemon in the foreground), `tl-mux` (the terminal multiplexer) and `tl-app` (the native app) on your PATH.
 
 ## Use
 
-- `cd ~/some/repo && o8` starts the daemon if it is not running, finds, resumes or creates the orchestrator for that directory, and opens the app on it (or the browser UI when the app is not built). `o8 --new` always starts a fresh orchestrator.
-- `o8 mux` (or `o8-mux`) does the same and attaches the terminal multiplexer instead.
-- `o8 stop` shuts the daemon down and closes every node; the nodes are not resumed on the next start.
-- `o8 reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
-- `o8 autostart on|off|status` manages a launchd agent that starts the daemon at login and again after a crash.
+- `cd ~/some/repo && tl` starts the daemon if it is not running, finds, resumes or creates the orchestrator for that directory, and opens the app on it (or the browser UI when the app is not built). `tl --new` always starts a fresh orchestrator.
+- `tl mux` (or `tl-mux`) does the same and attaches the terminal multiplexer instead.
+- `tl stop` shuts the daemon down and closes every node; the nodes are not resumed on the next start.
+- `tl reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
+- `tl autostart on|off|status` manages a launchd agent that starts the daemon at login and again after a crash.
 
-`o8 help` lists every command and flag.
+`tl help` lists every command and flag.
 
 ## Where files live
 
-Everything the daemon keeps is under `~/.orchestr8`, or `O8_HOME` when set: the node registry (`state.json`), per-node files under `nodes/<id>/`, the admin token `o8` uses, `config.json` ([docs/config.md](docs/config.md)), presets under `agents/` and the log `daemon.log`. Each tree of nodes has a session directory, `sessions/<rootId>/`, for notes and the event log ([docs/sessions.md](docs/sessions.md)). The daemon listens on 127.0.0.1, port 7788 unless `O8_PORT` says otherwise.
+Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the node registry (`state.json`), per-node files under `nodes/<id>/`, the admin token `tl` uses, `config.json` ([docs/config.md](docs/config.md)), presets under `agents/` and the log `daemon.log`. Each tree of nodes has a session directory, `sessions/<rootId>/`, for notes and the event log ([docs/sessions.md](docs/sessions.md)). The daemon listens on 127.0.0.1, port 7788 unless `TL_PORT` says otherwise.
 
 ## Known limits
 
 - Anthropic can disable mods remotely, and `--bare` or `--safe-mode` drop them. The daemon and CLI still work then; messages are pasted into the terminal instead.
 - Claude shows its trust dialog the first time it opens a new folder; attach and accept it.
 - One daemon per user.
-- With autostart on, a daemon started by `o8` or the app (when none was running) runs outside launchd, so a crash does not bring it back until the next `o8 reload` or login.
+- With autostart on, a daemon started by `tl` or the app (when none was running) runs outside launchd, so a crash does not bring it back until the next `tl reload` or login.
 
 ## Tests
 

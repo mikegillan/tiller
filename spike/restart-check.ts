@@ -1,13 +1,13 @@
 // Restart resilience: a message queued for a busy worker survives a daemon SIGTERM + restart (same home and port)
 // and is delivered through the mod after the worker is resumed. Starts and stops its own daemon; kill any other one first.
-//   O8_HOME=/tmp/o8-full O8_PORT=7794 npx tsx spike/restart-check.ts
+//   TL_HOME=/tmp/tl-full TL_PORT=7794 npx tsx spike/restart-check.ts
 import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, openSync, readFileSync } from 'node:fs';
 import { WebSocket } from 'ws';
 import type { ClientMessage, NodeView, ServerMessage } from '../src/shared/protocol.js';
 
-const PORT = process.env.O8_PORT ?? '7794';
-const HOME = process.env.O8_HOME ?? '/tmp/o8-full';
+const PORT = process.env.TL_PORT ?? '7794';
+const HOME = process.env.TL_HOME ?? '/tmp/tl-full';
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const t0 = Date.now();
 const log = (s: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1).padStart(6)}s] ${s}`);
@@ -24,7 +24,7 @@ async function waitFor<T>(what: string, ms: number, probe: () => T | undefined |
 async function startDaemon() {
   const out = openSync(`${HOME}/daemon.log`, 'a');
   appendFileSync(`${HOME}/daemon.log`, '\n=== daemon start ===\n');
-  const p = spawn('node', ['--import', 'tsx', 'src/daemon/index.ts'], { cwd: REPO, env: { ...process.env, O8_HOME: HOME, O8_PORT: PORT, O8_DEBUG: '1' }, stdio: ['ignore', out, out] });
+  const p = spawn('node', ['--import', 'tsx', 'src/daemon/index.ts'], { cwd: REPO, env: { ...process.env, TL_HOME: HOME, TL_PORT: PORT, TL_DEBUG: '1' }, stdio: ['ignore', out, out] });
   const exited = new Promise<number | null>((r) => p.on('exit', (c) => r(c)));
   await waitFor('daemon listening', 20_000, () => dlog().split('=== daemon start ===').pop()!.includes('listening'));
   return { p, exited };
@@ -46,7 +46,7 @@ async function connect() {
   return { ws, nodes, send };
 }
 async function api(tool: string, body: object): Promise<any> {
-  const r = await fetch(`http://127.0.0.1:${PORT}/api/${tool}`, { method: 'POST', headers: { Authorization: `Bearer ${readFileSync(`${HOME}/admin-token`, 'utf8').trim()}`, 'X-O8-Node': 'human', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/${tool}`, { method: 'POST', headers: { Authorization: `Bearer ${readFileSync(`${HOME}/admin-token`, 'utf8').trim()}`, 'X-TL-Node': 'human', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   return r.json();
 }
 

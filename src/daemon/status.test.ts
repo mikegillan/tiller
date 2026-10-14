@@ -218,7 +218,7 @@ describe('doneSource', () => {
 });
 
 describe('mod turn.complete', () => {
-  const blocked = st({ state: 'blocked', activity: 'needs approval: Write o8-deny-probe.txt', promptId: 'p1' });
+  const blocked = st({ state: 'blocked', activity: 'needs approval: Write tl-deny-probe.txt', promptId: 'p1' });
   it('an answer ends working, waiting and blocked as done, clearing the stale approval activity', () => {
     for (const state of ['working', 'waiting', 'blocked'] as const) {
       const next = turnComplete({ ...blocked, state }, NOW, { reason: 'answer', isAborted: false });

@@ -34,7 +34,7 @@ export function modApi(manager: NodeManager, authenticate: (req: http.IncomingMe
     if (!post && !(req.method === 'GET' && (path === '/inbox' || path === '/tree'))) return false;
     const caller = authenticate(req);
     if (!caller) { res.writeHead(401).end(); return true; }
-    const json = (body: unknown) => res.writeHead(200, { 'Content-Type': 'application/json', 'X-O8-Clients': clients().join(',') }).end(JSON.stringify(body));
+    const json = (body: unknown) => res.writeHead(200, { 'Content-Type': 'application/json', 'X-TL-Clients': clients().join(',') }).end(JSON.stringify(body));
 
     if (!post) {
       if (path === '/inbox') json(caller === HUMAN ? [] : inbox(manager, caller));
@@ -52,7 +52,7 @@ export function modApi(manager: NodeManager, authenticate: (req: http.IncomingMe
       if (path === '/ack') {
         const id = z.object({ id: z.string().min(1) }).parse(body).id;
         const ok = ack(manager, caller, id);
-        if (process.env.O8_DEBUG) console.log(`ack ${caller.slice(0, 6)} ${id}${ok ? ' (delivered via inbox)' : ' (unknown)'}`);
+        if (process.env.TL_DEBUG) console.log(`ack ${caller.slice(0, 6)} ${id}${ok ? ' (delivered via inbox)' : ' (unknown)'}`);
       } else if (path === '/claim') {
         // 404: withdrawn or expired, so the mod must not submit it.
         if (!claim(manager, caller, z.object({ id: z.string().min(1) }).parse(body).id)) { res.writeHead(404).end(); return true; }

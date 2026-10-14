@@ -18,7 +18,7 @@ export const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 
 export const inside = (path: string, dir: string) => path === dir || path.startsWith(dir + sep);
 
 /** For `.catch(logError)` on fire-and-forget promises. */
-export const logError = (err: unknown): void => console.error('orchestr8:', err);
+export const logError = (err: unknown): void => console.error('tiller:', err);
 
 /** The request body, or undefined once it passes `max` characters: then this has answered 413 and destroyed the request. */
 export async function readBody(req: http.IncomingMessage, res: http.ServerResponse, max = 1_000_000): Promise<string | undefined> {

@@ -1,4 +1,4 @@
 node_modules/
-.orchestr8-dev/
+.tiller-dev/
 ui/dist/
 src-tauri/target/

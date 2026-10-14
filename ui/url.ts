@@ -6,10 +6,10 @@ const urlKey = params.get('k');
 
 export function token(): string {
   if (urlKey) {
-    try { localStorage.setItem('o8.k', urlKey); } catch { /* storage unavailable; the in-memory copy still works */ }
+    try { localStorage.setItem('tl.k', urlKey); } catch { /* storage unavailable; the in-memory copy still works */ }
     return urlKey;
   }
-  try { return localStorage.getItem('o8.k') ?? ''; } catch { return ''; }
+  try { return localStorage.getItem('tl.k') ?? ''; } catch { return ''; }
 }
 
 export function syncUrl(nodeId: string | null) {

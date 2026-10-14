@@ -1,13 +1,15 @@
-// `o8 autostart`: a launchd user agent that starts bin/o8d at login and relaunches it after a crash, but not after a
-// clean exit such as `o8 stop`.
+// `tl autostart`: a launchd user agent that starts bin/tld at login and relaunches it after a crash, but not after a
+// clean exit such as `tl stop`.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const LABEL = 'com.orchestr8.daemon';
-export const O8D = fileURLToPath(new URL('../../bin/o8d', import.meta.url));
+export const LABEL = 'com.tiller.daemon';
+/** The agent before the rename to tiller; `tl autostart on` removes it. */
+export const OLD_LABEL = 'com.orchestr8.daemon';
+export const TLD = fileURLToPath(new URL('../../bin/tld', import.meta.url));
 export const plistPath = (label = LABEL): string => join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
 
 export interface Agent { label: string; program: string; env: Record<string, string>; log: string }
@@ -77,5 +79,5 @@ export function uninstall(label = LABEL, path = plistPath(label)): void {
   rmSync(path, { force: true });
 }
 
-/** Start the loaded agent's daemon, for `o8 reload`, so the new daemon stays under launchd. */
+/** Start the loaded agent's daemon, for `tl reload`, so the new daemon stays under launchd. */
 export const kickstart = (label = LABEL): void => check(launchctl('kickstart', target(label)), 'kickstart');

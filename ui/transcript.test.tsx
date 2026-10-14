@@ -42,9 +42,9 @@ describe('transcript', () => {
   });
 
   it('names an archived branch with its fate', () => {
-    const a = { id: 'a', rootId: 'r', parentId: null, title: 'a', cwd: '/w', createdAt: 0, closedAt: 1, branch: 'o8/n-123' };
+    const a = { id: 'a', rootId: 'r', parentId: null, title: 'a', cwd: '/w', createdAt: 0, closedAt: 1, branch: 'tl/n-123' };
     expect([
       branchLine({ ...a, branchFate: 'merged', base: 'main' }), branchLine({ ...a, branchFate: 'kept' }), branchLine({ ...a, branchFate: 'discarded' }), branchLine(a),
-    ]).toEqual(['o8/n-123 merged into main', 'o8/n-123 kept', 'o8/n-123 discarded', 'o8/n-123']);
+    ]).toEqual(['tl/n-123 merged into main', 'tl/n-123 kept', 'tl/n-123 discarded', 'tl/n-123']);
   });
 });

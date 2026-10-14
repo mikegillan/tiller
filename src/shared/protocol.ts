@@ -68,7 +68,7 @@ export type Effort = (typeof EFFORTS)[number];
 export const ISOLATIONS = ['none', 'worktree'] as const;
 export type Isolation = (typeof ISOLATIONS)[number];
 
-/** A worker's own git worktree: <repo>/.claude/worktrees/<nodeId> on branch o8/<nodeId>, branched from base at baseSha. */
+/** A worker's own git worktree: <repo>/.claude/worktrees/<nodeId> on branch tl/<nodeId>, branched from base at baseSha. */
 export interface Worktree {
   /** The main checkout root; the PTY starts here with `claude --worktree <nodeId>`. */
   repo: string;
@@ -95,7 +95,7 @@ export interface GitState {
   /** Lines added and removed by the node's work so far: the same numbers as the diff view (see Diff). */
   additions: number;
   deletions: number;
-  /** When orchestr8 last merged the branch into base; cleared once the branch moves past what was merged. */
+  /** When tiller last merged the branch into base; cleared once the branch moves past what was merged. */
   mergedAt?: number;
 }
 
@@ -124,7 +124,7 @@ export interface Pending {
   /** The first prompt and isolation to launch with. */
   prompt?: string;
   isolation?: Isolation;
-  /** Launch past daemon.maxWorking (the human's o8 spawn --now). */
+  /** Launch past daemon.maxWorking (the human's tl spawn --now). */
   now?: boolean;
   /** The failed dependency, "n-x: note", once its parent has been told. */
   blocked?: string;
@@ -141,7 +141,7 @@ export interface NodeRecord {
   permissionMode?: string;
   /** Explicit role override; absent means derive from parentId at each launch. */
   role?: Role;
-  /** The spawn preset (.orchestr8/agents/<name>.md); its body and tool lists are re-read at each launch. */
+  /** The spawn preset (.tiller/agents/<name>.md); its body and tool lists are re-read at each launch. */
   preset?: string;
   /** Set on a node that owns a git worktree (spawned with isolation "worktree"); its cwd is the worktree path. */
   worktree?: Worktree;
@@ -160,7 +160,7 @@ export interface NodeRecord {
   spentToday?: { day: string; usd: number };
   /** The session's cumulative cost at its last measure, so the next measure (even after a daemon restart) adds only the difference. */
   lastCost?: { sessionId?: string; usd: number };
-  /** Set by the human (o8 mute, the row's mute button): the node never sends an OS notification. */
+  /** Set by the human (tl mute, the row's mute button): the node never sends an OS notification. */
   muted?: boolean;
   /** Set while the node is armed or queued; cleared when it launches. */
   pending?: Pending;
@@ -289,7 +289,7 @@ export type ClientMessage =
   | { t: 'transcript'; id: string; sessionId?: string } // a live or archived Claude node's conversation (default: its current session); replies transcript
   | { t: 'history'; rootId?: string; query?: string } // archived nodes, of one tree or all, optionally filtered by text in title, prompt or last message; replies history
   | { t: 'followup'; id: string; prompt: string; title?: string } // continue an archived node's session as a new live node (claude --resume <session>) that starts on `prompt`; replies node (or error)
-  | { t: 'send'; id: string; text: string; mode?: SendMode } // a message from the human, as `o8 send` delivers it; replies sent
+  | { t: 'send'; id: string; text: string; mode?: SendMode } // a message from the human, as `tl send` delivers it; replies sent
   | { t: 'mute'; id: string; muted: boolean }  // the human mutes or unmutes a node's OS notifications
   | { t: 'dnd'; on: boolean; minutes?: number } // do not disturb on (for minutes, else until turned off) or off
   ;
@@ -301,7 +301,7 @@ export type SendMode = 'queue' | 'now';
 /** `steer` is set when the message interrupts (or interrupted) the target's running turn. */
 export interface SendResult { outcome: SendOutcome; retryable: boolean; detail?: string; messageId?: string; steer?: true }
 
-// Mod-facing HTTP API (PLAN §14). All routes authenticate like /hook: Authorization bearer + X-O8-Node.
+// Mod-facing HTTP API (PLAN §14). All routes authenticate like /hook: Authorization bearer + X-TL-Node.
 // The per-node mod (mod/) polls these; the daemon treats a node as "mod-live" while polls keep arriving.
 
 /** GET /inbox → InboxMessage[] (unacked messages for the calling node, oldest first). */

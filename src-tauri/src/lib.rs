@@ -2,7 +2,7 @@ use std::{env, fs, path::PathBuf, process::{Command, Stdio}, thread, time::{Dura
 use tauri::{image::Image, menu::{Menu, MenuItem, PredefinedMenuItem}, tray::TrayIconBuilder, AppHandle, Manager, RunEvent, Url, Wry};
 
 fn home() -> PathBuf {
-    env::var_os("O8_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env::var("HOME").unwrap_or_default()).join(".orchestr8"))
+    env::var_os("TL_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env::var("HOME").unwrap_or_default()).join(".tiller"))
 }
 
 fn read(name: &str) -> Option<String> {
@@ -11,24 +11,24 @@ fn read(name: &str) -> Option<String> {
 
 // Same lookup as src/daemon/home.ts daemonPort.
 fn port() -> u16 {
-    env::var("O8_PORT").ok().or_else(|| read("port")).and_then(|p| p.parse().ok()).unwrap_or(7788)
+    env::var("TL_PORT").ok().or_else(|| read("port")).and_then(|p| p.parse().ok()).unwrap_or(7788)
 }
 
 fn alive(port: u16) -> bool {
     reqwest::blocking::Client::new().get(format!("http://127.0.0.1:{port}/health")).timeout(Duration::from_millis(500)).send().is_ok_and(|r| r.status().is_success())
 }
 
-// Start bin/o8d detached in its own session, appending to daemon.log, then wait up to 15 s for /health.
+// Start bin/tld detached in its own session, appending to daemon.log, then wait up to 15 s for /health.
 fn ensure_daemon(port: u16) -> Result<(), String> {
     if alive(port) { return Ok(()); }
-    let repo = option_env!("O8_REPO").map(String::from).or_else(|| read("repo")).ok_or("no ~/.orchestr8/repo (run `o8` once) and O8_REPO not set at build time")?;
+    let repo = option_env!("TL_REPO").map(String::from).or_else(|| read("repo")).ok_or("no ~/.tiller/repo (run `tl` once) and TL_REPO not set at build time")?;
     fs::create_dir_all(home()).map_err(|e| e.to_string())?;
     let log = fs::OpenOptions::new().create(true).append(true).open(home().join("daemon.log")).map_err(|e| e.to_string())?;
-    let mut cmd = Command::new(PathBuf::from(repo).join("bin/o8d"));
-    cmd.env("O8_HOME", home()).env("O8_PORT", port.to_string()).stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
+    let mut cmd = Command::new(PathBuf::from(repo).join("bin/tld"));
+    cmd.env("TL_HOME", home()).env("TL_PORT", port.to_string()).stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    cmd.spawn().map_err(|e| format!("starting bin/o8d: {e}"))?;
+    cmd.spawn().map_err(|e| format!("starting bin/tld: {e}"))?;
     let end = Instant::now() + Duration::from_secs(15);
     while Instant::now() < end {
         if alive(port) { return Ok(()); }
@@ -54,7 +54,7 @@ fn tray_menu(app: &AppHandle, items: &[(String, String)], dnd: bool) -> tauri::R
     let menu = Menu::new(app)?;
     for (id, title) in items { menu.append(&MenuItem::with_id(app, format!("node:{id}"), title, true, None::<&str>)?)?; }
     if !items.is_empty() { menu.append(&PredefinedMenuItem::separator(app)?)?; }
-    menu.append(&MenuItem::with_id(app, "open", "Open orchestr8", true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "open", "Open Tiller", true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "dnd", if dnd { "Turn off do not disturb" } else { "Do not disturb 1 h" }, true, None::<&str>)?)?;
     Ok(menu)
 }
@@ -69,19 +69,19 @@ fn show_and_focus(w: &tauri::WebviewWindow) {
 // The UI calls this whenever what needs you changes (ui/hooks.ts useDocumentSync), as it sets the Dock badge.
 #[tauri::command]
 fn set_tray(app: AppHandle, color: String, items: Vec<(String, String)>, dnd: bool) -> Result<(), String> {
-    let tray = app.tray_by_id("o8").ok_or("no tray icon")?;
+    let tray = app.tray_by_id("tl").ok_or("no tray icon")?;
     let rgb = match color.as_str() { "red" => [0xe5, 0x48, 0x4d], "amber" => [0xf5, 0xa5, 0x24], _ => GREEN };
     tray.set_icon(Some(dot(rgb))).map_err(|e| e.to_string())?;
     tray.set_menu(Some(tray_menu(&app, &items, dnd).map_err(|e| e.to_string())?)).map_err(|e| e.to_string())
 }
 
-// Menu clicks go to the UI (window.__o8tray in ui/hooks.ts), which selects the node or toggles do not disturb.
+// Menu clicks go to the UI (window.__tltray in ui/hooks.ts), which selects the node or toggles do not disturb.
 fn on_tray_menu(app: &AppHandle, id: &str) {
     let Some(w) = app.get_webview_window("main") else { return };
-    if id == "dnd" { let _ = w.eval("window.__o8tray?.('dnd')"); return; }
+    if id == "dnd" { let _ = w.eval("window.__tltray?.('dnd')"); return; }
     show_and_focus(&w); // every other id, "open" included, brings the window up
     if let Some(node) = id.strip_prefix("node:").filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
-        let _ = w.eval(format!("window.__o8tray?.('select', '{node}')"));
+        let _ = w.eval(format!("window.__tltray?.('select', '{node}')"));
     }
 }
 
@@ -89,18 +89,18 @@ pub fn run() {
     let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![set_tray])
         .setup(|app| {
-            TrayIconBuilder::with_id("o8")
+            TrayIconBuilder::with_id("tl")
                 .icon(dot(GREEN))
-                .tooltip("orchestr8")
+                .tooltip("Tiller")
                 .menu(&tray_menu(app.handle(), &[], false)?)
                 .on_menu_event(|app, e| on_tray_menu(app, e.id().as_ref()))
                 .build(app)?;
             let win = app.get_webview_window("main").expect("main window");
             thread::spawn(move || {
                 let port = port();
-                if let Err(e) = ensure_daemon(port) { eprintln!("orchestr8: {e}"); return; }
+                if let Err(e) = ensure_daemon(port) { eprintln!("tiller: {e}"); return; }
                 let token = read("admin-token").unwrap_or_default();
-                // `o8` launches the app with `--node <id>` so it opens on that node.
+                // `tl` launches the app with `--node <id>` so it opens on that node.
                 let node = env::args().skip_while(|a| a != "--node").nth(1).map(|n| format!("&node={n}")).unwrap_or_default();
                 // The UI sets the Dock badge itself (ui/hooks.ts useDocumentSync).
                 let _ = win.navigate(Url::parse(&format!("http://127.0.0.1:{port}/?k={token}&app=1{node}")).unwrap());

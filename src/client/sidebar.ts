@@ -115,7 +115,7 @@ export function layoutSidebar(m: SideModel, W: number, H: number): SideLayout {
   const frame = (inner: string) => `${B}│\x1b[0m${inner}${B}│\x1b[0m`;
   const rule = (l: string, r: string) => `${B}${l}${'─'.repeat(w)}${r}\x1b[0m`;
   const count = ` ${m.nodes.size} `;
-  const top = paint([['2', '╭─ '], ['1', 'orchestr8'], ['2', count + '─'.repeat(Math.max(0, W - 13 - count.length)) + '╮']], W);
+  const top = paint([['2', '╭─ '], ['1', 'tiller'], ['2', count + '─'.repeat(Math.max(0, W - 10 - count.length)) + '╮']], W);
 
   // Bottom block: actions, divider, status, keys / prompt.
   const root = cur?.parentId === null; // an orchestrator is restarted, never killed

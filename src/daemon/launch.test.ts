@@ -28,7 +28,7 @@ describe('launchArgs', () => {
 
 describe('role prompts', () => {
   const dirs: string[] = [];
-  const tmp = () => { const d = mkdtempSync(join(tmpdir(), 'o8-roles-')); dirs.push(d); return d; };
+  const tmp = () => { const d = mkdtempSync(join(tmpdir(), 'tl-roles-')); dirs.push(d); return d; };
   afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
   const prompt = (home: string, cwd: string, parentId: string | null, role?: Role) => systemPrompt({ nodeId: 'n', title: 't', parentId, home, cwd, role });
 
@@ -50,8 +50,8 @@ describe('role prompts', () => {
   });
   it('lets a repo override beat the home file', () => {
     const home = tmp(), repo = tmp();
-    mkdirSync(join(repo, '.orchestr8'));
-    writeFileSync(join(repo, '.orchestr8', 'worker.md'), 'repo worker');
+    mkdirSync(join(repo, '.tiller'));
+    writeFileSync(join(repo, '.tiller', 'worker.md'), 'repo worker');
     expect(prompt(home, repo, 'p')).toContain('repo worker');
     expect(promptPath(home, repo, 'worker').override).toBe(true);
     expect(prompt(home, repo, null)).toContain('You are the orchestrator'); // no override for that role

@@ -10,7 +10,7 @@ export function Band({ Box, Text, Button }: Els, id: string, list: Child[], pend
   const first = needy[0], k = needy.length
   return (
     <Box columnGap={1}>
-      <Text dimColor wrap="truncate-end">orchestr8 · {me?.title ?? id} ·{parentId ? '' : ' parent none'}</Text>
+      <Text dimColor wrap="truncate-end">tiller · {me?.title ?? id} ·{parentId ? '' : ' parent none'}</Text>
       {parentId && <Button plain key="parent" onPress={() => focus(parentId, 'parent')}>↑ parent</Button>}
       {rootId && rootId !== parentId && <Button plain key="root" onPress={() => focus(rootId, 'root')}>⌂ root</Button>}
       {first && <Text color="yellow" wrap="truncate-end">· ! {first.title} [{first.id.slice(-4)}]{k > 1 ? ` +${k - 1}` : ''}</Text>}
