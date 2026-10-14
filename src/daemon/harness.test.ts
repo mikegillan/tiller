@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +10,7 @@ import { NodeManager } from './manager.js';
 import { startServer, type DaemonServer } from './server.js';
 import { deliver, HUMAN, messageStatus } from './messaging.js';
 import { setProjectTrust, tillerTrusts } from './trust.js';
+import { findArchived } from './archive.js';
 
 let home: string;
 let manager: NodeManager | undefined;
@@ -55,10 +56,12 @@ function fakePi(): string {
   const bin = join(home, 'bin'); mkdirSync(bin);
   const extension = fileURLToPath(new URL('../../adapters/pi/index.ts', import.meta.url));
   writeFileSync(join(bin, 'pi'), `#!${process.execPath} --experimental-transform-types
-import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import extension from ${JSON.stringify(extension)};
 const args = process.argv.slice(2), path = args[args.indexOf('--session') + 1];
 if (!existsSync(path)) writeFileSync(path, JSON.stringify({ type: 'session', id: 'pi-native-id', version: 3, cwd: process.cwd() }) + '\\n');
+// Native Pi opens --session using the header cwd, not the process launch cwd.
+process.chdir(JSON.parse(readFileSync(path, 'utf8').split('\\n')[0]).cwd);
 process.stdout.write('\\r\\n'.repeat(100));
 const handlers = new Map(); let busy = false, index = 0;
 const ctx = { isIdle: () => !busy, abort: () => { busy = false; }, shutdown: () => process.exit(1), model: { id: 'fake-pi' },
@@ -107,22 +110,37 @@ describe('Pi node integration', () => {
     expect(manager!.view(n.id)?.status.lastAssistantMessage).toContain('hello from Tiller');
     expect((await manager!.transcript(n.id)).entries.map(e => e.text).join('\n')).toContain('hello from Tiller');
     const path = manager!.view(n.id)!.transcriptPath!;
+    manager!.applyModEvent(n.id, { event: 'session.measure', payload: { cost: { usd: 0.8 } } });
     await manager!.close(n.id, true);
     expect(existsSync(manager!.nodeDir(n.id))).toBe(false);
     expect(existsSync(path)).toBe(true);
     expect((await manager!.transcript(n.id)).entries).toHaveLength(2);
     const next = await manager!.followup(n.id, 'next'); await ready(next.id);
     expect(next.harness).toBe('pi');
-    expect(next.transcriptPath).toBe(path);
+    expect(next.sessionId).toBe(n.sessionId);
+    await expect(manager!.followup(n.id, 'duplicate')).rejects.toThrow(/already continues the session/);
+    manager!.applyModEvent(next.id, { event: 'session.measure', payload: { cost: { usd: 1 } } });
+    expect(manager!.view(next.id)!.spentUsd).toBeCloseTo(0.2);
+    const adopted = join(manager!.sessionDirOf(next.id), 'agents', next.id, `${n.sessionId}.jsonl`);
+    expect(next.transcriptPath).toBe(adopted);
+    const originalEntries = readFileSync(path, 'utf8').split('\n').slice(1);
+    expect(readFileSync(adopted, 'utf8').split('\n').slice(1)).toEqual(originalEntries);
     const oldMeta = join(manager!.sessionDirOf(n.id), 'meta.json');
     const meta = JSON.parse(readFileSync(oldMeta, 'utf8'));
     writeFileSync(oldMeta, JSON.stringify({ ...meta, closedAt: Date.now() - 100 * 86_400_000 }));
-    expect(manager!.sweepSessions()).not.toContain(n.id);
-    expect(existsSync(path)).toBe(true);
+    expect(manager!.sweepSessions()).toContain(n.id);
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(adopted)).toBe(true);
     expect(manager!.restart(next.id).ok).toBe(true); await ready(next.id);
     const record = manager!.view(next.id)!;
     expect(record.previousSessions).toContain(n.sessionId);
     expect((await manager!.transcript(next.id, n.sessionId)).entries).toHaveLength(2);
+    await manager!.close(next.id, true);
+    expect(manager!.sweepSessions()).not.toContain(next.id);
+    expect((await manager!.transcript(next.id, n.sessionId)).entries).toHaveLength(2);
+    const again = await manager!.followup(next.id, 'again'); await ready(again.id);
+    expect(again.previousSessions).toContain(n.sessionId);
+    expect((await manager!.transcript(again.id, n.sessionId)).entries).toHaveLength(2);
   });
 
   it('keeps Pi defaults instead of importing Claude role models/effort, but honors explicit overrides', async () => {
@@ -170,6 +188,17 @@ describe('Pi node integration', () => {
     expect(manager!.view(n.id)?.transcriptPath).toBe(path);
     expect(readFileSync(path, 'utf8')).toContain('pi-native-id');
     await manager!.close(n.id, true, 'discard');
+    expect(existsSync(n.worktree!.path)).toBe(false);
+    const archived = await findArchived(manager!.home, n.id);
+    expect(archived!.cwd).toBe(n.worktree!.path);
+    const original = readFileSync(path, 'utf8');
+    const next = await manager!.followup(n.id, 'more'); await ready(next.id);
+    expect(next.cwd).toBe(realpathSync(repo));
+    expect(manager!.session(next.id)?.screenTail(30).join('\n')).toContain(`READY cwd=${next.cwd}`);
+    const adopted = readFileSync(next.transcriptPath!, 'utf8');
+    expect(JSON.parse(adopted.split('\n')[0]).cwd).toBe(next.cwd);
+    expect(readFileSync(path, 'utf8')).toBe(original); // Do not mutate the historical archive's cwd.
+    expect(adopted.slice(adopted.indexOf('\n'))).toBe(original.slice(original.indexOf('\n')));
   });
 });
 

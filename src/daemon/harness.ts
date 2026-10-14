@@ -6,6 +6,7 @@ import { harnessFor, type Harness, type NodeRecord } from '../shared/protocol.js
 import { claudeLaunch, nodeEnv, systemPrompt, type LaunchInput, type LaunchSpec } from './launch.js';
 import type { Preset } from './presets.js';
 import { transcriptFor } from './transcript.js';
+import { piTranscript, preparePiTranscript } from './pi-session.js';
 
 export interface HarnessOptions {
   permissionMode?: string;
@@ -22,10 +23,11 @@ export interface HarnessAdapter {
   /** Claude adopts worktrees itself; other CLIs start directly inside them. */
   cwd(node: NodeRecord): string;
   transcript(node: Pick<NodeRecord, 'id' | 'cwd' | 'sessionId' | 'transcriptPath'>, sessionDir: string): string | undefined;
+  /** Adopt/repair owned session storage before launch, without changing the conversation identity. */
+  prepareTranscript?(node: NodeRecord, sessionDir: string, resume: boolean): string;
 }
 
 const piExtension = fileURLToPath(new URL('../../adapters/pi/index.ts', import.meta.url));
-const piTranscript = (sessionDir: string, nodeId: string, sessionId: string) => join(sessionDir, 'agents', nodeId, `${sessionId}.jsonl`);
 
 export const claudeAdapter: HarnessAdapter = {
   id: 'claude',
@@ -60,6 +62,7 @@ export const piAdapter: HarnessAdapter = {
     return { file: 'pi', args, env: { ...nodeEnv(i), TL_HARNESS: 'pi', TL_SESSION_ID: i.sessionId, TL_PI_HOOK_TOOLS: '1' } };
   },
   cwd: (n) => n.cwd,
+  prepareTranscript: preparePiTranscript,
   transcript: (n, sessionDir) => n.transcriptPath ?? (n.sessionId ? piTranscript(sessionDir, n.id, n.sessionId) : undefined),
 };
 

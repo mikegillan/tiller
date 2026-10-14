@@ -36,8 +36,14 @@ lists Pi's choices). Pi maps explicit `effort` to `--thinking`.
 `tl send`, `tl read`, `tl transcript`, `tl resume`, `tl restart`, `tl followup`, dependency
 launches and outcome reporting work with Pi nodes. Pi conversation files live under
 `~/.tiller/sessions/<rootId>/agents/<nodeId>/<sessionId>.jsonl`, survive node close, and are
-subject to session-directory retention. Directories referenced by registered nodes are not
-swept. Tiller owns Pi's session lifecycle: use its controls, not Pi's `/new`, `/resume`, `/fork`
+subject to session-directory retention. Follow-up copies the conversation (and recorded prior
+sessions still present) into the new node's tree before launch; closing it does not leave its
+archive dependent on an older tree's retention clock. The source archive stays unchanged.
+Tiller updates the copied session header's cwd to the selected workspace, including the main
+checkout fallback for a removed worktree, because Pi resumes in its header cwd. Session IDs
+and cumulative-cost continuity are preserved. Existing cross-tree live records are adopted on
+next launch; transcripts already swept cannot be recovered. Directories referenced by
+registered nodes are not swept. Tiller owns Pi's session lifecycle: use its controls, not Pi's `/new`, `/resume`, `/fork`
 or `/tree` commands. Pi `/reload` remains available.
 
 ## Worktrees and safety
@@ -68,7 +74,8 @@ only presets work; built-in restricted reviewer/researcher presets may require r
 ## Adapter boundary
 
 `src/daemon/harness.ts` defines `HarnessAdapter`: validation, capabilities, launch command,
-working directory and transcript location. Claude's adapter wraps the existing launch logic;
+working directory, transcript location and optional pre-launch storage preparation.
+Claude's adapter wraps the existing launch logic;
 Pi's adapter loads `adapters/pi/index.ts`. No runtime Pi package is installed with Tiller.
 
 Coordination stays on the existing interfaces:
