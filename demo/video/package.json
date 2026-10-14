@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "render": "./render.sh",
+    "test": "node --test src/beats.check.js",
     "studio": "remotion studio"
   },
   "dependencies": {
