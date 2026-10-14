@@ -49,7 +49,9 @@ A tiny command-line tool that prints a greeting.
 
     npm test
 `,
-  '.gitignore': 'node_modules/\n.claude/worktrees/\n',
+  // Nothing the run writes may dirty main, or merges into it are refused: worktrees, and Claude's local settings
+  // (written when someone picks "always allow" at a permission prompt).
+  '.gitignore': 'node_modules/\n.claude/worktrees/\n.claude/settings.local.json\n',
   '.tiller/config.json': JSON.stringify({
     roles: { worker: { model: 'haiku' }, orchestrator: { model: 'sonnet' } },
     approvals: { close: 'done', merge: true },
