@@ -14,10 +14,10 @@ describe('diff view', () => {
   });
 
   it('formats comments as one message, quoting each line', () => {
-    expect(formatComments('o8/n-1', [
+    expect(formatComments('tl/n-1', [
       { nodeId: 'n-1', path: 'src/a.ts', line: 12, text: '+const x = 1;', note: 'Name this.' },
       { nodeId: 'n-1', path: 'README', line: 3, text: '-old text', note: 'Why remove it?\nIt is still true.' },
-    ])).toBe('Review comment on src/a.ts line 12 (o8/n-1):\n> +const x = 1;\nName this.\n\n'
-      + 'Review comment on README line 3 (o8/n-1):\n> -old text\nWhy remove it?\nIt is still true.');
+    ])).toBe('Review comment on src/a.ts line 12 (tl/n-1):\n> +const x = 1;\nName this.\n\n'
+      + 'Review comment on README line 3 (tl/n-1):\n> -old text\nWhy remove it?\nIt is still true.');
   });
 });

@@ -20,16 +20,16 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
   });
 
   async function setup(config?: object) {
-    home = mkdtempSync(join(tmpdir(), 'o8-deps-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-deps-'));
     const bin = join(home, 'bin'), proj = join(home, 'proj');
     mkdirSync(bin);
     mkdirSync(proj);
-    mkdirSync(join(home, 'o8'));
-    if (config) writeFileSync(join(home, 'o8', 'config.json'), JSON.stringify(config));
+    mkdirSync(join(home, 'tl'));
+    if (config) writeFileSync(join(home, 'tl', 'config.json'), JSON.stringify(config));
     writeFileSync(join(bin, 'claude'), '#!/bin/sh\nsleep 30\n');
     chmodSync(join(bin, 'claude'), 0o755);
     const open = () => {
-      const m = new NodeManager({ home: join(home, 'o8'), shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
+      const m = new NodeManager({ home: join(home, 'tl'), shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
       managers.push(m);
       return m;
     };

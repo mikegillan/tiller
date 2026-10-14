@@ -5,7 +5,7 @@ export const request = (c: Ctx, method: string, path: string, body?: unknown): [
   `${c.endpoint}${path}`,
   {
     method,
-    headers: { Authorization: `Bearer ${c.token}`, 'X-O8-Node': c.id, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${c.token}`, 'X-TL-Node': c.id, 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   },
 ]

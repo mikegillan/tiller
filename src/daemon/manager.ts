@@ -44,7 +44,7 @@ function usableCwd(cwd: string): string | undefined {
   return repo && existsSync(repo) ? repo : undefined;
 }
 
-/** The completion gate configured for `dir`, when Claude trusts that directory, as for worktree setup. `o8 gate` uses it too. */
+/** The completion gate configured for `dir`, when Claude trusts that directory, as for worktree setup. `tl gate` uses it too. */
 export function gateFor(dir: string, home: string): Config['gate'] {
   const gate = loadConfig(dir, home).gate;
   return gate && trustPolicy(dir, readClaudeJson()) === 'auto' ? gate : undefined;
@@ -69,7 +69,7 @@ export interface SpawnRequest {
   after?: string[];
   /** Arm the node: launch it once each of these reported succeeded. A failed report blocks it. */
   afterSuccess?: string[];
-  /** Launch past daemon.maxWorking instead of queueing (the human's o8 spawn --now). */
+  /** Launch past daemon.maxWorking instead of queueing (the human's tl spawn --now). */
   now?: boolean;
   /** A live or archived claude node whose conversation the new node starts from (claude --fork-session); cwd defaults to its. */
   fork?: string;
@@ -78,7 +78,7 @@ export interface SpawnRequest {
 }
 
 export interface ManagerOptions {
-  /** Defaults to O8_HOME, then ~/.orchestr8. */
+  /** Defaults to TL_HOME, then ~/.tiller. */
   home?: string;
   /** Shell for terminal nodes. Defaults to $SHELL, then /bin/sh. */
   shell?: string;
@@ -265,7 +265,7 @@ export class NodeManager extends EventEmitter {
   // ---- lifecycle ----
 
   /**
-   * The directory whose .orchestr8 config, presets and role prompts apply to a node or spawn request: its worktree's
+   * The directory whose .tiller config, presets and role prompts apply to a node or spawn request: its worktree's
    * repo, else the main checkout of its cwd (the cwd itself outside git). Never a worktree's own branch, which the node
    * in it can edit.
    */
@@ -654,7 +654,7 @@ export class NodeManager extends EventEmitter {
     const rt = this.runtimes.get(nodeId), prev = rt?.status;
     if (!rt || !prev) return;
     const now = Date.now();
-    if (process.env.O8_DEBUG) console.log(`${new Date(now).toISOString().slice(11, 23)} mod ${nodeId.slice(0, 6)} ${ev.event} ${JSON.stringify(ev.payload).slice(0, 300)}`);
+    if (process.env.TL_DEBUG) console.log(`${new Date(now).toISOString().slice(11, 23)} mod ${nodeId.slice(0, 6)} ${ev.event} ${JSON.stringify(ev.payload).slice(0, 300)}`);
     if (ev.event === 'turn.complete') {
       const model = ev.payload.usage?.model;
       const base = typeof model === 'string' && model !== prev.model ? { ...prev, model } : prev;
@@ -746,7 +746,7 @@ export class NodeManager extends EventEmitter {
     const token = this.tokenFor(id);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(join(dir, 'token'), token, { mode: 0o600 });
-    writeFileSync(join(dir, 'hook-headers'), `Authorization: Bearer ${token}\nX-O8-Node: ${id}\n`, { mode: 0o600 }); // read by hook.sh via curl -H @file
+    writeFileSync(join(dir, 'hook-headers'), `Authorization: Bearer ${token}\nX-TL-Node: ${id}\n`, { mode: 0o600 }); // read by hook.sh via curl -H @file
     writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token, worktree: !!this.registry.get(id)?.worktree, sessionDir: this.sessionDirOf(id) });
   }
 
@@ -783,7 +783,7 @@ export class NodeManager extends EventEmitter {
     const failures = rt.gate?.failures ?? 0;
     const log = join(this.nodeDir(id), 'gate.log');
     const start = existsSync(log) ? statSync(log).size : 0;
-    const env = rec.worktree ? worktreeEnv(this, id, rec.worktree) : buildChildEnv({ PATH: this.path, O8_NODE_ID: id });
+    const env = rec.worktree ? worktreeEnv(this, id, rec.worktree) : buildChildEnv({ PATH: this.path, TL_NODE_ID: id });
     rt.gate = { state: 'running', command: gate.command, failures };
     this.emitNode(id);
     // prune: a node closed mid-gate leaves the command running until it ends or times out; add an abort if gates get long.

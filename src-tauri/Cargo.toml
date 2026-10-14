@@ -1,12 +1,12 @@
 [package]
-name = "orchestr8"
+name = "tiller"
 version = "0.1.0"
-description = "Native shell for the orchestr8 web UI"
+description = "Native shell for the tiller web UI"
 edition = "2024"
 rust-version = "1.90"
 
 [lib]
-name = "orchestr8_lib"
+name = "tiller_lib"
 crate-type = ["rlib"]
 
 [build-dependencies]

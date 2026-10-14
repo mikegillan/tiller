@@ -28,7 +28,7 @@ describe('trust dialog auto-answer', () => {
   afterEach(() => { m?.shutdown(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }); });
 
   it('confirms only once Yes is selected, so a lost Down key does not exit Claude through "No, exit"', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     const bin = join(home, 'bin'), proj = join(home, 'proj');
     mkdirSync(bin);
     mkdirSync(proj);
@@ -49,7 +49,7 @@ process.stdin.on('data', (d) => {
 });
 `);
     chmodSync(join(bin, 'claude'), 0o755);
-    m = new NodeManager({ home: join(home, 'o8'), shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
+    m = new NodeManager({ home: join(home, 'tl'), shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
     const { id } = (await m.spawn({ kind: 'claude', title: 'c', cwd: proj }));
     await expect.poll(() => m!.session(id)?.screenTail(30).join('\n') ?? 'exited', { timeout: 3000 }).toContain('trusted');
     expect(m.view(id)!.status.exited).toBeFalsy();
@@ -62,7 +62,7 @@ describe('NodeManager tokens and files', () => {
   afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   it('verifies per-node tokens and keeps the secret private', () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     m = new NodeManager({ home });
     const t = m.tokenFor('n-1');
     expect(m.verifyToken('n-1', t)).toBe(true);
@@ -77,7 +77,7 @@ describe('NodeManager tokens and files', () => {
   });
 
   it('writes node files with restrictive modes and removes them on close', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
     const n = (await m.spawn({ kind: 'terminal', title: 't', cwd: tmpdir() }));
     const dir = join(home, 'nodes', n.id);
@@ -92,7 +92,7 @@ describe('NodeManager tokens and files', () => {
   });
 
   it('cleans up when the cwd is bad', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
     await expect(m.spawn({ kind: 'terminal', title: 't', cwd: '/no/such/dir' })).rejects.toThrow(/working directory/);
     expect(m.list()).toEqual([]);
@@ -105,7 +105,7 @@ describe('NodeManager runtime state', () => {
   afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   it('SessionStart records the session id and transcript on the node; other events leave them', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
     const { id } = await m.spawn({ kind: 'terminal', title: 't', cwd: tmpdir() });
     m.applyHook(id, { hook_event_name: 'SessionStart', session_id: 's2', transcript_path: '/t.jsonl' });
@@ -114,7 +114,7 @@ describe('NodeManager runtime state', () => {
   });
 
   it('close leaves no runtime state behind', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
     const { id } = await m.spawn({ kind: 'terminal', title: 't', cwd: tmpdir() });
     m.applyHook(id, { hook_event_name: 'UserPromptSubmit' });
@@ -134,7 +134,7 @@ describe('NodeManager restart', () => {
   afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   it('relaunches a terminal node with a new process, same id, children kept; refuses to close a root; prune keeps a live root', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
     const root = (await m.spawn({ kind: 'terminal', title: 'root', cwd: tmpdir() }));
     const kid = (await m.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: root.id }));
@@ -151,7 +151,7 @@ describe('NodeManager restart', () => {
   });
 
   it('gives a Claude node a new session id and keeps at most 10 old ones', () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
     // A missing cwd makes the launch fail without starting claude; the record and launch arguments are what is under test.
     const id = m.registry.create({ parentId: null, kind: 'claude', title: 'c', cwd: '/no/such/dir', sessionId: 's0' }).id;
@@ -175,14 +175,14 @@ describe('NodeManager model and effort defaults', () => {
   afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   it('records the configured model for the role unless spawn passes one; project beats home', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     const bin = join(home, 'bin'), proj = join(home, 'proj');
     mkdirSync(bin);
-    mkdirSync(join(proj, '.orchestr8'), { recursive: true });
+    mkdirSync(join(proj, '.tiller'), { recursive: true });
     writeFileSync(join(bin, 'claude'), '#!/bin/sh\nsleep 5\n'); // stands in for claude so nothing real launches
     chmodSync(join(bin, 'claude'), 0o755);
     writeFileSync(join(home, 'config.json'), JSON.stringify({ roles: { orchestrator: { model: 'opus' }, worker: { model: 'sonnet' } } }));
-    writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ roles: { worker: { model: 'haiku' } } }));
+    writeFileSync(join(proj, '.tiller', 'config.json'), JSON.stringify({ roles: { worker: { model: 'haiku' } } }));
     m = new NodeManager({ home, shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
     const model = async (req: { parentId?: string; model?: string; role?: 'none' }) => m.registry.get((await m.spawn({ kind: 'claude', title: 'c', cwd: proj, ...req })).id)!.model;
     const root = (await m.spawn({ kind: 'claude', title: 'root', cwd: proj }));
@@ -194,16 +194,16 @@ describe('NodeManager model and effort defaults', () => {
   });
 
   it('resolves effort from spawn, then the project file, then the home file, and passes it to claude as --effort', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     const bin = join(home, 'bin'), proj = join(home, 'proj'), other = join(home, 'other');
     mkdirSync(bin);
-    mkdirSync(join(proj, '.orchestr8'), { recursive: true });
+    mkdirSync(join(proj, '.tiller'), { recursive: true });
     mkdirSync(other);
     // Fake claude: writes its argv next to the node's settings.json, then idles.
     writeFileSync(join(bin, 'claude'), '#!/bin/sh\nfor a in "$@"; do case "$prev" in --settings) out="$(dirname "$a")/argv";; esac; prev="$a"; done\necho "$@" > "$out"\nsleep 5\n');
     chmodSync(join(bin, 'claude'), 0o755);
     writeFileSync(join(home, 'config.json'), JSON.stringify({ roles: { orchestrator: { effort: 'max' }, worker: { effort: 'high' } } }));
-    writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ roles: { worker: { effort: 'low' } } }));
+    writeFileSync(join(proj, '.tiller', 'config.json'), JSON.stringify({ roles: { worker: { effort: 'low' } } }));
     m = new NodeManager({ home, shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
     const root = (await m.spawn({ kind: 'claude', title: 'root', cwd: proj }));
     const spawn = async (req: { cwd?: string; effort?: 'medium' }) => m.registry.get((await m.spawn({ kind: 'claude', title: 'c', cwd: proj, parentId: root.id, ...req })).id)!;
@@ -224,7 +224,7 @@ describe('NodeManager live set and resume on start', () => {
   const saved = () => JSON.parse(readFileSync(join(home, 'state.json'), 'utf8')).live;
 
   it('saves the live ids as processes start and exit, keeps them on shutdown and clears them on an explicit stop', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
     const a = (await m.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir() }));
     const b = (await m.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir(), parentId: a.id }));
@@ -235,12 +235,12 @@ describe('NodeManager live set and resume on start', () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(saved()).toEqual([a.id]);
     m = new NodeManager({ home, shell: '/bin/sh' });
-    m.shutdown({ clearLive: true }); // o8 stop
+    m.shutdown({ clearLive: true }); // tl stop
     expect(saved()).toEqual([]);
   });
 
   it('resumes live Claude nodes parents first, skipping missing, idle and worktree-less ones, then forgets the set', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     const bin = join(home, 'bin');
     mkdirSync(bin);
     writeFileSync(join(bin, 'claude'), '#!/bin/sh\nsleep 5\n'); // stands in for claude
@@ -251,7 +251,7 @@ describe('NodeManager live set and resume on start', () => {
     const rec = (id: string, parentId: string | null, extra = {}) => ({ id, parentId, kind: 'claude', title: id, cwd: home, createdAt: now - 30 * day, lastActiveAt: now, sessionId: `s-${id}`, transcriptPath: transcript, ...extra });
     const nodes = [
       rec('kid', 'root'), rec('root', null), rec('idle', 'root', { lastActiveAt: now - 4 * day }),
-      rec('nowt', 'root', { worktree: { repo: home, path: join(home, 'gone'), branch: 'o8/nowt', base: 'main', baseSha: 'x' } }),
+      rec('nowt', 'root', { worktree: { repo: home, path: join(home, 'gone'), branch: 'tl/nowt', base: 'main', baseSha: 'x' } }),
       rec('exited', 'root'), // not in the live set
     ];
     writeFileSync(join(home, 'state.json'), JSON.stringify({ version: 1, nodes, live: ['kid', 'root', 'idle', 'nowt', 'deleted'] }));
@@ -275,10 +275,10 @@ describe('NodeManager guardrails', () => {
   afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   it('refuses an agent spawn at each cap, naming it; the human is exempt', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     const proj = join(home, 'proj');
-    mkdirSync(join(proj, '.orchestr8'), { recursive: true });
-    writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ limits: { maxDepth: 2, maxChildren: 2 } }));
+    mkdirSync(join(proj, '.tiller'), { recursive: true });
+    writeFileSync(join(proj, '.tiller', 'config.json'), JSON.stringify({ limits: { maxDepth: 2, maxChildren: 2 } }));
     writeFileSync(join(home, 'config.json'), JSON.stringify({ daemon: { maxLiveNodes: 4 } }));
     m = new NodeManager({ home, shell: '/bin/sh' });
     const spawn = async (parentId: string | null, byHuman = false) => (await m.spawn({ kind: 'terminal', title: 't', cwd: proj, parentId, byHuman })).id;
@@ -295,7 +295,7 @@ describe('NodeManager guardrails', () => {
   });
 
   it('keeps each node\'s spend across a session restart and a daemon restart', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     const bin = join(home, 'bin');
     mkdirSync(bin);
     writeFileSync(join(bin, 'claude'), '#!/bin/sh\nsleep 5\n'); // stands in for claude
@@ -318,7 +318,7 @@ describe('NodeManager guardrails', () => {
   });
 
   it('does not count a resumed session\'s earlier spend again after a daemon restart', async () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
     const bin = join(home, 'bin');
     mkdirSync(bin);
     writeFileSync(join(bin, 'claude'), '#!/bin/sh\nsleep 5\n'); // stands in for claude

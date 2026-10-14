@@ -25,7 +25,7 @@ const keys = Object.fromEntries(BINDINGS.map((b) => [b.key, b.action]));
 
 /** The key help, word-wrapped to `w` columns. */
 export function helpLines(w: number): string[] {
-  const lines = ['orchestr8 keys (Ctrl-\\ then):'];
+  const lines = ['tiller keys (Ctrl-\\ then):'];
   let line = '';
   for (const item of [...BINDINGS.map((b) => `${b.key} ${b.label}`), '1-9 jump to nth node']) {
     if (line && line.length + 3 + item.length > w) { lines.push(line); line = ''; }

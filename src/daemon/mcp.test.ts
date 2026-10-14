@@ -18,7 +18,7 @@ let answer = true;
 const focused: string[][] = [];
 
 beforeAll(async () => {
-  home = mkdtempSync(join(tmpdir(), 'o8-mcp-'));
+  home = mkdtempSync(join(tmpdir(), 'tl-mcp-'));
   manager = new NodeManager({ home, shell: '/bin/sh' });
   const { handler, publishAdminToken } = mountMcp(manager, async (t) => { confirms.push(t); return answer; }, (from, id) => focused.push([from, id]));
   expect(() => readFileSync(join(home, 'admin-token'))).toThrow(); // not written until the server is listening
@@ -36,7 +36,7 @@ afterAll(async () => {
 });
 
 const api = async (tool: string, args: object, id = 'human', token = admin) => {
-  const res = await fetch(`${base}/api/${tool}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': id }, body: JSON.stringify(args) });
+  const res = await fetch(`${base}/api/${tool}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': id }, body: JSON.stringify(args) });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as { text?: string; data?: any; error?: string } };
 };
 const spawnT = (title: string, id = 'human', token = admin, extra = {}) => api('spawn', { kind: 'terminal', title, cwd: tmpdir(), ...extra }, id, token);
@@ -81,7 +81,7 @@ describe('mcp api', () => {
     expect((await api('close', { nodeIds: [root] }, kid, tok(kid))).body.error).toMatch(/descendants/); // a child cannot reach its parent
     expect((await api('close', { nodeIds: [root] }, root, tok(root))).body.error).toMatch(/descendants/); // nor itself
     expect((await api('close', { nodeIds: [root], force: true }, kid, tok(kid))).status).toBe(400);
-    expect((await api('close', { nodeIds: [root] })).body.error).toBe(`refusing to close an orchestrator; use o8 kill --force ${root}`);
+    expect((await api('close', { nodeIds: [root] })).body.error).toBe(`refusing to close an orchestrator; use tl kill --force ${root}`);
     expect(manager.view(root)).toBeDefined();
     expect((await api('restart', { nodeId: root }, kid, tok(kid))).body.error).toMatch(/only for the human/);
     expect((await api('restart', { nodeId: root })).body.data).toEqual({ ok: true });
@@ -147,8 +147,8 @@ describe('mcp api', () => {
 
   it('approvals.close in the caller\'s project config skips the confirm only as configured', async () => {
     const proj = join(home, 'proj');
-    mkdirSync(join(proj, '.orchestr8'), { recursive: true });
-    const setMode = (mode: string) => writeFileSync(join(proj, '.orchestr8', 'config.json'), JSON.stringify({ approvals: { close: mode } }));
+    mkdirSync(join(proj, '.tiller'), { recursive: true });
+    const setMode = (mode: string) => writeFileSync(join(proj, '.tiller', 'config.json'), JSON.stringify({ approvals: { close: mode } }));
     const p = (await spawnT('cfg', 'human', admin, { cwd: proj })).body.data.nodeId as string;
     const tok = manager.tokenFor(p);
     const kids = async (n: number) => Promise.all(Array.from({ length: n }, async () => (await spawnT('k', p, tok)).body.data.nodeId as string));
@@ -179,18 +179,18 @@ describe('mcp api', () => {
     const repo = join(home, 'wt-repo'), path = join(repo, '.claude', 'worktrees', 'x');
     const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' }).trim();
     const setMode = (dir: string, mode: string) => {
-      mkdirSync(join(dir, '.orchestr8'), { recursive: true });
-      writeFileSync(join(dir, '.orchestr8', 'config.json'), JSON.stringify({ closeWithoutConfirm: mode }));
+      mkdirSync(join(dir, '.tiller'), { recursive: true });
+      writeFileSync(join(dir, '.tiller', 'config.json'), JSON.stringify({ closeWithoutConfirm: mode }));
     };
     mkdirSync(repo);
     git(repo, 'init', '-q', '-b', 'main');
     setMode(repo, 'never');
     git(repo, 'add', '.');
     git(repo, 'commit', '-qm', 'never');
-    git(repo, 'worktree', 'add', '-q', '-b', 'o8/x', path);
+    git(repo, 'worktree', 'add', '-q', '-b', 'tl/x', path);
     setMode(path, 'always'); // the worker's branch copy, which it can edit
     const p = (await spawnT('wt', 'human', admin, { cwd: path })).body.data.nodeId as string;
-    manager.registry.update(p, { worktree: { repo, path, branch: 'o8/x', base: 'main', baseSha: git(repo, 'rev-parse', 'HEAD') } });
+    manager.registry.update(p, { worktree: { repo, path, branch: 'tl/x', base: 'main', baseSha: git(repo, 'rev-parse', 'HEAD') } });
     const tok = manager.tokenFor(p);
     const kid = (await spawnT('k', p, tok, { cwd: path })).body.data.nodeId as string;
     const grandkid = (await spawnT('g', kid, manager.tokenFor(kid))).body.data.nodeId as string;
@@ -258,8 +258,8 @@ describe('mcp api', () => {
 
   it('tells the parent of each recorded outcome once, unless its pending notify_when covers that child', async () => {
     const cwd = join(home, 'plain');
-    mkdirSync(join(cwd, '.orchestr8'), { recursive: true });
-    writeFileSync(join(cwd, '.orchestr8', 'config.json'), '{}');
+    mkdirSync(join(cwd, '.tiller'), { recursive: true });
+    writeFileSync(join(cwd, '.tiller', 'config.json'), '{}');
     writeFileSync(join(home, 'config.json'), JSON.stringify({ daemon: { maxLiveNodes: 100 } })); // earlier tests leave many nodes live
     const p = (await spawnT('np', 'human', admin, { cwd })).body.data.nodeId as string;
     const [w1, w2] = [(await spawnT('nw1', p, manager.tokenFor(p), { cwd })).body.data.nodeId as string, (await spawnT('nw2', p, manager.tokenFor(p), { cwd })).body.data.nodeId as string];
@@ -281,10 +281,10 @@ describe('mcp api', () => {
     const slow = () => join(home, 'gated-slow');
     const tok = (id: string) => manager.tokenFor(id);
     beforeAll(() => {
-      mkdirSync(join(proj(), '.orchestr8'), { recursive: true });
-      writeFileSync(join(proj(), '.orchestr8', 'config.json'), JSON.stringify({ gate: { command: 'test -f ok.txt && echo fine || { echo missing ok.txt; exit 3; }', retries: 1 } }));
-      mkdirSync(join(slow(), '.orchestr8'), { recursive: true });
-      writeFileSync(join(slow(), '.orchestr8', 'config.json'), JSON.stringify({ gate: { command: 'while [ ! -f go ]; do sleep 0.05; done' } }));
+      mkdirSync(join(proj(), '.tiller'), { recursive: true });
+      writeFileSync(join(proj(), '.tiller', 'config.json'), JSON.stringify({ gate: { command: 'test -f ok.txt && echo fine || { echo missing ok.txt; exit 3; }', retries: 1 } }));
+      mkdirSync(join(slow(), '.tiller'), { recursive: true });
+      writeFileSync(join(slow(), '.tiller', 'config.json'), JSON.stringify({ gate: { command: 'while [ ! -f go ]; do sleep 0.05; done' } }));
       writeFileSync(join(home, 'config.json'), JSON.stringify({ daemon: { maxLiveNodes: 100 } })); // earlier tests leave many nodes live
       writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [proj()]: { hasTrustDialogAccepted: true }, [slow()]: { hasTrustDialogAccepted: true } } })); // gate commands need trust, as setup does
       vi.stubEnv('HOME', home);
@@ -341,7 +341,7 @@ describe('mcp api', () => {
     const id = (await spawnT('mcp-caller')).body.data.nodeId as string;
     const connect = async (who: string, token: string) => {
       const c = new Client({ name: 't', version: '0' });
-      await c.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': who } } }));
+      await c.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': who } } }));
       return c;
     };
     const human = await connect('human', admin);
@@ -362,7 +362,7 @@ describe('systemPrompt', () => {
     const p = systemPrompt({ nodeId: 'n-1', title: 'Builder', parentId: null, home: '/nonexistent', cwd: '/nonexistent' });
     expect(p).toContain('node n-1');
     expect(p).toContain('parent node is none');
-    expect(p).toContain('--- O8 MESSAGE <nonce> ---');
+    expect(p).toContain('--- TL MESSAGE <nonce> ---');
     expect(p).toContain('OUTERMOST');
   });
 });

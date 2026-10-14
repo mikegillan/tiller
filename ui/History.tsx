@@ -14,7 +14,7 @@ const OutcomeGlyph = ({ o }: { o?: Outcome }) => (
   <span className={`glyph ${o?.outcome ?? 'none'}`} title={o ? o.outcome : 'no outcome reported'}>{o ? GLYPH[o.outcome] : '·'}</span>
 );
 
-/** "o8/n-123 merged into main", "o8/n-123 kept", "o8/n-123 discarded", or the bare branch when its fate is unknown. */
+/** "tl/n-123 merged into main", "tl/n-123 kept", "tl/n-123 discarded", or the bare branch when its fate is unknown. */
 export const branchLine = (a: ArchivedNode) =>
   !a.branchFate ? a.branch : `${a.branch} ${a.branchFate === 'merged' && a.base ? `merged into ${a.base}` : a.branchFate}`;
 

@@ -1,4 +1,4 @@
-// The spawn fields shared by the MCP spawn tool and the WebSocket spawn message; `o8 spawn` maps its flags onto the same keys.
+// The spawn fields shared by the MCP spawn tool and the WebSocket spawn message; `tl spawn` maps its flags onto the same keys.
 import { z } from 'zod';
 import { EFFORTS, ISOLATIONS, NODE_KINDS, ROLES } from '../shared/protocol.js';
 

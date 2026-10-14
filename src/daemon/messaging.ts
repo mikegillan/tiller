@@ -23,7 +23,7 @@ const MOD_LIVE_MS = 5000;
 const SAVE_MS = 50;
 /** Caller ids that are not nodes. Both have full scope. */
 export const HUMAN = 'human';
-export const DAEMON = 'orchestr8';
+export const DAEMON = 'tiller';
 
 export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input' | 'logEvent' | 'projectDir'> & Partial<Pick<NodeManager, 'home' | 'runtimes'>>;
 interface DeliverOpts {
@@ -129,7 +129,7 @@ function frame(e: Entry): { text: string; nonce: string } {
   const nonce = randomBytes(6).toString('base64url');
   // paste() strips ESC bytes, so the body cannot close the paste frame.
   const steer = e.steer ? 'steer: the sender interrupted your turn on purpose to deliver this now\n' : '';
-  return { nonce, text: `--- O8 MESSAGE ${nonce} ---\nfrom: ${e.label}\nreply-to: ${e.replyTo ?? 'none'}\n${steer}${e.text}\n--- END O8 MESSAGE ${nonce} ---` };
+  return { nonce, text: `--- TL MESSAGE ${nonce} ---\nfrom: ${e.label}\nreply-to: ${e.replyTo ?? 'none'}\n${steer}${e.text}\n--- END TL MESSAGE ${nonce} ---` };
 }
 
 async function attempt(m: Mgr, e: Entry): Promise<Attempt> {
@@ -432,7 +432,7 @@ function loopNotice(m: Mgr, s: State, from: NodeView | undefined, key: string, w
   if (!from?.parentId || now - (s.loopNoticed.get(key) ?? -Infinity) < LOOP_MS) return;
   s.loopNoticed.set(key, now);
   deliver(m, DAEMON, from.parentId, `Refused a send: ${why}. It was told to escalate to the human or change approach.`,
-    { fromLabel: `orchestr8 (child ${from.id} "${from.title}" may be looping)`, replyTo: null }).catch(logError);
+    { fromLabel: `tiller (child ${from.id} "${from.title}" may be looping)`, replyTo: null }).catch(logError);
 }
 
 // ---- station notices (PLAN §7) ----
@@ -452,7 +452,7 @@ export function startNotices(m: Mgr): () => void {
     if (!v.parentId || notified.has(v.id)) return;
     notified.add(v.id);
     const body = v.status.lastAssistantMessage?.slice(0, 300) ?? 'No further details.';
-    deliver(m, DAEMON, v.parentId, body, { fromLabel: `orchestr8 (child ${v.id} "${v.title}" stopped: ${reason})`, replyTo: null }).catch(logError);
+    deliver(m, DAEMON, v.parentId, body, { fromLabel: `tiller (child ${v.id} "${v.title}" stopped: ${reason})`, replyTo: null }).catch(logError);
   };
   const onNode = (v: NodeView) => {
     if (!v.parentId) return;
@@ -473,14 +473,14 @@ export function startNotices(m: Mgr): () => void {
     else if (!stallNoticed.has(v.id)) {
       stallNoticed.add(v.id);
       const body = `No hook event for ${fmtAge(Date.now() - v.status.changedAt)} while working${v.status.activity ? `; last activity: ${v.status.activity}` : ''}.`;
-      deliver(m, DAEMON, v.parentId, body, { fromLabel: `orchestr8 (child ${v.id} "${v.title}" no activity)`, replyTo: null }).catch(logError);
+      deliver(m, DAEMON, v.parentId, body, { fromLabel: `tiller (child ${v.id} "${v.title}" no activity)`, replyTo: null }).catch(logError);
     }
     if (exited) notice(v, 'exited');
     else if (state === 'done' && errored) {
       const at = retried.get(v.id);
       if (at === undefined) {
         retried.set(v.id, v.status.changedAt);
-        deliver(m, DAEMON, v.id, RETRY_TEXT, { fromLabel: 'orchestr8 (your turn errored)', replyTo: null,
+        deliver(m, DAEMON, v.id, RETRY_TEXT, { fromLabel: 'tiller (your turn errored)', replyTo: null,
           onSettle: (r) => { if (r.outcome !== 'delivered') notice(v, 'turn-errored'); } }).catch(logError);
       } else if (at !== v.status.changedAt) notice(v, 'turn-errored');
     } else if (state === 'done' && v.status.doneSource === 'stop') { notified.delete(v.id); retried.delete(v.id); } // only a clean Stop re-arms
@@ -488,7 +488,7 @@ export function startNotices(m: Mgr): () => void {
   const onOutcome = (id: string) => {
     const v = m.view(id);
     if (!v?.parentId || !v.outcome || watching(m, v.parentId, id)) return;
-    deliver(m, DAEMON, v.parentId, `${id} reported ${outcomeLine(v.outcome)}`, { fromLabel: `orchestr8 (child ${id} "${v.title}" reported ${v.outcome.outcome})`, replyTo: null }).catch(logError);
+    deliver(m, DAEMON, v.parentId, `${id} reported ${outcomeLine(v.outcome)}`, { fromLabel: `tiller (child ${id} "${v.title}" reported ${v.outcome.outcome})`, replyTo: null }).catch(logError);
   };
   m.on('node', onNode);
   m.on('outcome', onOutcome);

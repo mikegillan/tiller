@@ -1,7 +1,7 @@
 export const COMMANDS: [string, string][] = [
-  ['o8-list', 'List orchestr8 nodes'],
-  ['o8-spawn', 'Spawn a child: <title> :: <prompt>'], ['o8-send', 'Send a message: <nodeId> <text>'],
-  ['o8-read', 'Read a node summary: <nodeId>'],
+  ['tl-list', 'List tiller nodes'],
+  ['tl-spawn', 'Spawn a child: <title> :: <prompt>'], ['tl-send', 'Send a message: <nodeId> <text>'],
+  ['tl-read', 'Read a node summary: <nodeId>'],
 ]
 
 export const parseSpawn = (args: string) => {

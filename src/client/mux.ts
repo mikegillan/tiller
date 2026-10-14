@@ -1,4 +1,4 @@
-// `o8` / `o8 attach <id>`: a tmux-style client. A persistent sidebar shows the whole tree; the main region shows the selected node's
+// `tl` / `tl attach <id>`: a tmux-style client. A persistent sidebar shows the whole tree; the main region shows the selected node's
 // live screen (a headless terminal here, painted by row diff) and routes input to it. Clicking a node swaps it in.
 import { writeSync } from 'node:fs';
 import { basename } from 'node:path';

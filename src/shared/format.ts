@@ -47,7 +47,7 @@ export function usageParts(limits: readonly RateLimit[], compact = false, now = 
   });
 }
 
-/** The line list_nodes and `o8 usage` print. */
+/** The line list_nodes and `tl usage` print. */
 export function usageLine(u: Usage | undefined, now = Date.now()): string {
   if (!u) return 'usage: no report yet';
   return `usage: ${usageParts(u.rateLimits, false, now).map((p) => p.text).join(' · ')} (from ${u.nodeId}, ${fmtAge(now - u.at)} ago)`;

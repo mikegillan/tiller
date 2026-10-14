@@ -1,4 +1,4 @@
-// Thin client for the daemon's POST /api/<tool>. Inside a node it uses O8_NODE_ID / O8_TOKEN_FILE / O8_ENDPOINT;
+// Thin client for the daemon's POST /api/<tool>. Inside a node it uses TL_NODE_ID / TL_TOKEN_FILE / TL_ENDPOINT;
 // outside it acts as `human` with the admin token in <home>/admin-token.
 import { mux } from '../client/mux.js';
 import { spawnSync } from 'node:child_process';
@@ -10,63 +10,63 @@ import { gateFor } from './manager.js';
 import { promptPath } from './launch.js';
 import { listPresets } from './presets.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
-import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
-import { agentStatus, install, kickstart, LABEL, O8D, plistPath, uninstall } from './autostart.js';
+import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir, migrateHome } from './home.js';
+import { agentStatus, install, kickstart, LABEL, OLD_LABEL, TLD, plistPath, uninstall } from './autostart.js';
 import { buildChildEnv, loginShellPath } from './pty.js';
 import { formatEvent, listSessions, parseSince, readEvents, sessionDir, type SessionEvent } from './sessions.js';
 import { fmtAge } from '../shared/format.js';
 import { mainCheckout, runCommands, WORKTREES_DIR } from './worktree.js';
 import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, waitForDaemon, type OrchestratorCandidate } from './up.js';
 
-const usage = () => `o8: control orchestr8. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
+const usage = () => `tl: control tiller. With no arguments, start the daemon if needed and open the app on this directory's orchestrator.
 
-  o8 [up|app] [--new] [--title T] [--prompt P]        start daemon if needed; open the app on (or create) this directory's orchestrator
-  o8 mux [--new] [--title T] [--prompt P]             the same, in the terminal multiplexer (also: o8-mux)
-  o8 status | stop                                    show or stop the daemon (o8d runs it in the foreground); stop also means
+  tl [up|app] [--new] [--title T] [--prompt P]        start daemon if needed; open the app on (or create) this directory's orchestrator
+  tl mux [--new] [--title T] [--prompt P]             the same, in the terminal multiplexer (also: tl-mux)
+  tl status | stop                                    show or stop the daemon (tld runs it in the foreground); stop also means
                                                       the nodes are not resumed on the next start
-  o8 reload                                           restart the daemon on the current code and resume the nodes that were live
-  o8 autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
-  o8 new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--worktree]  start a Claude node and attach to it in the terminal
-  o8 ps | list                                        show nodes
-  o8 usage                                            show account-level Claude usage (5-hour and 7-day windows) as nodes last reported it
-  o8 attach <id>                                      open the sidebar client on a node (Ctrl-\\ ? for keys)
-  o8 select <id>                                      show a node in the app (opens the app if it is built)
-  o8 resume <id>                                      relaunch an exited Claude node
-  o8 mute <id> | unmute <id>                          stop or restart OS notifications for one node
-  o8 dnd [on|off|1h|30m]                              do not disturb: no OS notifications until off, or for the time given;
+  tl reload                                           restart the daemon on the current code and resume the nodes that were live
+  tl autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
+  tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--worktree]  start a Claude node and attach to it in the terminal
+  tl ps | list                                        show nodes
+  tl usage                                            show account-level Claude usage (5-hour and 7-day windows) as nodes last reported it
+  tl attach <id>                                      open the sidebar client on a node (Ctrl-\\ ? for keys)
+  tl select <id>                                      show a node in the app (opens the app if it is built)
+  tl resume <id>                                      relaunch an exited Claude node
+  tl mute <id> | unmute <id>                          stop or restart OS notifications for one node
+  tl dnd [on|off|1h|30m]                              do not disturb: no OS notifications until off, or for the time given;
                                                       with no argument, show whether it is on
-  o8 prune                                            remove every exited node that has no live descendant
-  o8 restart <id> [--prompt T]                        relaunch a node with a fresh session (clears its context; children are kept);
+  tl prune                                            remove every exited node that has no live descendant
+  tl restart <id> [--prompt T]                        relaunch a node with a fresh session (clears its context; children are kept);
                                                       T is its first prompt, else it is pointed at the tree's handoff.md if any
-  o8 kill [--force] [--keep-branch|--discard] <id...> | close <id...>  close and delete nodes (an orchestrator needs --force);
+  tl kill [--force] [--keep-branch|--discard] <id...> | close <id...>  close and delete nodes (an orchestrator needs --force);
                                                       a node's worktree must be clean and merged unless --keep-branch
                                                       (commit as WIP, keep the branch) or --discard (delete both)
-  o8 merge <id> [--close]                             merge a worktree node's branch into its base (refused on conflict,
+  tl merge <id> [--close]                             merge a worktree node's branch into its base (refused on conflict,
                                                       naming the paths); --close then closes the node
-  o8 diff <id> [--stat]                               what a worktree node changed since it branched, committed or not
-  o8 send [--now] <id> "text"                         --now interrupts the target's turn if it is working (a steer)
-  o8 withdraw <messageId>                             take back a queued message that has not been delivered yet
-  o8 read <id> [summary|transcript|terminal] [--lines N]   (summary and transcript also read a closed node)
-  o8 history [--root ID] [QUERY]                      closed Claude nodes, newest first, of one tree or all; QUERY filters by
+  tl diff <id> [--stat]                               what a worktree node changed since it branched, committed or not
+  tl send [--now] <id> "text"                         --now interrupts the target's turn if it is working (a steer)
+  tl withdraw <messageId>                             take back a queued message that has not been delivered yet
+  tl read <id> [summary|transcript|terminal] [--lines N]   (summary and transcript also read a closed node)
+  tl history [--root ID] [QUERY]                      closed Claude nodes, newest first, of one tree or all; QUERY filters by
                                                       title, first prompt or last message
-  o8 transcript <id> [--session SID]                  a live or closed node's conversation; SID picks one of its earlier sessions
-  o8 followup <id> --prompt P [--title T]             continue a closed node's session as a new node that starts on P
-  o8 spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--preset NAME] [--request-id ID]
+  tl transcript <id> [--session SID]                  a live or closed node's conversation; SID picks one of its earlier sessions
+  tl followup <id> --prompt P [--title T]             continue a closed node's session as a new node that starts on P
+  tl spawn --kind claude|terminal --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree] [--preset NAME] [--request-id ID]
            [--after ID,ID] [--after-success ID,ID] [--now] [--fork ID]
                                                       --after / --after-success arm the node until those finish a turn or report
                                                       succeeded; --now launches past daemon.maxWorking instead of queueing;
                                                       --fork starts from a copy of a live or closed node's conversation (cwd: its)
-  o8 prompts                                          show the role prompt files and any override for this directory
-  o8 presets [--cwd P]                                list the spawn presets in effect for a directory and the file each comes from
-  o8 config [--cwd P]                                 show the effective config for a directory and which file each key came from
-  o8 gate [--cwd P]                                   run the configured completion gate command once in a directory and print the result
-  o8 worktrees [--cwd P]                            list node worktrees, orphans and kept branches for this repo
-  o8 worktrees clean [--force] [--cwd P]              remove orphans and kept branches that are clean and merged; --force removes all
-  o8 sessions                                         list session directories (<home>/sessions/<rootId>) with title, age, size and closedAt
-  o8 sessions clean                                   delete the ones daemon.sessionsKeepDays has expired now
-  o8 sessions path [id]                               print the session directory of a node's tree (default: this node's, or this directory's orchestrator's)
-  o8 log [id] [--since 2h] [--follow]                 print a tree's event log (for a non-root id, only that node's events)
-  o8 help`;
+  tl prompts                                          show the role prompt files and any override for this directory
+  tl presets [--cwd P]                                list the spawn presets in effect for a directory and the file each comes from
+  tl config [--cwd P]                                 show the effective config for a directory and which file each key came from
+  tl gate [--cwd P]                                   run the configured completion gate command once in a directory and print the result
+  tl worktrees [--cwd P]                            list node worktrees, orphans and kept branches for this repo
+  tl worktrees clean [--force] [--cwd P]              remove orphans and kept branches that are clean and merged; --force removes all
+  tl sessions                                         list session directories (<home>/sessions/<rootId>) with title, age, size and closedAt
+  tl sessions clean                                   delete the ones daemon.sessionsKeepDays has expired now
+  tl sessions path [id]                               print the session directory of a node's tree (default: this node's, or this directory's orchestrator's)
+  tl log [id] [--since 2h] [--follow]                 print a tree's event log (for a non-root id, only that node's events)
+  tl help`;
 
 const fail = (msg: string): never => { console.error(msg); process.exit(1); };
 
@@ -76,14 +76,14 @@ const daemonPort = () => portFor(home);
 
 async function call(tool: string, args: Record<string, unknown>, print = true, soft = false): Promise<{ text?: string; data?: any; error?: string }> {
   const env = process.env;
-  const node = env.O8_NODE_ID && env.O8_TOKEN_FILE;
+  const node = env.TL_NODE_ID && env.TL_TOKEN_FILE;
   let token: string;
-  try { token = node ? readFileSync(env.O8_TOKEN_FILE!, 'utf8').trim() : adminToken(); }
+  try { token = node ? readFileSync(env.TL_TOKEN_FILE!, 'utf8').trim() : adminToken(); }
   catch (e) { return fail(`cannot read token (is the daemon running?): ${(e as Error).message}`); }
-  const endpoint = env.O8_ENDPOINT ?? `http://127.0.0.1:${daemonPort()}`;
+  const endpoint = env.TL_ENDPOINT ?? `http://127.0.0.1:${daemonPort()}`;
   const res = await fetch(`${endpoint}/api/${tool}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': node ? env.O8_NODE_ID! : 'human', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': node ? env.TL_NODE_ID! : 'human', 'Content-Type': 'application/json' },
     body: JSON.stringify(args),
   }).catch((e: Error) => fail(`cannot reach daemon at ${endpoint}: ${e.message}`));
   if (res.status === 401) return fail('unauthorized: bad token, or the node no longer exists');
@@ -93,13 +93,13 @@ async function call(tool: string, args: Record<string, unknown>, print = true, s
   return body;
 }
 
-const APP = join(dirname(dirname(import.meta.dirname)), 'src-tauri/target/release/bundle/macos/orchestr8.app');
+const APP = join(dirname(dirname(import.meta.dirname)), 'src-tauri/target/release/bundle/macos/Tiller.app');
 // Cold start: the app reads --node. Already running: `open` only activates it, so callers also post `select`.
 const openApp = (port: number, node: string) =>
-  spawnSync('open', ['--env', `O8_HOME=${home}`, '--env', `O8_PORT=${port}`, '-a', APP, '--args', '--node', node]); // same daemon as this CLI
+  spawnSync('open', ['--env', `TL_HOME=${home}`, '--env', `TL_PORT=${port}`, '-a', APP, '--args', '--node', node]); // same daemon as this CLI
 
 const argv = process.argv.slice(2);
-const [cmd, ...rest] = argv[0]?.startsWith('-') ? ['up', ...argv] : argv; // `o8 --new` means `o8 up --new`
+const [cmd, ...rest] = argv[0]?.startsWith('-') ? ['up', ...argv] : argv; // `tl --new` means `tl up --new`
 const { values: f, positionals: pos } = parseArgs({
   args: rest, allowPositionals: true,
   options: {
@@ -116,11 +116,11 @@ const ids = (v: string[] | undefined) => v?.flatMap((x) => x.split(',')).map((x)
 const isolation = () => (f.worktree ? 'worktree' : undefined);
 
 /**
- * The session directory for `id` (a root, or any node of a tree; a non-root id also filters `o8 log` to that node);
- * without one, this node's own ($O8_SESSION_DIR), else the orchestrator of the current directory.
+ * The session directory for `id` (a root, or any node of a tree; a non-root id also filters `tl log` to that node);
+ * without one, this node's own ($TL_SESSION_DIR), else the orchestrator of the current directory.
  */
 async function sessionTarget(id: string | undefined): Promise<{ dir: string; only?: string }> {
-  if (!id && process.env.O8_SESSION_DIR) return { dir: process.env.O8_SESSION_DIR };
+  if (!id && process.env.TL_SESSION_DIR) return { dir: process.env.TL_SESSION_DIR };
   if (id && existsSync(sessionDir(home, id))) return { dir: sessionDir(home, id) }; // a root, even a closed one
   const all = ((await call('list_nodes', {}, false)).data ?? []) as OrchestratorCandidate[];
   const cwd = realpathSync(process.cwd());
@@ -207,7 +207,7 @@ switch (cmd) {
     break;
   }
   case 'spawn': {
-    // Each spawn field from its kebab-case flag; isolation, cwd and the id lists from o8's own spellings.
+    // Each spawn field from its kebab-case flag; isolation, cwd and the id lists from tl's own spellings.
     const flag = (k: string) => (f as Record<string, unknown>)[k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)];
     const args = Object.fromEntries([...Object.keys(SPAWN_FIELDS), 'permissionMode', 'requestId'].map((k) => [k, flag(k)]));
     await call('spawn', { ...args, cwd: f.cwd ?? (f.fork ? undefined : process.cwd()), isolation: isolation(), after: ids(f.after), afterSuccess: ids(f['after-success']) });
@@ -307,22 +307,25 @@ switch (cmd) {
     process.env = humanEnv(process.env); // run from a node's terminal, still restart as the human
     const port = daemonPort();
     if (!f.detached) {
-      if (!(await findDaemon(port))) { await startDaemon(home, port).catch((e: Error) => fail(e.message)); console.log('no daemon was running; started it'); break; }
+      const running = await findDaemon(port);
+      if (!running) { await startDaemon(home, port).catch((e: Error) => fail(e.message)); console.log('no daemon was running; started it'); break; }
+      // Such as the pre-rename daemon on ~/.orchestr8: moving the home under it would strand its state (docs/sessions.md).
+      if (running.home !== home) fail(`daemon pid ${running.pid} uses home ${running.home}, not ${home}; stop it with kill ${running.pid} and run tl reload again`);
       console.log(`reloading daemon; the new one resumes the nodes that were live; log in ${spawnReload(home, port)}`);
       break;
     }
-    // The detached helper: stdout is daemon.log. SIGTERM, unlike `o8 stop`, keeps the live set for the new daemon to resume.
-    const say = (s: string) => console.log(`o8 reload: ${s}`);
+    // The detached helper: stdout is daemon.log. SIGTERM, unlike `tl stop`, keeps the live set for the new daemon to resume.
+    const say = (s: string) => console.log(`tl reload: ${s}`);
     const old = await findDaemon(port);
     if (old) {
       say(`stopping daemon pid ${old.pid}`);
       process.kill(old.pid, 'SIGTERM');
       for (const end = Date.now() + 10_000; await findDaemon(port); await new Promise((r) => setTimeout(r, 200)))
-        if (Date.now() > end) fail(`o8 reload: daemon pid ${old.pid} did not stop`);
+        if (Date.now() > end) fail(`tl reload: daemon pid ${old.pid} did not stop`);
     }
     const agent = agentStatus().loaded;
     if (agent) kickstart(); // keep the daemon under launchd when autostart is on
-    const h = await (agent ? waitForDaemon(port, join(home, 'daemon.log')) : startDaemon(home, port)).catch((e: Error) => fail(`o8 reload: ${e.message}`));
+    const h = await (agent ? waitForDaemon(port, join(home, 'daemon.log')) : startDaemon(home, port)).catch((e: Error) => fail(`tl reload: ${e.message}`));
     say(`started daemon pid ${h.pid}${agent ? ' through launchd' : ''}; it resumes the nodes that were live`);
     break;
   }
@@ -331,14 +334,18 @@ switch (cmd) {
     if (pos[0] === 'status') {
       console.log(`${LABEL}: ${st.installed ? `installed (${plistPath()})` : 'not installed'}, ${st.loaded ? `loaded${st.pid ? `, daemon pid ${st.pid}` : ', not running'}` : 'not loaded'}`);
     } else if (pos[0] === 'on') {
-      if (st.loaded) { console.log(`autostart is already on; run o8 autostart off, then on, to rewrite ${plistPath()}`); break; }
+      if (st.loaded) { console.log(`autostart is already on; run tl autostart off, then on, to rewrite ${plistPath()}`); break; }
+      // The pre-rename agent would start a second daemon on the same port at login; bootout stops one it runs.
+      if (existsSync(plistPath(OLD_LABEL))) { uninstall(OLD_LABEL); console.log(`removed the old agent ${OLD_LABEL}`); }
       const running = await findDaemon(daemonPort());
-      const env: Record<string, string> = { O8_HOME: home, PATH: await loginShellPath(), ...(process.env.SHELL ? { SHELL: process.env.SHELL } : {}) };
-      if (process.env.O8_PORT) env.O8_PORT = process.env.O8_PORT;
-      install({ label: LABEL, program: O8D, env, log: join(home, 'daemon.log') });
-      console.log(`autostart on: ${plistPath()} loaded; the daemon starts at login and after a crash, not after o8 stop`);
+      if (running && running.home !== home) fail(`daemon pid ${running.pid} uses home ${running.home}, not ${home}; stop it with kill ${running.pid} (its nodes resume on the next start) and run this again`);
+      migrateHome(home);
+      const env: Record<string, string> = { TL_HOME: home, PATH: await loginShellPath(), ...(process.env.SHELL ? { SHELL: process.env.SHELL } : {}) };
+      if (process.env.TL_PORT) env.TL_PORT = process.env.TL_PORT;
+      install({ label: LABEL, program: TLD, env, log: join(home, 'daemon.log') });
+      console.log(`autostart on: ${plistPath()} loaded; the daemon starts at login and after a crash, not after tl stop`);
       // The agent's first launch finds the port busy and exits 0, so the running daemon stays as it is.
-      if (running) console.log(`daemon pid ${running.pid} keeps running outside launchd; o8 reload hands it to launchd`);
+      if (running) console.log(`daemon pid ${running.pid} keeps running outside launchd; tl reload hands it to launchd`);
     } else if (pos[0] === 'off') {
       uninstall();
       console.log(`autostart off${st.pid ? `; stopped daemon pid ${st.pid} (its nodes resume on the next start)` : ''}`);

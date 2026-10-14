@@ -14,7 +14,7 @@ let ws: WebSocket | undefined;
 let seen: ServerMessage[];
 
 beforeEach(async () => {
-  home = mkdtempSync(join(tmpdir(), 'o8-'));
+  home = mkdtempSync(join(tmpdir(), 'tl-'));
   manager = new NodeManager({ home, shell: '/bin/sh' });
   server = await startServer(manager, { port: 0 });
   seen = [];
@@ -98,7 +98,7 @@ describe('websocket', () => {
 describe('POST /hook', () => {
   const post = (nodeId: string, token: string, body: object) => fetch(`${manager.endpoint}/hook`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': nodeId, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': nodeId, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
 
@@ -126,7 +126,7 @@ describe('POST /hook', () => {
     const parent = (await manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() }));
     const kid = (await manager.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: parent.id }));
     const call = (path: string, id: string, token: string, init: RequestInit = {}) =>
-      fetch(`http://127.0.0.1:${server.port}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': id, 'Content-Type': 'application/json' } });
+      fetch(`http://127.0.0.1:${server.port}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': id, 'Content-Type': 'application/json' } });
     const tp = manager.tokenFor(parent.id), tk = manager.tokenFor(kid.id);
     expect((await call('/inbox', parent.id, 'bad')).status).toBe(401);
     expect((await call('/tree', kid.id, tp)).status).toBe(401); // another node's token
@@ -150,7 +150,7 @@ describe('POST /hook', () => {
     const b = (await manager.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir() }));
     const post = (id: string, payload: unknown) => fetch(`http://127.0.0.1:${server.port}/mod-event`, {
       method: 'POST', body: JSON.stringify({ event: 'session.measure', payload }),
-      headers: { Authorization: `Bearer ${manager.tokenFor(id)}`, 'X-O8-Node': id, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${manager.tokenFor(id)}`, 'X-TL-Node': id, 'Content-Type': 'application/json' },
     });
     await connect();
     await until(() => seen.find((m) => m.t === 'snapshot'));
@@ -182,14 +182,14 @@ describe('POST /hook', () => {
     const a1 = (await manager.spawn({ kind: 'terminal', title: 'a1', cwd: tmpdir(), parentId: a.id }));
     const b = (await manager.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir(), parentId: root.id }));
     (await manager.spawn({ kind: 'terminal', title: 'elsewhere', cwd: tmpdir() }));
-    const res = await fetch(`http://127.0.0.1:${server.port}/tree`, { headers: { Authorization: `Bearer ${manager.tokenFor(a.id)}`, 'X-O8-Node': a.id } });
+    const res = await fetch(`http://127.0.0.1:${server.port}/tree`, { headers: { Authorization: `Bearer ${manager.tokenFor(a.id)}`, 'X-TL-Node': a.id } });
     const rows = await res.json() as Array<{ id: string; depth: number; self?: boolean }>;
     expect(rows.map((r) => [r.id, r.depth, !!r.self])).toEqual([[root.id, 0, false], [a.id, 1, true], [a1.id, 2, false], [b.id, 1, false]]);
   });
 
-  it('X-O8-Clients lists the connected client kinds on /tree and /inbox', async () => {
+  it('X-TL-Clients lists the connected client kinds on /tree and /inbox', async () => {
     const n = (await manager.spawn({ kind: 'terminal', title: 'boss', cwd: tmpdir() }));
-    const header = async (path: string) => (await fetch(`http://127.0.0.1:${server.port}${path}`, { headers: { Authorization: `Bearer ${manager.tokenFor(n.id)}`, 'X-O8-Node': n.id } })).headers.get('x-o8-clients');
+    const header = async (path: string) => (await fetch(`http://127.0.0.1:${server.port}${path}`, { headers: { Authorization: `Bearer ${manager.tokenFor(n.id)}`, 'X-TL-Node': n.id } })).headers.get('x-tl-clients');
     expect(await header('/tree')).toBe('');
     await connect(adminToken(), 'app');
     await until(() => seen.find((m) => m.t === 'snapshot'));
@@ -202,7 +202,7 @@ describe('POST /hook', () => {
     const kid = (await manager.spawn({ kind: 'terminal', title: 'kid', cwd: tmpdir(), parentId: parent.id }));
     const other = (await manager.spawn({ kind: 'terminal', title: 'other', cwd: tmpdir() }));
     const focus = (caller: string, token: string, id: string) =>
-      fetch(`http://127.0.0.1:${server.port}/focus`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': caller }, body: JSON.stringify({ id }) });
+      fetch(`http://127.0.0.1:${server.port}/focus`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': caller }, body: JSON.stringify({ id }) });
     const tp = manager.tokenFor(parent.id), tk = manager.tokenFor(kid.id);
     await connect();
     await until(() => seen.find((m) => m.t === 'snapshot'));
@@ -220,7 +220,7 @@ describe('POST /hook', () => {
   it('the CLI\'s human-only API tools: mute, dnd and sessions_clean', async () => {
     const n = await manager.spawn({ kind: 'terminal', title: 't', cwd: tmpdir() });
     const api = async (tool: string, args: object, caller = 'human', token = adminToken()) => {
-      const res = await fetch(`http://127.0.0.1:${server.port}/api/${tool}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-O8-Node': caller }, body: JSON.stringify(args) });
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/${tool}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': caller }, body: JSON.stringify(args) });
       return { status: res.status, body: await res.json() as { text?: string; error?: string } };
     };
     await connect();

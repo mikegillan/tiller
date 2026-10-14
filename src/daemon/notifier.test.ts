@@ -39,14 +39,14 @@ describe('content', () => {
 
 describe('notifyArgs', () => {
   const c = { title: 'api', subtitle: 'sess', body: 'Needs approval: Bash ls', sound: true };
-  const base = { terminalNotifier: '/bin/tn', terminalBundle: 'com.mitchellh.ghostty', appConnected: () => false, onClick: (id: string) => `o8 select ${id}` };
+  const base = { terminalNotifier: '/bin/tn', terminalBundle: 'com.mitchellh.ghostty', appConnected: () => false, onClick: (id: string) => `tl select ${id}` };
 
   it('builds terminal-notifier args, activating the app when connected, else the terminal', () => {
     expect(notifyArgs(c, 'n1', base).args).toEqual([
       '-title', 'api', '-subtitle', 'sess', '-message', 'Needs approval: Bash ls', '-group', 'n1',
-      '-sound', 'default', '-activate', 'com.mitchellh.ghostty', '-execute', 'o8 select n1',
+      '-sound', 'default', '-activate', 'com.mitchellh.ghostty', '-execute', 'tl select n1',
     ]);
-    expect(notifyArgs(c, 'n1', { ...base, appConnected: () => true }).args).toContain('dev.orchestr8.app');
+    expect(notifyArgs(c, 'n1', { ...base, appConnected: () => true }).args).toContain('dev.tiller.app');
   });
 
   it('falls back to osascript without terminal-notifier, escaping quotes', () => {
@@ -140,7 +140,7 @@ describe('createNotifier', () => {
   });
 
   it('a muted node never notifies, and the mute survives a save and reload of the record', () => {
-    const file = join(mkdtempSync(join(tmpdir(), 'o8-mute-')), 'state.json');
+    const file = join(mkdtempSync(join(tmpdir(), 'tl-mute-')), 'state.json');
     const r = new NodeRegistry(file);
     const rec = r.create({ parentId: null, kind: 'claude', title: 'api', cwd: '/' });
     r.update(rec.id, { muted: true });

@@ -123,7 +123,7 @@ describe('gates', () => {
 });
 
 describe('loop detection', () => {
-  beforeEach(() => { vi.stubEnv('O8_HOME', '/nonexistent'); }); // default limits, whatever the real home holds
+  beforeEach(() => { vi.stubEnv('TL_HOME', '/nonexistent'); }); // default limits, whatever the real home holds
   afterEach(() => { vi.unstubAllEnvs(); });
   const send = async (text: string) => {
     m.set('b', { state: 'done', doneSource: 'stop' });
@@ -138,7 +138,7 @@ describe('loop detection', () => {
     expect(r).toMatchObject({ outcome: 'refused', retryable: false });
     expect(r.detail).toBe('looks like a loop: 20 messages to b in 10 min (limits.maxMessagesPer10Min); escalate to the human or change approach');
     expect(m.sessions.get('p')!.pasted).toHaveLength(1);
-    expect(m.sessions.get('p')!.pasted[0]).toContain('from: orchestr8 (child a "T-a" may be looping)');
+    expect(m.sessions.get('p')!.pasted[0]).toContain('from: tiller (child a "T-a" may be looping)');
     expect((await send('m22')).outcome).toBe('refused');
     expect(m.sessions.get('p')!.pasted).toHaveLength(1);
     expect((await deliver(m.mgr, 'b', 'a', 'other pair')).outcome).toBe('delivered');
@@ -150,7 +150,7 @@ describe('loop detection', () => {
     expect((await send('same')).outcome).toBe('delivered');
     expect(await send('same')).toMatchObject({ outcome: 'refused', detail: expect.stringContaining('the same message to b twice in 10 min; escalate to the human or change approach') });
     expect((await send('different')).outcome).toBe('delivered');
-    for (const from of ['human', 'orchestr8']) {
+    for (const from of ['human', 'tiller']) {
       m.set('b', { state: 'done', doneSource: 'stop' });
       expect((await deliver(m.mgr, from, 'b', 'x')).outcome).toBe('delivered');
       await vi.advanceTimersByTimeAsync(10_000);
@@ -162,7 +162,7 @@ describe('loop detection', () => {
   it('does not count a send that came back queueFull or was later withdrawn or expired', async () => {
     m.set('b', { state: 'working' });
     const fill = [];
-    for (let i = 0; i < 16; i++) fill.push(await deliver(m.mgr, 'orchestr8', 'b', `fill${i}`));
+    for (let i = 0; i < 16; i++) fill.push(await deliver(m.mgr, 'tiller', 'b', `fill${i}`));
     expect((await deliver(m.mgr, 'a', 'b', 'retry me')).outcome).toBe('queueFull');
     await withdraw(m.mgr, 'human', fill[0].messageId!);
     await vi.advanceTimersByTimeAsync(10_000);
@@ -183,19 +183,19 @@ describe('envelope', () => {
     m.set('b', { state: 'done', doneSource: 'stop' });
     await deliver(m.mgr, 'p', 'b', 'again');
     const [first, second] = m.sessions.get('b')!.pasted;
-    const nonceOf = (t: string) => /^--- O8 MESSAGE (\S+) ---\n/.exec(t)?.[1];
+    const nonceOf = (t: string) => /^--- TL MESSAGE (\S+) ---\n/.exec(t)?.[1];
     expect(nonceOf(first)).toBeTruthy();
     expect(nonceOf(second)).toBeTruthy();
     expect(nonceOf(first)).not.toBe(nonceOf(second));
-    expect(first).toBe(`--- O8 MESSAGE ${nonceOf(first)} ---\nfrom: T-a (a)\nreply-to: a\nline1\nline2\n--- END O8 MESSAGE ${nonceOf(first)} ---`);
+    expect(first).toBe(`--- TL MESSAGE ${nonceOf(first)} ---\nfrom: T-a (a)\nreply-to: a\nline1\nline2\n--- END TL MESSAGE ${nonceOf(first)} ---`);
   });
 });
 
 describe('queue', () => {
   it('caps at 16, then refuses with queueFull', async () => {
     m.set('b', { state: 'working' });
-    for (let i = 0; i < 16; i++) expect((await deliver(m.mgr, 'orchestr8', 'b', `m${i}`)).outcome).toBe('queued');
-    expect(await deliver(m.mgr, 'orchestr8', 'b', 'overflow')).toMatchObject({ outcome: 'queueFull', retryable: true });
+    for (let i = 0; i < 16; i++) expect((await deliver(m.mgr, 'tiller', 'b', `m${i}`)).outcome).toBe('queued');
+    expect(await deliver(m.mgr, 'tiller', 'b', 'overflow')).toMatchObject({ outcome: 'queueFull', retryable: true });
   });
 
   it('expires after 5 minutes and tells the sender through message_status', async () => {
@@ -209,15 +209,15 @@ describe('queue', () => {
 
   it('flushes in order when the target reaches verified idle, one at a time', async () => {
     m.set('b', { state: 'working' });
-    const r1 = await deliver(m.mgr, 'orchestr8', 'b', 'first');
-    const r2 = await deliver(m.mgr, 'orchestr8', 'b', 'second');
+    const r1 = await deliver(m.mgr, 'tiller', 'b', 'first');
+    const r2 = await deliver(m.mgr, 'tiller', 'b', 'second');
     m.set('b', { state: 'done', doneSource: 'stop' });
     await vi.advanceTimersByTimeAsync(0);
     const pasted = m.sessions.get('b')!.pasted;
     expect(pasted).toHaveLength(1);
     expect(pasted[0]).toContain('first');
-    expect(messageStatus(m.mgr, 'orchestr8', r1.messageId!)?.outcome).toBe('delivered');
-    expect(messageStatus(m.mgr, 'orchestr8', r2.messageId!)?.outcome).toBe('queued');
+    expect(messageStatus(m.mgr, 'tiller', r1.messageId!)?.outcome).toBe('delivered');
+    expect(messageStatus(m.mgr, 'tiller', r2.messageId!)?.outcome).toBe('queued');
     m.set('b', { state: 'working' });
     m.set('b', { state: 'done', doneSource: 'stop' });
     await vi.advanceTimersByTimeAsync(0);
@@ -265,7 +265,7 @@ describe('mod inbox', () => {
     expect(r).toMatchObject({ outcome: 'queued', retryable: false, messageId: expect.stringMatching(/^m-/) });
     const [msg] = inbox(m.mgr, 'b');
     expect(msg).toMatchObject({ id: r.messageId, from: 'T-a (a)' });
-    expect(msg.text).toMatch(/^--- O8 MESSAGE (\S+) ---\nfrom: T-a \(a\)\nreply-to: a\nhello\n--- END O8 MESSAGE \1 ---$/);
+    expect(msg.text).toMatch(/^--- TL MESSAGE (\S+) ---\nfrom: T-a \(a\)\nreply-to: a\nhello\n--- END TL MESSAGE \1 ---$/);
     expect(m.sessions.get('b')!.pasted).toHaveLength(0);
     expect(messageStatus(m.mgr, 'a', r.messageId!)?.outcome).toBe('queued');
     expect(ack(m.mgr, 'p', r.messageId!)).toBe(false); // not p's message
@@ -317,8 +317,8 @@ describe('mod inbox', () => {
   });
 
   it('caps the inbox at 16', async () => {
-    for (let i = 0; i < 16; i++) expect((await deliver(m.mgr, 'orchestr8', 'b', `m${i}`)).outcome).toBe('queued');
-    expect(await deliver(m.mgr, 'orchestr8', 'b', 'overflow')).toMatchObject({ outcome: 'queueFull', retryable: true });
+    for (let i = 0; i < 16; i++) expect((await deliver(m.mgr, 'tiller', 'b', `m${i}`)).outcome).toBe('queued');
+    expect(await deliver(m.mgr, 'tiller', 'b', 'overflow')).toMatchObject({ outcome: 'queueFull', retryable: true });
   });
 
   it('station notices ride the inbox too', async () => {
@@ -340,7 +340,7 @@ describe('mod inbox', () => {
   });
 
   it('survives a restart; entries past their TTL are dropped', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'o8inbox-'));
+    const home = mkdtempSync(join(tmpdir(), 'tlinbox-'));
     try {
       const withHome = (): Mgr => Object.assign(Object.create(m), { home }) as Mgr; // fresh state per Mgr object
       const m1 = withHome();
@@ -358,7 +358,7 @@ describe('mod inbox', () => {
   });
 
   it('flushInbox writes a pending save at once, so a shutdown inside the debounce loses nothing', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'o8inbox-'));
+    const home = mkdtempSync(join(tmpdir(), 'tlinbox-'));
     try {
       const m1 = Object.assign(Object.create(m.mgr), { home }) as Mgr;
       inbox(m1, 'b');
@@ -459,7 +459,7 @@ describe('event log', () => {
   it('logs sends and withdrawals on the target, the human\'s included, but not the daemon\'s own sends', async () => {
     m.set('b', { state: 'working' });
     const r = await deliver(m.mgr, 'human', 'b', 'hi');
-    await deliver(m.mgr, 'orchestr8', 'b', 'notice');
+    await deliver(m.mgr, 'tiller', 'b', 'notice');
     await withdraw(m.mgr, 'human', r.messageId!);
     expect(m.events).toEqual([
       ['b', 'send', { from: 'human', outcome: 'queued', messageId: r.messageId }],
@@ -475,7 +475,7 @@ describe('station notices', () => {
     m.set('a', { state: 'done', errored: true, doneSource: 'stop', changedAt: 1 });
     await vi.advanceTimersByTimeAsync(0);
     expect(child()).toHaveLength(1);
-    expect(child()[0]).toMatch(/\nfrom: orchestr8 \(your turn errored\)\nreply-to: none\nYour last turn ended with an error\. Continue where you left off\.\n/);
+    expect(child()[0]).toMatch(/\nfrom: tiller \(your turn errored\)\nreply-to: none\nYour last turn ended with an error\. Continue where you left off\.\n/);
     expect(pasted()).toHaveLength(0);
     m.set('a', { state: 'done', errored: true, doneSource: 'stop', changedAt: 1 }); // other events on the same error do nothing
     await vi.advanceTimersByTimeAsync(0);
@@ -485,7 +485,7 @@ describe('station notices', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(child()).toHaveLength(1);
     expect(pasted()).toHaveLength(1);
-    expect(pasted()[0]).toMatch(/\nfrom: orchestr8 \(child a "T-a" stopped: turn-errored\)\nreply-to: none\n/);
+    expect(pasted()[0]).toMatch(/\nfrom: tiller \(child a "T-a" stopped: turn-errored\)\nreply-to: none\n/);
     m.set('a', { state: 'done', errored: true, changedAt: 3 }); // still the same episode: nothing more
     await vi.advanceTimersByTimeAsync(0);
     expect(pasted()).toHaveLength(1);
@@ -510,7 +510,7 @@ describe('station notices', () => {
     expect(inbox(m.mgr, 'a')[0].text).toContain('Continue where you left off');
     expect(m.sessions.get('p')!.pasted).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(5 * 60_000);
-    expect(m.sessions.get('p')!.pasted[0]).toMatch(/\nfrom: orchestr8 \(child a "T-a" stopped: turn-errored\)\n/);
+    expect(m.sessions.get('p')!.pasted[0]).toMatch(/\nfrom: tiller \(child a "T-a" stopped: turn-errored\)\n/);
   });
 
   it('tells the parent once when a working child stalls, again only after activity resumes', async () => {
@@ -519,7 +519,7 @@ describe('station notices', () => {
     m.set('a', { state: 'working', activity: 'Bash: npm test', stalled: true, changedAt: Date.now() - 7 * 60_000 });
     await vi.advanceTimersByTimeAsync(0);
     expect(pasted()).toHaveLength(1);
-    expect(pasted()[0]).toMatch(/\nfrom: orchestr8 \(child a "T-a" no activity\)\nreply-to: none\nNo hook event for 7m while working; last activity: Bash: npm test\.\n/);
+    expect(pasted()[0]).toMatch(/\nfrom: tiller \(child a "T-a" no activity\)\nreply-to: none\nNo hook event for 7m while working; last activity: Bash: npm test\.\n/);
     m.set('p', { state: 'done', doneSource: 'stop' });
     m.set('a', { activity: 'Bash: npm test' }); // still stalled
     await vi.advanceTimersByTimeAsync(0);

@@ -5,7 +5,7 @@ describe('holding messages while a turn runs', () => {
     let state = 'working'
     const claims: string[] = []
     const clock = mock.clock(on)
-    mock.env(on, { O8_NODE_ID: 'n1', O8_TOKEN_FILE: '/t', O8_ENDPOINT: 'http://d' })
+    mock.env(on, { TL_NODE_ID: 'n1', TL_TOKEN_FILE: '/t', TL_ENDPOINT: 'http://d' })
     on('fs.read', () => ({ value: 'tok' }))
     on('command.register', ($: any, e: any) => ({ value: { command: e.name } }))
     on('ui.toast', () => ({ value: undefined }))

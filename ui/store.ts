@@ -63,7 +63,7 @@ export interface State {
   removals: number;
 }
 
-const stored = (() => { try { return localStorage.getItem('o8.panel') === '1'; } catch { return false; } })();
+const stored = (() => { try { return localStorage.getItem('tl.panel') === '1'; } catch { return false; } })();
 
 let state: State = {
   nodes: {}, order: [], selected: null, session: null, opened: [], collapsed: [], toasts: [], confirms: [],
@@ -97,7 +97,7 @@ export const expectSpawn = () => update(() => ({ awaitSpawn: true }));
 export const toggleCollapsed = (id: string) =>
   update((s) => ({ collapsed: s.collapsed.includes(id) ? without(s.collapsed, id) : [...s.collapsed, id] }));
 export const togglePanel = () => update((s) => {
-  try { localStorage.setItem('o8.panel', s.panel ? '0' : '1'); } catch { /* per-viewer convenience only */ }
+  try { localStorage.setItem('tl.panel', s.panel ? '0' : '1'); } catch { /* per-viewer convenience only */ }
   return { panel: !s.panel };
 });
 

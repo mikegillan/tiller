@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "orchestr8",
+  "productName": "Tiller",
   "version": "0.1.0",
-  "identifier": "dev.orchestr8.app",
+  "identifier": "dev.tiller.app",
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://127.0.0.1:7788"
@@ -10,7 +10,7 @@
   "app": {
     "windows": [
       {
-        "title": "orchestr8",
+        "title": "Tiller",
         "width": 1400,
         "height": 900,
         "minWidth": 900,

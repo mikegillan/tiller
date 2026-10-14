@@ -6,5 +6,5 @@ export default defineConfig({
   base: './',
   plugins: [react()],
   build: { outDir: 'dist', emptyOutDir: true },
-  server: { proxy: { '/ws': { target: process.env.O8_WS ?? 'http://127.0.0.1:7788', ws: true } } },
+  server: { proxy: { '/ws': { target: process.env.TL_WS ?? 'http://127.0.0.1:7788', ws: true } } },
 });

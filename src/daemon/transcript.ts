@@ -45,7 +45,7 @@ export function toEntry(m: Message): TranscriptEntry {
 
 export const parseTranscript = (raw: string): TranscriptEntry[] => parseMessages(raw).map(toEntry);
 
-/** One message as text, as `o8 read` prints it: tool calls become a "[tool: name]" marker where they occur. */
+/** One message as text, as `tl read` prints it: tool calls become a "[tool: name]" marker where they occur. */
 export const renderMessage = (m: Message): string => `${m.role}: ${m.parts.map((p) => ('text' in p ? p.text : `[tool: ${p.tool}]`)).join('\n')}`;
 
 /** The last MAX_ENTRIES messages of a transcript file, reading at most its last TAIL_BYTES. */

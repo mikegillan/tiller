@@ -27,7 +27,7 @@ describe('transcript', () => {
   });
 
   it('lists the sessions current first and reads a previous one from the same directory', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'o8-tr-'));
+    const dir = mkdtempSync(join(tmpdir(), 'tl-tr-'));
     writeFileSync(join(dir, 'cur.jsonl'), FIXTURE);
     writeFileSync(join(dir, 'old2.jsonl'), line({ type: 'user', message: { content: 'earlier' } }));
     const n = { cwd: dir, sessionId: 'cur', previousSessions: ['old1', 'old2'], transcriptPath: join(dir, 'cur.jsonl') };
@@ -46,7 +46,7 @@ describe('transcript', () => {
   });
 
   it('reads only the tail of a large file, dropping the cut line, and says so', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'o8-tr-'));
+    const dir = mkdtempSync(join(tmpdir(), 'tl-tr-'));
     const one = `${line({ type: 'user', message: { content: 'x'.repeat(1000) } })}\n`;
     const path = join(dir, 'big.jsonl');
     writeFileSync(path, one.repeat(Math.ceil(TAIL_BYTES / one.length) + 10) + line({ type: 'user', message: { content: 'last' } }));
@@ -62,7 +62,7 @@ describe('transcript', () => {
 describe('briefOf', () => {
   const base = { id: 'n-1', rootId: 'n-0', parentId: 'n-0', title: 't', cwd: '/', createdAt: 0, closedAt: 1 };
   it('leads with the outcome and its summary\'s first sentence, else the last message, else the prompt; ends with the branch fate', () => {
-    expect(briefOf({ ...base, outcome: { outcome: 'succeeded', summary: 'Added the flag. Also tests.', at: 0 }, branch: 'o8/n-1', branchFate: 'merged', base: 'main' }))
+    expect(briefOf({ ...base, outcome: { outcome: 'succeeded', summary: 'Added the flag. Also tests.', at: 0 }, branch: 'tl/n-1', branchFate: 'merged', base: 'main' }))
       .toBe('succeeded: Added the flag. (merged into main)');
     expect(briefOf({ ...base, outcome: { outcome: 'failed', note: 'tests fail', at: 0 }, branchFate: 'kept' })).toBe('failed: tests fail (branch kept, unmerged)');
     expect(briefOf({ ...base, lastAssistantMessage: '\nDone with it.\nMore.', prompt: 'p', branchFate: 'discarded' })).toBe('Done with it. (branch discarded)');
@@ -80,7 +80,7 @@ describe('archive, history, follow-up and fork', () => {
 
   /** A manager whose `claude` writes its argv to <node dir>/argv and idles. */
   const setup = () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-arch-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-arch-'));
     const bin = join(home, 'bin');
     mkdirSync(bin);
     writeFileSync(join(bin, 'claude'), '#!/bin/sh\nfor a in "$@"; do case "$prev" in --settings) out="$(dirname "$a")/argv";; esac; prev="$a"; done\necho "$@" > "$out"\nsleep 5\n');
@@ -109,9 +109,9 @@ describe('archive, history, follow-up and fork', () => {
     const c = await started('cleanup', root);
     const t = (await m.spawn({ kind: 'terminal', title: 'term', cwd: home, parentId: root })).id;
     m.setOutcome(a, { outcome: 'succeeded', summary: 'Parser done. Tests pass.', at: 1 });
-    m.registry.update(a, { worktree: { repo: home, path: join(home, 'wt'), branch: `o8/${a}`, base: 'main', baseSha: 'x' }, spentUsd: 0.5 });
+    m.registry.update(a, { worktree: { repo: home, path: join(home, 'wt'), branch: `tl/${a}`, base: 'main', baseSha: 'x' }, spentUsd: 0.5 });
     m.closed(a, undefined, { branchFate: 'merged', base: 'main' }); // what closeWorktreeNode passes for a merged branch
-    m.closed(b, 'kept branch o8/b', { branchFate: 'kept' });
+    m.closed(b, 'kept branch tl/b', { branchFate: 'kept' });
     m.closed(c, undefined, { branchFate: 'discarded' });
     await m.close(t);
     const other = await started('elsewhere', null, 'unrelated parser');
@@ -121,7 +121,7 @@ describe('archive, history, follow-up and fork', () => {
     expect(all.map((x) => x.id).sort()).toEqual([a, b, c, other].sort());
     expect(all.find((x) => x.id === a)).toMatchObject({
       rootId: root, parentId: root, title: 'parser', prompt: 'write the parser', role: 'worker', outcome: { outcome: 'succeeded' },
-      branch: `o8/${a}`, branchFate: 'merged', base: 'main', spentUsd: 0.5, sessionId: expect.any(String), transcriptPath: expect.stringContaining('.jsonl'),
+      branch: `tl/${a}`, branchFate: 'merged', base: 'main', spentUsd: 0.5, sessionId: expect.any(String), transcriptPath: expect.stringContaining('.jsonl'),
       brief: 'succeeded: Parser done. (merged into main)', closedAt: expect.any(Number),
     });
     expect(all.find((x) => x.id === b)).toMatchObject({ branchFate: 'kept', brief: 'write the docs (branch kept, unmerged)' });

@@ -1,20 +1,20 @@
 {
-  "name": "orchestr8",
+  "name": "tiller",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "bin": {
-    "o8": "./bin/o8",
-    "o8d": "./bin/o8d",
-    "o8-app": "./bin/o8-app",
-    "o8-mux": "./bin/o8-mux"
+    "tl": "./bin/tl",
+    "tld": "./bin/tld",
+    "tl-app": "./bin/tl-app",
+    "tl-mux": "./bin/tl-mux"
   },
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "daemon": "tsx src/daemon/index.ts",
-    "o8": "tsx src/daemon/cli.ts",
+    "tl": "tsx src/daemon/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true",

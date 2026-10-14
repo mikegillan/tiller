@@ -13,16 +13,16 @@ describe('session directories with a fake claude', () => {
   let m: NodeManager | undefined;
   afterEach(() => { m?.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
-  /** A manager whose claude writes its argv and O8_SESSION_DIR next to the node's settings.json, then idles. */
+  /** A manager whose claude writes its argv and TL_SESSION_DIR next to the node's settings.json, then idles. */
   function setup() {
-    home = mkdtempSync(join(tmpdir(), 'o8-sess-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-sess-'));
     const bin = join(home, 'bin'), proj = join(home, 'proj');
     mkdirSync(bin);
     mkdirSync(proj);
-    writeFileSync(join(bin, 'claude'), '#!/bin/sh\nfor a in "$@"; do case "$prev" in --settings) d="$(dirname "$a")";; esac; prev="$a"; done\nprintf "%s\\n" "$@" > "$d/argv"\necho "$O8_SESSION_DIR" > "$d/env"\nsleep 5\n');
+    writeFileSync(join(bin, 'claude'), '#!/bin/sh\nfor a in "$@"; do case "$prev" in --settings) d="$(dirname "$a")";; esac; prev="$a"; done\nprintf "%s\\n" "$@" > "$d/argv"\necho "$TL_SESSION_DIR" > "$d/env"\nsleep 5\n');
     chmodSync(join(bin, 'claude'), 0o755);
-    m = new NodeManager({ home: join(home, 'o8'), shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
-    return { m, proj, nodeFile: (id: string, f: string) => join(home, 'o8', 'nodes', id, f) };
+    m = new NodeManager({ home: join(home, 'tl'), shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` });
+    return { m, proj, nodeFile: (id: string, f: string) => join(home, 'tl', 'nodes', id, f) };
   }
 
   it('creates the root\'s directory with meta.json and gives every node in the tree its path', async () => {
@@ -33,7 +33,7 @@ describe('session directories with a fake claude', () => {
     expect(JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8'))).toMatchObject({ rootId: root.id, title: 'root', cwd: proj });
     await expect.poll(() => read(nodeFile(worker.id, 'env'))).toBe(`${dir}\n`);
     await expect.poll(() => read(nodeFile(root.id, 'env'))).toBe(`${dir}\n`);
-    expect(read(nodeFile(worker.id, 'argv'))).toContain(`Notes that must outlive your context go in $O8_SESSION_DIR (${dir}); keep handoff.md there`);
+    expect(read(nodeFile(worker.id, 'argv'))).toContain(`Notes that must outlive your context go in $TL_SESSION_DIR (${dir}); keep handoff.md there`);
   });
 
   it('restarts with the given prompt, else the handoff pointer when handoff.md exists, else no prompt', async () => {
@@ -87,7 +87,7 @@ describe('sweepSessions', () => {
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
   it('deletes only the directories of gone roots that closed, or went quiet, more than keepDays ago', () => {
-    home = mkdtempSync(join(tmpdir(), 'o8-sweep-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-sweep-'));
     const now = Date.now();
     const make = (id: string, meta: object | null, mtime: number) => {
       const dir = sessionDir(home, id);
@@ -109,7 +109,7 @@ describe('sweepSessions', () => {
 
 describe('event log reading', () => {
   it('filters by --since', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'o8-log-'));
+    const dir = mkdtempSync(join(tmpdir(), 'tl-log-'));
     const now = Date.now();
     writeFileSync(join(dir, 'events.jsonl'), [
       { ts: now - 3 * 3_600_000, type: 'spawn', id: 'a' },

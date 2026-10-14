@@ -16,7 +16,7 @@ const GIT_TIMEOUT_MS = 30_000;
 const SLOW_TIMEOUT_MS = 5 * 60_000;
 export const WORKTREES_DIR = join('.claude', 'worktrees');
 const EXCLUDE_LINE = '/.claude/worktrees/';
-const MARKER = 'o8-node';
+const MARKER = 'tl-node';
 
 export async function git(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS, env?: NodeJS.ProcessEnv): Promise<string> {
   try {
@@ -129,7 +129,7 @@ export const MAX_PATCH_BYTES = 2 << 20;
 async function nodeDiff(w: Worktree, runs: string[][]): Promise<string[]> {
   const common = ['diff', '--no-color', '--no-ext-diff', '-M'];
   if (!existsSync(w.path)) return Promise.all(runs.map((args) => git(w.repo, [...common, ...args, `${w.baseSha}...${w.branch}`])));
-  const dir = await mkdtemp(join(tmpdir(), 'o8-diff-'));
+  const dir = await mkdtemp(join(tmpdir(), 'tl-diff-'));
   try {
     const env = { ...process.env, GIT_INDEX_FILE: join(dir, 'index') };
     const [index, mergeBase] = await Promise.all([
@@ -232,7 +232,7 @@ export async function mergeInto(repo: string, branch: string, base: string, styl
     }
     await git(checkout.path, ['merge', '--ff-only', '-q', next]);
   } else {
-    await git(repo, ['update-ref', '-m', `orchestr8: merge ${branch}`, ref, next, baseTip]);
+    await git(repo, ['update-ref', '-m', `tiller: merge ${branch}`, ref, next, baseTip]);
   }
   return next;
 }
@@ -292,7 +292,7 @@ export async function ensureExcluded(repo: string): Promise<void> {
   await appendFile(file, `${text && !text.endsWith('\n') ? '\n' : ''}${EXCLUDE_LINE}\n`);
 }
 
-/** Written to .git/worktrees/<id>/o8-node; `home` keeps a test daemon from claiming the real daemon's worktrees. */
+/** Written to .git/worktrees/<id>/tl-node; `home` keeps a test daemon from claiming the real daemon's worktrees. */
 export interface Marker { home: string; nodeId: string; base: string; baseSha: string }
 
 const adminDir = async (path: string) => (await git(path, ['rev-parse', '--path-format=absolute', '--git-dir'])).trim();
@@ -313,7 +313,7 @@ export async function copyIncluded(repo: string, dest: string, patterns?: string
   let from = join(repo, '.worktreeinclude');
   let tmp: string | undefined;
   if (patterns) {
-    tmp = await mkdtemp(join(tmpdir(), 'o8-include-'));
+    tmp = await mkdtemp(join(tmpdir(), 'tl-include-'));
     from = join(tmp, 'patterns');
     await writeFile(from, `${patterns.join('\n')}\n`);
   } else if (!existsSync(from)) {

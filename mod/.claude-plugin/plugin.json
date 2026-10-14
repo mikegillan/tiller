@@ -1,1 +1,1 @@
-{ "name": "orchestr8", "version": "0.1.0", "description": "orchestr8 node mod: inbox delivery, band, toasts and commands", "types": "./types/index.d.ts" }
+{ "name": "tiller", "version": "0.1.0", "description": "tiller node mod: inbox delivery, band, toasts and commands", "types": "./types/index.d.ts" }

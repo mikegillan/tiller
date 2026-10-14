@@ -1,21 +1,32 @@
 // The daemon's home directory and the files in it that the CLI, the daemon and the app shell share.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 export const DEFAULT_PORT = 7788;
 /** Admin token for the human: mcp.ts writes it once the server listens; the CLI and the app read it. */
 export const ADMIN_TOKEN_FILE = 'admin-token';
-/** The port the daemon bound, so `o8` finds it without O8_PORT. */
+/** The port the daemon bound, so `tl` finds it without TL_PORT. */
 export const PORT_FILE = 'port';
-/** This checkout's root, so the app shell can find bin/o8d. */
+/** This checkout's root, so the app shell can find bin/tld. */
 export const REPO_FILE = 'repo';
 
-/** O8_HOME, else ~/.orchestr8. */
-export const homeDir = (): string => process.env.O8_HOME ?? join(homedir(), '.orchestr8');
+/** TL_HOME, else ~/.tiller. */
+export const homeDir = (): string => process.env.TL_HOME ?? join(homedir(), '.tiller');
 
-/** O8_PORT when set and non-empty, else the port file, else DEFAULT_PORT. */
+/**
+ * Move the pre-rename home (~/.orchestr8) to ~/.tiller, once: only when the home is ~/.tiller (not another TL_HOME), the old
+ * directory exists and the new one does not. Called before anything creates the home, with no daemon running on the old one.
+ */
+export function migrateHome(home = homeDir(), user = homedir()): void {
+  const from = join(user, '.orchestr8');
+  if (home !== join(user, '.tiller') || existsSync(home) || !existsSync(from)) return;
+  renameSync(from, home);
+  console.log(`moved ${from} to ${home} (orchestr8 is now tiller)`);
+}
+
+/** TL_PORT when set and non-empty, else the port file, else DEFAULT_PORT. */
 export function daemonPort(home = homeDir()): number {
-  if (process.env.O8_PORT) return Number(process.env.O8_PORT);
+  if (process.env.TL_PORT) return Number(process.env.TL_PORT);
   try { return Number(readFileSync(join(home, PORT_FILE), 'utf8').trim()) || DEFAULT_PORT; } catch { return DEFAULT_PORT; }
 }

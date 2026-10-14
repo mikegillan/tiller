@@ -1,6 +1,6 @@
-// Spawn presets: <cwd>/.orchestr8/agents/<name>.md, else <home>/agents/<name>.md. Read fresh on every call.
+// Spawn presets: <cwd>/.tiller/agents/<name>.md, else <home>/agents/<name>.md. Read fresh on every call.
 // Frontmatter uses Claude agent-definition fields (model, tools, disallowedTools, permissionMode, maxTurns) plus
-// orchestr8's effort, isolation and role; the body replaces the role prompt text.
+// tiller's effort, isolation and role; the body replaces the role prompt text.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { z } from 'zod';
@@ -26,7 +26,7 @@ export type Preset = Omit<z.infer<typeof Frontmatter>, 'name'> & { name: string;
 
 const NAME = /^[\w.-]+$/;
 
-export const presetDirs = (cwd: string, home: string): string[] => [join(cwd, '.orchestr8', 'agents'), join(home, 'agents')];
+export const presetDirs = (cwd: string, home: string): string[] => [join(cwd, '.tiller', 'agents'), join(home, 'agents')];
 
 /**
  * Parses `---` frontmatter of `key: value` lines, where a value may be `[a, b]` or followed by `- item` lines, then
@@ -79,7 +79,7 @@ export function listPresets(cwd: string, home: string): (Preset | { name: string
 }
 
 // The reviewer sets no permissionMode so it inherits its parent's: plan mode would ask the human before every
-// orchestr8 MCP call, report_outcome included, and without Edit and Write any inherited mode is read-only enough.
+// tiller MCP call, report_outcome included, and without Edit and Write any inherited mode is read-only enough.
 export const DEFAULT_PRESETS = {
   reviewer: `---
 name: reviewer
@@ -91,7 +91,7 @@ role: worker
 ---
 # Reviewer
 
-You review another node's work; you have not seen its reasoning, only its result. Your brief names the worker (node id or branch) and its brief. From the main checkout, read what changed with \`git diff <base>...<branch>\` or \`o8 diff <id>\`, check it against the brief, and run the project's checks (tests, type checks) where you can. Look for correctness bugs, missed requirements, unsafe changes and needless complexity. Do not fix anything and do not edit files.
+You review another node's work; you have not seen its reasoning, only its result. Your brief names the worker (node id or branch) and its brief. From the main checkout, read what changed with \`git diff <base>...<branch>\` or \`tl diff <id>\`, check it against the brief, and run the project's checks (tests, type checks) where you can. Look for correctness bugs, missed requirements, unsafe changes and needless complexity. Do not fix anything and do not edit files.
 
 When done, call report_outcome: "succeeded" if the work meets the brief, "failed" if it does not. Put the verdict in summary, and each finding in openQuestions as "<severity>: <file:line> <problem>", most severe first (blocker, major, minor). Put what you ran and its result in verified. Then send your parent the verdict in a few lines.
 `,

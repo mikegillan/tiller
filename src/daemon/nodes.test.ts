@@ -7,7 +7,7 @@ import { NodeRegistry } from './nodes.js';
 let dir: string;
 let file: string;
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'o8-nodes-'));
+  dir = mkdtempSync(join(tmpdir(), 'tl-nodes-'));
   file = join(dir, 'state.json');
 });
 
