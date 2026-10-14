@@ -8,9 +8,9 @@
  * - Registers the Tiller MCP server (`pi.registerMcpServer`) with node-scoped auth headers.
  * - Polls `/inbox`, claims only the immediate next message, submits through `pi.sendUserMessage`,
  *   and acks only once a matching `before_agent_start` confirms Pi accepted the prompt. A void
- *   `sendUserMessage` return is ambiguous, so the message is retained and never re-sent until it
- *   is accepted. Non-steer messages wait in the daemon until Pi is idle; steer messages abort the
- *   running turn and are delivered after Pi reports idle.
+ *   `sendUserMessage` return is ambiguous; after a bounded wait the claim retires as unconfirmed
+ *   (stalled/nonretryable), never re-sent or falsely acknowledged. Non-steer messages wait in the
+ *   daemon until Pi is idle; steers abort the running turn and submit after Pi reports idle.
  * - Reports `/hook` `SessionStart` with the daemon's `TL_SESSION_ID` (never Pi's own header UUID),
  *   `UserPromptSubmit` from the actual `before_agent_start` prompt, `SessionEnd`, and optionally
  *   PreToolUse/PostToolUse for tool activity.
@@ -30,11 +30,14 @@
  * cannot enforce, it refuses to activate (see config.ts) instead of running with weaker safety.
  */
 
+import { randomBytes } from "node:crypto";
 import { TillerBridge } from "./bridge.ts";
 import { readToken, TillerClient } from "./client.ts";
 import {
   findUnsupportedRestrictions,
   missingCapabilities,
+  nativePiVersion,
+  supportsNativeEvents,
   parseBridgeConfig,
   type BridgeConfig,
 } from "./config.ts";
@@ -89,7 +92,8 @@ function sessionInfo(
 }
 
 function modelOf(ctx: PiExtensionContextLike | undefined): string | undefined {
-  return ctx?.model?.id;
+  const model = ctx?.model;
+  return model?.id ? (model.provider ? `${model.provider}/${model.id}` : model.id) : undefined;
 }
 
 function contextUsage(ctx: PiExtensionContextLike | undefined) {
@@ -120,7 +124,11 @@ function lastAssistantMessage(messages: unknown): unknown {
   return undefined;
 }
 
-export default function tillerPiExtension(pi: PiExtensionApiLike): void {
+export default function tillerPiExtension(
+  pi: PiExtensionApiLike,
+  // Tests/fake CLI supply the host version without installing a second Pi runtime.
+  dependencies: { getVersion?: () => Promise<string | undefined> } = {},
+): void {
   // Extension state. The factory is called once per runtime load; a /reload or session
   // replacement builds a fresh closure, and session_shutdown stops the previous bridge.
   let currentCtx: PiExtensionContextLike | undefined;
@@ -195,6 +203,7 @@ export default function tillerPiExtension(pi: PiExtensionApiLike): void {
     const context = measureContext(contextUsage(currentCtx));
     const costUsd = sessionCost(currentCtx);
     return forwardModEvent("session.measure", {
+      ...(currentModel ? { model: currentModel } : {}),
       ...(context ? { context } : {}),
       ...(costUsd > 0 ? { cost: { usd: costUsd } } : {}),
     });
@@ -234,8 +243,11 @@ export default function tillerPiExtension(pi: PiExtensionApiLike): void {
     // Capability gate: fail closed *before* registering the MCP server or reading the token, so an
     // incompatible Pi never runs as a half node that silently misses its tools or messages.
     const missing = missingCapabilities(pi);
+    const version = await (dependencies.getVersion ?? nativePiVersion)();
+    if (!supportsNativeEvents(version)) missing.push(`native Pi 1.2.x events (version ${version ?? "unknown"})`);
     if (typeof ctx.isIdle !== "function") missing.push("ctx.isIdle");
     if (typeof ctx.abort !== "function") missing.push("ctx.abort");
+    if (typeof ctx.shutdown !== "function") missing.push("ctx.shutdown");
     if (missing.length > 0) {
       report(`tiller: incompatible Pi build (missing ${missing.join(", ")}); not activating`, "error");
       try {
@@ -247,6 +259,9 @@ export default function tillerPiExtension(pi: PiExtensionApiLike): void {
     }
 
     config = parsed.config;
+    // File MCP entries silently override extension registrations. Use a fresh node-scoped name
+    // each runtime: ordinary `tiller` (or an old runtime's entry) cannot shadow authenticated tools.
+    config.mcpName += `_${randomBytes(12).toString("hex")}`;
     currentModel = modelOf(ctx);
     lastUserText = "";
     lastTurnIndex = 0;
@@ -314,16 +329,18 @@ export default function tillerPiExtension(pi: PiExtensionApiLike): void {
       client,
       isIdle: () => currentCtx?.isIdle() ?? true,
       abort: () => currentCtx?.abort(),
-      sendUserMessage: (text, options) => pi.sendUserMessage(text, options),
+      sendUserMessage: (text) => pi.sendUserMessage(text),
       // Bookkeeping only. The `UserPromptSubmit` receipt is emitted from `before_agent_start`
       // once Pi has actually accepted the message, never here.
       onSubmit: (message) => {
         lastUserText = message.text;
       },
+      onUnconfirmed: (message) => {
+        report(`tiller: message ${message.id} unconfirmed; it may still run later; do not resend automatically`, "warning");
+      },
       onExpired: (message) => {
-        // Pi never started a run for a message whose send returned; the daemon dropped it anyway
-        // (TTL/restart/close). Report it so a lost delivery is visible rather than silent.
-        report(`tiller: message ${message.id} expired before Pi accepted it`, "warning");
+        // Disappearance does not prove rejection. The daemon may have retired it or closed/restarted.
+        report(`tiller: message ${message.id} removed without confirmed acceptance; do not resend automatically`, "warning");
       },
       onError: (error, phase) => {
         console.error(`[tiller] bridge ${phase}: ${String(error)}`);
@@ -349,7 +366,7 @@ export default function tillerPiExtension(pi: PiExtensionApiLike): void {
     // Let queued hooks land before tearing the client down, then cancel anything still in flight.
     await lifecycle.drain();
     try {
-      pi.unregisterMcpServer?.(config?.mcpName ?? "tiller");
+      if (config) pi.unregisterMcpServer?.(config.mcpName);
     } catch {
       /* nothing registered, or another extension owns the name */
     }
@@ -411,9 +428,10 @@ export default function tillerPiExtension(pi: PiExtensionApiLike): void {
     await forwardModEvent("turn.start", turnStartPayload(lastUserText, lastTurnIndex));
   });
 
-  pi.on("model_select", (event, ctx) => {
+  pi.on("model_select", async (event, ctx) => {
     currentCtx = ctx;
-    currentModel = event?.model?.id ?? currentModel;
+    currentModel = modelOf({ ...ctx, model: event?.model ?? ctx.model }) ?? currentModel;
+    await sendMeasure(); // persist idle switches too, without fabricating a run boundary
   });
 
   pi.on("turn_start", (event, ctx) => {
@@ -452,6 +470,7 @@ export default function tillerPiExtension(pi: PiExtensionApiLike): void {
         durationMs: Date.now() - runStartedAt,
         answer: messageText(lastTurnMessage),
         model: currentModel,
+        // `model` is provider-qualified for replay; usage's provider is separate metadata.
         provider: ctx?.model?.provider,
         stopReason: typeof stopReason === "string" ? stopReason : undefined,
       }),

@@ -5,7 +5,7 @@ import { classify, composerTextOf } from './pty.js';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ack, claim, deliver, flushInbox, inbox, messageStatus, startNotices, withdraw, type Mgr } from './messaging.js';
+import { ack, claim, deliver, flushInbox, inbox, messageStatus, PI_CONFIRM_MS, startNotices, unconfirmed, withdraw, type Mgr } from './messaging.js';
 
 const PROMPT = ['some output', '────────────────── n-b', '❯ ', '──────────────────'];
 
@@ -257,6 +257,49 @@ describe('queue', () => {
 });
 
 describe('mod inbox', () => {
+  it('bounds claimed Pi messages despite live polls/busy state; late hook/ack cannot report delivered', async () => {
+    Object.assign(m.nodes.get('b')!, { kind: 'agent', harness: 'pi' });
+    const r = await deliver(m.mgr, 'a', 'b', 'unaccepted native send');
+    const [msg] = inbox(m.mgr, 'b');
+    expect(claim(m.mgr, 'b', msg.id)).toBe(true);
+    expect(claim(m.mgr, 'b', msg.id)).toBe(false);
+    m.set('b', { state: 'working' });
+    for (let i = 0; i < 60; i++) {
+      inbox(m.mgr, 'b');
+      await vi.advanceTimersByTimeAsync(PI_CONFIRM_MS / 60);
+    }
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'stalled', retryable: false, detail: expect.stringContaining('may still run') });
+    expect(inbox(m.mgr, 'b')).toEqual([]);
+    m.emit('hook', 'b', { hook_event_name: 'UserPromptSubmit', prompt: msg.text });
+    expect(ack(m.mgr, 'b', msg.id)).toBe(false);
+    expect(messageStatus(m.mgr, 'a', msg.id)?.outcome).toBe('stalled');
+    const b = await deliver(m.mgr, 'p', 'b', 'later B', { mode: 'now' });
+    expect(claim(m.mgr, 'b', b.messageId!)).toBe(true);
+  });
+
+  it('retires only the caller claimed message, preserves status and prevents replay across restart', async () => {
+    Object.assign(m.nodes.get('b')!, { kind: 'agent', harness: 'pi' });
+    const home = mkdtempSync(join(tmpdir(), 'tlinbox-pi-'));
+    try {
+      const withHome = (): Mgr => Object.assign(Object.create(m), { home }) as Mgr;
+      const m1 = withHome();
+      const r = await deliver(m1, 'a', 'b', 'native A');
+      expect(unconfirmed(m1, 'b', r.messageId!)).toBe(false); // not yet claimed
+      expect(claim(m1, 'b', r.messageId!)).toBe(true);
+      // Claim is saved before /claim returns, no debounce window can allow replay.
+      const m2 = withHome();
+      expect(inbox(m2, 'b')[0]).toMatchObject({ id: r.messageId, claimed: true });
+      expect(claim(m2, 'b', r.messageId!)).toBe(false);
+      expect(unconfirmed(m2, 'p', r.messageId!)).toBe(false); // no cross-node mutation
+      expect(unconfirmed(m2, 'b', r.messageId!)).toBe(true);
+      flushInbox(m2);
+      const m3 = withHome();
+      expect(inbox(m3, 'b')).toEqual([]);
+      expect(messageStatus(m3, 'a', r.messageId!)).toMatchObject({ outcome: 'stalled', retryable: false });
+      expect(ack(m3, 'b', r.messageId!)).toBe(false);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   beforeEach(() => { inbox(m.mgr, 'b'); }); // b's mod polls
 
   it('queues for a mod-live target without pasting; the inbox lists it; ack resolves it as delivered', async () => {

@@ -13,9 +13,10 @@
  *     * `submitted` — `sendUserMessage` was called (the message is ambiguous; it must never be
  *       submitted again), and
  *     * `accepted`  — Pi actually started a run with this exact prompt, reported through
- *       `before_agent_start`. Only acceptance can ack the message and release the queue.
- *   A claimed message whose submit failed before acceptance is reset to unsubmitted and retried;
- *   one that was accepted (even if the send call then threw) is never un-accepted.
+ *       `before_agent_start`. Only acceptance can ack the message.
+ *   After a bounded confirmation window, an ambiguous claim is retired as stalled/nonretryable,
+ *   never resent. Native Pi catches/logs send errors and returns void; even a thrown wrapper
+ *   error is not proof that submission had no effect.
  * - The state is marked `submitted` *before* `sendUserMessage` is invoked, because Pi can
  *   dispatch `before_agent_start` synchronously from inside that call. Acceptance is an explicit
  *   flag, so the reentrant `confirmAccepted` cannot be undone by the enclosing submit.
@@ -29,13 +30,14 @@
  */
 
 import type { InboxMessage } from "./client.ts";
-import type { PiSendUserMessageOptions } from "./types.ts";
 
 /** The subset of `TillerClient` the bridge uses; tests inject a fake. */
 export interface TillerClientLike {
   inbox(): Promise<InboxMessage[]>;
   claim(id: string): Promise<boolean>;
   ack(id: string): Promise<void>;
+  /** Retire an ambiguous claim without acknowledging delivery. Idempotent. */
+  unconfirmed(id: string): Promise<void>;
 }
 
 export interface TillerBridgeDeps {
@@ -44,8 +46,8 @@ export interface TillerBridgeDeps {
   isIdle: () => boolean;
   /** Abort the running turn, e.g. `() => ctx.abort()`. */
   abort: () => void;
-  /** Submit a user message, e.g. `(text, o) => pi.sendUserMessage(text, o)`. May be async. */
-  sendUserMessage: (text: string, options?: PiSendUserMessageOptions) => unknown;
+  /** Native Pi submission returns void and logs asynchronous prompt errors internally. */
+  sendUserMessage: (text: string) => void;
   /** Called just before submitting. Bookkeeping only: no receipt/ack may happen here. */
   onSubmit?: (message: InboxMessage) => unknown;
   /** Called after a message is accepted by Pi and acked. */
@@ -58,19 +60,23 @@ export interface TillerBridgeDeps {
   onError?: (error: unknown, phase: string) => void;
   /** Default 1000 ms. */
   pollIntervalMs?: number;
-  /** Max submit attempts before a claimed message is dropped (it cannot be un-claimed). Default 5. */
-  maxSendAttempts?: number;
+  /** Bound the acceptance wait independently of daemon inbox TTL renewal. Default 60 seconds. */
+  confirmationTimeoutMs?: number;
+  now?: () => number;
+  onUnconfirmed?: (message: InboxMessage) => void;
   /** Timer injection for tests. */
   setIntervalFn?: (handler: () => void, ms: number) => unknown;
   clearIntervalFn?: (handle: unknown) => void;
 }
 
 interface HeldMessage extends InboxMessage {
-  attempts: number;
-  /** `sendUserMessage` was invoked; only acceptance (or a pre-acceptance throw) may clear it. */
+  claimedAt: number;
+  retiring: boolean;
+  /** `sendUserMessage` was invoked; it must never be invoked again for this claim. */
   submitted: boolean;
   /** A matching `before_agent_start` confirmed Pi accepted this prompt. */
   accepted: boolean;
+  acking: boolean;
   /** The running turn was aborted once for this steer; never abort again on later polls. */
   steerAborted: boolean;
   /** Consecutive inbox polls where a submitted-unaccepted message was absent. */
@@ -89,7 +95,10 @@ export class TillerBridge {
   private readonly deps: TillerBridgeDeps;
   private readonly setIntervalFn: (handler: () => void, ms: number) => unknown;
   private readonly clearIntervalFn: (handle: unknown) => void;
-  private readonly maxSendAttempts: number;
+  private readonly confirmationTimeoutMs: number;
+  private readonly now: () => number;
+  /** Guard stale inbox snapshots/late acceptance after retirement. Framed prompts contain unique ids. */
+  private readonly retired = new Set<string>();
   private readonly held: HeldMessage[] = [];
   private timer: unknown;
   private polling = false;
@@ -100,7 +109,8 @@ export class TillerBridge {
     this.deps = deps;
     this.setIntervalFn = deps.setIntervalFn ?? defaultSetInterval;
     this.clearIntervalFn = deps.clearIntervalFn ?? defaultClearInterval;
-    this.maxSendAttempts = deps.maxSendAttempts ?? 5;
+    this.confirmationTimeoutMs = deps.confirmationTimeoutMs ?? 60_000;
+    this.now = deps.now ?? Date.now;
   }
 
   /** Messages claimed but not yet accepted and acked. */
@@ -160,7 +170,7 @@ export class TillerBridge {
     if (this.stopped) return;
     const message = this.held[0];
     if (!message) return;
-    if (!message.submitted || message.accepted) return;
+    if (!message.submitted || message.accepted || message.retiring) return;
     // Only the injected message that Pi actually ran is confirmed; an unrelated human prompt
     // (or a stale prompt from a prior run) must not clear the claim.
     if (message.text !== text) return;
@@ -169,7 +179,7 @@ export class TillerBridge {
   }
 
   private isKnown(id: string): boolean {
-    return this.held.some((message) => message.id === id);
+    return this.retired.has(id) || this.held.some((message) => message.id === id);
   }
 
   private hasSteerHeld(): boolean {
@@ -217,6 +227,7 @@ export class TillerBridge {
           if (held.inboxMisses >= EXPIRY_MISSES) {
             const at = this.held.indexOf(held);
             if (at >= 0) this.held.splice(at, 1);
+            this.retired.add(held.id);
             this.deps.onExpired?.(held);
           }
         }
@@ -227,6 +238,11 @@ export class TillerBridge {
     if (this.deps.isIdle()) {
       for (const message of messages) {
         if (this.isKnown(message.id)) continue;
+        // Reloaded native claims are ambiguous: never submit them again.
+        if (message.claimed) {
+          await this.retire(this.newHeld(message));
+          continue;
+        }
         if (!(await this.claim(message))) {
           if (this.stopped) return;
           continue; // withdrawn/expired: the next message is now the immediate one
@@ -246,6 +262,10 @@ export class TillerBridge {
     if (this.hasSteerHeld()) return;
     const steer = messages.find((message) => message.steer && !this.isKnown(message.id));
     if (!steer) return;
+    if (steer.claimed) {
+      await this.retire(this.newHeld(steer));
+      return;
+    }
     if (!(await this.claim(steer))) return;
     if (this.stopped) return;
     const held = this.newHeld(steer);
@@ -258,9 +278,11 @@ export class TillerBridge {
   private newHeld(message: InboxMessage): HeldMessage {
     return {
       ...message,
-      attempts: 0,
+      claimedAt: this.now(),
+      retiring: false,
       submitted: false,
       accepted: false,
+      acking: false,
       steerAborted: false,
       inboxMisses: 0,
     };
@@ -276,6 +298,10 @@ export class TillerBridge {
       if (message.accepted) {
         // Pi accepted it: retry the ack only, never the submit.
         await this.retryAck(message);
+        return;
+      }
+      if (message.retiring || this.now() - message.claimedAt >= this.confirmationTimeoutMs) {
+        await this.retire(message);
         return;
       }
       if (message.submitted) return; // awaiting acceptance: ambiguous, so never resubmit
@@ -294,49 +320,55 @@ export class TillerBridge {
       // Mark submitted before the call: Pi may dispatch `before_agent_start` synchronously from
       // inside `sendUserMessage`, and `confirmAccepted` must see a submitted message.
       message.submitted = true;
-      // `followUp` is ignored while idle; it is a safety net for the race where Pi becomes busy
-      // between the idle check and the submit, so the message is queued instead of rejected.
-      await this.deps.sendUserMessage(message.text, { deliverAs: "followUp" });
-      message.attempts = 0;
+      // No followUp fallback: it may combine queued prompts without an exact acceptance event.
+      // A busy race is ambiguous and will retire honestly rather than queue an invisible replay.
+      this.deps.sendUserMessage(message.text);
     } catch (error) {
       // A confirmation set synchronously during the call wins: Pi already ran the prompt, so the
-      // throw must not un-submit it or count against the send-retry/drop cap.
+      // throw must not un-submit it or turn a confirmed delivery into an ambiguous failure.
       if (message.accepted) {
         this.deps.onError?.(error, "send-after-accept");
         return;
       }
-      message.submitted = false;
-      message.attempts += 1;
       this.deps.onError?.(error, "send");
-      if (message.attempts >= this.maxSendAttempts) {
-        const at = this.held.indexOf(message);
-        if (at >= 0) {
-          this.held.splice(at, 1);
-          this.deps.onError?.(
-            new Error(
-              `dropping claimed message ${message.id} after ${message.attempts} failed submits`,
-            ),
-            "drop",
-          );
-        }
-      }
+      // A wrapper can throw after dispatch. Do not retry or assume the native failure surfaced.
+      message.submitted = true;
       return;
     }
     // A void return is not acceptance. The message stays submitted until a matching
     // `before_agent_start` (via `confirmAccepted`) or the daemon drops it.
   }
 
-  /** Ack a submitted, accepted message. A failure keeps it for a later retry; success releases it. */
-  private async retryAck(message: HeldMessage): Promise<void> {
-    if (!message.accepted || this.stopped) return;
+  /** Retirement is a distinct terminal state; a late acceptance cannot turn it into delivery. */
+  private async retire(message: HeldMessage): Promise<void> {
+    message.retiring = true; // before HTTP: an acceptance racing this request must not ack
     try {
-      await this.deps.client.ack(message.id);
+      await this.deps.client.unconfirmed(message.id);
     } catch (error) {
-      this.deps.onError?.(error, "ack");
-      return;
+      this.deps.onError?.(error, "unconfirmed");
+      return; // retry retirement only, never submission
     }
+    this.retired.add(message.id);
     const at = this.held.indexOf(message);
     if (at >= 0) this.held.splice(at, 1);
-    this.deps.onDelivered?.(message);
+    this.deps.onUnconfirmed?.(message);
+  }
+
+  /** Ack a submitted, accepted message. A failure keeps it for a later retry; success releases it. */
+  private async retryAck(message: HeldMessage): Promise<void> {
+    if (!message.accepted || message.acking || this.stopped) return;
+    message.acking = true;
+    try {
+      await this.deps.client.ack(message.id);
+      const at = this.held.indexOf(message);
+      if (at >= 0) {
+        this.held.splice(at, 1);
+        this.deps.onDelivered?.(message);
+      }
+    } catch (error) {
+      this.deps.onError?.(error, "ack");
+    } finally {
+      message.acking = false;
+    }
   }
 }

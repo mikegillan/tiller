@@ -1,8 +1,8 @@
 /**
  * Minimal structural types for the subset of the Pi extension API the Tiller bridge uses.
  *
- * These are deliberately local: the adapter must not take a runtime dependency on
- * `@earendil-works/pi-coding-agent`. Pi passes its real `ExtensionAPI` / `ExtensionContext`
+ * These are deliberately local: Tiller does not install a second Pi runtime. The extension
+ * reads the host-provided VERSION export only for its compatibility gate. Pi passes `ExtensionAPI` / `ExtensionContext`
  * object at load time and the shapes below match it structurally. Keeping the types here also
  * lets the pure helpers and the bridge be unit-tested with a fake Pi, without installing Pi.
  *
@@ -68,7 +68,8 @@ export interface PiExtensionContextLike {
 export interface PiExtensionApiLike {
   registerMcpServer?(name: string, config: PiMcpServerConfig): void;
   unregisterMcpServer?(name: string): void;
-  sendUserMessage(content: string, options?: PiSendUserMessageOptions): unknown;
+  /** Native Pi is fire-and-forget: it catches/logs prompt errors and returns void. */
+  sendUserMessage(content: string, options?: PiSendUserMessageOptions): void;
   appendEntry?(customType: string, data?: unknown): void;
   on(event: string, handler: (event: any, ctx: PiExtensionContextLike) => unknown): () => void;
   getSessionName?(): string | undefined;

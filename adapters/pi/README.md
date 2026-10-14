@@ -15,7 +15,7 @@ spawn processes.
    client.ts     Tiller HTTP client (node-scoped bearer auth)
    config.ts     TL_* environment parsing + unsupported-restriction rejection
    lifecycle.ts  pure Pi-event -> Tiller /hook and /mod-event mappers
-   types.ts      structural subset of the Pi API (no runtime dependency on Pi)
+   types.ts      structural subset of the Pi API (host supplies Pi)
    *.test.ts     vitest coverage for the pure helpers and the bridge
 ```
 
@@ -67,7 +67,7 @@ mod). Pi loads the directory through `jiti`, so no build step is required.
 | `TL_SESSION_DIR` | no | Tiller session directory; not used by the bridge itself. |
 | `TL_PI_POLL_MS` | no | Inbox poll interval in ms, `>= 100`. Default `1000`. |
 | `TL_PI_HOOK_TOOLS` | no | `1`/`true`/`yes`/`on` to forward tool activity as `/hook`. |
-| `TL_PI_MCP_EXPOSURE` | no | MCP exposure for `tiller`: `direct` (default), `codemode`, `deferred`, `hidden`. |
+| `TL_PI_MCP_EXPOSURE` | no | MCP exposure for the node-scoped Tiller server: `direct` (default), `codemode`, `deferred`, `hidden`. |
 
 ### Rejected settings
 
@@ -89,7 +89,7 @@ All calls use `Authorization: Bearer <token>` and `X-TL-Node: <nodeId>`.
 | Pi event / API | Tiller call | Notes |
 |---|---|---|
 | `session_start` | `POST /hook` `SessionStart` | `session_id` (`TL_SESSION_ID`), `transcript_path` (from `--session`), `model`. |
-| `session_start` | `pi.registerMcpServer("tiller", …)` | HTTP MCP at `<endpoint>/mcp`, node-scoped headers. Gated: a build without `registerMcpServer` fails closed. |
+| `session_start` | `pi.registerMcpServer("tiller_<node>_<random>", …)` | HTTP MCP at `<endpoint>/mcp`, node-scoped headers. Fresh names prevent ordinary `mcp.json` entries named `tiller` from silently overriding the registration. |
 | `before_agent_start` (`user`) | `POST /hook` `UserPromptSubmit` | The actual prompt Pi accepted; also the only source of bridge acceptance, so a void `sendUserMessage` return is never treated as delivered. |
 | `agent_start` | `POST /mod-event` `turn.start` | Once per run (`{ text, turnId }`, informational), not per model turn. |
 | `turn_end` | `POST /mod-event` `session.measure` | Context usage + cumulative session cost. |
@@ -99,7 +99,8 @@ All calls use `Authorization: Bearer <token>` and `X-TL-Node: <nodeId>`.
 | `ui_prompt_end` | `POST /hook` `PostToolUse` | Returns the node to working; paired with a mapped start (nested dialogs are counted). |
 | `tool_execution_start` / `_end` | `POST /hook` `PreToolUse` / `PostToolUse` | Only with `TL_PI_HOOK_TOOLS`. Pi tool names/fields are mapped to the Claude names the daemon's reducer reads; the raw name stays in `pi_tool_name`. |
 | `session_shutdown` (`quit`) | `POST /hook` `SessionEnd` | Await the queued hooks, then dispose the HTTP client. Other shutdown reasons replace the runtime and a new `session_start` follows. |
-| poll loop | `GET /inbox`, `POST /claim`, `POST /ack` | See below. |
+| `model_select` | `POST /mod-event` `session.measure` | Provider-qualified `model` (`provider/id`) including idle switches, so follow-up can replay the selected provider. |
+| poll loop | `GET /inbox`, `POST /claim`, `POST /ack`, `POST /unconfirmed` | See below. |
 
 Every hook and mod-event is serialized through one in-process queue and awaited, so
 `SessionStart` can never race the first turn's `turn.start` / `UserPromptSubmit`.
@@ -115,23 +116,28 @@ On every poll (`pollOnce`, one in flight at a time):
    withdraw it. A claimed steer aborts the running turn and is delivered once Pi reports idle.
 4. A message claimed while idle is submitted in the same cycle.
 
-`POST /claim` returning `404` means the message was withdrawn or expired, so it is skipped and
-the next message becomes the immediate one. Non-steer submissions pass `deliverAs: "followUp"` as
-a race guard: if Pi became busy between the idle check and the submit, the message queues instead
-of being rejected.
+`POST /claim` returning `404` means withdrawn, expired, or (for Pi) already claimed by a prior
+runtime; never submit it. There is no `followUp` fallback: Pi can combine queued prompts without
+an exact matching acceptance event. A busy race is treated as ambiguous instead.
 
-`sendUserMessage` is fire-and-forget in Pi: a void return is **not** evidence Pi accepted the
-prompt, because Pi can reject the input asynchronously or consume it without ever starting a run.
-The bridge therefore tracks `submitted` (the call was made, so the message must never be sent
-again) and `accepted` (a matching `before_agent_start` started a run with that exact prompt)
-separately. It marks the message submitted **before** calling `sendUserMessage`, because Pi can
-dispatch `before_agent_start` synchronously from inside that call; a synchronous throw resets the
-marker only when the prompt was not accepted in the meantime. Only acceptance acks the message and
-releases the queue. A submit Pi never accepts is retained and is retried only when the send call
-itself threw. If the daemon drops a submitted-but-unaccepted message (TTL, restart, close), the
-bridge clears it after two consecutive inbox misses and reports it as expired. A later message
-(including a steer) is not claimed until the held one clears, so ordering and no-duplicate safety
-are kept.
+Native `sendUserMessage` catches/logs prompt errors and returns **void**. Missing credentials,
+compaction failure, and consumed input therefore need not throw or start a run. The bridge marks
+`submitted` **before** calling it and never retries that call, even if a wrapper throws. Only an
+exact matching `before_agent_start` confirms acceptance and permits `/ack`; ack failures retry
+only the receipt. Pi does not use the daemon's Claude substring-hook acknowledgment.
+
+A claim without confirmation retires within **60 seconds**, independently of inbox TTL renewal.
+The bridge uses `/unconfirmed`; the daemon also bounds Pi claims if the adapter stops polling.
+Retirement removes the claim and reports `stalled`, `retryable: false`, with an explicit warning
+that the prompt may still run later. **Do not resend automatically.** Later messages, including
+steers, can progress; timeout is not cancellation, so late execution may change run ordering.
+Late acceptance/ack cannot change the retired sender status to delivered or acknowledge a different
+uniquely framed message. A lost retirement response retries retirement only.
+
+Pi claims are persisted before `/claim` succeeds, are not re-claimable after reload/restart, and
+are exposed as `claimed` in `/inbox`. A new bridge retires an inherited claim without replaying it.
+Unconfirmed terminal statuses are saved with the inbox and retained for the normal status window.
+If a claim disappears from the daemon, two consecutive misses release it locally without an ack.
 
 ## Pi API compatibility
 
@@ -142,22 +148,24 @@ Target: `@earendil-works/pi-coding-agent` **1.2.x**. The adapter relies on:
   "model_select" | "turn_start" | "turn_end" | "agent_end" | "agent_settled" |
   "ui_prompt_start" | "ui_prompt_end" | "tool_execution_start" | "tool_execution_end")`
 - `pi.registerMcpServer` / `pi.unregisterMcpServer` (HTTP MCP config)
-- `pi.sendUserMessage(content, { deliverAs })`
+- `pi.sendUserMessage(content)` (no implicit native queue fallback)
 - `ctx.isIdle()`, `ctx.abort()`, `ctx.getContextUsage()`, `ctx.sessionManager.getSessionId() /
   getSessionFile() / getEntries()`, `ctx.model`, `ctx.ui.notify`, `ctx.shutdown()`
 
-The bridge checks these before it registers the MCP server or reads the token. A Pi build missing
-`registerMcpServer`, `sendUserMessage`, `pi.on`, `ctx.isIdle` or `ctx.abort` is refused with an
-error and `ctx.shutdown()` rather than left running as a half node. This is the same fail-closed
-posture as the unsupported-restriction check.
+The bridge reads the public host-supplied `VERSION` export and requires a stable **1.2.x** version
+before registering MCP or reading credentials. `pi.on` accepting an event name is not proof the
+build emits it; the version gate pins the documented native event contract. Unknown, older, newer,
+and prerelease versions fail closed. It also checks `registerMcpServer`, `unregisterMcpServer`,
+`sendUserMessage`, `pi.on`, `ctx.isIdle`, `ctx.abort`, and `ctx.shutdown`. Optional UI/usage APIs
+are not required. This is the same fail-closed posture as unsupported restrictions.
 
 `agent_settled` is the final boundary (`docs/extensions.md`): unlike `agent_end`, no automatic
 retry, compaction, or queued continuation follows, so `turn.complete` is reported there.
 
-`types.ts` declares the exact structural subset used. There is **no runtime import** from the Pi
-packages, which keeps the main Tiller package free of a Pi dependency and lets the bridge be
-tested with a fake Pi. `package.json` lists the Pi package as a peer dependency for packaging,
-not as a runtime dependency.
+`types.ts` declares the structural subset used. Only the compatibility gate imports the host's
+public `VERSION` through Pi's supported extension module mapping; Tiller installs no Pi runtime.
+`package.json` lists Pi as a host-provided peer dependency. Tests inject a version without
+installing a second Pi runtime.
 
 ## Develop
 
@@ -170,7 +178,7 @@ npx tsc -p adapters/pi/tsconfig.json
 
 The suite covers config parsing and restriction rejection, the HTTP client, the lifecycle
 mappers, and the bridge state machine (idle delivery, daemon-held messages, steer abort, poll
-non-overlap, timer cleanup, send retry/drop, ack failure) with an injectable fake Pi and fetch.
+non-overlap, timer cleanup, unconfirmed retirement, late acceptance/reload races, ack failure) with an injectable fake Pi and fetch.
 
 ### Managed sessions are protected
 
@@ -181,6 +189,13 @@ the cancel and a `new`/`resume`/`fork` `session_start` still arrives, the bridge
 and calls `ctx.shutdown()` instead of letting the managed UUID point at a different conversation.
 `/reload` is still allowed: it restarts the extension runtime in place with the same session file.
 
+## Safety boundary
+
+Tiller's `tl trust`/`tl untrust` guard based on `TL_NODE_ID` is advisory UX only, **not a sandbox or
+security boundary**. A same-user agent can unset the variable or write the trust file. Enforced
+isolation needs OS accounts/containers/sandboxing and restricted credentials/filesystem access;
+Pi project trust and node-scoped HTTP authentication do not constrain same-user local code.
+
 ## Limitations
 
 - Turn text for `turn.start` is the most recent user prompt seen by the extension; Pi's
@@ -190,10 +205,10 @@ and calls `ctx.shutdown()` instead of letting the managed UUID point at a differ
 - `turn.complete.reason` is `answer`, `aborted` or `error`: the final assistant message's
   `stopReason` (`aborted`/`error`) is mapped at `agent_settled`. Pi does not expose a distinct
   `refusal` reason.
-- A claimed message whose submission fails before acceptance is retried at most 5 times, then
-  dropped (it cannot be un-claimed). A message Pi accepted but whose `/ack` failed is kept and its
-  ack retried; it is never submitted again. A submitted-but-unaccepted message Pi never runs is
-  retained (never re-sent) until the daemon drops it, then cleared as expired.
+- The 60-second confirmation deadline is conservative: a long compaction or delayed event may
+  retire a prompt that eventually runs. Retirement does not cancel that prompt and cannot prove
+  non-delivery. It prevents duplicate submission and queue wedges, not all late-run ordering.
+  Native provider-backed delivery is not exercised by the offline/fake-Pi tests.
 - `POST /focus` and the `tl-*` slash commands from the Claude mod are not ported here; the bridge
   only covers lifecycle, messaging, and MCP registration.
 - The extension assumes the daemon supplies the session file via `--session`. It reads the path
