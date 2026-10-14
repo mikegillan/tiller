@@ -1,7 +1,6 @@
 // Client-side helpers for `tl` / `tl up`: find or start the daemon, pick the orchestrator for a directory.
 import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, readFileSync } from 'node:fs';
-import { migrateHome } from './home.js';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +18,6 @@ export async function findDaemon(port: number, timeoutMs = 500): Promise<Health 
 
 /** Run bin/<name> detached (survives this process and its terminal) with output appended to <home>/daemon.log; returns the log path. */
 function detach(name: string, args: string[], home: string, port: number, env: NodeJS.ProcessEnv = process.env): string {
-  migrateHome(home); // before the log below creates the home
   mkdirSync(home, { recursive: true });
   const log = join(home, 'daemon.log');
   const fd = openSync(log, 'a');

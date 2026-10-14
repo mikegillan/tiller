@@ -10,8 +10,8 @@ import { gateFor } from './manager.js';
 import { promptPath } from './launch.js';
 import { listPresets } from './presets.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
-import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir, migrateHome } from './home.js';
-import { agentStatus, install, kickstart, LABEL, OLD_LABEL, TLD, plistPath, uninstall } from './autostart.js';
+import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
+import { agentStatus, install, kickstart, LABEL, TLD, plistPath, uninstall } from './autostart.js';
 import { buildChildEnv, loginShellPath } from './pty.js';
 import { formatEvent, listSessions, parseSince, readEvents, sessionDir, type SessionEvent } from './sessions.js';
 import { fmtAge } from '../shared/format.js';
@@ -309,7 +309,6 @@ switch (cmd) {
     if (!f.detached) {
       const running = await findDaemon(port);
       if (!running) { await startDaemon(home, port).catch((e: Error) => fail(e.message)); console.log('no daemon was running; started it'); break; }
-      // Such as the pre-rename daemon on ~/.orchestr8: moving the home under it would strand its state (docs/sessions.md).
       if (running.home !== home) fail(`daemon pid ${running.pid} uses home ${running.home}, not ${home}; stop it with kill ${running.pid} and run tl reload again`);
       console.log(`reloading daemon; the new one resumes the nodes that were live; log in ${spawnReload(home, port)}`);
       break;
@@ -335,11 +334,8 @@ switch (cmd) {
       console.log(`${LABEL}: ${st.installed ? `installed (${plistPath()})` : 'not installed'}, ${st.loaded ? `loaded${st.pid ? `, daemon pid ${st.pid}` : ', not running'}` : 'not loaded'}`);
     } else if (pos[0] === 'on') {
       if (st.loaded) { console.log(`autostart is already on; run tl autostart off, then on, to rewrite ${plistPath()}`); break; }
-      // The pre-rename agent would start a second daemon on the same port at login; bootout stops one it runs.
-      if (existsSync(plistPath(OLD_LABEL))) { uninstall(OLD_LABEL); console.log(`removed the old agent ${OLD_LABEL}`); }
       const running = await findDaemon(daemonPort());
       if (running && running.home !== home) fail(`daemon pid ${running.pid} uses home ${running.home}, not ${home}; stop it with kill ${running.pid} (its nodes resume on the next start) and run this again`);
-      migrateHome(home);
       const env: Record<string, string> = { TL_HOME: home, PATH: await loginShellPath(), ...(process.env.SHELL ? { SHELL: process.env.SHELL } : {}) };
       if (process.env.TL_PORT) env.TL_PORT = process.env.TL_PORT;
       install({ label: LABEL, program: TLD, env, log: join(home, 'daemon.log') });

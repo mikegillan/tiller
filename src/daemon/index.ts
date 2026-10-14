@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { treeOrder } from '../shared/tree.js';
 import { loadConfig } from './config.js';
-import { ADMIN_TOKEN_FILE, daemonPort, migrateHome, PORT_FILE, REPO_FILE } from './home.js';
+import { ADMIN_TOKEN_FILE, daemonPort, PORT_FILE, REPO_FILE } from './home.js';
 import { terminalBundleFor } from './launch.js';
 import { createNotifier, findBin, runDetached } from './notifier.js';
 import { NodeManager } from './manager.js';
@@ -11,7 +11,6 @@ import { loginShellPath } from './pty.js';
 import { startServer } from './server.js';
 import { logError } from './util.js';
 
-migrateHome();
 const path = await loginShellPath();
 const manager = new NodeManager({ path });
 const server = await startServer(manager, { port: daemonPort(manager.home) }).catch((err: NodeJS.ErrnoException) => {
