@@ -322,14 +322,15 @@ export interface SendResult { outcome: SendOutcome; retryable: boolean; detail?:
 
 /** GET /inbox → InboxMessage[] (unacked messages for the calling node, oldest first). */
 /** `steer`: abort the running turn and submit now; otherwise the mod holds it until no turn runs, so it can be withdrawn. */
-export interface InboxMessage { id: string; from: string; text: string; enqueuedAt: number; steer?: true }
+export interface InboxMessage { id: string; from: string; text: string; enqueuedAt: number; steer?: true; claimed?: true }
 /** POST /claim { id } → 204, or 404 if it was withdrawn or expired. Sent just before $.prompt.submit; a claimed message can no longer be withdrawn. */
-/** POST /ack { id } → 204. Sent when $.prompt.submit resolved (the turn started). */
+/** POST /ack { id } → 204. Sent only on native prompt acceptance (the turn started). */
+/** POST /unconfirmed { id } → 204. Retires this node's claimed prompt as stalled/nonretryable, never delivered. */
 /** POST /mod-event { event, payload } → 204. */
 export type ModEvent =
   | { event: 'turn.start'; payload: { text: string; turnId: string } }
   | { event: 'turn.complete'; payload: { answer?: string; durationMs: number; isAborted: boolean; turnId: string; reason: 'answer' | 'aborted' | 'refusal' | 'error'; usage?: Record<string, unknown> } }
-  | { event: 'session.measure'; payload: { context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: RateLimit[] } };
+  | { event: 'session.measure'; payload: { model?: string; context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: RateLimit[] } };
 /** POST /focus { id } → 204; the daemon broadcasts `focus` to ws clients (PLAN §14). */
 /** GET /tree → ChildView[]: the calling node's whole tree from its root, depth-first. */
 export interface ChildView {

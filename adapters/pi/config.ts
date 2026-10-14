@@ -11,7 +11,7 @@
  * activate the bridge if it sees any of them.
  */
 
-export const TILLER_MCP_NAME = "tiller";
+export const TILLER_MCP_NAME = "tl";
 export const DEFAULT_POLL_INTERVAL_MS = 1000;
 export const MIN_POLL_INTERVAL_MS = 100;
 
@@ -132,9 +132,25 @@ export function parseBridgeConfig(
         (nonEmpty(env.TL_PI_HOOK_TOOLS) ?? "").toLowerCase(),
       ),
       exposure: exposure as McpExposure,
-      mcpName: TILLER_MCP_NAME,
+      // Bound the prefix so mcp__<server>__<tool> leaves provider tool-name headroom.
+      mcpName: `${TILLER_MCP_NAME}_${nodeId.replace(/^n[-_]/, "").replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 8)}`,
     },
   };
+}
+
+/** Pi supplies this public module through its extension loader, including compiled installs. */
+export async function nativePiVersion(): Promise<string | undefined> {
+  const hostModule = "@earendil-works/pi-coding-agent";
+  try {
+    return (await import(hostModule)).VERSION;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Pi has no event-capability query. Pin the documented native event contract, fail closed otherwise. */
+export function supportsNativeEvents(version: string | undefined): boolean {
+  return typeof version === "string" && /^1\.2\.\d+$/.test(version);
 }
 
 /** The subset of the Pi API the capability gate inspects before any resource is registered. */
@@ -142,6 +158,7 @@ export interface PiCapabilityApi {
   on?: unknown;
   sendUserMessage?: unknown;
   registerMcpServer?: unknown;
+  unregisterMcpServer?: unknown;
 }
 
 /**
@@ -154,5 +171,6 @@ export function missingCapabilities(api: PiCapabilityApi): string[] {
   if (typeof api.on !== "function") missing.push("pi.on");
   if (typeof api.sendUserMessage !== "function") missing.push("pi.sendUserMessage");
   if (typeof api.registerMcpServer !== "function") missing.push("pi.registerMcpServer");
+  if (typeof api.unregisterMcpServer !== "function") missing.push("pi.unregisterMcpServer");
   return missing;
 }

@@ -82,7 +82,7 @@ async function run(text) {
  busy = false; await emit('agent_settled', { aborted: false });
  console.log('PROCESSED');
 }
-extension(pi); await emit('session_start', { reason: 'startup' }); console.log('READY cwd=' + process.cwd());
+extension(pi, { getVersion: async () => '1.2.0' }); await emit('session_start', { reason: 'startup' }); console.log('READY cwd=' + process.cwd());
 process.on('SIGTERM', async () => { await emit('session_shutdown', { reason: 'quit' }); process.exit(0); });
 setInterval(() => {}, 1000);
 `);

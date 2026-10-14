@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import tillerPiExtension from "./index.ts";
+import nativeExtension from "./index.ts";
+const tillerPiExtension = (pi: PiExtensionApiLike) => nativeExtension(pi, { getVersion: async () => "1.2.0" });
 import type { PiExtensionApiLike, PiExtensionContextLike } from "./types.ts";
 
 type Handler = (event: any, ctx: PiExtensionContextLike) => unknown;
@@ -132,6 +133,68 @@ afterEach(() => {
 afterAll(() => rmSync(tokenDir, { recursive: true, force: true }));
 
 describe("tiller pi extension", () => {
+  it("fails closed when on() accepts unknown event names but the host event contract is unsupported", async () => {
+    setBaseEnv();
+    const calls = stubFetch();
+    const pi = fakePi();
+    const shutdown = vi.fn();
+    nativeExtension(pi.api, { getVersion: async () => "1.1.9" });
+    await pi.emit("session_start", { reason: "startup" }, fakeContext({ shutdown }));
+    expect(shutdown).toHaveBeenCalledOnce();
+    expect(pi.mcp).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("a file-configured tiller MCP server cannot override the node-scoped authenticated registration", async () => {
+    setBaseEnv();
+    stubFetch();
+    const pi = fakePi();
+    const configured = { tiller: { url: "http://wrong.invalid/mcp" } };
+    const effective: Record<string, unknown> = { ...configured };
+    const register = pi.api.registerMcpServer!;
+    pi.api.registerMcpServer = (name, config) => {
+      register(name, config);
+      effective[name] = configured[name as keyof typeof configured] ?? config;
+    };
+    tillerPiExtension(pi.api);
+    await pi.emit("session_start", { reason: "startup" });
+    expect(effective[pi.mcp[0].name]).toMatchObject({
+      url: "http://127.0.0.1:7777/mcp",
+      headers: { Authorization: "Bearer test-token", "X-TL-Node": "n-1" },
+    });
+    expect(effective.tiller).toEqual(configured.tiller);
+    await pi.emit("session_shutdown", { reason: "quit" });
+  });
+
+  it("bounds MCP server/tool names with at least 16 chars of future provider-name headroom", async () => {
+    setBaseEnv();
+    process.env.TL_NODE_ID = "n-abcdefgh-extra-long-future-node-id";
+    stubFetch();
+    const pi = fakePi();
+    tillerPiExtension(pi.api);
+    await pi.emit("session_start", { reason: "startup" });
+    const name = pi.mcp[0].name;
+    expect(name).toMatch(/^tl_abcdefgh_[a-f0-9]{12}$/);
+    expect(name.length).toBeLessThanOrEqual(24);
+    const source = readFileSync(new URL("../../src/daemon/mcp.ts", import.meta.url), "utf8");
+    const toolNames = [...source.matchAll(/^  ([a-z_]+): tool\(/gm)].map((match) => match[1]);
+    expect(toolNames.length).toBeGreaterThan(20);
+    const longest = toolNames.reduce((a, b) => a.length >= b.length ? a : b);
+    expect(`mcp__${name}__${longest}`.length).toBeLessThanOrEqual(64 - 16);
+    await pi.emit("session_shutdown", { reason: "quit" });
+  });
+
+  it("reports provider-qualified runtime model switches including idle selections", async () => {
+    setBaseEnv();
+    const calls = stubFetch();
+    const pi = fakePi();
+    tillerPiExtension(pi.api);
+    await pi.emit("session_start", { reason: "startup" });
+    await pi.emit("model_select", { model: { id: "next", provider: "other" } });
+    expect(calls.filter((c) => c.body?.event === "session.measure").at(-1)?.body.payload.model).toBe("other/next");
+    await pi.emit("session_shutdown", { reason: "quit" });
+  });
+
   it("is inert without TL_NODE_ID", async () => {
     const calls = stubFetch();
     const pi = fakePi();
@@ -151,7 +214,7 @@ describe("tiller pi extension", () => {
     await tick();
 
     expect(pi.mcp[0]).toMatchObject({
-      name: "tiller",
+      name: expect.stringMatching(/^tl_1_[a-f0-9]{12}$/),
       config: {
         type: "http",
         url: "http://127.0.0.1:7777/mcp",
@@ -165,7 +228,7 @@ describe("tiller pi extension", () => {
     expect(sessionStart?.body).toMatchObject({
       session_id: "tiller-sess-1",
       transcript_path: "/home/.tiller/nodes/n-1/sessions/sess-1.jsonl",
-      model: "model-1",
+      model: "provider-1/model-1",
     });
 
     // The bridge polls the inbox and reports a first session.measure baseline.
@@ -208,7 +271,7 @@ describe("tiller pi extension", () => {
       isAborted: false,
       reason: "answer",
       answer: "all done",
-      usage: { model: "model-1", provider: "provider-1" },
+      usage: { model: "provider-1/model-1", provider: "provider-1" },
     });
 
     await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });

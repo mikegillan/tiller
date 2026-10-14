@@ -8,6 +8,7 @@ class FakeClient implements TillerClientLike {
   inboxCalls = 0;
   claims: string[] = [];
   acks: string[] = [];
+  unconfirmedIds: string[] = [];
   claimResult: (id: string) => boolean = () => true;
 
   async inbox(): Promise<InboxMessage[]> {
@@ -18,6 +19,10 @@ class FakeClient implements TillerClientLike {
   async claim(id: string): Promise<boolean> {
     this.claims.push(id);
     return this.claimResult(id);
+  }
+
+  async unconfirmed(id: string): Promise<void> {
+    this.unconfirmedIds.push(id);
   }
 
   async ack(id: string): Promise<void> {
@@ -201,6 +206,28 @@ describe("TillerBridge inbox", () => {
     expect(h.events).toEqual(["abort", "submit:s", "send:now"]);
   });
 
+  it("retires an unsent busy steer when abort/compaction consumes its claim lease", async () => {
+    let now = 0;
+    const h = harness({ now: () => now });
+    h.setBusy(true);
+    h.client.inboxBatches.push([msg("s", "stop", true)]);
+    await h.bridge.pollOnce();
+    expect(h.events).toEqual(["abort"]);
+    // Pi never became idle, so no native submission occurred. Retirement stays conservative:
+    // do not release/replay an uncertain claim or promise that abort cancelled native work.
+    now = 60_001;
+    h.client.inboxBatches.push([msg("s", "stop", true), msg("b")]);
+    await h.bridge.pollOnce();
+    expect(h.client.unconfirmedIds).toEqual(["s"]);
+    expect(h.client.acks).toEqual([]);
+    expect(h.events).toEqual(["abort"]);
+    expect(h.bridge.pendingCount).toBe(0);
+    h.setBusy(false);
+    h.client.inboxBatches.push([msg("b")]);
+    await h.bridge.pollOnce();
+    expect(h.events).toEqual(["abort", "submit:b", "send:b"]);
+  });
+
   it("claims at most one steer at a time", async () => {
     const h = harness();
     h.setBusy(true);
@@ -222,6 +249,73 @@ describe("TillerBridge inbox", () => {
 });
 
 describe("TillerBridge acceptance", () => {
+  it("retires a real-like void send without acceptance; B progresses even if A stays past inbox TTL", async () => {
+    let now = 0;
+    const send = vi.fn(); // native Pi logs rejected prompt internally, returns void
+    const h = harness({ now: () => now, sendUserMessage: send });
+    h.client.inboxBatches.push([msg("a"), msg("b")]);
+    await h.bridge.pollOnce();
+    now = 6 * 60_000; // daemon might keep A indefinitely while polling; do not rely on absence
+    h.client.inboxBatches.push([msg("a"), msg("b")]);
+    await h.bridge.pollOnce();
+    expect(h.client.unconfirmedIds).toEqual(["a"]);
+    expect(send.mock.calls).toEqual([["a"], ["b"]]); // no followUp fallback
+    await h.bridge.confirmAccepted("a"); // late A must not ack A or B
+    expect(h.client.acks).toEqual([]);
+    await h.bridge.confirmAccepted("b");
+    expect(h.client.acks).toEqual(["b"]);
+    expect(h.bridge.pendingCount).toBe(0);
+  });
+
+  it("retries only retirement when its response is lost; ignores acceptance racing retirement", async () => {
+    let now = 0;
+    const h = harness({ now: () => now });
+    h.client.inboxBatches.push([msg("a")], [msg("a")], [msg("a"), msg("b")]);
+    await h.bridge.pollOnce();
+    let attempts = 0;
+    h.client.unconfirmed = async () => {
+      await h.bridge.confirmAccepted("a");
+      if (++attempts < 3) throw new Error("response lost");
+    };
+    now = 60_000;
+    await h.bridge.pollOnce();
+    expect(h.client.acks).toEqual([]);
+    expect(h.bridge.pendingCount).toBe(1);
+    await h.bridge.pollOnce();
+    expect(h.client.claims).toEqual(["a", "b"]);
+    expect(h.events.filter((s) => s === "send:a")).toHaveLength(1);
+  });
+
+  it("acceptance already observed wins over deadline retirement; an in-flight ack is not duplicated", async () => {
+    let now = 0;
+    const h = harness({ now: () => now });
+    h.client.inboxBatches.push([msg("a")], [msg("a")]);
+    await h.bridge.pollOnce();
+    let finishAck!: () => void;
+    h.client.ack = async (id) => {
+      h.client.acks.push(id);
+      await new Promise<void>((resolve) => { finishAck = resolve; });
+    };
+    const accepted = h.bridge.confirmAccepted("a");
+    now = 60_001;
+    await h.bridge.pollOnce();
+    expect(h.client.unconfirmedIds).toEqual([]);
+    expect(h.client.acks).toEqual(["a"]);
+    finishAck();
+    await accepted;
+    expect(h.bridge.pendingCount).toBe(0);
+    expect(h.events.filter((event) => event === "delivered:a")).toHaveLength(1);
+  });
+
+  it("never replays a claim inherited from a reloaded bridge", async () => {
+    const h = harness();
+    h.client.inboxBatches.push([{ ...msg("a"), claimed: true }, msg("b")]);
+    await h.bridge.pollOnce();
+    expect(h.client.unconfirmedIds).toEqual(["a"]);
+    expect(h.client.claims).toEqual(["b"]);
+    expect(h.events).toEqual(["submit:b", "send:b"]);
+  });
+
   it("does not ack or resubmit when Pi consumes the prompt without a before_agent_start", async () => {
     const h = harness();
     h.client.inboxBatches.push([msg("a")], [msg("a")], [msg("a")]);
@@ -375,25 +469,27 @@ describe("TillerBridge scheduling", () => {
 });
 
 describe("TillerBridge failures", () => {
-  it("retries a failed submit and drops the claimed message at the cap", async () => {
+  it("never retries even a throwing wrapper: native Pi catches/logs errors and returns void", async () => {
     const sends: string[] = [];
+    let now = 0;
     const h = harness({
-      maxSendAttempts: 2,
+      now: () => now,
       sendUserMessage: (text) => {
         sends.push(text);
-        throw new Error("busy race");
+        throw new Error("wrapper threw after possible dispatch");
       },
     });
-    h.client.inboxBatches.push([msg("a")]);
-
+    h.client.inboxBatches.push([msg("a")], [msg("a")], [msg("a")]);
     await h.bridge.pollOnce();
-    expect(h.bridge.pendingCount).toBe(1);
     await h.bridge.pollOnce();
-
-    expect(sends).toEqual(["a", "a"]);
+    expect(sends).toEqual(["a"]);
+    now = 60_001;
+    await h.bridge.pollOnce();
+    expect(sends).toEqual(["a"]);
     expect(h.bridge.pendingCount).toBe(0);
+    expect(h.client.unconfirmedIds).toEqual(["a"]);
     expect(h.client.acks).toEqual([]);
-    expect(h.errors.map((entry) => entry.phase)).toEqual(["send", "send", "drop"]);
+    expect(h.errors.map((entry) => entry.phase)).toEqual(["send"]);
   });
 
   it("retains an accepted message and retries the ack without re-submitting", async () => {

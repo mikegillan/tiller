@@ -29,6 +29,8 @@ export interface InboxMessage {
   from?: string;
   text: string;
   enqueuedAt?: number;
+  /** A previous bridge claimed this prompt; never replay it after reload/restart. */
+  claimed?: boolean;
   /** Abort the running turn and submit now instead of waiting for idle. */
   steer?: boolean;
 }
@@ -155,6 +157,11 @@ export class TillerClient {
   /** Acknowledge a claimed message once it has been submitted. */
   async ack(id: string): Promise<void> {
     await this.call("POST", "/ack", { id });
+  }
+
+  /** Retire an ambiguous native submission. No delivery receipt and no automatic retry. */
+  async unconfirmed(id: string): Promise<void> {
+    await this.call("POST", "/unconfirmed", { id });
   }
 
   /** Forward a lifecycle event. */

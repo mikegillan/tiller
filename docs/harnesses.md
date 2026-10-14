@@ -17,8 +17,9 @@ tl new "Pi session" --harness pi --model openai/gpt-5 --prompt "Inspect this rep
 
 Compatibility target: **`@earendil-works/pi-coding-agent` 1.2.x**, which has native HTTP MCP
 registration and the `agent_settled` extension event. Other Pi distributions/older versions
-are not interchangeable automatically; the bridge checks required APIs and shuts down an
-incompatible node. Pi uses its own provider credentials/subscriptions; Tiller supplies neither.
+are not interchangeable automatically; the bridge checks the public host `VERSION` for stable
+1.2.x and required APIs, then shuts down an incompatible/unknown node. Registering an event handler
+alone cannot prove the build emits the required events. Pi uses its own provider credentials/subscriptions; Tiller supplies neither.
 
 The spawn dialog also offers Pi. From another agent, use the existing `spawn` MCP tool:
 
@@ -67,6 +68,10 @@ inspect it before opting in. Trust applies to descendants and is stored in
 compatibility; `untrust` removes only Tiller's opt-in, not that separate record. This trust
 controls Tiller's repo commands, not Pi's own project-resource trust or permission policy.
 
+The `tl trust`/`tl untrust` `TL_NODE_ID` check is **advisory UX, not a sandbox or security boundary**.
+A same-user agent can unset the variable or write the trust file directly. To enforce separation,
+use OS accounts, a sandbox/container, and narrowly scoped filesystem/credential access.
+
 Pi does **not** implement Claude `permissionMode`, preset `tools`/`disallowedTools`/`maxTurns`,
 or Tiller session forking. These requests are rejected rather than silently weakened. Prompt-
 only presets work; built-in restricted reviewer/researcher presets may require replacement.
@@ -90,8 +95,13 @@ Coordination stays on the existing interfaces:
 
 Pi requires its native inbox bridge, so messages are queued there even before its first poll;
 Tiller never tries Claude-composer terminal-paste heuristics on a Pi node. Claimed messages
-that Pi never accepts remain unconfirmed rather than being resent blindly. Inspect the node
-if delivery remains queued (for example, when credentials are missing).
+without confirmed acceptance retire after 60 seconds from claim as `stalled`, nonretryable, rather
+than being resent or falsely delivered. A busy steer's abort/compaction can consume that lease
+before any native submission; retirement remains conservative and guarantees neither cancellation
+nor delivery. `/unconfirmed` releases the queue even while inbox TTL is renewed.
+Inspect the node (for example, missing credentials) and **do not resend automatically**: the old
+prompt may still run late. Reload/restart never replays an inherited native claim. Pi MCP server
+names are fresh and node-scoped to avoid silent overrides by file-configured `tiller` entries.
 
 To add Codex/OpenCode/another CLI: add its harness identifier and adapter, provide an equivalent
 lifecycle/inbox bridge using that CLI's native API, and supply a transcript decoder. Declare

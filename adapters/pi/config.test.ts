@@ -4,6 +4,7 @@ import {
   findUnsupportedRestrictions,
   missingCapabilities,
   parseBridgeConfig,
+  supportsNativeEvents,
 } from "./config.ts";
 
 const base = {
@@ -24,7 +25,7 @@ describe("parseBridgeConfig", () => {
       pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
       hookTools: false,
       exposure: "direct",
-      mcpName: "tiller",
+      mcpName: "tl_abc123",
     });
   });
 
@@ -90,13 +91,25 @@ describe("missingCapabilities", () => {
     const on = () => {};
     const sendUserMessage = () => {};
     const registerMcpServer = () => {};
-    expect(missingCapabilities({ on, sendUserMessage, registerMcpServer })).toEqual([]);
-    expect(missingCapabilities({ on, sendUserMessage })).toEqual(["pi.registerMcpServer"]);
+    const unregisterMcpServer = () => {};
+    expect(missingCapabilities({ on, sendUserMessage, registerMcpServer, unregisterMcpServer })).toEqual([]);
+    expect(missingCapabilities({ on, sendUserMessage, unregisterMcpServer })).toEqual(["pi.registerMcpServer"]);
     expect(missingCapabilities({})).toEqual([
       "pi.on",
       "pi.sendUserMessage",
       "pi.registerMcpServer",
+      "pi.unregisterMcpServer",
     ]);
+  });
+});
+
+describe("native event contract", () => {
+  it("only accepts stable native Pi 1.2.x versions; pi.on alone cannot prove event support", () => {
+    expect(supportsNativeEvents("1.2.0")).toBe(true);
+    expect(supportsNativeEvents("1.2.17")).toBe(true);
+    for (const version of [undefined, "1.1.9", "1.3.0", "1.2.0-fork", "bad"]) {
+      expect(supportsNativeEvents(version)).toBe(false);
+    }
   });
 });
 
