@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
+    <img src="docs/assets/logo-light.png" alt="tiller" width="320">
+  </picture>
+</p>
+
 # tiller
 
 Tiller (formerly orchestr8) is a local daemon that runs several Claude Code sessions as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser, and `tl-mux` is a multiplexer for the terminal. A small Claude Code mod (a plugin loaded into each node) delivers messages and adds a few slash commands.
