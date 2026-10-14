@@ -1,11 +1,21 @@
 import { useState } from 'react';
 import { isAgentKind, type ClientMessage, type Harness, type NodeKind, type Role } from '../src/shared/protocol';
 import { send } from './conn';
+import type { TauriWindow } from './hooks';
 import { Modal } from './Modal';
 import { expectSpawn, openDialog, useStore, type Dialog } from './store';
+import { IN_APP } from './url';
 
 type Spawn = Extract<Dialog, { kind: 'spawn' }>;
 const close = () => openDialog(null);
+
+/** The app's native folder dialog (tauri-plugin-dialog): the chosen path, or null when cancelled or not in the app.
+ *  It opens at `current` when that is an absolute path, else where the OS chooses. */
+const pickFolder = async (current: string): Promise<string | null> => {
+  const tauri = (window as TauriWindow).__TAURI_INTERNALS__;
+  const defaultPath = current.trim().startsWith('/') ? current.trim() : undefined;
+  return ((await tauri?.invoke('plugin:dialog|open', { options: { directory: true, multiple: false, defaultPath, title: 'Choose a working directory' } })) as string | null | undefined) ?? null;
+};
 
 type SpawnChoice = 'claude' | 'pi' | 'terminal';
 
@@ -59,7 +69,10 @@ function SpawnDialog({ d }: { d: Spawn }) {
           ))}
         </div>
         <label>Title<input placeholder={choice} value={title} onChange={(e) => setTitle(e.target.value)} autoFocus /></label>
-        <label>Working directory<input className="mono" value={cwd} onChange={(e) => setCwd(e.target.value)} required placeholder="/path/to/project" /></label>
+        <label>Working directory<div className="pick">
+          <input className="mono" value={cwd} onChange={(e) => setCwd(e.target.value)} required placeholder="/path/to/project" />
+          {IN_APP && <button type="button" className="btn" onClick={() => void pickFolder(cwd).then((p) => p && setCwd(p)).catch(() => {})}>Choose…</button>}
+        </div></label>
         {agent && <label>Initial prompt<textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional" /></label>}
         <label>Model<input className="mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="Default" /></label>
         {agent && <label>Role<select value={role} onChange={(e) => setRole(e.target.value as Role)}>{(['orchestrator', 'worker', 'none'] as const).map((r) => <option key={r}>{r}</option>)}</select></label>}

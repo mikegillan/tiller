@@ -13,7 +13,7 @@ setInterval(() => { now = Date.now(); subs.forEach((f) => f()); }, 10_000);
 const subscribe = (f: () => void) => (subs.add(f), () => void subs.delete(f));
 export const useNow = () => useSyncExternalStore(subscribe, () => now);
 
-type TauriWindow = { __TAURI_INTERNALS__?: { invoke: (cmd: string, args: object) => Promise<unknown> } };
+export type TauriWindow = { __TAURI_INTERNALS__?: { invoke: (cmd: string, args: object) => Promise<unknown> } };
 
 /** Do not disturb for an hour, or off when it is on. */
 export const toggleDnd = () => send(dndActive(getState().dnd, Date.now()) ? { t: 'dnd', on: false } : { t: 'dnd', on: true, minutes: 60 });

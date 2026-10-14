@@ -13,6 +13,8 @@ The app is a small Tauri v2 shell that hosts the browser UI in a native window a
 
 The app has a menu bar item: a dot that is green when nothing needs you, amber when a node is waiting or blocked, and red when a node's turn errored. Its menu lists the nodes that need you (clicking one selects it), Open tiller, and Do not disturb 1 h.
 
+In the app, the New session dialog has a Choose… button beside Working directory that opens the native folder picker; the browser UI has only the text field, because a web page cannot read a folder's path.
+
 ## The browser UI
 
 `npm run ui:build` writes the UI to `ui/dist`; the daemon then serves it at the URL `tld` prints, which carries the admin token. It is the same UI the app shows: a sidebar with the tree, each node's live terminal, a last-message panel with the node's reported outcome, a Diff tab for worktree nodes in which you can add line comments and send them to the node as one message, and a status bar with today's total spend, the number of queued spawns and the do-not-disturb control. Each node's row shows its spend summed across its sessions, with the subtree total (Σ) on nodes with children. The browser keeps its own toasts, a tab-title badge and a chime. `ui/README.md` covers developing the UI against a mock daemon.
