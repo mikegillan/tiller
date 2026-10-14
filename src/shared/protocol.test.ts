@@ -14,10 +14,8 @@ describe('node kinds and harnesses', () => {
   });
 
   it('defaults an absent harness to claude (legacy nodes and terminal callers)', () => {
-    expect(harnessFor({ kind: 'claude' })).toBe('claude');
-    expect(harnessFor({ kind: 'agent' })).toBe('claude');
-    expect(harnessFor({ kind: 'terminal' })).toBe('claude');
-    expect(harnessFor({ kind: 'agent', harness: 'pi' })).toBe('pi');
-    expect(harnessFor({ kind: 'claude', harness: 'claude' })).toBe('claude');
+    expect(harnessFor({})).toBe('claude');
+    expect(harnessFor({ harness: 'pi' })).toBe('pi');
+    expect(harnessFor({ harness: 'claude' })).toBe('claude');
   });
 });

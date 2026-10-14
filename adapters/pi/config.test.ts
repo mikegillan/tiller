@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_POLL_INTERVAL_MS,
-  findUnsupportedRestrictions,
   missingCapabilities,
   parseBridgeConfig,
   supportsNativeEvents,
@@ -110,25 +109,5 @@ describe("native event contract", () => {
     for (const version of [undefined, "1.1.9", "1.3.0", "1.2.0-fork", "bad"]) {
       expect(supportsNativeEvents(version)).toBe(false);
     }
-  });
-});
-
-describe("findUnsupportedRestrictions", () => {
-  it("reports only restriction keys with values", () => {
-    expect(findUnsupportedRestrictions(base)).toEqual([]);
-    expect(
-      findUnsupportedRestrictions({ ...base, TL_PERMISSION_MODE: "plan", TL_TOOLS: "" }),
-    ).toEqual(["TL_PERMISSION_MODE"]);
-  });
-
-  it("covers the safety-relevant keys", () => {
-    const found = findUnsupportedRestrictions({
-      TL_PERMISSION_MODE: "x",
-      TL_BYPASS_PERMISSIONS: "1",
-      TL_DISALLOWED_TOOLS: "bash",
-    });
-    expect(found).toContain("TL_PERMISSION_MODE");
-    expect(found).toContain("TL_BYPASS_PERMISSIONS");
-    expect(found).toContain("TL_DISALLOWED_TOOLS");
   });
 });

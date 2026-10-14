@@ -5,7 +5,7 @@ import { classify, composerTextOf } from './pty.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ack, claim, deliver, flushInbox, inbox, messageStatus, PI_CONFIRM_MS, QUEUE_TTL_MS, startNotices, unconfirmed, withdraw, type Mgr } from './messaging.js';
+import { ack, claim, deliver, flushInbox, inbox, messageStatus, PI_CONFIRM_MS, QUEUE_TTL_MS, release, startNotices, unconfirmed, withdraw, type Mgr } from './messaging.js';
 
 const PROMPT = ['some output', '────────────────── n-b', '❯ ', '──────────────────'];
 
@@ -275,6 +275,39 @@ describe('mod inbox', () => {
     expect(messageStatus(m.mgr, 'a', msg.id)?.outcome).toBe('stalled');
     const b = await deliver(m.mgr, 'p', 'b', 'later B', { mode: 'now' });
     expect(claim(m.mgr, 'b', b.messageId!)).toBe(true);
+  });
+
+  it('a released Pi claim is queued, withdrawable and retryable again, never stalled', async () => {
+    Object.assign(m.nodes.get('b')!, { kind: 'agent', harness: 'pi' });
+    m.set('b', { state: 'working' });
+    const r = await deliver(m.mgr, 'a', 'b', 'claimed just as Pi became busy');
+    expect(release(m.mgr, 'b', r.messageId!)).toBe(false); // not claimed
+    expect(claim(m.mgr, 'b', r.messageId!)).toBe(true);
+    expect(release(m.mgr, 'p', r.messageId!)).toBe(false); // no cross-node mutation
+    expect(release(m.mgr, 'b', r.messageId!)).toBe(true);
+    expect(inbox(m.mgr, 'b')).toEqual([expect.not.objectContaining({ claimed: true })]);
+    await vi.advanceTimersByTimeAsync(PI_CONFIRM_MS + 1000); // the claim lease no longer applies
+    expect(messageStatus(m.mgr, 'a', r.messageId!)?.outcome).toBe('queued');
+    m.set('b', { state: 'done', doneSource: 'stop' });
+    await vi.advanceTimersByTimeAsync(QUEUE_TTL_MS);
+    expect(messageStatus(m.mgr, 'a', r.messageId!)).toMatchObject({ outcome: 'expired', retryable: true });
+    const w = await deliver(m.mgr, 'p', 'b', 'withdraw me after a release');
+    expect(claim(m.mgr, 'b', w.messageId!)).toBe(true);
+    expect(release(m.mgr, 'b', w.messageId!)).toBe(true);
+    await expect(withdraw(m.mgr, 'p', w.messageId!)).resolves.toMatchObject({ result: { outcome: 'withdrawn' } });
+  });
+
+  it('a Pi claim that cannot be persisted is refused and stays queued, not retired', async () => {
+    Object.assign(m.nodes.get('b')!, { kind: 'agent', harness: 'pi' });
+    const home = join(tmpdir(), `tlinbox-missing-${process.pid}`, 'nope'); // never created, so every write fails
+    const mh = Object.assign(Object.create(m), { home }) as Mgr;
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await deliver(mh, 'a', 'b', 'claim persist fails');
+    expect(claim(mh, 'b', r.messageId!)).toBe(false);
+    quiet.mockRestore();
+    expect(inbox(mh, 'b')).toEqual([expect.not.objectContaining({ claimed: true })]);
+    await vi.advanceTimersByTimeAsync(PI_CONFIRM_MS + 1000);
+    expect(messageStatus(mh, 'a', r.messageId!)?.outcome).toBe('queued');
   });
 
   it('retires only the caller claimed message, preserves status and prevents replay across restart', async () => {

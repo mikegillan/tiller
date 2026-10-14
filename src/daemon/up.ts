@@ -44,7 +44,7 @@ export interface OrchestratorCandidate { id: string; title: string; kind: string
 
 /** Whether a candidate is an agent node on `harness` (legacy records without a harness are claude). */
 const onHarness = (n: OrchestratorCandidate, harness: Harness) =>
-  isAgentKind(n.kind as NodeKind) && harnessFor({ kind: n.kind as NodeKind, harness: n.harness }) === harness;
+  isAgentKind(n.kind as NodeKind) && harnessFor(n) === harness;
 
 /**
  * The newest top-level agent node for `cwd` (already a realpath) on `harness` (default claude): live ones when

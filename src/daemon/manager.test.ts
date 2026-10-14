@@ -321,8 +321,19 @@ describe('NodeManager harness delegation and lifecycle', () => {
     m.applyHook(id, { hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
     unchanged(); // cannot clear a blocked dialog
     m.applyModEvent(id, { event: 'turn.complete', payload: { answer: 'Finished.', durationMs: 10, isAborted: false, turnId: 'mod-id', reason: 'answer' } });
-    unchanged(); // cannot resurrect an ended turn or discard its answer
-    expect(m.view(id)!.status).toMatchObject({ state: 'done', promptId: 'hook-id', lastAssistantMessage: 'Finished.' });
+    unchanged(); // cannot resurrect an ended turn
+    expect(m.view(id)!.status).toMatchObject({ state: 'done', promptId: 'hook-id' });
+    expect(m.view(id)!.status.lastAssistantMessage).toBeUndefined(); // the Stop hook owns Claude's answer
+  });
+
+  it('leaves a settled Claude status untouched on a late mod turn.complete', async () => {
+    const { id } = await claude({ prompt: 'work' });
+    m.applyHook(id, { hook_event_name: 'UserPromptSubmit', prompt_id: 'hook-id' });
+    m.applyHook(id, { hook_event_name: 'Stop', last_assistant_message: 'From the hook.' });
+    const prev = m.view(id)!.status;
+    expect(prev).toMatchObject({ state: 'done', lastAssistantMessage: 'From the hook.' });
+    m.applyModEvent(id, { event: 'turn.complete', payload: { answer: 'From the mod.', durationMs: 10, isAborted: false, turnId: 'mod-id', reason: 'answer' } });
+    expect(m.view(id)!.status).toBe(prev);
   });
 
   it('accepts Pi native turn.start as a turn boundary and settles normally', async () => {
@@ -378,6 +389,16 @@ describe('NodeManager harness delegation and lifecycle', () => {
     expect(m.view(id)!.status.errored).toBe(code ? true : undefined);
     expect(prev.activity).toBe('old');
     expect(m.view(id)!.status).not.toBe(prev);
+  });
+
+  it.each([0, 1])('shows the adapter\'s activation refusal on a Pi exit %s', async (code) => {
+    const { id } = await pi(undefined, { byHuman: true });
+    output('\u001b[2J pi starting\r\n\u001b[31m[tiller] tiller: incompatible Pi build (missing native Pi 1.2.x events (version 0.87.1)); not activating\u001b[0m\r\n');
+    output('\u001b[?1049lbye\r\n');
+    exit(code);
+    expect(m.view(id)!.status).toMatchObject({
+      exited: true, errored: true, activity: 'tiller: incompatible Pi build (missing native Pi 1.2.x events (version 0.87.1)); not activating',
+    });
   });
 
   it('finishes an active Pi on a failing PTY exit without mutating its working status', async () => {

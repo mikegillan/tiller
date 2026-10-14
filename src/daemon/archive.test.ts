@@ -247,6 +247,7 @@ describe('archive, history, follow-up and fork', () => {
     await m.close(a);
     const f = await m.followup(a, 'second task');
     expect(f).toMatchObject({ parentId: root, title: 'worker', followupOf: a, sessionId: sid, prompt: 'second task' });
+    expect(m.registry.get(f.id)!.transcriptPath).toBeUndefined(); // Claude's SessionStart hook reports it, as for any launch
     const args = await argv(f.id);
     expect(args).toMatch(new RegExp(`^--resume ${sid} --name worker`));
     expect(args.trimEnd().endsWith('-- second task')).toBe(true);
@@ -282,7 +283,7 @@ describe('archive, history, follow-up and fork', () => {
     const g = await m.spawn({ kind: 'claude', title: 'fork2', cwd: '', parentId: root, fork: src, byHuman: true }); // archived source
     expect(await argv(g.id)).toContain(`--resume ${srcSid} --fork-session`);
     const fresh = (await m.spawn({ kind: 'claude', title: 'fresh', cwd: home, parentId: root, byHuman: true })).id;
-    await expect(m.spawn({ kind: 'claude', title: 'x', cwd: '', fork: fresh, byHuman: true })).rejects.toThrow(/has no Claude session yet/);
+    await expect(m.spawn({ kind: 'claude', title: 'x', cwd: '', fork: fresh, byHuman: true })).rejects.toThrow(/has no session yet/);
     await expect(m.spawn({ kind: 'terminal', title: 'x', cwd: '', fork: src, byHuman: true })).rejects.toThrow(/agent nodes only/);
   });
 });

@@ -9,6 +9,7 @@ class FakeClient implements TillerClientLike {
   claims: string[] = [];
   acks: string[] = [];
   unconfirmedIds: string[] = [];
+  releases: string[] = [];
   claimResult: (id: string) => boolean = () => true;
 
   async inbox(): Promise<InboxMessage[]> {
@@ -23,6 +24,11 @@ class FakeClient implements TillerClientLike {
 
   async unconfirmed(id: string): Promise<void> {
     this.unconfirmedIds.push(id);
+  }
+
+  async release(id: string): Promise<boolean> {
+    this.releases.push(id);
+    return true;
   }
 
   async ack(id: string): Promise<void> {
@@ -150,19 +156,21 @@ describe("TillerBridge inbox", () => {
     expect(h.events).toEqual(["submit:a", "send:a", "delivered:a"]);
   });
 
-  it("aborts the running turn for a steer, then delivers once idle", async () => {
+  it("aborts the running turn for a steer without claiming it, then delivers it first once idle", async () => {
     const h = harness();
     h.setBusy(true);
-    h.client.inboxBatches.push([msg("s", "stop", true)]);
+    h.client.inboxBatches.push([msg("a"), msg("s", "stop", true)]);
 
+    // Unclaimed while the abort runs, so its sender can still withdraw it.
     await h.bridge.pollOnce();
-    expect(h.client.claims).toEqual(["s"]);
+    expect(h.client.claims).toEqual([]);
     expect(h.events).toEqual(["abort"]);
-    expect(h.bridge.pendingCount).toBe(1);
+    expect(h.bridge.pendingCount).toBe(0);
 
     h.setBusy(false);
-    h.client.inboxBatches.push([msg("s", "stop", true)]);
+    h.client.inboxBatches.push([msg("a"), msg("s", "stop", true)]);
     await h.bridge.pollOnce();
+    expect(h.client.claims).toEqual(["s"]);
     expect(h.events).toEqual(["abort", "submit:s", "send:stop"]);
     await h.bridge.confirmAccepted("stop");
     expect(h.events).toEqual(["abort", "submit:s", "send:stop", "delivered:s"]);
@@ -183,14 +191,14 @@ describe("TillerBridge inbox", () => {
     await h.bridge.pollOnce();
 
     expect(h.events.filter((event) => event === "abort")).toEqual(["abort"]);
-    expect(h.client.claims).toEqual(["s"]);
-    expect(h.bridge.pendingCount).toBe(1);
+    expect(h.client.claims).toEqual([]);
+    expect(h.bridge.pendingCount).toBe(0);
   });
 
-  it("rechecks busy after the claim round-trip and aborts a steer claimed from the idle branch", async () => {
+  it("releases a steer claimed just as Pi became busy, aborts once, then claims it again when idle", async () => {
     const h = harness();
     h.client.inboxBatches.push([msg("s", "now", true)]);
-    // Pi becomes busy during the claim request: the post-claim check must still abort once.
+    // Pi becomes busy during the claim request: hand the claim back and abort once.
     h.client.claimResult = () => {
       h.setBusy(true);
       return true;
@@ -198,43 +206,73 @@ describe("TillerBridge inbox", () => {
 
     await h.bridge.pollOnce();
     expect(h.events).toEqual(["abort"]);
-    expect(h.bridge.pendingCount).toBe(1);
+    expect(h.client.releases).toEqual(["s"]);
+    expect(h.bridge.pendingCount).toBe(0);
+
+    h.client.inboxBatches.push([msg("s", "now", true)]);
+    await h.bridge.pollOnce(); // still busy: no second abort, no claim
+    expect(h.events).toEqual(["abort"]);
 
     h.setBusy(false);
+    h.client.claimResult = () => true;
     h.client.inboxBatches.push([msg("s", "now", true)]);
     await h.bridge.pollOnce();
+    expect(h.client.claims).toEqual(["s", "s"]);
     expect(h.events).toEqual(["abort", "submit:s", "send:now"]);
   });
 
-  it("retires an unsent busy steer when abort/compaction consumes its claim lease", async () => {
+  it("releases a claimed-but-never-submitted message as retryable instead of retiring it", async () => {
     let now = 0;
     const h = harness({ now: () => now });
-    h.setBusy(true);
-    h.client.inboxBatches.push([msg("s", "stop", true)]);
+    h.client.inboxBatches.push([msg("a")]);
+    h.client.claimResult = () => {
+      h.setBusy(true);
+      return true;
+    };
+
     await h.bridge.pollOnce();
-    expect(h.events).toEqual(["abort"]);
-    // Pi never became idle, so no native submission occurred. Retirement stays conservative:
-    // do not release/replay an uncertain claim or promise that abort cancelled native work.
-    now = 60_001;
-    h.client.inboxBatches.push([msg("s", "stop", true), msg("b")]);
-    await h.bridge.pollOnce();
-    expect(h.client.unconfirmedIds).toEqual(["s"]);
-    expect(h.client.acks).toEqual([]);
-    expect(h.events).toEqual(["abort"]);
+    expect(h.client.releases).toEqual(["a"]);
+    expect(h.events).toEqual([]);
     expect(h.bridge.pendingCount).toBe(0);
-    h.setBusy(false);
-    h.client.inboxBatches.push([msg("b")]);
+
+    // Past the claim lease, nothing retires it: it was never submitted, and the daemon holds it again.
+    now = 60_001;
+    h.client.inboxBatches.push([msg("a")]);
     await h.bridge.pollOnce();
-    expect(h.events).toEqual(["abort", "submit:b", "send:b"]);
+    expect(h.client.unconfirmedIds).toEqual([]);
+
+    h.setBusy(false);
+    h.client.claimResult = () => true;
+    h.client.inboxBatches.push([msg("a")]);
+    await h.bridge.pollOnce();
+    expect(h.events).toEqual(["submit:a", "send:a"]);
   });
 
-  it("claims at most one steer at a time", async () => {
+  it("keeps a claim whose release fails and retries only the release", async () => {
     const h = harness();
-    h.setBusy(true);
-    h.client.inboxBatches.push([msg("s1", "one", true), msg("s2", "two", true)]);
-
+    h.client.inboxBatches.push([msg("a")]);
+    h.client.claimResult = () => {
+      h.setBusy(true);
+      return true;
+    };
+    h.client.release = async (id) => {
+      h.client.releases.push(id);
+      throw new Error("down");
+    };
     await h.bridge.pollOnce();
-    expect(h.client.claims).toEqual(["s1"]);
+    expect(h.errors.map((e) => e.phase)).toEqual(["release"]);
+    expect(h.bridge.pendingCount).toBe(1);
+
+    h.client.release = async (id) => {
+      h.client.releases.push(id);
+      return true;
+    };
+    h.client.inboxBatches.push([msg("a")]);
+    await h.bridge.pollOnce();
+    expect(h.client.releases).toEqual(["a", "a"]);
+    expect(h.client.claims).toEqual(["a"]);
+    expect(h.events).toEqual([]);
+    expect(h.bridge.pendingCount).toBe(0);
   });
 
   it("ignores a message the claim endpoint reports as withdrawn", async () => {

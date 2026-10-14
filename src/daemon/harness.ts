@@ -16,7 +16,8 @@ export interface HarnessOptions {
 /** New CLIs implement this boundary; tools, permissions/scope and delivery receipts stay in Tiller. */
 export interface HarnessAdapter {
   id: Harness;
-  capabilities: { resume: boolean; fork: boolean; permissionMode: boolean; presetRestrictions: boolean; inbox: boolean };
+  /** `inbox`: the mod's inbox is the only delivery path, and a claim is a native submission with no paste to verify. */
+  capabilities: { fork: boolean; inbox: boolean };
   /** Fail before allocating a node when requested restrictions cannot be enforced. */
   validate(options: HarnessOptions): void;
   launch(input: LaunchInput): LaunchSpec;
@@ -31,7 +32,7 @@ const piExtension = fileURLToPath(new URL('../../adapters/pi/index.ts', import.m
 
 export const claudeAdapter: HarnessAdapter = {
   id: 'claude',
-  capabilities: { resume: true, fork: true, permissionMode: true, presetRestrictions: true, inbox: false },
+  capabilities: { fork: true, inbox: false },
   validate() {},
   launch: claudeLaunch,
   cwd: (n) => n.worktree?.repo ?? n.cwd,
@@ -40,7 +41,7 @@ export const claudeAdapter: HarnessAdapter = {
 
 export const piAdapter: HarnessAdapter = {
   id: 'pi',
-  capabilities: { resume: true, fork: false, permissionMode: false, presetRestrictions: false, inbox: true },
+  capabilities: { fork: false, inbox: true },
   validate({ permissionMode, preset }) {
     if (permissionMode !== undefined) throw new Error('Pi does not support Claude permissionMode; omit it (Pi keeps its own permission policy)');
     if (preset?.tools !== undefined || preset?.disallowedTools !== undefined || preset?.maxTurns !== undefined) {
