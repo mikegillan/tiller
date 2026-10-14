@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { LABEL, OLD_LABEL, plist, plistPath } from './autostart.js';
+import { LABEL, plist } from './autostart.js';
 
 describe('plist', () => {
-  it('installs com.tiller.daemon and knows where the pre-rename agent lives', () => {
+  it('installs com.tiller.daemon', () => {
     expect(LABEL).toBe('com.tiller.daemon');
-    expect(plistPath(OLD_LABEL)).toMatch(/\/Library\/LaunchAgents\/com\.orchestr8\.daemon\.plist$/);
   });
 
   it('runs tld at load with the environment, relaunches only after a failed exit and logs to daemon.log', () => {

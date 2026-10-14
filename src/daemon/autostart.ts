@@ -7,8 +7,6 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const LABEL = 'com.tiller.daemon';
-/** The agent before the rename to tiller; `tl autostart on` removes it. */
-export const OLD_LABEL = 'com.orchestr8.daemon';
 export const TLD = fileURLToPath(new URL('../../bin/tld', import.meta.url));
 export const plistPath = (label = LABEL): string => join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
 

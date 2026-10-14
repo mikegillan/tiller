@@ -1,5 +1,5 @@
 // The daemon's home directory and the files in it that the CLI, the daemon and the app shell share.
-import { existsSync, readFileSync, renameSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,17 +13,6 @@ export const REPO_FILE = 'repo';
 
 /** TL_HOME, else ~/.tiller. */
 export const homeDir = (): string => process.env.TL_HOME ?? join(homedir(), '.tiller');
-
-/**
- * Move the pre-rename home (~/.orchestr8) to ~/.tiller, once: only when the home is ~/.tiller (not another TL_HOME), the old
- * directory exists and the new one does not. Called before anything creates the home, with no daemon running on the old one.
- */
-export function migrateHome(home = homeDir(), user = homedir()): void {
-  const from = join(user, '.orchestr8');
-  if (home !== join(user, '.tiller') || existsSync(home) || !existsSync(from)) return;
-  renameSync(from, home);
-  console.log(`moved ${from} to ${home} (orchestr8 is now tiller)`);
-}
 
 /** TL_PORT when set and non-empty, else the port file, else DEFAULT_PORT. */
 export function daemonPort(home = homeDir()): number {
