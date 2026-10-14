@@ -219,6 +219,10 @@ export interface ArchivedNode {
   spentUsd?: number;
   /** The worktree branch it worked on, when it had one. */
   branch?: string;
+  /** What became of that branch at close, decided by the close check itself: merged into `base`, kept with a WIP commit (unmerged), or discarded with unmerged work. */
+  branchFate?: 'merged' | 'kept' | 'discarded';
+  /** The branch it merged into, when branchFate is merged. */
+  base?: string;
   createdAt: number;
   closedAt: number;
 }
