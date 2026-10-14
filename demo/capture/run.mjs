@@ -127,9 +127,12 @@ try {
 
   browser = await chromium.launch();
   ctx = await browser.newContext({
-    viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1.5, colorScheme: 'dark', // 1920x1080 video with the UI 1.5x larger
+    viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1, colorScheme: 'dark',
     recordVideo: { dir: SCRATCH, size: { width: 1920, height: 1080 } },
   });
+  // recordVideo captures CSS pixels and never upscales, so a deviceScaleFactor does not reach the video. Zooming the
+  // page instead lays the UI out 1.5x larger inside the full 1920x1080 frame, at native pixels.
+  await ctx.addInitScript(() => { document.addEventListener('DOMContentLoaded', () => { document.documentElement.style.zoom = '1.5'; }); });
   page = await ctx.newPage();
   const v0 = Date.now(); // the video's clock starts with the page
   const vt = (ms = Date.now()) => Math.max(0, ms - v0);
