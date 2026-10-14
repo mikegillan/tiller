@@ -80,7 +80,7 @@ describe('websocket', () => {
   it('replies to history and transcript for a closed Claude node, and with an error for an unknown one', async () => {
     const transcriptPath = join(home, 't.jsonl');
     writeFileSync(transcriptPath, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } })}\n`);
-    const id = manager.registry.create({ parentId: null, kind: 'claude', title: 'old', cwd: home, prompt: 'build it', sessionId: 's1', transcriptPath }).id;
+    const id = manager.registry.create({ parentId: null, kind: 'claude', title: 'old', cwd: home, lastActiveAt: Date.now(), prompt: 'build it', sessionId: 's1', transcriptPath }).id;
     manager.runtimes.set(id, {});
     mkdirSync(manager.sessionDirOf(id), { recursive: true }); // made at launch; this node never launched
     manager.closed(id);

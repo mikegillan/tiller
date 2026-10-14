@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { briefOf, history } from './archive.js';
 import { NodeManager } from './manager.js';
-import { nodeTranscript, parseTranscript } from './transcript.js';
+import { nodeTranscript, parseMessages, parseTranscript, readMessages, renderMessage, TAIL_BYTES } from './transcript.js';
 
 const line = (o: object) => JSON.stringify(o);
 const FIXTURE = [
@@ -36,6 +36,24 @@ describe('transcript', () => {
     expect((await nodeTranscript(n, 'old2')).entries).toEqual([{ role: 'user', text: 'earlier' }]);
     await expect(nodeTranscript(n, 'old1')).rejects.toThrow(/session old1 is gone/);
     await expect(nodeTranscript(n, 'other')).rejects.toThrow(/no session other on record/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('renders text and tool calls in content order', () => {
+    const [m] = parseMessages(line({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read' }, { type: 'text', text: 'Then this.' }, { type: 'tool_use', name: 'Bash' }] } }));
+    expect(renderMessage(m!)).toBe('assistant: [tool: Read]\nThen this.\n[tool: Bash]');
+  });
+
+  it('reads only the tail of a large file, dropping the cut line, and says so', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'o8-tr-'));
+    const one = `${line({ type: 'user', message: { content: 'x'.repeat(1000) } })}\n`;
+    const path = join(dir, 'big.jsonl');
+    writeFileSync(path, one.repeat(Math.ceil(TAIL_BYTES / one.length) + 10) + line({ type: 'user', message: { content: 'last' } }));
+    const r = await readMessages(path);
+    expect(r.truncated).toBe(true);
+    expect(r.messages.at(-1)).toEqual({ role: 'user', parts: [{ text: 'last' }] });
+    expect(r.messages.every((x) => 'text' in x.parts[0]! && (x.parts[0].text === 'last' || x.parts[0].text.length === 1000))).toBe(true);
+    expect((await readMessages(join(dir, 'big.jsonl'))).messages.length).toBeLessThanOrEqual(2000);
     rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -112,6 +130,43 @@ describe('archive, history, follow-up and fork', () => {
     expect((await history(home, { query: 'parser', rootId: root })).map((x) => x.id)).toEqual([a]);
   });
 
+  it('archives every node of a tree under its root, through prune (root first in the registry) and after a forced root close', async () => {
+    setup();
+    const root = await started('root', null);
+    const kid = await started('kid', root);
+    const grandkid = await started('grandkid', kid);
+    for (const id of [root, kid, grandkid]) process.kill(m.session(id)!.pid, 'SIGKILL');
+    await expect.poll(() => [root, kid, grandkid].every((id) => m.view(id)!.status.exited)).toBe(true);
+    expect((await m.prune()).removed).toHaveLength(3);
+    expect((await history(home, { rootId: root })).map((a) => [a.id, a.rootId]).sort()).toEqual([[grandkid, root], [kid, root], [root, root]].sort());
+
+    const root2 = await started('root2', null);
+    const kid2 = await started('kid2', root2);
+    await m.close(root2, true);
+    await m.close(kid2); // its root is gone; it still belongs to root2's tree
+    expect((await history(home, { rootId: root2 })).map((a) => a.id).sort()).toEqual([kid2, root2].sort());
+  });
+
+  it('refuses a second follow-up of the same session while the first is live', async () => {
+    setup();
+    const a = await started('worker', null);
+    await m.close(a, true);
+    const f = await m.followup(a, 'more');
+    await expect(m.followup(a, 'again')).rejects.toThrow(`refused: ${f.id} already continues the session of ${a}; send it the prompt instead`);
+  });
+
+  it('an armed fork keeps its own session id until it launches, and is not archived if closed before', async () => {
+    setup();
+    const root = await started('root', null);
+    const src = await started('source', root);
+    const srcSid = m.registry.get(src)!.sessionId!;
+    const f = await m.spawn({ kind: 'claude', title: 'fork', cwd: '', parentId: root, fork: src, after: [root], byHuman: true });
+    expect(f.status.state).toBe('armed');
+    expect(m.registry.get(f.id)).toMatchObject({ forkSession: srcSid, sessionId: expect.not.stringMatching(srcSid) });
+    await m.close(f.id);
+    expect((await history(home)).map((a) => a.id)).not.toContain(f.id);
+  });
+
   it('follows up an archived node with claude --resume and the prompt, under its live parent; refuses an unknown id', async () => {
     setup();
     const root = await started('root', null);
@@ -150,6 +205,7 @@ describe('archive, history, follow-up and fork', () => {
     expect(args.startsWith(`--resume ${srcSid} --fork-session --session-id ${newSid} `)).toBe(true);
     expect(args.trimEnd().endsWith('-- try another way')).toBe(true);
     expect(m.registry.get(f.id)).toMatchObject({ forkOf: src, cwd: home });
+    expect(m.registry.get(f.id)!.forkSession).toBeUndefined(); // cleared at launch, so a restart starts fresh
     await m.close(src);
     const g = await m.spawn({ kind: 'claude', title: 'fork2', cwd: '', parentId: root, fork: src, byHuman: true }); // archived source
     expect(await argv(g.id)).toContain(`--resume ${srcSid} --fork-session`);

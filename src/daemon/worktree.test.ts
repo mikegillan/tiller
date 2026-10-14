@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { history } from './archive.js';
 import { NodeManager, type SpawnRequest } from './manager.js';
 import { mountMcp } from './mcp.js';
 import * as wt from './worktree.js';
@@ -145,6 +146,27 @@ describe('worktree nodes', () => {
     expect(existsSync(v.cwd)).toBe(false);
     expect(g(repo, 'branch', '--list', `o8/${v.id}`)).toBe('');
     expect(g(repo, 'worktree', 'list').split('\n')).toHaveLength(1);
+  });
+
+  it('close archives what became of the branch; a fork of the closed node lands in the main checkout', async () => {
+    setup();
+    const merged = await spawnW(), kept = await spawnW(), discarded = await spawnW();
+    for (const v of [merged, kept, discarded]) commit(v.cwd, `${v.id}.txt`);
+    g(repo, 'merge', '-q', '--no-ff', '--no-edit', `o8/${merged.id}`);
+    const transcript = join(home, 't.jsonl');
+    writeFileSync(transcript, '');
+    m.applyHook(merged.id, { hook_event_name: 'SessionStart', session_id: m.registry.get(merged.id)!.sessionId, transcript_path: transcript });
+    await m.close(merged.id, true);
+    await m.close(kept.id, true, 'keep');
+    await m.close(discarded.id, true, 'discard');
+    const fates = Object.fromEntries((await history(m.home)).map((a) => [a.id, [a.branch, a.branchFate, a.base]]));
+    expect(fates).toEqual({
+      [merged.id]: [`o8/${merged.id}`, 'merged', 'main'], [kept.id]: [`o8/${kept.id}`, 'kept', undefined], [discarded.id]: [`o8/${discarded.id}`, 'discarded', undefined],
+    });
+    for (const cwd of [merged.cwd, '']) { // the UI passes the archived cwd; o8 spawn --fork passes none
+      const f = await m.spawn({ kind: 'claude', title: 'f', cwd, fork: merged.id, byHuman: true });
+      expect(m.registry.get(f.id)!.cwd).toBe(repo);
+    }
   });
 
   it('prune removes a clean exited worktree node and keeps one with unmerged work', async () => {

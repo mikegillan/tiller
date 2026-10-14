@@ -48,10 +48,11 @@ export function archivedOf(rec: NodeRecord, status: NodeStatus | undefined, outc
 
 export const archiveNode = (dir: string, a: ArchivedNode): void => appendLine(join(dir, ARCHIVE), a);
 
-function readArchive(dir: string): ArchivedNode[] {
+/** The tree's archive lines. Agents can write the file, so rootId comes from the directory, never from the line. */
+function readArchive(dir: string, rootId: string): ArchivedNode[] {
   let raw: string;
   try { raw = readFileSync(join(dir, ARCHIVE), 'utf8'); } catch { return []; }
-  return raw.split('\n').flatMap((l) => { try { return l ? [JSON.parse(l) as ArchivedNode] : []; } catch { return []; } });
+  return raw.split('\n').flatMap((l) => { try { return l ? [{ ...(JSON.parse(l) as ArchivedNode), rootId }] : []; } catch { return []; } });
 }
 
 /** Archived nodes, newest closed first: of one tree when rootId is given, and with `query` in title, prompt or last message (any case). */
@@ -60,7 +61,11 @@ export async function history(home: string, f: { rootId?: string; query?: string
   const q = f.query?.toLowerCase();
   const hit = (a: ArchivedNode) => !q || [a.title, a.prompt, a.lastAssistantMessage].some((s) => s?.toLowerCase().includes(q));
   // prune: reads every archive on each call; keep an index by id if trees and lookups grow large.
-  return listSessions(home).filter((s) => !f.rootId || s.rootId === f.rootId).flatMap((s) => readArchive(s.dir)).filter(hit).sort((a, b) => b.closedAt - a.closedAt);
+  return listSessions(home).filter((s) => !f.rootId || s.rootId === f.rootId).flatMap((s) => readArchive(s.dir, s.rootId)).filter(hit).sort((a, b) => b.closedAt - a.closedAt);
 }
 
-export const findArchived = async (home: string, id: string): Promise<ArchivedNode | undefined> => (await history(home)).find((a) => a.id === id);
+/** The archived node `id`, from tree `prefer` when it has one (a line elsewhere could claim the same id), else the newest. */
+export async function findArchived(home: string, id: string, prefer?: string): Promise<ArchivedNode | undefined> {
+  const hits = (await history(home)).filter((a) => a.id === id);
+  return hits.find((a) => a.rootId === prefer) ?? hits[0];
+}
