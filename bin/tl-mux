@@ -1,4 +1,0 @@
-#!/bin/sh
-# The terminal multiplexer: same as `tl mux`.
-self="$0"; if [ -L "$0" ]; then self="$(readlink "$0")"; case "$self" in /*) ;; *) self="$(dirname "$0")/$self";; esac; fi
-exec "$(dirname "$self")/tl" mux "$@"

@@ -1,4 +1,4 @@
-// Spend roll-ups over node records, shared by the daemon (list_nodes), the web UI and the mux sidebar.
+// Spend roll-ups over node records, shared by the daemon (list_nodes) and the web UI.
 import type { NodeRecord } from './protocol.js';
 import { treeOrder } from './tree.js';
 

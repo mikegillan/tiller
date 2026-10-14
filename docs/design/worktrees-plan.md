@@ -131,7 +131,6 @@ Options: merge into base (no-ff, squash, ff-only); rebase (done by the worker in
 `GitState = { branch, base, ahead, behind, dirty, missing?, mergedAt? }` per worktree node: `ahead`/`behind` from `git rev-list --left-right --count <base>...tl/<id>`; `dirty` from `git status --porcelain` line count. Refresh on worktree creation, Stop and `turn.complete`, debounced 3 s on PostToolUse for Edit, Write and Bash, PTY exit, before close or merge, daemon start. Lives on `NodeStatus` (not persisted); node re-emitted on change.
 
 - Web UI: `NodeMeta` gains a leading `⎇ tl/n-3f2a ↑3 ●2`; a has-changes marker when `ahead + dirty > 0` and the node is done or exited; "merged" once `mergedAt` is set; `missing` in the warning colour; close dialog gains Keep branch and Discard.
-- Mux sidebar: prepend `⎇↑3●2` to the meta line, dropped first under width pressure.
 - list_nodes: `worktree: { path, branch, base, ahead, behind, dirty, missing, merged }`; text tree appends `⎇ tl/n-3f2a ↑3 dirty`.
 - /tree ChildView: `branch?`, `ahead?`, `dirty?`.
 

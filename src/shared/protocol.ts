@@ -246,10 +246,9 @@ export interface Usage { rateLimits: RateLimit[]; nodeId: string; at: number }
 
 // Daemon -> UI (WebSocket, JSON). One message per line.
 export type ServerMessage =
-  | { t: 'snapshot'; nodes: NodeView[]; appConnected: boolean; usage?: Usage; dnd?: Dnd }
+  | { t: 'snapshot'; nodes: NodeView[]; usage?: Usage; dnd?: Dnd }
   | ({ t: 'dnd' } & Dnd)                     // do not disturb changed
   | { t: 'usage'; usage: Usage }             // a node reported new account-level rate limits
-  | { t: 'clients'; app: boolean }           // the native app connected or disconnected; terminal clients then stop ringing the bell
   | { t: 'node'; node: NodeView }            // created or updated (full record)
   | { t: 'removed'; id: string }
   | { t: 'data'; id: string; data: string }  // raw PTY output
@@ -270,7 +269,7 @@ export interface DigestItem { id: string; title: string; kind: 'needsYou' | 'err
 
 // UI -> Daemon.
 export type ClientMessage =
-  | { t: 'auth'; token: string; client?: 'app' | 'browser' | 'mux' } // must be the first message; token comes from the ?k= query param of the served UI URL
+  | { t: 'auth'; token: string; client?: 'app' | 'browser' } // must be the first message; token comes from the ?k= query param of the served UI URL
   | { t: 'visibility'; focused: boolean }       // whether this client's window is in front; the daemon skips OS notifications for a node a focused client has selected
   | { t: 'attach'; id: string; cols: number; rows: number } // start receiving data; replies with a data message holding the serialized screen
   | { t: 'detach'; id: string }

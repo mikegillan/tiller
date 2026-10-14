@@ -230,9 +230,8 @@ daemon.maxWorking spawn queue.
 
 The primary front end is the web UI (`ui/`) in a Tauri shell (`src-tauri/`); `tl` opens it on
 the current directory's session. A "session" is a root node and its subtree, shown one at a
-time with a switcher. The same UI runs in a browser, and `tl-mux` is a terminal multiplexer
-with the same sidebar tree for SSH and other terminals. The mod adds a band above the prompt
-and `/tl-*` slash commands inside each node, and draws nothing while any of those clients is
+time with a switcher. The same UI runs in a browser. The mod adds a band above the prompt
+and `/tl-*` slash commands inside each node, and draws nothing while the app or a browser is
 attached. Everything must keep working with mods off, because Anthropic can disable mods
 remotely and `--bare` / `--safe-mode` drop them; the paste fallback covers delivery then.
 

@@ -63,7 +63,7 @@ export interface SpawnRequest {
   isolation?: Isolation;
   /** A spawn preset's name; its fields fill in what the request leaves unset (see withPreset). */
   preset?: string;
-  /** Set for the human's spawns (web UI, app, mux, admin token), which skip the spawn caps. */
+  /** Set for the human's spawns (web UI, app, admin token), which skip the spawn caps. */
   byHuman?: boolean;
   /** Arm the node: launch it once each of these has finished a turn begun after this spawn, or has exited. */
   after?: string[];
