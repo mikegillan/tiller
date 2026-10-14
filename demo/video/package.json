@@ -1,0 +1,16 @@
+{
+  "name": "tiller-demo-video",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "render": "./render.sh",
+    "test": "node --test src/beats.check.js",
+    "studio": "remotion studio"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.535",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "remotion": "^4.0.535"
+  }
+}
