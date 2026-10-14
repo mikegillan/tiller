@@ -41,6 +41,23 @@ Tiller is a local daemon that runs several Claude Code sessions as child process
 
 Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the node registry (`state.json`), per-node files under `nodes/<id>/`, the admin token `tl` uses, `config.json` ([docs/config.md](docs/config.md)), presets under `agents/` and the log `daemon.log`. Each tree of nodes has a session directory, `sessions/<rootId>/`, for notes and the event log ([docs/sessions.md](docs/sessions.md)). The daemon listens on 127.0.0.1, port 7788 unless `TL_PORT` says otherwise.
 
+## Configuration
+
+Tiller reads two JSON files, both optional: a per-repo file at `<repo>/.tiller/config.json`, which you commit so everyone who runs tiller in that repo gets the same behaviour, and a global file at `~/.tiller/config.json` for your own defaults across repos. Each key resolves on its own: the repo file wins over the global file, which wins over the built-in default. Keys in the `daemon` group (resume, retention, node caps) are daemon-wide and are read from the global file only. Both files are re-read on every use, so an edit applies without restarting the daemon. `tl config` prints the effective value of every key for the current directory and which file it came from.
+
+A typical repo file sets the models for each role, gives workers their own worktrees, defines the check that must pass before a worker may report success, and lets the orchestrator close finished workers without asking:
+
+```json
+{
+  "roles": { "orchestrator": { "model": "opus", "effort": "high" }, "worker": { "model": "sonnet", "effort": "medium" } },
+  "worktrees": { "isolation": "worktree", "setup": ["npm ci"] },
+  "gate": { "command": "npm test" },
+  "approvals": { "close": "done" }
+}
+```
+
+The same two levels hold for the text tiller gives agents: a repo can override the role prompts with `.tiller/orchestrator.md` and `.tiller/worker.md`, or globally with `~/.tiller/prompts/<role>.md`, and spawn presets (a named bundle of role text, model, effort, isolation and tool restrictions) live in `.tiller/agents/<name>.md` or `~/.tiller/agents/<name>.md`. Every key, its default and its level are listed in [docs/config.md](docs/config.md); prompts and presets are in [docs/agent-roles.md](docs/agent-roles.md).
+
 ## Known limits
 
 - Anthropic can disable mods remotely, and `--bare` or `--safe-mode` drop them. The daemon and CLI still work then; messages are pasted into the terminal instead.
