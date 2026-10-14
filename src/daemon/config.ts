@@ -30,6 +30,8 @@ const ConfigFile = z.object({
    * branchPrefix: a worktree's branch is <prefix><nodeId>. include: gitignored files to copy in; absent means .worktreeinclude.
    * mergeStyle: how the merge verb brings a branch into its base.
    * setup, teardown: shell commands run in a new worktree before launch, and in a worktree before it is removed.
+   * protected: branches merge refuses as a base (origin's default branch counts too). A worker spawned without a base
+   * from one of them, or from a detached HEAD, gets a new base branch named by taskBranch, {slug} from its title.
    */
   worktrees: z.object({
     isolation: z.enum(ISOLATIONS).optional(),
@@ -38,6 +40,8 @@ const ConfigFile = z.object({
     mergeStyle: z.enum(MERGE_STYLES).optional(),
     setup: z.array(z.string().min(1)).optional(),
     teardown: z.array(z.string().min(1)).optional(),
+    protected: z.array(z.string().min(1)).optional(),
+    taskBranch: z.string().regex(/\{slug\}/, 'must contain {slug}').optional(),
   }).strict().optional(),
   /**
    * A command that must pass before a worker's report_outcome "succeeded" is accepted; absent means no gate. Once it has
@@ -98,6 +102,7 @@ const DEFAULTS = {
   'roles.orchestrator.model': undefined, 'roles.orchestrator.effort': undefined, 'roles.worker.model': undefined, 'roles.worker.effort': undefined,
   'approvals.close': 'never', 'approvals.merge': false,
   'worktrees.isolation': 'none', 'worktrees.branchPrefix': 'tl/', 'worktrees.include': undefined, 'worktrees.mergeStyle': 'merge', 'worktrees.setup': [], 'worktrees.teardown': [],
+  'worktrees.protected': ['main', 'master'], 'worktrees.taskBranch': 'tl/{slug}',
   'gate.command': undefined, 'gate.retries': 2, 'gate.timeoutMinutes': 10,
   'daemon.resumeOnStart': true, 'daemon.resumeMaxAgeDays': 3, 'daemon.sessionsKeepDays': 14, 'daemon.digestAfterMinutes': 10, 'daemon.maxLiveNodes': 20, 'daemon.maxWorking': 0,
   'notifications.kinds.needsYou': 'sound', 'notifications.kinds.errored': 'sound', 'notifications.kinds.done': 'banner', 'notifications.kinds.exited': 'banner',

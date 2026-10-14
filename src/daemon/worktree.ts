@@ -54,6 +54,49 @@ export async function headInfo(cwd: string): Promise<{ base: string; baseSha: st
   return { base: name || baseSha, baseSha };
 }
 
+/** Branches that never receive a merge: the configured ones and origin's default branch, when it is known. */
+export async function protectedBranches(repo: string, configured: string[]): Promise<string[]> {
+  const remote = (await git(repo, ['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD']).catch(() => '')).trim();
+  return remote.startsWith('origin/') ? [...configured, remote.slice('origin/'.length)] : configured;
+}
+
+/** A title as part of a branch name: lower case, each run of other characters one dash, at most 40 characters; "task" when empty. */
+export const slugify = (title: string) => title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/^-+|-+$/g, '') || 'task';
+
+/** A local branch's commit, or undefined when there is no such branch. */
+export const branchSha = (cwd: string, branch: string) =>
+  git(cwd, ['rev-parse', '--verify', '-q', `refs/heads/${branch}^{commit}`]).then((s) => s.trim(), () => undefined);
+
+/** Create a branch at `sha` only if no branch of that name exists; returns whether it did. */
+const createBranch = (cwd: string, branch: string, sha: string) =>
+  git(cwd, ['update-ref', `refs/heads/${branch}`, sha, '']).then(() => true, () => false);
+
+async function checkBranchName(cwd: string, name: string): Promise<void> {
+  await git(cwd, ['check-ref-format', '--branch', name]).catch(() => { throw new Error(`not a valid branch name: ${name}`); });
+}
+
+/**
+ * The branch a new worktree forks from and merges back into. `requested` is used as given, created at `head` when it
+ * does not exist. Without it, head's branch unless that is protected or HEAD is detached; then a new branch named by
+ * `pattern`, {slug} from `title` (adding -2, -3 ... while the name is taken), at head. created: this call made it.
+ */
+export async function pickBase(cwd: string, head: { base: string; baseSha: string }, o: { requested?: string; protected: string[]; pattern: string; title: string }): Promise<{ base: string; created: boolean }> {
+  if (o.requested) {
+    await checkBranchName(cwd, o.requested);
+    if (await createBranch(cwd, o.requested, head.baseSha)) return { base: o.requested, created: true };
+    if (await branchSha(cwd, o.requested)) return { base: o.requested, created: false };
+    throw new Error(`cannot create base branch ${o.requested}`);
+  }
+  if (head.base !== head.baseSha && !o.protected.includes(head.base)) return { base: head.base, created: false };
+  const name = o.pattern.replaceAll('{slug}', slugify(o.title));
+  await checkBranchName(cwd, name);
+  for (let n = 1; n <= 100; n++) {
+    const branch = n === 1 ? name : `${name}-${n}`;
+    if (await createBranch(cwd, branch, head.baseSha)) return { base: branch, created: true };
+  }
+  throw new Error(`cannot create a task branch: ${name} and ${name}-2 to -100 are taken`);
+}
+
 export const add = (repo: string, path: string, branch: string, baseSha: string) =>
   git(repo, ['worktree', 'add', '-q', '-b', branch, path, baseSha], SLOW_TIMEOUT_MS);
 

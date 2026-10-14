@@ -61,6 +61,8 @@ export interface SpawnRequest {
   role?: Role;
   parentId?: string | null;
   isolation?: Isolation;
+  /** Worktree isolation only: the branch the worktree forks from and merges into, created at the cwd's HEAD if absent. */
+  base?: string;
   /** A spawn preset's name; its fields fill in what the request leaves unset (see withPreset). */
   preset?: string;
   /** Set for the human's spawns (web UI, app, admin token), which skip the spawn caps. */
@@ -302,9 +304,9 @@ export class NodeManager extends EventEmitter {
    * Spawn a node. Each of role, model, effort, permissionMode and isolation comes from the request, else its preset,
    * else: model and effort from the project config's defaults for its role; permissionMode from an agent parent's own
    * mode unless that is bypassPermissions; isolation from the config for a claude node whose role is worker or none.
-   * Isolation "worktree" gives the node <main checkout>/.claude/worktrees/<id> on branch <prefix><id>, branched from the
-   * HEAD of the checkout req.cwd is in; the repo must have a commit and be trusted by Claude. Any failure removes the
-   * worktree and branch and discards the record.
+   * Isolation "worktree" gives the node <main checkout>/.claude/worktrees/<id> on branch <prefix><id>, branched from its
+   * base (see wt.pickBase: req.base, else the cwd's HEAD branch, else a new task branch); the repo must have a commit
+   * and be trusted by Claude. Any failure removes the worktree and branch and discards the record.
    */
   async spawn(req: SpawnRequest): Promise<NodeView> {
     const from = req.fork ? await this.forkSource(req) : undefined;
@@ -322,11 +324,14 @@ export class NodeManager extends EventEmitter {
     if (isolation === 'worktree' && req.kind !== 'claude') throw new Error('isolation "worktree" is for claude nodes only');
     this.checkLimits(req, config.limits);
     this.checkDependencies(req);
-    let head: { base: string; baseSha: string } | undefined;
+    if (req.base && isolation !== 'worktree') throw new Error('base is for isolation "worktree" only');
+    let base: { base: string; created: boolean } | undefined, head: { base: string; baseSha: string } | undefined;
     if (isolation === 'worktree') {
       const repo = await wt.mainCheckout(req.cwd);
       head = await wt.headInfo(req.cwd);
       if (!trustedForWorktree(repo, readClaudeJson())) throw new Error(`refusing isolation "worktree": Claude does not trust ${repo} yet; run claude once in ${repo} to trust it`);
+      const protectedBranches = await wt.protectedBranches(repo, config.worktrees.protected);
+      base = await wt.pickBase(req.cwd, head, { requested: req.base, protected: protectedBranches, pattern: config.worktrees.taskBranch, title: req.title });
     }
     const rec = this.registry.create({ // the resolved fields, so restart keeps them
       parentId, kind: req.kind, title: req.title, cwd: req.cwd,
@@ -338,9 +343,9 @@ export class NodeManager extends EventEmitter {
       lastCost: req.followup?.lastCost?.sessionId === req.followup?.sessionId ? req.followup?.lastCost : undefined,
     });
     this.runtimes.set(rec.id, {});
-    if (arm(this, rec.id, req, isolation)) return this.emitNode(rec.id)!;
+    if (arm(this, rec.id, { ...req, base: base?.base }, isolation)) return this.emitNode(rec.id)!;
     try {
-      if (isolation === 'worktree') await addWorktree(this, rec.id, req.prompt, head);
+      if (isolation === 'worktree') await addWorktree(this, rec.id, req.prompt, base!.base);
       else {
         this.writeFiles(rec.id);
         this.runtimes.get(rec.id)!.status = { state: initialState(req.kind), changedAt: Date.now() };
@@ -348,6 +353,8 @@ export class NodeManager extends EventEmitter {
       }
     } catch (err) {
       this.discard(rec.id);
+      // A task branch made for this spawn alone goes too, unless something has moved it; a requested base may be shared.
+      if (base?.created && !req.base) await wt.git(req.cwd, ['update-ref', '-d', `refs/heads/${base.base}`, head!.baseSha]).catch(logError);
       throw err;
     }
     this.logEvent(rec.id, 'spawn', { parentId, kind: req.kind, ...(rec.worktree ? { branch: rec.worktree.branch } : {}) });
