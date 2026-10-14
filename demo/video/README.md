@@ -7,13 +7,15 @@ caption and highlights, and an end card, with a music track underneath.
 ```sh
 npm install
 ./render.sh        # writes tiller-demo.mp4 and contact-sheet.png to $DEMO_DIR/out
-npm test           # the timing and crop arithmetic
+npm test           # the timing arithmetic
 ```
 
 `render.sh` reads the clips from `$DEMO_DIR/clips` (or `CLIPS_DIR`) and the music from
 `$DEMO_DIR/music` (or `MUSIC`); neither is committed. The beats, trims, speed-ups and highlight
-regions are in `src/beats.js`; the regions are pixel rectangles measured from the clip frames, so
-they need re-measuring after a new capture.
+regions are in `src/beats.js`; the regions are rectangles in page pixels (the 1280x720 capture),
+measured from the clip frames, so they need re-measuring after a new capture. Playwright records
+the page unscaled in the top-left of each 1920x1080 clip frame; `src/Demo.jsx` (PAGE_IN_FRAME)
+draws the clip at 1.5x and clips it to the page.
 
 ## Music
 
