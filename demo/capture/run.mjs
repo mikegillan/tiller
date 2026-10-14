@@ -127,7 +127,7 @@ try {
 
   browser = await chromium.launch();
   ctx = await browser.newContext({
-    viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 2, colorScheme: 'dark',
+    viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1.5, colorScheme: 'dark', // 1920x1080 video with the UI 1.5x larger
     recordVideo: { dir: SCRATCH, size: { width: 1920, height: 1080 } },
   });
   page = await ctx.newPage();
