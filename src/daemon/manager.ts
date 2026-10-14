@@ -103,6 +103,8 @@ export interface NodeRuntime {
   status?: NodeStatus;
   /** The live PTY; unset once the process has gone. */
   session?: PtySession;
+  /** The preset passed to the latest launch (empty for no preset), not a later edit of its file. */
+  launchedPreset?: Partial<Preset>;
   unread?: boolean;
   lastHookAt?: number;
   interruptTimer?: NodeJS.Timeout;
@@ -341,6 +343,22 @@ export class NodeManager extends EventEmitter {
     // Legacy role defaults name Claude models; other CLIs keep their own defaults unless explicitly configured by a preset/request.
     const defaults = adapter?.id === 'claude' ? config.roles[isOrchestrator ? 'orchestrator' : 'worker'] : {};
     const parent = parentId ? this.registry.get(parentId) : undefined;
+    // Pi cannot carry Claude's restrictions. Selecting it is unrestricted delegation, not a permission override
+    // or a process sandbox: only the human, a Pi parent, or an already unrestricted Claude parent may do so.
+    if (adapter?.id === 'pi' && !req.byHuman && !(parent && isAgentKind(parent.kind) && harnessFor(parent) === 'pi')) {
+      const rt = parent ? this.runtimes.get(parent.id) : undefined;
+      const mode = rt?.status?.permissionMode ?? parent?.permissionMode;
+      // A restored/armed node has no launch snapshot. Its preset file may have changed since the old process;
+      // do not infer that process's restrictions from today's file. A successful launch establishes the snapshot.
+      if (parent?.preset && !rt?.launchedPreset) {
+        throw new Error('refused: Claude preset restrictions are unknown until the parent launches; only the human may spawn Pi');
+      }
+      const preset = rt?.launchedPreset ?? {};
+      const restricted = preset.tools !== undefined || preset.disallowedTools !== undefined || preset.maxTurns !== undefined;
+      if (!parent || !isAgentKind(parent.kind) || mode !== 'bypassPermissions' || restricted) {
+        throw new Error('refused: only the human or an unrestricted agent parent may spawn Pi; Claude requires effective permissionMode bypassPermissions and no preset tools, disallowedTools or maxTurns restrictions');
+      }
+    }
     const inherited = req.byHuman || !parent || adapter?.id === 'pi' || (adapter && harnessFor(parent) !== adapter.id)
       ? undefined : this.runtimes.get(parentId!)?.status?.permissionMode ?? parent.permissionMode;
     const permissionMode = req.permissionMode ?? p.permissionMode ?? (inherited === 'bypassPermissions' ? undefined : inherited);
@@ -699,6 +717,9 @@ export class NodeManager extends EventEmitter {
     const now = Date.now();
     if (process.env.TL_DEBUG) console.log(`${new Date(now).toISOString().slice(11, 23)} mod ${nodeId.slice(0, 6)} ${ev.event} ${JSON.stringify(ev.payload).slice(0, 300)}`);
     if (ev.event === 'turn.start') {
+      // Claude's UserPromptSubmit hook owns its turn boundary; a late/duplicate mod start must not clear state.
+      const rec = this.registry.get(nodeId);
+      if (!rec || !isAgentKind(rec.kind) || harnessFor(rec) !== 'pi') return;
       rt.lastHookAt = now;
       rt.turnStart = now;
       rt.starting = false;
@@ -724,7 +745,10 @@ export class NodeManager extends EventEmitter {
         rt.lastCostEvent = now;
         this.logEvent(nodeId, 'cost', { usd: cost.usd, ...(context ? { contextPct: context.percent } : {}) });
       }
-      this.setStatus(nodeId, { ...prev, contextPct: context?.percent ?? prev.contextPct, contextTokens: context?.tokens ?? prev.contextTokens, contextWindow: context?.window ?? prev.contextWindow, costUsd: cost?.usd ?? prev.costUsd });
+      this.setStatus(nodeId, { ...prev,
+        ...('model' in ev.payload && typeof ev.payload.model === 'string' ? { model: ev.payload.model } : {}),
+        contextPct: context?.percent ?? prev.contextPct, contextTokens: context?.tokens ?? prev.contextTokens, contextWindow: context?.window ?? prev.contextWindow, costUsd: cost?.usd ?? prev.costUsd,
+      });
     }
   }
 
@@ -887,6 +911,7 @@ export class NodeManager extends EventEmitter {
     const s = PtySession.spawn({ ...spec, cwd, ...DEFAULT_SIZE });
     const rt = this.runtimes.get(id)!;
     rt.session = s;
+    rt.launchedPreset = input.preset ?? {};
     if (adapter && prompt) rt.starting = true;
     this.registry.update(id, { lastActiveAt: Date.now(), forkSession: undefined });
     this.liveChanged();
@@ -901,13 +926,14 @@ export class NodeManager extends EventEmitter {
       rt.starting = false;
       this.liveChanged();
       this.markUnread(id);
-      const status = ptyExited(rt.status!, Date.now());
-      if (code !== 0) {
-        const lines = stripVTControlCharacters(outputTail).split(/[\r\n]+/).map((line) => line.trim());
-        const error = lines.findLast((line) => /^Error:/i.test(line));
-        status.errored = true;
-        status.activity = error?.slice(0, 300) ?? `Process exited with code ${code}`;
-      } else status.activity = undefined;
+      let status = ptyExited(rt.status!, Date.now());
+      if (adapter?.id === 'pi') {
+        if (code !== 0) {
+          const lines = stripVTControlCharacters(outputTail).split(/[\r\n]+/).map((line) => line.trim());
+          const error = lines.findLast((line) => /^Error:/i.test(line));
+          status = { ...status, errored: true, activity: error?.slice(0, 300) ?? `Process exited with code ${code}` };
+        } else status = { ...status, activity: undefined };
+      }
       this.setStatus(id, status, false);
       this.emit('notify', { id, kind: 'exited', title: rec.title } satisfies NotifyEvent);
       refreshGit(this, id).catch(logError);
