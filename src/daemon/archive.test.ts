@@ -247,6 +247,7 @@ describe('archive, history, follow-up and fork', () => {
     await m.close(a);
     const f = await m.followup(a, 'second task');
     expect(f).toMatchObject({ parentId: root, title: 'worker', followupOf: a, sessionId: sid, prompt: 'second task' });
+    expect(m.registry.get(f.id)!.transcriptPath).toBeUndefined(); // Claude's SessionStart hook reports it, as for any launch
     const args = await argv(f.id);
     expect(args).toMatch(new RegExp(`^--resume ${sid} --name worker`));
     expect(args.trimEnd().endsWith('-- second task')).toBe(true);

@@ -381,7 +381,7 @@ export class NodeManager extends EventEmitter {
       parentId, kind: req.kind, ...(req.harness ? { harness: req.harness } : {}), title: req.title, cwd: req.cwd,
       model: req.model ?? p.model ?? defaults.model, effort: req.effort ?? p.effort ?? defaults.effort, permissionMode, role, preset: req.preset,
       sessionId: adapter ? req.followup?.sessionId ?? randomUUID() : undefined,
-      ...(req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
+      ...(adapter?.id === 'pi' && req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
       ...(adapter?.id === 'pi' && req.followup?.previousSessions ? { previousSessions: req.followup.previousSessions } : {}),
       rootId: parentId ? this.rootIdOf(parentId) : undefined,
       prompt: req.prompt, forkOf: req.fork, forkSession: from?.sessionId, followupOf: req.followup?.id,
@@ -725,13 +725,15 @@ export class NodeManager extends EventEmitter {
       rt.starting = false;
       this.setStatus(nodeId, reduce(prev, { hook_event_name: 'UserPromptSubmit', prompt_id: ev.payload.turnId }, now));
     } else if (ev.event === 'turn.complete') {
-      rt.lastHookAt = now;
-      rt.starting = false;
       const model = ev.payload.usage?.model;
-      const base = { ...prev,
-        ...(typeof model === 'string' ? { model } : {}),
-        ...(typeof ev.payload.answer === 'string' ? { lastAssistantMessage: ev.payload.answer } : {}),
-      };
+      let base = typeof model === 'string' && model !== prev.model ? { ...prev, model } : prev;
+      // Claude's Stop hook owns its final message; only Pi reports it here.
+      const rec = this.registry.get(nodeId);
+      if (rec && isAgentKind(rec.kind) && harnessFor(rec) === 'pi') {
+        rt.lastHookAt = now;
+        rt.starting = false;
+        if (typeof ev.payload.answer === 'string') base = { ...base, lastAssistantMessage: ev.payload.answer };
+      }
       this.setStatus(nodeId, turnComplete(base, now, ev.payload));
       refreshGit(this, nodeId).catch(logError);
     } else if (ev.event === 'session.measure') {
