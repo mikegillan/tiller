@@ -64,7 +64,9 @@ if (!existsSync(path)) writeFileSync(path, JSON.stringify({ type: 'session', id:
 process.chdir(JSON.parse(readFileSync(path, 'utf8').split('\\n')[0]).cwd);
 process.stdout.write('\\r\\n'.repeat(100));
 const handlers = new Map(); let busy = false, index = 0;
-const ctx = { isIdle: () => !busy, abort: () => { busy = false; }, shutdown: () => process.exit(1), model: { id: 'fake-pi' },
+const selected = args.includes('--model') ? args[args.indexOf('--model') + 1] : 'fake-pi';
+const model = process.env.TL_TEST_PI_NO_MODEL ? undefined : { id: selected.slice(selected.indexOf('/') + 1) };
+const ctx = { isIdle: () => !busy, abort: () => { busy = false; }, shutdown: () => process.exit(1), model,
  sessionManager: { getSessionId: () => 'pi-native-id', getSessionFile: () => path, getEntries: () => [] },
  ui: { notify() {} } };
 const emit = async (name, event = {}) => { for (const fn of handlers.get(name) ?? []) await fn(event, ctx); };
@@ -159,6 +161,30 @@ describe('Pi node integration', () => {
     const explicit = await manager!.spawn({ kind: 'agent', harness: 'pi', title: 'explicit', cwd: home, model: 'openai/test', effort: 'low', byHuman: true });
     await ready(explicit.id);
     expect(explicit).toMatchObject({ model: 'openai/test', effort: 'low' });
+  });
+
+  it('keeps an explicit provider/model through bare-id SessionStart, archive and follow-up', async () => {
+    await setup();
+    const n = await manager!.spawn({ kind: 'agent', harness: 'pi', title: 'qualified', cwd: home, model: 'openai/test', byHuman: true });
+    await ready(n.id);
+    expect(manager!.view(n.id)!.status.model).toBe('test'); // Native Pi reports its bare model.id.
+    await manager!.close(n.id, true);
+    expect((await findArchived(manager!.home, n.id))!.model).toBe('openai/test');
+    const next = await manager!.followup(n.id, 'continue'); await ready(next.id);
+    expect(next.model).toBe('openai/test');
+    expect(manager!.view(next.id)!.status.model).toBe('test');
+  });
+
+  it('leaves model selection to Pi on follow-up when no model has resolved', async () => {
+    vi.stubEnv('TL_TEST_PI_NO_MODEL', '1');
+    await setup();
+    const n = await manager!.spawn({ kind: 'agent', harness: 'pi', title: 'no model', cwd: home, byHuman: true });
+    await ready(n.id);
+    expect(manager!.view(n.id)!.status.model).toBeUndefined();
+    await manager!.close(n.id, true);
+    expect((await findArchived(manager!.home, n.id))!.model).toBeUndefined();
+    const next = await manager!.followup(n.id, 'continue'); await ready(next.id);
+    expect(next.model).toBeUndefined();
   });
 
   it('inherits Pi for agent children but never imports Claude permission modes', async () => {
