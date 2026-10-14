@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { notifyWhen, watching } from './deps.js';
 import { NodeManager } from './manager.js';
 import { inbox } from './messaging.js';
-import { flushEvents } from './sessions.js';
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
@@ -13,9 +12,7 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
   let home = '';
   const managers: NodeManager[] = [];
   afterEach(async () => {
-    for (const m of managers.splice(0)) m.shutdown();
-    await new Promise((r) => setTimeout(r, 300)); // the killed fake claudes exit and log it
-    await flushEvents(); // before the home goes, so no append fails after the file's tests end
+    await Promise.all(managers.splice(0).map((m) => m.shutdown())); // before the home goes, so no append fails after the file's tests end
     rmSync(home, { recursive: true, force: true });
   });
 

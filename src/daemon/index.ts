@@ -57,8 +57,7 @@ setInterval(sweepSessions, 86_400_000).unref();
 process.on('unhandledRejection', logError);
 
 function stop(): void {
-  manager.shutdown();
-  server.close().catch(logError).finally(() => process.exit(0));
+  manager.shutdown().then(() => server.close()).catch(logError).finally(() => process.exit(0));
 }
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);

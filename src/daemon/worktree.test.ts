@@ -46,8 +46,8 @@ async function releasedChild(extra: Partial<SpawnRequest> = {}): Promise<string>
 }
 const exited = async (id: string) => { m.session(id)!.kill(); await expect.poll(() => m.view(id)!.status.exited).toBe(true); };
 
-afterEach(() => {
-  m?.shutdown();
+afterEach(async () => {
+  await m?.shutdown();
   vi.unstubAllEnvs();
   rmSync(home, { recursive: true, force: true });
 });

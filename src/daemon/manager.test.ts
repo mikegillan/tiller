@@ -25,7 +25,7 @@ describe('trustPolicy', () => {
 describe('trust dialog auto-answer', () => {
   let home = '';
   let m: NodeManager | undefined;
-  afterEach(() => { m?.shutdown(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }); });
+  afterEach(async () => { await m?.shutdown(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }); });
 
   it('confirms only once Yes is selected, so a lost Down key does not exit Claude through "No, exit"', async () => {
     home = mkdtempSync(join(tmpdir(), 'tl-'));
@@ -59,7 +59,7 @@ process.stdin.on('data', (d) => {
 describe('NodeManager tokens and files', () => {
   let home = '';
   let m: NodeManager;
-  afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
+  afterEach(async () => { await m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   it('verifies per-node tokens and keeps the secret private', () => {
     home = mkdtempSync(join(tmpdir(), 'tl-'));
@@ -102,7 +102,7 @@ describe('NodeManager tokens and files', () => {
 describe('NodeManager runtime state', () => {
   let home = '';
   let m: NodeManager;
-  afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
+  afterEach(async () => { await m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   it('SessionStart records the session id and transcript on the node; other events leave them', async () => {
     home = mkdtempSync(join(tmpdir(), 'tl-'));
@@ -131,7 +131,7 @@ describe('NodeManager runtime state', () => {
 describe('NodeManager restart', () => {
   let home = '';
   let m: NodeManager;
-  afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
+  afterEach(async () => { await m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   it('relaunches a terminal node with a new process, same id, children kept; refuses to close a root; prune keeps a live root', async () => {
     home = mkdtempSync(join(tmpdir(), 'tl-'));
@@ -172,7 +172,7 @@ describe('NodeManager restart', () => {
 describe('NodeManager model and effort defaults', () => {
   let home = '';
   let m: NodeManager;
-  afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
+  afterEach(async () => { await m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   it('records the configured model for the role unless spawn passes one; project beats home', async () => {
     home = mkdtempSync(join(tmpdir(), 'tl-'));
@@ -220,7 +220,7 @@ describe('NodeManager model and effort defaults', () => {
 describe('NodeManager live set and resume on start', () => {
   let home = '';
   let m: NodeManager;
-  afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
+  afterEach(async () => { await m.shutdown(); rmSync(home, { recursive: true, force: true }); });
   const saved = () => JSON.parse(readFileSync(join(home, 'state.json'), 'utf8')).live;
 
   it('saves the live ids as processes start and exit, keeps them on shutdown and clears them on an explicit stop', async () => {
@@ -272,7 +272,7 @@ describe('NodeManager live set and resume on start', () => {
 describe('NodeManager guardrails', () => {
   let home = '';
   let m: NodeManager;
-  afterEach(() => { m.shutdown(); rmSync(home, { recursive: true, force: true }); });
+  afterEach(async () => { await m.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   it('refuses an agent spawn at each cap, naming it; the human is exempt', async () => {
     home = mkdtempSync(join(tmpdir(), 'tl-'));

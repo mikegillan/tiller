@@ -246,8 +246,12 @@ export class NodeManager extends EventEmitter {
     return sessionDir(this.home, this.rootIdOf(id));
   }
 
-  /** Append an event to the node's tree's events.jsonl; never blocks. */
+  /**
+   * Append an event to the node's tree's events.jsonl; never blocks. Nothing is logged after shutdown: the PTY exits it
+   * causes are not the tree's history (the nodes resume on the next start), and the append would outlive the process.
+   */
   logEvent(id: string, type: string, data: Record<string, unknown> = {}): void {
+    if (this.shutDown) return;
     appendEvent(this.sessionDirOf(id), { ts: Date.now(), type, id, title: this.registry.get(id)?.title, ...data });
   }
 
@@ -707,9 +711,9 @@ export class NodeManager extends EventEmitter {
 
   /**
    * Flush the registry and the message inbox, and kill every PTY. The live set is kept for resume on next start, unless
-   * `clearLive` (an explicit stop: do not come back).
+   * `clearLive` (an explicit stop: do not come back). Resolves once the event appends already queued have landed.
    */
-  shutdown(opts: { clearLive?: boolean } = {}): void {
+  shutdown(opts: { clearLive?: boolean } = {}): Promise<void> {
     this.shutDown = true;
     if (opts.clearLive) this.registry.setLive([]);
     clearInterval(this.sweepTimer);
@@ -721,6 +725,7 @@ export class NodeManager extends EventEmitter {
     }
     this.registry.flush();
     flushInbox(this);
+    return flushEvents();
   }
 
   // ---- internals; worktree-lifecycle.ts and deps.ts call the ones not marked private ----

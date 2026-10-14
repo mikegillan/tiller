@@ -11,7 +11,7 @@ const read = (f: string) => { try { return readFileSync(f, 'utf8'); } catch { re
 describe('session directories with a fake claude', () => {
   let home = '';
   let m: NodeManager | undefined;
-  afterEach(() => { m?.shutdown(); rmSync(home, { recursive: true, force: true }); });
+  afterEach(async () => { await m?.shutdown(); rmSync(home, { recursive: true, force: true }); });
 
   /** A manager whose claude writes its argv and TL_SESSION_DIR next to the node's settings.json, then idles. */
   function setup() {
@@ -79,6 +79,15 @@ describe('session directories with a fake claude', () => {
     expect(evs[4]).toMatchObject({ from: 'done', to: 'done', message: 'all done' });
     expect(evs.every((e, i) => e.ts >= t0 && (i === 0 || e.ts >= evs[i - 1]!.ts))).toBe(true);
     expect(JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')).closedAt).toBeGreaterThanOrEqual(t0);
+  });
+
+  it('logs nothing for the exits that shutdown causes', async () => {
+    const { m, proj } = setup();
+    const root = await m.spawn({ kind: 'claude', title: 'root', cwd: proj });
+    await m.shutdown();
+    await expect.poll(() => m.view(root.id)?.status.exited).toBe(true);
+    await flushEvents();
+    expect(readEvents(sessionDir(m.home, root.id)).map((e) => e.type)).toEqual(['spawn']);
   });
 });
 
