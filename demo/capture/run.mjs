@@ -21,7 +21,7 @@ const TL_HOME = join(SCRATCH, 'home');
 const SAMPLE = join(homedir(), '.tiller/sessions/n-8f9599e6/demo/sample-repo');
 
 const TASK = 'Add a --json flag to the CLI, write its tests, and document it in the README. Use one worker per part, in '
-  + 'worktrees, review the result, then merge.';
+  + 'worktrees. Spawn one reviewer node with preset reviewer to check the branches before merging, then merge.';
 const COMMENT = 'Looks good. Keep the JSON on one line so it pipes cleanly into jq.';
 
 const t0 = Date.now();
@@ -247,7 +247,14 @@ try {
   }); else log('no worker with changes to diff');
 
   // 50: the reviewer.
-  const reviewer = await until('a reviewer node', 600_000, () => [...nodes.values()].find(isReviewer)?.id);
+  const findReviewer = () => [...nodes.values()].find(isReviewer)?.id;
+  let reviewer = await until('a reviewer node', 300_000, findReviewer);
+  if (!reviewer) {
+    log('nudging the orchestrator to spawn the reviewer');
+    await api('send', { nodeId: orch, text: 'Before merging, spawn one reviewer node with preset reviewer to check the workers\' branches, as the task asks.' })
+      .catch((e) => log(`nudge failed: ${e.message}`));
+    reviewer = await until('a reviewer node after the nudge', 300_000, findReviewer);
+  }
   if (reviewer) await beat('50-review', async () => {
     start = Date.now();
     await page.locator('.seg.tabs').getByRole('button', { name: 'Terminal' }).click().catch(() => {});

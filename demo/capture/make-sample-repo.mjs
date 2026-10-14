@@ -52,7 +52,7 @@ A tiny command-line tool that prints a greeting.
   '.gitignore': 'node_modules/\n.claude/worktrees/\n',
   '.tiller/config.json': JSON.stringify({
     roles: { worker: { model: 'haiku' }, orchestrator: { model: 'sonnet' } },
-    approvals: { close: 'done' },
+    approvals: { close: 'done', merge: true },
     worktrees: { isolation: 'worktree' },
   }, null, 2) + '\n',
   // Committed, so every worktree has it too. Edits stay inside the checkout ("/" is relative to this file's project);
@@ -60,7 +60,7 @@ A tiny command-line tool that prints a greeting.
   '.claude/settings.json': JSON.stringify({
     permissions: {
       allow: [
-        'Edit(/**)', 'Write(/**)',
+        'Edit(/**)', // Edit rules cover Write too
         'Bash(node src/cli.js:*)', 'Bash(node --test:*)', 'Bash(npm test:*)',
         'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)', 'Bash(git add:*)', 'Bash(git commit:*)',
       ],
