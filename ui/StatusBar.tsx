@@ -2,7 +2,7 @@ import { dndActive, needsYou } from '../src/shared/protocol';
 import { fmtAge, usageParts } from '../src/shared/format';
 import { fmtUsd, todaySpend } from '../src/shared/spend';
 import { toggleDnd, useNow } from './hooks';
-import { useStore } from './store';
+import { openDialog, useStore } from './store';
 
 export function StatusBar() {
   const connected = useStore((s) => s.connected);
@@ -15,9 +15,11 @@ export function StatusBar() {
   const today = useStore((s) => todaySpend(Object.values(s.nodes), now));
   const dnd = useStore((s) => s.dnd);
   const quiet = dndActive(dnd, now);
+  const upd = useStore((s) => s.update);
+  const asked = useStore((s) => s.updateAsked);
   return (
     <footer className="statusbar" role="status">
-      <span className={`conn ${connected ? 'up' : 'down'}`}>
+      <span className={`conn ${connected ? 'up' : 'down'}`} title={upd && `running ${upd.sha.slice(0, 7)}${upd.eligible ? '' : `; updates off: ${upd.reason}`}${upd.fetchError ? `; last fetch failed: ${upd.fetchError}` : ''}`}>
         <i className="dot" />
         {connected ? `daemon connected · ${location.host}` : `reconnecting to ${location.host}${retry > 1 ? ` (attempt ${retry})` : ''}…`}
       </span>
@@ -31,6 +33,12 @@ export function StatusBar() {
       )}
       {today > 0 && <span title="spent today, all nodes">{fmtUsd(today)} today</span>}
       <span className="spacer" />
+      {upd?.applying || asked ? <span className="update">Updating…</span>
+        : upd?.eligible && upd.behind > 0 && (
+          <button className="update" onClick={() => openDialog({ kind: 'update' })} title={`Newest: ${upd.newest}`}>
+            Update available ({upd.behind} commit{upd.behind === 1 ? '' : 's'})
+          </button>
+        )}
       <button className={`dnd${quiet ? ' on' : ''}`} onClick={toggleDnd} title={quiet ? 'Turn off do not disturb' : 'No OS notifications for an hour'}>
         {quiet ? `do not disturb${dnd!.until ? ` · ${Math.ceil((dnd!.until - now) / 60_000)} min left` : ''}` : 'do not disturb 1 h'}
       </button>

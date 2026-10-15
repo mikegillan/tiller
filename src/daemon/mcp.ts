@@ -7,7 +7,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { dndActive, EFFORTS, finished, ISOLATIONS, NODE_KINDS, ROLES, type ArchivedNode, type Diff, type Dnd, type NodeView, type Outcome } from '../shared/protocol.js';
+import { dndActive, EFFORTS, finished, isAgentKind, ISOLATIONS, NODE_KINDS, ROLES, type ArchivedNode, type Diff, type Dnd, type NodeView, type Outcome } from '../shared/protocol.js';
 import { fmtUsd, subtreeSpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { loadConfig, type Config } from './config.js';
@@ -17,6 +17,7 @@ import { notifyWhen } from './deps.js';
 import type { NodeManager } from './manager.js';
 import { closeRefusal, type WorktreeReport } from './worktree-lifecycle.js';
 import { MAX_PATCH_BYTES, MergeConflict } from './worktree.js';
+import { updateLine, type Updater } from './update.js';
 import { PERMISSION_MODES } from './presets.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
 import { readMessages, renderMessage, sessionMessages } from './transcript.js';
@@ -29,7 +30,7 @@ const TRANSCRIPT_CAP = 200_000;
 const HISTORY_LINES = 50;
 
 /** dnd sets do not disturb when `on` is given, and returns it. */
-interface Ctx { manager: NodeManager; confirm: (text: string) => Promise<boolean>; focus: (from: string, id: string) => void; dnd: (on?: boolean, minutes?: number) => Dnd; caller: string }
+interface Ctx { manager: NodeManager; confirm: (text: string) => Promise<boolean>; focus: (from: string, id: string) => void; dnd: (on?: boolean, minutes?: number) => Dnd; updates?: Updater; caller: string }
 interface Out { text?: string; data?: unknown }
 
 /** How long report_outcome waits for a completion gate before replying that it is still running. */
@@ -326,7 +327,7 @@ const tools = {
     }),
 
   merge: tool(
-    'Merge the git branch of one of your descendants that has its own worktree into the branch it was created from (its base), in the project\'s merge style (worktrees.mergeStyle in .tiller/config.json: "merge", the default, makes a merge commit; "squash" makes one commit; "ff-only" only fast-forwards). Refused, with nothing changed, when the base is a protected branch (worktrees.protected, default main and master, plus origin\'s default branch: spawn with a `base` branch instead and have the human open a pull request from it), while the node is working, when its worktree has uncommitted files, when the base is checked out somewhere with uncommitted changes, A conflict with the base is checked first without touching any file: the reply is then {ok:false, conflicts:[paths]}; send the worker a rebase instruction rather than resolving it yourself, then merge again. The human approves each merge in the UI unless the project config sets approvals.merge; if they decline you get {ok:false, reason:"denied"}. Close the node afterwards to remove its worktree and branch.',
+    'Merge the git branch of one of your descendants that has its own worktree into the branch it was created from (its base), in the project\'s merge style (worktrees.mergeStyle in .tiller/config.json: "merge", the default, makes a merge commit; "squash" makes one commit; "ff-only" only fast-forwards). Refused, with nothing changed, when the base is a protected branch (worktrees.protected, default main and master, plus origin\'s default branch: spawn with a `base` branch instead and have the human open a pull request from it), while the node is working, when its worktree has uncommitted files, when the base is checked out somewhere with uncommitted changes, A conflict with the base is checked first without touching any file: the reply is then {ok:false, conflicts:[paths]}; send the worker a rebase instruction rather than resolving it yourself, then merge again. The merge or squash commit is signed when the repo\'s git config sets commit.gpgsign, and a signing failure refuses the merge with git\'s error. The human approves each merge in the UI unless the project config sets approvals.merge; if they decline you get {ok:false, reason:"denied"}. Close the node afterwards to remove its worktree and branch.',
     { nodeId: z.string().min(1) },
     async (c, a) => {
       const v = requireOwned(c, a.nodeId, false);
@@ -424,6 +425,20 @@ const tools = {
       return { text, data: d };
     }, true),
 
+  update: tool(
+    'Check origin\'s default branch for a newer tiller now (fetching it), or with apply, update this daemon\'s checkout to it: refused unless HEAD is on that branch, clean and only behind. A detached helper fast-forwards, runs npm install and the UI build as the change needs, and restarts the daemon, which resumes the nodes that were live; its log is <home>/update.log. Only the human may call this.',
+    { apply: z.boolean().optional() },
+    async (c, a) => {
+      if (!c.updates) throw new Error('updates are not available in this daemon');
+      if (!a.apply) { const s = await c.updates.check(); return { text: updateLine(s), data: s }; }
+      const working = c.manager.list().filter((v) => isAgentKind(v.kind) && !v.status.exited && v.status.state === 'working').length;
+      const { log, status } = await c.updates.apply();
+      return {
+        text: `updating: ${updateLine(status)}. ${working} working agent node${working === 1 ? '' : 's'} will be interrupted and resumed. Log: ${log}`,
+        data: { ...status, working, log },
+      };
+    }, true),
+
   sessions_clean: tool(
     'Delete the session directories that daemon.sessionsKeepDays has expired now, rather than at the daily sweep. Only the human may call this.',
     {},
@@ -471,7 +486,7 @@ const tools = {
  * Handler for `/mcp` (MCP over stateless streamable HTTP) and `POST /api/<tool>` (the same tools as plain JSON, for the CLI).
  * Both authenticate with `Authorization: Bearer` + `X-TL-Node`. Node id `human` takes the admin token written to `<home>/admin-token`.
  */
-export function mountMcp(manager: NodeManager, confirm: Ctx['confirm'], focus: Ctx['focus'], dnd: Ctx['dnd'] = () => ({ on: false })): {
+export function mountMcp(manager: NodeManager, confirm: Ctx['confirm'], focus: Ctx['focus'], dnd: Ctx['dnd'] = () => ({ on: false }), updates?: Updater): {
   handler: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void>;
   /** Write the admin token file. Call once the server is listening, so a daemon that fails to bind leaves the running daemon's token alone. */
   publishAdminToken: () => void;
@@ -519,7 +534,7 @@ export function mountMcp(manager: NodeManager, confirm: Ctx['confirm'], focus: C
   const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const caller = authenticate(req);
     if (!caller) return void res.writeHead(401).end();
-    const ctx: Ctx = { manager, confirm, focus, dnd, caller };
+    const ctx: Ctx = { manager, confirm, focus, dnd, updates, caller };
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     if (path.startsWith('/api/')) return api(req, res, path.slice(5), ctx);
 

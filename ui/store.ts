@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { ArchivedNode, Diff, DigestItem, Dnd, ServerMessage, Transcript, Usage } from '../src/shared/protocol';
+import type { ArchivedNode, Diff, DigestItem, Dnd, ServerMessage, Transcript, UpdateStatus, Usage } from '../src/shared/protocol';
 import type { ReviewComment } from './diff';
 import { pickInitial, rootOf } from './sessions';
 import { insertSorted, type Nodes } from './tree';
@@ -15,7 +15,8 @@ export type Dialog =
   | { kind: 'followup'; id: string; title: string }
   /** Spawn a Claude node that starts from `from`'s conversation (a live or archived node). */
   | { kind: 'fork'; from: string; title: string; cwd: string; parentId: string | null }
-  | { kind: 'palette' };
+  | { kind: 'palette' }
+  | { kind: 'update' };
 
 export interface State {
   nodes: Nodes;
@@ -41,6 +42,10 @@ export interface State {
   dnd?: Dnd;
   /** Account-level rate limits, as the newest node report gave them. */
   usage?: Usage;
+  /** The daemon's checkout against origin, as its last update check found it. */
+  update?: UpdateStatus;
+  /** The human confirmed an update and the daemon has not answered yet. */
+  updateAsked: boolean;
   /** What happened while no client was focused, until dismissed. */
   digest?: { since: number; items: DigestItem[] };
   /** The Diff tab is showing instead of the terminal (for worktree nodes). */
@@ -68,7 +73,7 @@ const stored = (() => { try { return localStorage.getItem('tl.panel') === '1'; }
 let state: State = {
   nodes: {}, order: [], selected: null, session: null, opened: [], collapsed: [], toasts: [], confirms: [],
   connected: false, retry: 0, panel: stored, dialog: null, renaming: null, awaitSpawn: false, diffOpen: false, diff: null, comments: [],
-  transcriptOpen: false, transcript: null, historyOpen: false, history: [], archived: null, removals: 0,
+  transcriptOpen: false, updateAsked: false, transcript: null, historyOpen: false, history: [], archived: null, removals: 0,
 };
 const subs = new Set<() => void>();
 let toastSeq = 0;
@@ -94,6 +99,7 @@ export const openDialog = (dialog: Dialog | null) => update(() => ({ dialog }));
 export const dismissDigest = () => update(() => ({ digest: undefined }));
 export const setRenaming = (renaming: string | null) => update(() => ({ renaming }));
 export const expectSpawn = () => update(() => ({ awaitSpawn: true }));
+export const askUpdate = () => update(() => ({ updateAsked: true }));
 export const toggleCollapsed = (id: string) =>
   update((s) => ({ collapsed: s.collapsed.includes(id) ? without(s.collapsed, id) : [...s.collapsed, id] }));
 export const togglePanel = () => update((s) => {
@@ -142,12 +148,15 @@ export function applyServer(m: ServerMessage) {
         for (const n of fresh) order = insertSorted(order, nodes, n);
         const base = { ...s, order, opened: s.opened.filter((id) => nodes[id]) };
         const sel = s.selected && nodes[s.selected] ? s.selected : pickInitial(nodes, order, s.selected ? undefined : wantedNode);
-        return { order, opened: base.opened, usage: m.usage ?? s.usage, dnd: m.dnd, ...choose(base, nodes, sel) };
+        return { order, opened: base.opened, usage: m.usage ?? s.usage, dnd: m.dnd, update: m.update, ...choose(base, nodes, sel) };
       });
     case 'dnd':
       return update(() => ({ dnd: { on: m.on, until: m.until } }));
     case 'usage':
       return update(() => ({ usage: m.usage }));
+    case 'update':
+      if (m.update.failed && m.update.failed !== state.update?.failed) toast(m.update.failed, undefined, 'bad');
+      return update(() => ({ update: m.update, updateAsked: false }));
     case 'node':
       return update((s) => {
         const isNew = !s.order.includes(m.node.id);
@@ -198,6 +207,7 @@ export function applyServer(m: ServerMessage) {
     case 'error':
       // A spawn or follow-up that failed answers only with an error: stop waiting, or the next node anyone spawns gets selected.
       if (state.awaitSpawn) update(() => ({ awaitSpawn: false }));
+      if (state.updateAsked) update(() => ({ updateAsked: false })); // the update was refused before it started
       return toast(m.message, m.id, 'bad');
     case 'digest':
       return update(() => ({ digest: { since: m.since, items: m.items } }));

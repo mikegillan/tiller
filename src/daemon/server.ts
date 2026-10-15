@@ -17,6 +17,8 @@ import { modApi } from './modapi.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
 import type { HookEvent } from './status.js';
 import { deliver, HUMAN } from './messaging.js';
+import { spawnUpdate } from './up.js';
+import { createUpdater, REPO, type Updater } from './update.js';
 import { readBody } from './util.js';
 
 const UI_DIR = fileURLToPath(new URL('../../ui/dist', import.meta.url));
@@ -54,6 +56,7 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('send'), id, text: z.string().min(1), mode: z.enum(['queue', 'now']).optional() }),
   z.object({ t: z.literal('mute'), id, muted: z.boolean() }),
   z.object({ t: z.literal('dnd'), on: z.boolean(), minutes: z.number().positive().max(7 * 24 * 60).optional() }),
+  z.object({ t: z.literal('update') }),
 ]) satisfies z.ZodType<ClientMessage>;
 
 export interface DaemonServer {
@@ -66,6 +69,8 @@ export interface DaemonServer {
   appConnected(): boolean;
   /** Do not disturb, as the human last set it; check dndActive for whether it has expired. */
   dnd(): Dnd;
+  /** Update checks for this daemon's checkout; index.ts starts the periodic check. */
+  updates: Updater;
   close(): Promise<void>;
 }
 
@@ -75,7 +80,8 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   const clients = new Set<Client>();
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
   const focus = (from: string, id: string) => broadcast({ t: 'focus', from, id });
-  const { handler: mcp, publishAdminToken, authenticate, isAdmin } = mountMcp(manager, (text) => daemon.confirm(text), focus, (on, minutes) => setDnd(on, minutes));
+  const updates = createUpdater({ repo: REPO, home: manager.home, onChange: (update) => broadcast({ t: 'update', update }), spawnHelper: (onExit) => spawnUpdate(manager.home, daemon.port, onExit) });
+  const { handler: mcp, publishAdminToken, authenticate, isAdmin } = mountMcp(manager, (text) => daemon.confirm(text), focus, (on, minutes) => setDnd(on, minutes), updates);
   const mod = modApi(manager, authenticate, focus, () => [...new Set([...clients].filter((c) => c.authed && c.kind).map((c) => c.kind!))]);
 
   const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
@@ -169,6 +175,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
         if (!manager.mute(m.id, m.muted)) sendTo(c, { t: 'error', message: `no such node: ${m.id}`, id: m.id });
         return;
       case 'dnd': setDnd(m.on, m.minutes); return;
+      case 'update': await updates.apply(); return;
     }
   }
 
@@ -196,7 +203,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
           c.authed = true;
           c.kind = msg.client;
           clearTimeout(authTimer);
-          sendTo(c, { t: 'snapshot', nodes: manager.list(), usage: manager.usage, dnd });
+          sendTo(c, { t: 'snapshot', nodes: manager.list(), usage: manager.usage, dnd, update: updates.status() });
         } else {
           ws.close(4401, 'auth required');
         }
@@ -217,7 +224,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   async function route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://x');
     if (req.method === 'GET' && url.pathname === '/health') {
-      return void res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, pid: process.pid, home: manager.home, version: VERSION }));
+      return void res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, pid: process.pid, home: manager.home, version: VERSION, sha: updates.status().sha }));
     }
     if (req.method === 'POST' && url.pathname === '/hook') return hook(req, res);
     if (await mod(req, res, url.pathname)) return;
@@ -282,6 +289,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     watchers: (id) => [...clients].filter((c) => c.authed && c.focused && c.selected === id).length,
     appConnected,
     dnd: () => dnd,
+    updates,
     async close() {
       for (const c of clients) c.ws.terminate();
       wss.close();

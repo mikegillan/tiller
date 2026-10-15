@@ -9,24 +9,23 @@
 
 Tiller is a local daemon that runs several agent CLI sessions (Claude Code or Pi) as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser. A Claude Code mod or Pi extension loaded into each agent node delivers messages and reports lifecycle events.
 
-## Requirements
-
-- macOS with the Xcode Command Line Tools (`xcode-select --install`); the native app is built with Tauri, which needs them.
-- Node 24 and your chosen agent CLI on your PATH: `claude` (Claude Code), or compatible `pi` (`@earendil-works/pi-coding-agent` 1.2.x). See [docs/harnesses.md](docs/harnesses.md) for Pi setup and limitations.
-- Rust, installed through Homebrew's rustup:
-
-      brew install rustup
-      /opt/homebrew/opt/rustup/bin/rustup-init -y
-
-  Homebrew's rustup is keg-only, so `cargo` is not on your PATH by default. `bin/tl-app` adds `/opt/homebrew/opt/rustup/bin` itself; to run `npm run app:build` or `cargo` from your own shell, add that directory to your PATH (for example `export PATH=/opt/homebrew/opt/rustup/bin:$PATH` in `~/.zshrc`).
-- Optional: `terminal-notifier` (`brew install terminal-notifier`), so clicking a macOS notification selects the node.
-
 ## Install
 
-    npm install && npm link
-    npm run app:build
+On a Mac, clone the repo and run:
 
-`npm install && npm link` puts `tl` (the client), `tld` (the daemon in the foreground) and `tl-app` (the native app) on your PATH. `npm run app:build` builds the browser UI and then the unsigned app, `src-tauri/target/release/bundle/macos/Tiller.app`; the first build compiles the Rust dependencies and takes a few minutes. Without a built app, `tl` opens the browser UI instead, and `tl-app` runs the app in dev mode. Rebuild the app after pulling changes to `ui/` or `src-tauri/`.
+    bin/setup
+
+It checks everything tiller needs, lists what is missing with the exact command for each, asks once, installs those pieces, then runs `npm ci` (which installs exactly what package-lock.json says and leaves it unchanged), `npm link` and `npm run app:build`. It never uses `sudo` and does not edit your shell profile. `bin/setup --no-app` skips Rust and the app build; `bin/setup --harness pi` installs Pi instead of Claude Code when neither is present. Run `tl doctor` (or `bin/setup --check`) later to rerun the checks without changing anything; it prints the fix for anything broken.
+
+What it checks, for reference:
+
+- macOS with the Xcode Command Line Tools (`xcode-select --install`), which Tauri needs to build the native app.
+- Homebrew, and Node 24 or newer (`brew install node`).
+- An agent CLI on your PATH: `claude` (Claude Code, `curl -fsSL https://claude.ai/install.sh | bash`), or `pi` 1.2.x (`npm install -g @earendil-works/pi-coding-agent@~1.2.0`). See [docs/harnesses.md](docs/harnesses.md) for Pi setup and limitations.
+- Rust, through Homebrew's rustup: `brew install rustup`, then `"$(brew --prefix rustup)/bin/rustup" default stable`, which installs the stable toolchain and leaves your shell profile alone. That rustup is keg-only, so `cargo` is not on your PATH by default; `bin/setup` and `bin/tl-app` add it themselves. To run `npm run app:build` or `cargo` from your own shell, add `export PATH="$(brew --prefix rustup)/bin:$PATH"` to `~/.zshrc`.
+- Optional: `terminal-notifier` (`brew install terminal-notifier`), so clicking a macOS notification selects the node.
+- `tl` on your PATH pointing at this checkout. `npm link` puts `tl` (the client), `tld` (the daemon in the foreground) and `tl-app` (the native app) there; if you have another tiller checkout linked, `tl doctor` says where `tl` points.
+- The built app, `src-tauri/target/release/bundle/macos/Tiller.app`. The first build compiles the Rust dependencies and takes a few minutes. Without it, `tl` opens the browser UI instead, and `tl-app` runs the app in dev mode. Rebuild after pulling changes to `ui/` or `src-tauri/` (`npm run app:build`, or rerun `bin/setup`).
 
 ## Use
 
@@ -34,6 +33,7 @@ Tiller is a local daemon that runs several agent CLI sessions (Claude Code or Pi
 - `cd ~/some/repo && tl --harness pi` uses Pi instead of Claude Code; the spawn dialog also offers Pi. Claude Code is not needed for a Pi-only tree.
 - `tl stop` shuts the daemon down and closes every node; the nodes are not resumed on the next start.
 - `tl reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
+- `tl update` updates tiller itself when its checkout is a plain clone of origin's default branch: it fast-forwards to `origin/main` (or whatever `origin/HEAD` names), runs `npm ci` when the package files changed and rebuilds the UI when it changed, then reloads the daemon, which resumes the nodes that were live. A checkout on another branch, with uncommitted changes to tracked files or with local commits is never touched; `tl update --check` fetches and says which case applies. If a step before the restart fails, the checkout goes back to the commit the daemon is running, and an `npm ci` or UI build that had started is run again there, so the packages and the UI match the running daemon. While an update runs it holds `update.lock` in the daemon's home, and `tl reload` refuses to run; a lock left by an interrupted update is cleared at the next check, which reports it. Both forms are for the human: inside an agent node, `tl update` refuses to run and the daemon refuses `--check`. When `src-tauri/` changed and the app is built, it rebuilds the app afterwards and tells you to quit and reopen Tiller. The daemon also checks origin shortly after it starts and every 6 hours, and the app's status bar offers the update; nothing is applied without a click.
 - `tl autostart on|off|status` manages a launchd agent that starts the daemon at login and again after a crash.
 
 Workers that edit code in parallel get their own git worktrees, each on a branch forked from a base branch. The base is a task branch, one per task, named after the repo's convention (`tl spawn --base feature/x`, or `base` on the spawn tool); when none is given and the checkout is on a protected branch (`main`, `master` or the remote's default), tiller makes one named `tl/<slug>` from the worker's title. Merges go into that base and never into a protected branch, so you push the task branch and open a pull request yourself. See [docs/worktrees.md](docs/worktrees.md).
@@ -42,7 +42,7 @@ Workers that edit code in parallel get their own git worktrees, each on a branch
 
 ## Where files live
 
-Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the node registry (`state.json`), per-node files under `nodes/<id>/`, the admin token `tl` uses, `config.json` ([docs/config.md](docs/config.md)), presets under `agents/` and the log `daemon.log`. Each tree of nodes has a session directory, `sessions/<rootId>/`, for notes and the event log ([docs/sessions.md](docs/sessions.md)). The daemon listens on 127.0.0.1, port 7788 unless `TL_PORT` says otherwise.
+Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the node registry (`state.json`), per-node files under `nodes/<id>/`, the admin token `tl` uses, `config.json` ([docs/config.md](docs/config.md)), presets under `agents/`, the log `daemon.log`, and `update.log`, which records each `tl update` step and its output. Each tree of nodes has a session directory, `sessions/<rootId>/`, for notes and the event log ([docs/sessions.md](docs/sessions.md)). The daemon listens on 127.0.0.1, port 7788 unless `TL_PORT` says otherwise.
 
 ## Configuration
 

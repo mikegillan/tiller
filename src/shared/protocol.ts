@@ -261,9 +261,20 @@ export interface RateLimit { kind: string; percentUsed: number; resetsAt?: strin
 /** Account-level Claude usage: the newest non-empty rateLimits any node's mod reported. Limits are per account, so there is one. */
 export interface Usage { rateLimits: RateLimit[]; nodeId: string; at: number }
 
+/**
+ * The daemon's checkout against origin's default branch (`branch`), as the last update check found it. `sha` is the
+ * commit the running daemon started on. Eligible means an update can fast-forward; otherwise `reason` says why not.
+ * `applying` while the update helper runs; `failed` when it gave up before restarting the daemon.
+ */
+export interface UpdateStatus {
+  sha: string; branch?: string; originSha?: string; behind: number; newest?: string; eligible: boolean; reason?: string;
+  checkedAt: number; fetchError?: string; applying?: boolean; failed?: string;
+}
+
 // Daemon -> UI (WebSocket, JSON). One message per line.
 export type ServerMessage =
-  | { t: 'snapshot'; nodes: NodeView[]; usage?: Usage; dnd?: Dnd }
+  | { t: 'snapshot'; nodes: NodeView[]; usage?: Usage; dnd?: Dnd; update?: UpdateStatus }
+  | { t: 'update'; update: UpdateStatus }    // an update check finished, or an update started or failed
   | ({ t: 'dnd' } & Dnd)                     // do not disturb changed
   | { t: 'usage'; usage: Usage }             // a node reported new account-level rate limits
   | { t: 'node'; node: NodeView }            // created or updated (full record)
@@ -308,6 +319,7 @@ export type ClientMessage =
   | { t: 'send'; id: string; text: string; mode?: SendMode } // a message from the human, as `tl send` delivers it; replies sent
   | { t: 'mute'; id: string; muted: boolean }  // the human mutes or unmutes a node's OS notifications
   | { t: 'dnd'; on: boolean; minutes?: number } // do not disturb on (for minutes, else until turned off) or off
+  | { t: 'update' }                            // update the daemon's checkout from origin and restart it, as `tl update` does; error when not eligible
   ;
 
 // Outcome of delivering a message into an agent node (PLAN.md §6).
