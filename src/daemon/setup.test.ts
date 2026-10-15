@@ -70,9 +70,9 @@ describe('bin/setup install', () => {
     rmSync(join(dir, 'terminal-notifier'));
     writeFileSync(join(dir, 'answer'), 'y\n');
     const r = run(['--harness', 'pi', '--no-app'], { TL_SETUP_TTY: join(dir, 'answer') });
-    expect(r.stdout).toContain('Plan:\n  1. npm install -g @earendil-works/pi-coding-agent@~1.2.0\n  2. brew install terminal-notifier\n  3. npm install\n  4. npm link\n');
+    expect(r.stdout).toContain('Plan:\n  1. npm install -g @earendil-works/pi-coding-agent@~1.2.0\n  2. brew install terminal-notifier\n  3. npm ci\n  4. npm link\n');
     const log = readFileSync(join(dir, 'log'), 'utf8').split('\n').filter((l) => !l.startsWith('brew --prefix'));
-    expect(log).toEqual(['npm install -g @earendil-works/pi-coding-agent@~1.2.0', 'brew install terminal-notifier', 'npm install', 'npm link', '']);
+    expect(log).toEqual(['npm install -g @earendil-works/pi-coding-agent@~1.2.0', 'brew install terminal-notifier', 'npm ci', 'npm link', '']);
     expect(r.stdout).toContain('Checking again:');
   });
 });

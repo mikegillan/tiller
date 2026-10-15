@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { agentHome, agentStatus, kickstart } from './autostart.js';
+import { UPDATE_LOG } from './update.js';
 import { harnessFor, isAgentKind, type Harness, type NodeKind } from '../shared/protocol.js';
 
 export interface Health { ok: true; pid: number; home: string; version: string; sha: string }
@@ -23,7 +24,7 @@ export async function findDaemon(port: number, timeoutMs = 500): Promise<Health 
  * Run bin/<name> detached (survives this process and its terminal) with output appended to <home>/<logName>; returns
  * the log path. `onExit` hears its exit code while this process lives.
  */
-function detach(name: string, args: string[], home: string, port: number, env: NodeJS.ProcessEnv = process.env, logName = 'daemon.log', onExit?: (code: number | null) => void): string {
+function detach(name: string, args: string[], home: string, port: number, env: NodeJS.ProcessEnv = process.env, logName = 'daemon.log', onExit?: (code: number | null, signal: NodeJS.Signals | null) => void): string {
   mkdirSync(home, { recursive: true });
   const log = join(home, logName);
   const fd = openSync(log, 'a');
@@ -87,8 +88,8 @@ export function humanEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export const spawnReload = (home: string, port: number): string => detach('tl', ['reload', '--detached'], home, port, humanEnv(process.env));
 
 /** Hand `tl update` to a detached `tl update --detached`, logging to <home>/update.log; returns the log path. */
-export const spawnUpdate = (home: string, port: number, onExit?: (code: number | null) => void): string =>
-  detach('tl', ['update', '--detached'], home, port, humanEnv(process.env), 'update.log', onExit);
+export const spawnUpdate = (home: string, port: number, onExit?: (code: number | null, signal: NodeJS.Signals | null) => void): string =>
+  detach('tl', ['update', '--detached'], home, port, humanEnv(process.env), UPDATE_LOG, onExit);
 
 /**
  * Stop the daemon on `port` with SIGTERM (unlike `tl stop` it keeps the live set, so the new daemon resumes those

@@ -16,6 +16,7 @@ export function StatusBar() {
   const dnd = useStore((s) => s.dnd);
   const quiet = dndActive(dnd, now);
   const upd = useStore((s) => s.update);
+  const asked = useStore((s) => s.updateAsked);
   return (
     <footer className="statusbar" role="status">
       <span className={`conn ${connected ? 'up' : 'down'}`} title={upd && `running ${upd.sha.slice(0, 7)}${upd.eligible ? '' : `; updates off: ${upd.reason}`}${upd.fetchError ? `; last fetch failed: ${upd.fetchError}` : ''}`}>
@@ -32,7 +33,7 @@ export function StatusBar() {
       )}
       {today > 0 && <span title="spent today, all nodes">{fmtUsd(today)} today</span>}
       <span className="spacer" />
-      {upd?.applying ? <span className="update">Updating…</span>
+      {upd?.applying || asked ? <span className="update">Updating…</span>
         : upd?.eligible && upd.behind > 0 && (
           <button className="update" onClick={() => openDialog({ kind: 'update' })} title={`Newest: ${upd.newest}`}>
             Update available ({upd.behind} commit{upd.behind === 1 ? '' : 's'})

@@ -80,7 +80,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   const clients = new Set<Client>();
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
   const focus = (from: string, id: string) => broadcast({ t: 'focus', from, id });
-  const updates = createUpdater({ repo: REPO, onChange: (update) => broadcast({ t: 'update', update }), spawnHelper: (onExit) => spawnUpdate(manager.home, daemon.port, onExit) });
+  const updates = createUpdater({ repo: REPO, home: manager.home, onChange: (update) => broadcast({ t: 'update', update }), spawnHelper: (onExit) => spawnUpdate(manager.home, daemon.port, onExit) });
   const { handler: mcp, publishAdminToken, authenticate, isAdmin } = mountMcp(manager, (text) => daemon.confirm(text), focus, (on, minutes) => setDnd(on, minutes), updates);
   const mod = modApi(manager, authenticate, focus, () => [...new Set([...clients].filter((c) => c.authed && c.kind).map((c) => c.kind!))]);
 

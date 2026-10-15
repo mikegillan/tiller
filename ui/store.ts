@@ -44,6 +44,8 @@ export interface State {
   usage?: Usage;
   /** The daemon's checkout against origin, as its last update check found it. */
   update?: UpdateStatus;
+  /** The human confirmed an update and the daemon has not answered yet. */
+  updateAsked: boolean;
   /** What happened while no client was focused, until dismissed. */
   digest?: { since: number; items: DigestItem[] };
   /** The Diff tab is showing instead of the terminal (for worktree nodes). */
@@ -71,7 +73,7 @@ const stored = (() => { try { return localStorage.getItem('tl.panel') === '1'; }
 let state: State = {
   nodes: {}, order: [], selected: null, session: null, opened: [], collapsed: [], toasts: [], confirms: [],
   connected: false, retry: 0, panel: stored, dialog: null, renaming: null, awaitSpawn: false, diffOpen: false, diff: null, comments: [],
-  transcriptOpen: false, transcript: null, historyOpen: false, history: [], archived: null, removals: 0,
+  transcriptOpen: false, updateAsked: false, transcript: null, historyOpen: false, history: [], archived: null, removals: 0,
 };
 const subs = new Set<() => void>();
 let toastSeq = 0;
@@ -97,6 +99,7 @@ export const openDialog = (dialog: Dialog | null) => update(() => ({ dialog }));
 export const dismissDigest = () => update(() => ({ digest: undefined }));
 export const setRenaming = (renaming: string | null) => update(() => ({ renaming }));
 export const expectSpawn = () => update(() => ({ awaitSpawn: true }));
+export const askUpdate = () => update(() => ({ updateAsked: true }));
 export const toggleCollapsed = (id: string) =>
   update((s) => ({ collapsed: s.collapsed.includes(id) ? without(s.collapsed, id) : [...s.collapsed, id] }));
 export const togglePanel = () => update((s) => {
@@ -153,7 +156,7 @@ export function applyServer(m: ServerMessage) {
       return update(() => ({ usage: m.usage }));
     case 'update':
       if (m.update.failed && m.update.failed !== state.update?.failed) toast(m.update.failed, undefined, 'bad');
-      return update(() => ({ update: m.update }));
+      return update(() => ({ update: m.update, updateAsked: false }));
     case 'node':
       return update((s) => {
         const isNew = !s.order.includes(m.node.id);
@@ -204,6 +207,7 @@ export function applyServer(m: ServerMessage) {
     case 'error':
       // A spawn or follow-up that failed answers only with an error: stop waiting, or the next node anyone spawns gets selected.
       if (state.awaitSpawn) update(() => ({ awaitSpawn: false }));
+      if (state.updateAsked) update(() => ({ updateAsked: false })); // the update was refused before it started
       return toast(m.message, m.id, 'bad');
     case 'digest':
       return update(() => ({ digest: { since: m.since, items: m.items } }));

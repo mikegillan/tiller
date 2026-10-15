@@ -3,7 +3,7 @@ import { isAgentKind, type ClientMessage, type Harness, type NodeKind, type Role
 import { send } from './conn';
 import type { TauriWindow } from './hooks';
 import { Modal } from './Modal';
-import { expectSpawn, openDialog, useStore, type Dialog } from './store';
+import { askUpdate, expectSpawn, openDialog, useStore, type Dialog } from './store';
 import { IN_APP } from './url';
 
 type Spawn = Extract<Dialog, { kind: 'spawn' }>;
@@ -207,7 +207,7 @@ function UpdateDialog() {
         {working > 0 && ` ${working} agent${working === 1 ? ' is' : 's are'} working and will be interrupted, then resumed.`}</p>
       <div className="btns">
         <button className="btn" autoFocus onClick={close}>Cancel</button>
-        <button className="btn primary" onClick={() => { send({ t: 'update' }); close(); }}>Update</button>
+        <button className="btn primary" onClick={() => { send({ t: 'update' }); askUpdate(); close(); }}>Update</button>
       </div>
     </Modal>
   );

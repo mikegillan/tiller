@@ -18,7 +18,7 @@ import { fmtAge } from '../shared/format.js';
 import type { Harness, NodeKind } from '../shared/protocol.js';
 import { mainCheckout, runCommands, WORKTREES_DIR } from './worktree.js';
 import { findDaemon, humanEnv, pickOrchestrator, restartDaemon, spawnReload, startDaemon, upDir, type OrchestratorCandidate } from './up.js';
-import { applyUpdate, REPO } from './update.js';
+import { applyUpdate, lockHolder, REPO, UPDATE_LOCK, UPDATE_LOG } from './update.js';
 
 const usage = () => `tl: control tiller. With no arguments, start the daemon if needed and open the app; tl . opens it on this directory.
 
@@ -334,6 +334,8 @@ switch (cmd) {
     process.env = humanEnv(process.env); // run from a node's terminal, still restart as the human
     const port = daemonPort();
     if (!f.detached) {
+      const updating = lockHolder(join(home, UPDATE_LOCK));
+      if (updating) fail(`an update (pid ${updating.pid}) is changing tiller's checkout and restarts the daemon itself; wait for it (log: ${join(home, UPDATE_LOG)})`);
       const running = await findDaemon(port);
       if (!running) { await startDaemon(home, port).catch((e: Error) => fail(e.message)); console.log('no daemon was running; started it'); break; }
       if (running.home !== home) fail(`daemon pid ${running.pid} uses home ${running.home}, not ${home}; stop it with kill ${running.pid} and run tl reload again`);
@@ -345,13 +347,16 @@ switch (cmd) {
     break;
   }
   case 'update': {
-    process.env = humanEnv(process.env); // run from a node's terminal, still update as the human
-    if (!f.detached) { await call('update', f.check ? {} : { apply: true }); break; }
-    // The detached helper the daemon started: stdout is update.log.
+    if (!f.detached) {
+      if (!f.check && process.env.TL_NODE_ID) fail('update is a human-only operation; run it outside a Tiller node');
+      await call('update', f.check ? {} : { apply: true });
+      break;
+    }
+    // The detached helper the daemon started, with the human's environment: stdout is update.log.
     const port = daemonPort();
     const say = (s: string) => console.log(`${new Date().toISOString()} tl update: ${s}`);
     const notify = (text: string) => { say(text); spawnSync('osascript', ['-e', `display notification ${JSON.stringify(text)} with title "Tiller"`]); };
-    await applyUpdate({ repo: REPO, log: join(home, 'update.log'), restart: () => restartDaemon(home, port, say).then(() => {}), notify })
+    await applyUpdate({ repo: REPO, log: join(home, UPDATE_LOG), lock: join(home, UPDATE_LOCK), restart: () => restartDaemon(home, port, say).then(() => {}), notify })
       .catch((e: Error) => fail(`tl update: ${e.message}`));
     break;
   }
