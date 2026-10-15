@@ -16,22 +16,24 @@ root=$(dirname "$(dirname "$(resolve "$0")")")
 app="$root/src-tauri/target/release/bundle/macos/Tiller.app"
 
 check=0; no_app=0; harness=
+bad_harness() { echo "bin/setup: --harness takes claude or pi" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
     --check) check=1 ;;
     --no-app) no_app=1 ;;
-    --harness) harness=$2; shift ;;
-    --harness=*) harness=${1#--harness=} ;;
+    --harness) [ -n "${2:-}" ] || bad_harness; harness=$2; shift ;;
+    --harness=*) harness=${1#--harness=}; [ -n "$harness" ] || bad_harness ;;
     -h|--help) sed -n 2,3p "$0"; exit 0 ;;
     *) echo "bin/setup: unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
-case $harness in ''|claude|pi) ;; *) echo "bin/setup: --harness takes claude or pi" >&2; exit 2 ;; esac
+case $harness in ''|claude|pi) ;; *) bad_harness ;; esac
 
 BREW_INSTALL='/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 CLAUDE_INSTALL='curl -fsSL https://claude.ai/install.sh | bash'
 PI_INSTALL='npm install -g @earendil-works/pi-coding-agent@~1.2.0'
+RUST_INSTALL='"$(brew --prefix rustup)/bin/rustup" default stable'
 RUST_HINT='export PATH="$(brew --prefix rustup)/bin:$PATH"'
 
 # One line per check: status, item, and the fix when there is one.
@@ -43,11 +45,13 @@ step() { steps+=("$1"); posts+=("${2:-}"); }
 
 # A fresh Homebrew is not on PATH until the user's shell profile says so.
 find_brew() {
-  command -v brew >/dev/null && return
   local d
-  for d in /opt/homebrew/bin /usr/local/bin; do
-    [ -x "$d/brew" ] && { PATH="$d:$PATH"; brew_hint="eval \"\$($d/brew shellenv)\""; return; }
-  done
+  if ! command -v brew >/dev/null; then
+    for d in /opt/homebrew/bin /usr/local/bin; do
+      [ -x "$d/brew" ] && { PATH="$d:$PATH"; brew_hint="eval \"\$($d/brew shellenv)\""; break; }
+    done
+  fi
+  command -v brew >/dev/null && brew_prefix=$(brew --prefix)
 }
 
 major() { local v=${1#v}; echo "${v%%.*}"; }
@@ -98,19 +102,21 @@ check_harness() {
 }
 
 check_rust() {
-  local rb=${brew_prefix:+$(brew --prefix rustup 2>/dev/null)/bin}
-  if command -v cargo >/dev/null; then line ok "Rust ($(command -v cargo))"; return; fi
-  if [ -n "$rb" ] && [ -x "$rb/cargo" ]; then
-    line ok "Rust ($rb/cargo, not on your PATH; for your own shell: $RUST_HINT)"
+  local rb=${brew_prefix:+$(brew --prefix rustup 2>/dev/null)/bin} cargo
+  cargo=$(command -v cargo) || cargo=${rb:+$rb/cargo}
+  # A rustup proxy exists before any toolchain does; RUSTUP_AUTO_INSTALL=0 stops it downloading one.
+  if [ -n "$cargo" ] && [ -x "$cargo" ] && RUSTUP_AUTO_INSTALL=0 "$cargo" --version >/dev/null 2>&1; then
+    if [ "$cargo" = "$(command -v cargo)" ]; then line ok "Rust ($cargo)"
+    else line ok "Rust ($cargo, not on your PATH; for your own shell: $RUST_HINT)"; fi
     return
   fi
-  if [ -n "$rb" ] && [ -x "$rb/rustup-init" ]; then
-    bad missing "Rust toolchain (for the app build; --no-app skips it)" '$(brew --prefix rustup)/bin/rustup-init -y --no-modify-path'
+  if [ -n "$rb" ] && [ -x "$rb/rustup" ]; then
+    bad missing "Rust toolchain (for the app build; --no-app skips it)" "$RUST_INSTALL"
   else
-    bad missing "Rust (for the app build; --no-app skips it)" 'brew install rustup && $(brew --prefix rustup)/bin/rustup-init -y --no-modify-path'
+    bad missing "Rust (for the app build; --no-app skips it)" "brew install rustup && $RUST_INSTALL"
     step "brew install rustup"
   fi
-  step '"$(brew --prefix rustup)/bin/rustup-init" -y --no-modify-path'
+  step "$RUST_INSTALL"
 }
 
 checks() {
@@ -129,8 +135,7 @@ checks() {
   fi
 
   find_brew
-  if command -v brew >/dev/null; then
-    brew_prefix=$(brew --prefix)
+  if [ -n "$brew_prefix" ]; then
     line ok "Homebrew ($brew_prefix)${brew_hint:+, not on your PATH; add: $brew_hint}"
   else
     bad missing Homebrew "$BREW_INSTALL"

@@ -54,6 +54,14 @@ describe('bin/setup --check', () => {
     expect(r.status).toBe(1);
     expect(r.stdout).toMatch(/wrong version\s+Pi 0\.87\.1, the adapter needs 1\.2\.x\s+fix: npm install -g @earendil-works\/pi-coding-agent@~1\.2\.0/);
   });
+
+  it('reports a rustup proxy without a toolchain as missing, without letting it download one', () => {
+    stubs({ node: 'v24.1.0', claude: '2.1.0 (Claude Code)' });
+    writeFileSync(join(dir, 'cargo'), '#!/bin/sh\n[ "$RUSTUP_AUTO_INSTALL" = 0 ] && exit 1\necho cargo 1.90.0\n');
+    const r = run(['--check']);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toMatch(/missing\s+Rust .*fix: brew install rustup && "\$\(brew --prefix rustup\)\/bin\/rustup" default stable/);
+  });
 });
 
 describe('bin/setup install', () => {
