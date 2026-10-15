@@ -1,0 +1,189 @@
+#!/bin/bash
+# Check and install what tiller needs on macOS. `bin/setup --check` (or `tl doctor`) only reports.
+# Usage: bin/setup [--check] [--no-app] [--harness claude|pi]
+# Runs on the stock macOS bash 3.2 and needs no Node.
+
+# Follow symlinks to the real file, then resolve its directory physically.
+resolve() {
+  local f=$1 l
+  while [ -L "$f" ]; do
+    l=$(readlink "$f")
+    case $l in /*) f=$l ;; *) f=$(dirname "$f")/$l ;; esac
+  done
+  echo "$(cd -P "$(dirname "$f")" && pwd)/$(basename "$f")"
+}
+root=$(dirname "$(dirname "$(resolve "$0")")")
+app="$root/src-tauri/target/release/bundle/macos/Tiller.app"
+
+check=0; no_app=0; harness=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --check) check=1 ;;
+    --no-app) no_app=1 ;;
+    --harness) harness=$2; shift ;;
+    --harness=*) harness=${1#--harness=} ;;
+    -h|--help) sed -n 2,3p "$0"; exit 0 ;;
+    *) echo "bin/setup: unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+case $harness in ''|claude|pi) ;; *) echo "bin/setup: --harness takes claude or pi" >&2; exit 2 ;; esac
+
+BREW_INSTALL='/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+CLAUDE_INSTALL='curl -fsSL https://claude.ai/install.sh | bash'
+PI_INSTALL='npm install -g @earendil-works/pi-coding-agent@~1.2.0'
+RUST_HINT='export PATH="$(brew --prefix rustup)/bin:$PATH"'
+
+# One line per check: status, item, and the fix when there is one.
+line() { printf '  %-14s %s%s\n' "$1" "$2" "${3:+   fix: $3}"; }
+failed=0
+bad() { line "$@"; failed=1; }
+steps=(); posts=()
+step() { steps+=("$1"); posts+=("${2:-}"); }
+
+# A fresh Homebrew is not on PATH until the user's shell profile says so.
+find_brew() {
+  command -v brew >/dev/null && return
+  local d
+  for d in /opt/homebrew/bin /usr/local/bin; do
+    [ -x "$d/brew" ] && { PATH="$d:$PATH"; brew_hint="eval \"\$($d/brew shellenv)\""; return; }
+  done
+}
+
+major() { local v=${1#v}; echo "${v%%.*}"; }
+
+check_node() {
+  local n v bn
+  n=$(command -v node) || { bad missing "Node 24 or newer" "brew install node"; [ $check = 1 ] || step "brew install node" check_node_quiet; return; }
+  v=$(node -v 2>/dev/null)
+  if [ "$(major "$v")" -ge 24 ] 2>/dev/null; then line ok "Node $v ($n)"; return; fi
+  bn=${brew_prefix:+$brew_prefix/bin/node}
+  if [ -n "$bn" ] && [ -x "$bn" ] && [ "$bn" != "$n" ] && [ "$(major "$("$bn" -v)")" -ge 24 ] 2>/dev/null; then
+    bad "wrong version" "Node $v at $n shadows Homebrew's $bn ($("$bn" -v))" "put $brew_prefix/bin before $(dirname "$n") in PATH (with nvm: nvm install 24)"
+    return
+  fi
+  bad "wrong version" "Node $v at $n, need 24 or newer" "brew install node"
+  [ $check = 1 ] || step "brew install node" check_node_quiet
+}
+# Run after `brew install node`: stop if an older node still comes first on PATH.
+check_node_quiet() { local f=$failed c=$check r; failed=0; check=1; check_node; r=$failed; failed=$f; check=$c; return $r; }
+
+check_harness() {
+  local c=missing p=missing pv=
+  if command -v claude >/dev/null && claude --version >/dev/null 2>&1; then c=ok; fi
+  if command -v pi >/dev/null; then
+    pv=$(pi --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    case $pv in 1.2.*) p=ok ;; *) p="wrong version" ;; esac
+  fi
+  if [ "$c" = ok ]; then local cv; cv=$(claude --version 2>/dev/null | head -1); line ok "Claude Code ${cv% (Claude Code)}"
+  elif [ -x "$HOME/.local/bin/claude" ]; then c="not on PATH"; line "not on PATH" "Claude Code at ~/.local/bin/claude" 'export PATH="$HOME/.local/bin:$PATH" (add it to ~/.zshrc)'
+  else line missing "Claude Code (claude)" "$CLAUDE_INSTALL"; fi
+  case $p in
+    ok) line ok "Pi $pv" ;;
+    missing) line missing "Pi 1.2.x (pi), optional with Claude Code" "$PI_INSTALL" ;;
+    *) line "wrong version" "Pi ${pv:-unknown}, the adapter needs 1.2.x" "$PI_INSTALL" ;;
+  esac
+  # Which harness must work: the one asked for, else either; if neither, install Claude Code
+  # (or upgrade a Pi that is present but the wrong version).
+  local want=$harness
+  if [ -z "$want" ]; then
+    [ "$c" = ok ] || [ "$p" = ok ] && return
+    want=claude; [ "$p" = "wrong version" ] && want=pi
+  fi
+  if [ $want = claude ] && [ "$c" != ok ]; then
+    failed=1; [ "$c" = missing ] && step "$CLAUDE_INSTALL"
+  elif [ $want = pi ] && [ "$p" != ok ]; then
+    failed=1; step "$PI_INSTALL"
+  fi
+}
+
+check_rust() {
+  local rb=${brew_prefix:+$(brew --prefix rustup 2>/dev/null)/bin}
+  if command -v cargo >/dev/null; then line ok "Rust ($(command -v cargo))"; return; fi
+  if [ -n "$rb" ] && [ -x "$rb/cargo" ]; then
+    line ok "Rust ($rb/cargo, not on your PATH; for your own shell: $RUST_HINT)"
+    return
+  fi
+  if [ -n "$rb" ] && [ -x "$rb/rustup-init" ]; then
+    bad missing "Rust toolchain (for the app build; --no-app skips it)" '$(brew --prefix rustup)/bin/rustup-init -y --no-modify-path'
+  else
+    bad missing "Rust (for the app build; --no-app skips it)" 'brew install rustup && $(brew --prefix rustup)/bin/rustup-init -y --no-modify-path'
+    step "brew install rustup"
+  fi
+  step '"$(brew --prefix rustup)/bin/rustup-init" -y --no-modify-path'
+}
+
+checks() {
+  failed=0; steps=(); posts=(); brew_hint=; brew_prefix=
+  if [ "$(uname)" != Darwin ]; then echo "bin/setup: tiller needs macOS; this is $(uname)." >&2; exit 1; fi
+  line ok macOS
+
+  if xcode-select -p >/dev/null 2>&1; then line ok "Xcode Command Line Tools"
+  else
+    bad missing "Xcode Command Line Tools" "xcode-select --install"
+    if [ $check = 0 ]; then
+      xcode-select --install
+      echo "A dialog is installing the Command Line Tools. Run bin/setup again when it finishes."
+      exit 1
+    fi
+  fi
+
+  find_brew
+  if command -v brew >/dev/null; then
+    brew_prefix=$(brew --prefix)
+    line ok "Homebrew ($brew_prefix)${brew_hint:+, not on your PATH; add: $brew_hint}"
+  else
+    bad missing Homebrew "$BREW_INSTALL"
+    step "$BREW_INSTALL" find_brew
+  fi
+
+  check_node
+  check_harness
+  [ $no_app = 1 ] || check_rust
+
+  if command -v terminal-notifier >/dev/null; then line ok terminal-notifier
+  else line missing "terminal-notifier (optional: clicking a notification selects the node)" "brew install terminal-notifier"; step "brew install terminal-notifier"; fi
+
+  if [ -d "$root/node_modules" ]; then line ok "node_modules"; else bad missing "node_modules in $root" "npm install"; fi
+  step "npm install"
+
+  local tl
+  if ! tl=$(command -v tl); then bad missing "tl on PATH" "npm link (in $root)"
+  elif [ "$(resolve "$tl")" = "$root/bin/tl" ]; then line ok "tl ($tl)"
+  else bad "elsewhere" "tl at $tl points to $(resolve "$tl"), not this checkout" "npm link (in $root)"; fi
+  step "npm link"
+
+  if [ $no_app = 0 ]; then
+    if [ -d "$app" ]; then line ok "Tiller.app built"
+    else line "not built" "Tiller.app (tl uses the browser UI until it is)" "npm run app:build"; fi
+    step 'PATH="$(brew --prefix rustup)/bin:$PATH" npm run app:build'
+  fi
+}
+
+echo "tiller setup: checking $root"
+checks
+if [ $check = 1 ]; then
+  [ $failed = 0 ] && echo "Everything required is in place." || echo "Run bin/setup to install what is missing."
+  exit $failed
+fi
+
+echo
+echo "Plan:"
+for i in "${!steps[@]}"; do printf '  %d. %s\n' $((i + 1)) "${steps[$i]}"; done
+printf 'Run these steps? [y/N] '
+read -r answer < "${TL_SETUP_TTY:-/dev/tty}" || answer=
+case $answer in y|Y|yes|YES) ;; *) echo "Nothing changed."; exit 1 ;; esac
+
+cd "$root" || exit 1
+for i in "${!steps[@]}"; do
+  echo; echo "==> ${steps[$i]}"
+  bash -c "${steps[$i]}"; rc=$?
+  if [ $rc != 0 ]; then echo; echo "Failed (exit $rc): ${steps[$i]}" >&2; exit 1; fi
+  if [ -n "${posts[$i]}" ] && ! ${posts[$i]}; then echo "Stopped after: ${steps[$i]}" >&2; exit 1; fi
+done
+
+echo; echo "Checking again:"
+saved_check=$check; check=1; checks; check=$saved_check
+[ $failed = 0 ] || { echo "Some checks still fail; see the fixes above."; exit 1; }
+echo
+echo "Next: run tl to start tiller; tl autostart on starts the daemon at login."
