@@ -32,6 +32,7 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
   tl update [--check]                                 update tiller's checkout from origin's default branch (fast-forward only),
                                                       rebuild what changed and reload; --check only fetches and reports
   tl autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
+  tl doctor [--no-app] [--harness claude|pi]          check what tiller needs (bin/setup --check) and print the fix for anything missing
   tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--harness claude|pi] [--worktree [--base B]]
                                                       start an agent node and show it in the app; --harness pi starts a Pi node
   tl ps | list                                        show nodes
@@ -114,7 +115,7 @@ const { values: f, positionals: pos } = parseArgs({
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
     'permission-mode': { type: 'string' }, role: { type: 'string' }, harness: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
-    worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, check: { type: 'boolean' }, stat: { type: 'boolean' }, preset: { type: 'string' },
+    worktree: { type: 'boolean' }, 'no-app': { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, check: { type: 'boolean' }, stat: { type: 'boolean' }, preset: { type: 'string' },
     after: { type: 'string', multiple: true }, 'after-success': { type: 'string', multiple: true }, now: { type: 'boolean' },
     fork: { type: 'string' }, root: { type: 'string' }, session: { type: 'string' }, base: { type: 'string' },
   },
@@ -395,6 +396,10 @@ switch (cmd) {
     tick();
     if (f.follow) setInterval(tick, 1000);
     break;
+  }
+  case 'doctor': {
+    const r = spawnSync(join(dirname(dirname(import.meta.dirname)), 'bin/setup'), ['--check', ...rest], { stdio: 'inherit' });
+    process.exit(r.status ?? 1);
   }
   case 'help': console.log(usage()); break;
   default: fail(usage());
