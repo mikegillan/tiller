@@ -55,8 +55,9 @@ export async function headInfo(cwd: string): Promise<{ base: string; baseSha: st
   return { base: name || baseSha, baseSha };
 }
 
-/** Branches that never receive a merge: the configured ones and origin's default branch, when it is known. */
+/** Branches that never receive a merge: the configured ones and origin's default branch, when it is known. An empty list protects nothing. */
 export async function protectedBranches(repo: string, configured: string[]): Promise<string[]> {
+  if (!configured.length) return [];
   const remote = (await git(repo, ['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD']).catch(() => '')).trim();
   return remote.startsWith('origin/') ? [...configured, remote.slice('origin/'.length)] : configured;
 }

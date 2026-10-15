@@ -9,7 +9,7 @@ The app is a small Tauri v2 shell that hosts the browser UI in a native window a
     npm run app:build    # unsigned src-tauri/target/release/bundle/macos/Tiller.app
     bin/tl-app           # opens that app, or runs `npm run app:dev` if it is not built
 
-`tl` opens the app on the current directory's orchestrator, or switches a running app to it. On launch the app finds the daemon the way `tl` does (`TL_PORT`, then `~/.tiller/port`, then 7788). If none answers, it starts `bin/tld` detached, using the repo path that `tl` records in `~/.tiller/repo` the last time it started a daemon, then opens the UI with the admin token. The daemon keeps running when the app quits.
+`tl` opens the app, or brings a running app to the front; `tl .` (or `tl <path>`) opens it on that directory's orchestrator, or switches a running app to it. On launch the app finds the daemon the way `tl` does (`TL_PORT`, then `~/.tiller/port`, then 7788). If none answers, it starts `bin/tld` detached, using the repo path that `tl` records in `~/.tiller/repo` the last time it started a daemon, then opens the UI with the admin token. The daemon keeps running when the app quits.
 
 The app has a menu bar item: a dot that is green when nothing needs you, amber when a node is waiting or blocked, and red when a node's turn errored. Its menu lists the nodes that need you (clicking one selects it), Open tiller, and Do not disturb 1 h.
 

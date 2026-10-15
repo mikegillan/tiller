@@ -1,10 +1,10 @@
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { NodeManager } from './manager.js';
-import { findDaemon, humanEnv, pickOrchestrator, type OrchestratorCandidate } from './up.js';
+import { findDaemon, humanEnv, pickOrchestrator, upDir, type OrchestratorCandidate } from './up.js';
 
 const node = (o: Partial<OrchestratorCandidate>): OrchestratorCandidate => ({ id: 'x', title: 't', kind: 'claude', parentId: null, cwd: '/repo', createdAt: 1, ...o });
 
@@ -42,6 +42,24 @@ describe('pickOrchestrator, exited', () => {
     const nodes = [node({ id: 'live' }), node({ id: 'd1', exited: true, createdAt: 2 }), node({ id: 'd2', exited: true, createdAt: 9 }), node({ id: 'kid', exited: true, parentId: 'p', createdAt: 99 })];
     expect(pickOrchestrator(nodes, '/repo', true)?.id).toBe('d2');
     expect(pickOrchestrator(nodes, '/repo')?.id).toBe('live');
+  });
+});
+
+describe('upDir', () => {
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'tl-updir-')));
+  mkdirSync(join(tmp, 'repo'));
+  writeFileSync(join(tmp, 'file'), '');
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+  it('opens no directory without a path or a directory flag', () => expect(upDir(undefined, false, tmp)).toBeUndefined());
+  it('resolves a path against cwd, and a directory flag alone to cwd', () => {
+    expect(upDir('.', false, tmp)).toBe(tmp);
+    expect(upDir('repo', false, tmp)).toBe(join(tmp, 'repo'));
+    expect(upDir(undefined, true, join(tmp, 'repo'))).toBe(join(tmp, 'repo'));
+  });
+  it('expands ~ to the home directory', () => expect(upDir('~/repo', false, '/', tmp)).toBe(join(tmp, 'repo')));
+  it('fails on a missing path or a file', () => {
+    expect(() => upDir('nope', false, tmp)).toThrow(`no such directory: ${join(tmp, 'nope')}`);
+    expect(() => upDir('file', false, tmp)).toThrow(`not a directory: ${join(tmp, 'file')}`);
   });
 });
 

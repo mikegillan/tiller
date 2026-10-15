@@ -460,12 +460,32 @@ describe('git state and merge', () => {
     config({ protected: [] });
     expect((await m.merge(v.id)).base).toBe('main');
 
+    config({});
     g(repo, 'update-ref', 'refs/remotes/origin/trunk', 'HEAD');
     g(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/trunk');
     g(repo, 'branch', 'trunk');
     const t = await spawnW({ base: 'trunk' });
     commit(t.cwd, 't.txt');
     await expect(m.merge(t.id)).rejects.toThrow('refusing to merge into protected branch trunk');
+  });
+
+  it('an explicit empty protected list leaves origin\'s default branch unprotected; unset, main is protected', async () => {
+    setup();
+    g(repo, 'branch', '-m', 'main');
+    g(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+    g(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+    config({ protected: [] });
+    const v = await spawnW();
+    expect(v.worktree!.base).toBe('main');
+    commit(v.cwd, 'a.txt');
+    expect((await m.merge(v.id)).base).toBe('main');
+
+    config({});
+    const t = await spawnW({ title: 'x' });
+    expect(t.worktree!.base).toBe('tl/x');
+    const u = await spawnW({ base: 'main' });
+    commit(u.cwd, 'u.txt');
+    await expect(m.merge(u.id)).rejects.toThrow('refusing to merge into protected branch main');
   });
 });
 
