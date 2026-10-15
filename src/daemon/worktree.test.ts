@@ -389,6 +389,63 @@ describe('git state and merge', () => {
     expect(g(repo, 'rev-parse', 'dev')).toBe(g(repo, 'rev-parse', `tl/${f.id}`));
   });
 
+  /** Lift vitest's commit.gpgsign=false override and hide the user's global and system config, so the repo's config decides. */
+  const repoConfigOnly = () => {
+    const global = join(home, 'empty.gitconfig');
+    writeFileSync(global, '');
+    vi.stubEnv('GIT_CONFIG_COUNT', '0');
+    vi.stubEnv('GIT_CONFIG_GLOBAL', global);
+    vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
+  };
+  /** ssh signing with a throwaway key file (no agent) and commit.gpgsign on; returns the key's path. */
+  const sshSigning = () => {
+    const key = join(home, 'key');
+    execFileSync('ssh-keygen', ['-t', 'ed25519', '-N', '', '-f', key, '-q']);
+    writeFileSync(join(home, 'allowed_signers'), `t@example.com ${readFileSync(`${key}.pub`, 'utf8')}`);
+    for (const [k, v] of [['gpg.format', 'ssh'], ['user.signingkey', key], ['gpg.ssh.allowedSignersFile', join(home, 'allowed_signers')], ['commit.gpgsign', 'true']]) g(repo, 'config', k!, v!);
+    return key;
+  };
+  const signed = (sha: string) => g(repo, 'cat-file', '-p', sha).split('\n\n')[0]!.includes('\ngpgsig ');
+
+  it('signs merge and squash commits when the repo sets commit.gpgsign', async () => {
+    setup();
+    repoConfigOnly();
+    sshSigning();
+    const v = await spawnW();
+    commit(v.cwd, 'a.txt');
+    const merged = (await m.merge(v.id)).sha;
+    config({ mergeStyle: 'squash' });
+    const s = await spawnW();
+    commit(s.cwd, 'b.txt');
+    const squashed = (await m.merge(s.id)).sha;
+    for (const sha of [merged, squashed]) {
+      expect(signed(sha)).toBe(true);
+      execFileSync('git', ['-C', repo, 'verify-commit', sha], { stdio: 'pipe' }); // throws on a bad or missing signature
+    }
+  });
+
+  it('leaves the merge commit unsigned when commit.gpgsign is unset', async () => {
+    setup();
+    repoConfigOnly();
+    g(repo, 'config', '--unset', 'commit.gpgsign');
+    const v = await spawnW();
+    commit(v.cwd, 'a.txt');
+    expect(signed((await m.merge(v.id)).sha)).toBe(false);
+  });
+
+  it('refuses the merge with git\'s error when signing fails, leaving base where it was', async () => {
+    setup();
+    repoConfigOnly();
+    const key = sshSigning();
+    const v = await spawnW();
+    commit(v.cwd, 'a.txt');
+    g(repo, 'config', 'user.signingkey', `${key}.missing`);
+    const before = g(repo, 'rev-parse', 'dev');
+    await expect(m.merge(v.id)).rejects.toThrow(/^git commit-tree failed: .*key\.missing/s);
+    expect(g(repo, 'rev-parse', 'dev')).toBe(before);
+    expect(m.view(v.id)!.status.git?.mergedAt).toBeUndefined();
+  });
+
   it('a squash-merged branch still counts as merged after a daemon restart', async () => {
     setup();
     config({ merge: 'squash' });
