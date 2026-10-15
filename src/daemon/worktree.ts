@@ -261,7 +261,8 @@ export class MergeConflict extends Error {
  * commit even when a fast-forward would do; squash makes one commit on base with the branch's changes; ff-only moves
  * base only when it has not moved since the branch left it. Where base is checked out, that checkout must have no
  * uncommitted changes to tracked files and is fast-forwarded to the result; elsewhere the ref moves atomically, and
- * only if base is still where it was. Returns base's new sha.
+ * only if base is still where it was. The merge or squash commit is signed when the repo's git config sets commit.gpgsign.
+ * Returns base's new sha.
  */
 export async function mergeInto(repo: string, branch: string, base: string, style: MergeStyle, subject: string): Promise<string> {
   const ref = `refs/heads/${base}`;
@@ -276,7 +277,9 @@ export async function mergeInto(repo: string, branch: string, base: string, styl
     if (conflicts.length) throw new MergeConflict(`merge refused, nothing changed: ${branch} conflicts with ${base} in ${conflicts.join(', ')}`, conflicts);
     const log = style === 'squash' ? await git(repo, ['log', '--reverse', '--format=* %s', `${baseTip}..${tip}`]) : '';
     const parents = style === 'merge' ? ['-p', baseTip, '-p', tip] : ['-p', baseTip];
-    next = (await git(repo, ['commit-tree', tree, ...parents, '-m', subject, ...(log ? ['-m', log.trim()] : [])])).trim();
+    // commit-tree ignores commit.gpgsign, so honour it here; a signing failure throws before base moves.
+    const sign = (await git(repo, ['config', '--type=bool', '--default=false', '--get', 'commit.gpgsign'])).trim() === 'true';
+    next = (await git(repo, ['commit-tree', ...(sign ? ['-S'] : []), tree,...parents, '-m', subject, ...(log ? ['-m', log.trim()] : [])])).trim();
   }
   const checkout = (await listWorktrees(repo)).find((e) => e.branch === base);
   if (checkout) {
