@@ -196,6 +196,23 @@ function ForkDialog({ d }: { d: Fork }) {
   );
 }
 
+function UpdateDialog() {
+  const upd = useStore((s) => s.update);
+  const working = useStore((s) => Object.values(s.nodes).filter((n) => isAgentKind(n.kind) && !n.status.exited && n.status.state === 'working').length);
+  if (!upd) return null;
+  return (
+    <Modal title="Update tiller?" onClose={close}>
+      <p>{upd.behind} new commit{upd.behind === 1 ? '' : 's'} on origin/{upd.branch}, the newest: <b>{upd.newest}</b></p>
+      <p>The checkout is fast-forwarded, what changed is rebuilt and the daemon restarts; the nodes that were live are resumed.
+        {working > 0 && ` ${working} agent${working === 1 ? ' is' : 's are'} working and will be interrupted, then resumed.`}</p>
+      <div className="btns">
+        <button className="btn" autoFocus onClick={close}>Cancel</button>
+        <button className="btn primary" onClick={() => { send({ t: 'update' }); close(); }}>Update</button>
+      </div>
+    </Modal>
+  );
+}
+
 export function Dialogs() {
   const d = useStore((s) => s.dialog);
   if (d?.kind === 'spawn') return <SpawnDialog d={d} />;
@@ -203,5 +220,6 @@ export function Dialogs() {
   if (d?.kind === 'restart') return <RestartDialog id={d.id} />;
   if (d?.kind === 'followup') return <FollowupDialog id={d.id} title={d.title} />;
   if (d?.kind === 'fork') return <ForkDialog d={d} />;
+  if (d?.kind === 'update') return <UpdateDialog />;
   return null;
 }

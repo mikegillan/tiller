@@ -1,7 +1,7 @@
 // `tl autostart`: a launchd user agent that starts bin/tld at login and relaunches it after a crash, but not after a
 // clean exit such as `tl stop`.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,6 +45,14 @@ ${env}
 </dict>
 </plist>
 `;
+}
+
+/** The TL_HOME the agent's plist gives the daemon, or undefined without a plist. */
+export function agentHome(path = plistPath()): string | undefined {
+  let text: string;
+  try { text = readFileSync(path, 'utf8'); } catch { return undefined; }
+  const m = /<key>TL_HOME<\/key>\s*<string>([^<]*)<\/string>/.exec(text);
+  return m?.[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
 
 const target = (label: string) => `gui/${process.getuid!()}/${label}`;

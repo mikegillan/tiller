@@ -6,6 +6,8 @@ import { IN_APP, token } from './url';
 
 let ws: WebSocket | undefined;
 let attempt = 0;
+/** The daemon's sha when this page loaded; a daemon on another sha (after an update) serves a new UI bundle. */
+let loadedSha: string | undefined;
 
 export function send(m: ClientMessage) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
@@ -32,6 +34,10 @@ function open() {
   sock.onmessage = (e) => {
     let m: ServerMessage;
     try { m = JSON.parse(String(e.data)); } catch { return; }
+    if (m.t === 'snapshot' && m.update?.sha) {
+      loadedSha ??= m.update.sha;
+      if (m.update.sha !== loadedSha) return location.reload();
+    }
     if (m.t === 'data') getTerm(m.id)?.term.write(m.data);
     else if (m.t === 'notify') handleNotify(m);
     else applyServer(m);

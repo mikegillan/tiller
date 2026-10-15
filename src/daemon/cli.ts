@@ -11,13 +11,14 @@ import { listPresets } from './presets.js';
 import { SPAWN_FIELDS, spawnKind } from './spawnfields.js';
 import { setProjectTrust } from './trust.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
-import { agentStatus, install, kickstart, LABEL, TLD, plistPath, uninstall } from './autostart.js';
+import { agentStatus, install, LABEL, TLD, plistPath, uninstall } from './autostart.js';
 import { buildChildEnv, loginShellPath } from './pty.js';
 import { formatEvent, listSessions, parseSince, readEvents, sessionDir, type SessionEvent } from './sessions.js';
 import { fmtAge } from '../shared/format.js';
 import type { Harness, NodeKind } from '../shared/protocol.js';
 import { mainCheckout, runCommands, WORKTREES_DIR } from './worktree.js';
-import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, upDir, waitForDaemon, type OrchestratorCandidate } from './up.js';
+import { findDaemon, humanEnv, pickOrchestrator, restartDaemon, spawnReload, startDaemon, upDir, type OrchestratorCandidate } from './up.js';
+import { applyUpdate, REPO } from './update.js';
 
 const usage = () => `tl: control tiller. With no arguments, start the daemon if needed and open the app; tl . opens it on this directory.
 
@@ -28,6 +29,8 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
   tl status | stop                                    show or stop the daemon (tld runs it in the foreground); stop also means
                                                       the nodes are not resumed on the next start
   tl reload                                           restart the daemon on the current code and resume the nodes that were live
+  tl update [--check]                                 update tiller's checkout from origin's default branch (fast-forward only),
+                                                      rebuild what changed and reload; --check only fetches and reports
   tl autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
   tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--harness claude|pi] [--worktree [--base B]]
                                                       start an agent node and show it in the app; --harness pi starts a Pi node
@@ -111,7 +114,7 @@ const { values: f, positionals: pos } = parseArgs({
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
     'permission-mode': { type: 'string' }, role: { type: 'string' }, harness: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
-    worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' }, preset: { type: 'string' },
+    worktree: { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, check: { type: 'boolean' }, stat: { type: 'boolean' }, preset: { type: 'string' },
     after: { type: 'string', multiple: true }, 'after-success': { type: 'string', multiple: true }, now: { type: 'boolean' },
     fork: { type: 'string' }, root: { type: 'string' }, session: { type: 'string' }, base: { type: 'string' },
   },
@@ -336,19 +339,19 @@ switch (cmd) {
       console.log(`reloading daemon; the new one resumes the nodes that were live; log in ${spawnReload(home, port)}`);
       break;
     }
-    // The detached helper: stdout is daemon.log. SIGTERM, unlike `tl stop`, keeps the live set for the new daemon to resume.
-    const say = (s: string) => console.log(`tl reload: ${s}`);
-    const old = await findDaemon(port);
-    if (old) {
-      say(`stopping daemon pid ${old.pid}`);
-      process.kill(old.pid, 'SIGTERM');
-      for (const end = Date.now() + 10_000; await findDaemon(port); await new Promise((r) => setTimeout(r, 200)))
-        if (Date.now() > end) fail(`tl reload: daemon pid ${old.pid} did not stop`);
-    }
-    const agent = agentStatus().loaded;
-    if (agent) kickstart(); // keep the daemon under launchd when autostart is on
-    const h = await (agent ? waitForDaemon(port, join(home, 'daemon.log')) : startDaemon(home, port)).catch((e: Error) => fail(`tl reload: ${e.message}`));
-    say(`started daemon pid ${h.pid}${agent ? ' through launchd' : ''}; it resumes the nodes that were live`);
+    // The detached helper: stdout is daemon.log.
+    await restartDaemon(home, port, (s) => console.log(`tl reload: ${s}`)).catch((e: Error) => fail(`tl reload: ${e.message}`));
+    break;
+  }
+  case 'update': {
+    process.env = humanEnv(process.env); // run from a node's terminal, still update as the human
+    if (!f.detached) { await call('update', f.check ? {} : { apply: true }); break; }
+    // The detached helper the daemon started: stdout is update.log.
+    const port = daemonPort();
+    const say = (s: string) => console.log(`${new Date().toISOString()} tl update: ${s}`);
+    const notify = (text: string) => { say(text); spawnSync('osascript', ['-e', `display notification ${JSON.stringify(text)} with title "Tiller"`]); };
+    await applyUpdate({ repo: REPO, log: join(home, 'update.log'), restart: () => restartDaemon(home, port, say).then(() => {}), notify })
+      .catch((e: Error) => fail(`tl update: ${e.message}`));
     break;
   }
   case 'autostart': {

@@ -52,6 +52,9 @@
 .statusbar .dnd { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
 .statusbar .dnd:hover { color: var(--fg); }
 .statusbar .dnd.on { color: var(--needs); }
+.statusbar .update { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; }
+.statusbar button.update { cursor: pointer; }
+.statusbar button.update:hover { text-decoration: underline; }
 
 /* Diff tab: a worktree node's changes, over the terminal (which stays mounted and measurable underneath). */
 .seg.tabs { grid-template-columns: none; grid-auto-flow: column; flex: none; }

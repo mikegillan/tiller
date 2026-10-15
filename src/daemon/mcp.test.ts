@@ -345,7 +345,7 @@ describe('mcp api', () => {
       return c;
     };
     const human = await connect('human', admin);
-    expect((await human.listTools()).tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'dnd', 'followup', 'history', 'list_nodes', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'transcript', 'withdraw', 'worktrees', 'write']);
+    expect((await human.listTools()).tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'dnd', 'followup', 'history', 'list_nodes', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'transcript', 'update', 'withdraw', 'worktrees', 'write']);
     await human.close();
     const client = await connect(id, manager.tokenFor(id));
     const { tools } = await client.listTools();

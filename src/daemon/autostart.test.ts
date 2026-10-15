@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { LABEL, plist } from './autostart.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { agentHome, LABEL, plist } from './autostart.js';
 
 describe('plist', () => {
   it('installs com.tiller.daemon', () => {
@@ -15,5 +18,16 @@ describe('plist', () => {
     expect(flat).toContain('<key>RunAtLoad</key><true/>');
     expect(flat).toContain('<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>');
     expect(flat).toContain('<key>StandardOutPath</key><string>/h/daemon.log</string><key>StandardErrorPath</key><string>/h/daemon.log</string>');
+  });
+});
+
+describe('agentHome', () => {
+  it('reads TL_HOME back from a plist, so reload uses launchd only for the home it serves', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tl-plist-'));
+    const path = join(dir, 'a.plist');
+    writeFileSync(path, plist({ label: 'x', program: '/tld', env: { TL_HOME: '/h & co', PATH: '/bin' }, log: '/l' }));
+    expect(agentHome(path)).toBe('/h & co');
+    expect(agentHome(join(dir, 'missing.plist'))).toBeUndefined();
+    rmSync(dir, { recursive: true });
   });
 });
