@@ -34,6 +34,7 @@ Tiller is a local daemon that runs several agent CLI sessions (Claude Code or Pi
 - `cd ~/some/repo && tl --harness pi` uses Pi instead of Claude Code; the spawn dialog also offers Pi. Claude Code is not needed for a Pi-only tree.
 - `tl stop` shuts the daemon down and closes every node; the nodes are not resumed on the next start.
 - `tl reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
+- `tl update` updates tiller itself when its checkout is a plain clone of origin's default branch: it fast-forwards to `origin/main` (or whatever `origin/HEAD` names), runs `npm install` when the lockfile changed and rebuilds the UI when it changed, then reloads the daemon, which resumes the nodes that were live. A checkout on another branch, with uncommitted changes to tracked files or with local commits is never touched; `tl update --check` fetches and says which case applies. If a step before the restart fails, the checkout goes back to the commit the daemon is running. When `src-tauri/` changed and the app is built, it rebuilds the app afterwards and tells you to quit and reopen Tiller. The daemon also checks origin shortly after it starts and every 6 hours, and the app's status bar offers the update; nothing is applied without a click.
 - `tl autostart on|off|status` manages a launchd agent that starts the daemon at login and again after a crash.
 
 Workers that edit code in parallel get their own git worktrees, each on a branch forked from a base branch. The base is a task branch, one per task, named after the repo's convention (`tl spawn --base feature/x`, or `base` on the spawn tool); when none is given and the checkout is on a protected branch (`main`, `master` or the remote's default), tiller makes one named `tl/<slug>` from the worker's title. Merges go into that base and never into a protected branch, so you push the task branch and open a pull request yourself. See [docs/worktrees.md](docs/worktrees.md).
@@ -42,7 +43,7 @@ Workers that edit code in parallel get their own git worktrees, each on a branch
 
 ## Where files live
 
-Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the node registry (`state.json`), per-node files under `nodes/<id>/`, the admin token `tl` uses, `config.json` ([docs/config.md](docs/config.md)), presets under `agents/` and the log `daemon.log`. Each tree of nodes has a session directory, `sessions/<rootId>/`, for notes and the event log ([docs/sessions.md](docs/sessions.md)). The daemon listens on 127.0.0.1, port 7788 unless `TL_PORT` says otherwise.
+Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the node registry (`state.json`), per-node files under `nodes/<id>/`, the admin token `tl` uses, `config.json` ([docs/config.md](docs/config.md)), presets under `agents/`, the log `daemon.log` and `update.log`, which records each `tl update` step and its output. Each tree of nodes has a session directory, `sessions/<rootId>/`, for notes and the event log ([docs/sessions.md](docs/sessions.md)). The daemon listens on 127.0.0.1, port 7788 unless `TL_PORT` says otherwise.
 
 ## Configuration
 
