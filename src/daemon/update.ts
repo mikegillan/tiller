@@ -65,8 +65,9 @@ export function planSteps(changed: string[], appBuilt: boolean): { install: bool
 
 /**
  * The helper's work, logging to `log`: fast-forward to origin's branch, npm install and rebuild the UI as the changed
- * paths need, then `restart`. A failure before the restart moves the checkout back to the old sha (git reset --keep),
- * so the code on disk matches the running daemon, and throws without restarting. After the restart, an app build runs
+ * paths need, then `restart`. A failure before the restart moves the checkout back to the old sha (git reset --keep)
+ * and reruns the npm steps that had started, so the code, packages and UI bundle on disk match the running daemon,
+ * then throws without restarting. After the restart, an app build runs
  * when src-tauri/ changed and Tiller.app exists; `notify` tells the human how that went.
  */
 export async function applyUpdate(o: {
@@ -89,16 +90,26 @@ export async function applyUpdate(o: {
   if (!s.behind) { say('already up to date'); return; }
   const old = s.sha;
   let plan: ReturnType<typeof planSteps>;
+  /** The npm steps that started, so a rollback can redo them at the old sha. */
+  const started: string[][] = [];
+  const step = (args: string[]) => { started.push(args); run('npm', args); };
   try {
     run('git', ['merge', '--ff-only', `origin/${s.branch}`]);
     const changed = (await git(o.repo, 'diff', '--name-only', old, 'HEAD')).split('\n').filter(Boolean);
     plan = planSteps(changed, existsSync(join(o.repo, APP_BUNDLE)));
     say(`updated ${old.slice(0, 7)}..${(await git(o.repo, 'rev-parse', 'HEAD')).slice(0, 7)}, ${changed.length} file(s) changed`);
-    if (plan.install) run('npm', ['install']);
-    if (plan.ui) run('npm', ['run', 'ui:build']);
+    if (plan.install) step(['install']);
+    if (plan.ui) step(['run', 'ui:build']);
   } catch (err) {
     say(`${(err as Error).message}; moving the checkout back to ${old.slice(0, 7)} and leaving the daemon running`);
-    try { run('git', ['reset', '--keep', old]); } catch (e) { say(`rollback failed: ${(e as Error).message}`); }
+    try {
+      run('git', ['reset', '--keep', old]);
+      // Best effort: node_modules and ui/dist go back to matching the code the running daemon serves.
+      for (const args of started) {
+        say(`rollback: rerunning npm ${args.join(' ')} at ${old.slice(0, 7)}`);
+        try { run('npm', args); } catch (e) { say(`rollback: ${(e as Error).message}`); }
+      }
+    } catch (e) { say(`rollback failed: ${(e as Error).message}`); }
     throw err;
   }
   await o.restart();

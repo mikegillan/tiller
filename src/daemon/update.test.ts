@@ -113,6 +113,22 @@ describe('applyUpdate', () => {
     expect(text).toContain('npm run ui:build failed (exit 1); moving the checkout back');
   });
 
+  it('rebuilds the UI at the old sha after rolling back a failed build', async () => {
+    const old = git(work, 'rev-parse', 'HEAD');
+    const log = join(dir, 'update.log');
+    // npm fails on its first run and succeeds after, recording the sha each run saw.
+    const bin = join(dir, 'binflaky');
+    mkdirSync(bin);
+    const [builds, failed] = [join(dir, 'builds'), join(dir, 'failed')];
+    writeFileSync(join(bin, 'npm'), `#!/bin/sh\necho "$* at $(git rev-parse HEAD)" >> ${builds}\nif [ ! -e ${failed} ]; then touch ${failed}; exit 1; fi\n`);
+    chmodSync(join(bin, 'npm'), 0o755);
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+    await expect(applyUpdate({ repo: work, log, env, restart: async () => {}, notify: () => {} })).rejects.toThrow('npm run ui:build failed');
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(old);
+    expect(readFileSync(builds, 'utf8').trim().split('\n')).toEqual([`run ui:build at ${git(work, 'rev-parse', 'origin/main')}`, `run ui:build at ${old}`]);
+    expect(readFileSync(log, 'utf8')).toContain(`rollback: rerunning npm run ui:build at ${old.slice(0, 7)}`);
+  });
+
   it('fast-forwards, builds the UI without npm install, then restarts', async () => {
     const log = join(dir, 'update.log');
     let restarted = false;
