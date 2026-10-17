@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { token } from './url';
+import { send } from './conn';
+import { useStore } from './store';
 import { buildChanges, codexRecommendations, efforts, formatValue, groups, inputValue, profileFields, type Field, type Scope, type SettingsSnapshot } from './settings-model';
 import './settings.css';
 
@@ -17,6 +19,7 @@ async function request(scope: Scope, nodeId: string | undefined, body?: unknown,
 }
 
 export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: () => void }) {
+  const usageSources = useStore((s) => (s as unknown as { usageSources?: { id: string; tool: 'claude' | 'codex' | 'pi'; installed: boolean | null; detail?: string; checkedAt: number }[] }).usageSources);
   const dialog = useRef<HTMLDialogElement>(null);
   const [scope, setScope] = useState<Scope>(nodeId ? 'project' : 'home');
   const [snapshot, setSnapshot] = useState<SettingsSnapshot>();
@@ -104,6 +107,14 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
       {error && <div className="settings-notice settings-error" role="alert"><p>{error}</p>{conflict ? <><p>The file changed since it was loaded. Reload discards your draft and loads the latest values.</p><button className="btn" disabled={busy} onClick={() => setReload((n) => n + 1)}>Reload latest settings</button></> : !snapshot && <button className="btn" disabled={busy} onClick={() => setReload((n) => n + 1)}>Retry</button>}</div>}
       {success && <p className="settings-success" role="status">{success}</p>}
       {!snapshot && busy && <p role="status">Loading settings…</p>}
+      <section className="settings-clis" aria-labelledby="settings-clis-title">
+        <div className="settings-clis-heading"><h3 id="settings-clis-title">Supported CLIs</h3><button className="btn" onClick={() => send({ t: 'usageRefresh' } as unknown as Parameters<typeof send>[0])}>Rescan</button></div>
+        <p>Availability reported by the daemon. This does not check sign-in or credentials.</p>
+        <ul>{(['claude', 'codex', 'pi'] as const).map((tool) => {
+          const source = usageSources?.find((source) => source.tool === tool);
+          return <li key={tool}><strong>{tool}</strong><span>{source?.installed === true ? 'Installed' : source?.installed === false ? 'Not detected' : 'Unknown'}</span>{source?.detail && <small>{source.detail}</small>}</li>;
+        })}</ul>
+      </section>
       {snapshot && <form id="settings-form" onSubmit={(e) => { e.preventDefault(); void save(); }}>
         {sections.map((section) => <details className="settings-section" key={section.title} open={section.title === 'claude task profiles'}><summary>{section.title}</summary>{section.help && <p>{section.help}</p>}{section.title === 'codex task profiles' && <><p>Recommendations: Astra medium for orchestration, Sol medium for implementation, Luna high for exploration, Luna low for mechanical tasks, Sol high for review.</p><button className="btn" type="button" disabled={busy} onClick={() => { setDrafts((d) => ({ ...d, ...codexRecommendations })); setSuccess(''); }}>Stage recommended Codex defaults</button><p>Replaces this draft’s Codex profile values; review and Save to apply.</p></>}{section.fields.map(renderField)}</details>)}
       </form>}

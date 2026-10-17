@@ -38,3 +38,11 @@
   .settings-detail { grid-column: 1; }
   .settings-footer span { width: 100%; }
 }
+
+.settings-clis { margin-top: 20px; }
+.settings-clis-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.settings-clis h3 { margin: 0; font-size: 15px; }
+.settings-clis p { color: var(--dim); margin: 8px 0; }
+.settings-clis ul { list-style: none; margin: 0; padding: 0; }
+.settings-clis li { display: grid; grid-template-columns: 100px 1fr; gap: 4px 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.settings-clis li small { grid-column: 2; color: var(--dim); overflow-wrap: anywhere; }
