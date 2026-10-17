@@ -24,3 +24,20 @@ it('expired windows are stale and model-family windows do not leak to another Cl
   const modelPools = { ...source, rateLimits: [...source.rateLimits, { kind: 'seven_day_opus', percentUsed: 30 }, { kind: 'seven_day_sonnet', percentUsed: 40 }] };
   expect(selectedUsage(node('a', 'claude', 'claude-opus-5-5'), [modelPools])[0].rateLimits.map((l) => l.kind)).toEqual(['5h', 'seven_day_opus']);
 });
+
+it('scopes shared-account read failures to the selected reporter', () => {
+  const shared = { ...source, accountId: 'shared', nodeIds: ['a', 'b'] };
+  const failure: UsageSource = { ...source, id: 'unavailable:claude:a', rateLimits: [], at: undefined, availability: 'unavailable' };
+  expect(selectedUsage(node('a'), [shared, failure])[0].availability).toBe('unavailable');
+  expect(selectedUsage(node('b'), [shared, failure])[0].availability).toBe('available');
+});
+
+it('matches model-family aliases with context suffixes and version variants', () => {
+  const pools = { ...source, rateLimits: [{ kind: 'seven_day_opus', percentUsed: 10 }, { kind: 'seven_day_sonnet', percentUsed: 20 }] };
+  for (const model of ['opus', 'opus[1m]', 'Opus[1M]', 'opus-5-5', 'claude-opus-5-5[1m]']) {
+    expect(selectedUsage(node('a', 'claude', model), [pools])[0].rateLimits.map((l) => l.kind)).toEqual(['seven_day_opus']);
+  }
+  for (const model of ['sonnet', 'sonnet[1m]', 'sonnet-5-5', 'claude-sonnet-5-5[1m]']) {
+    expect(selectedUsage(node('a', 'claude', model), [pools])[0].rateLimits.map((l) => l.kind)).toEqual(['seven_day_sonnet']);
+  }
+});

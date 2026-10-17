@@ -132,3 +132,29 @@ it('ignores empty PATH entries instead of detecting an executable in the daemon 
     expect(JSON.parse(result)).toEqual([false, false, false]);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+it('applies full-read window tombstones and rejects older cached windows after removal', () => {
+  const registry = new UsageRegistry('');
+  const report = { accountId: 'a', poolId: 'codex', scope: 'account' as const, rateLimits: [
+    { kind: 'primary', windowId: 'primary', percentUsed: 10, observedAt: 100 },
+    { kind: 'spend control', windowId: 'individualLimit', percentUsed: 75, observedAt: 100 },
+  ] };
+  registry.record('codex', 'one', [report], 100);
+  registry.record('codex', 'one', usageReportsSchema.parse([{ ...report, rateLimits: [], removedWindows: [{ windowId: 'individualLimit', observedAt: 200 }] }]), 200);
+  expect(registry.sources.find((s) => s.accountId === 'a')?.rateLimits.map((l) => l.windowId)).toEqual(['primary']);
+  registry.record('codex', 'two', [report], 300); // another reporter still caches the removed spend window
+  expect(registry.sources.find((s) => s.accountId === 'a')?.rateLimits.map((l) => l.windowId)).toEqual(['primary']);
+  registry.record('codex', 'one', [{ ...report, rateLimits: [], removedWindows: [{ windowId: 'primary', observedAt: 400 }] }], 400);
+  expect(registry.sources.find((s) => s.accountId === 'a')).toMatchObject({ rateLimits: [], availability: 'unavailable' });
+});
+
+it('keeps a healthy shared-account snapshot available when one reporter fails', () => {
+  const registry = new UsageRegistry('');
+  const report = { accountId: 'shared', scope: 'account' as const, rateLimits: [{ kind: '5h', percentUsed: 45 }] };
+  registry.record('codex', 'failed', [report], 100);
+  registry.record('codex', 'healthy', [report], 200);
+  registry.unavailable('codex', 'failed', 300);
+  expect(registry.sources.find((s) => s.accountId === 'shared')).toMatchObject({ availability: 'available', at: 200, nodeIds: ['failed', 'healthy'] });
+  expect(registry.sources.find((s) => s.id === 'unavailable:codex:failed')?.nodeIds).toEqual(['failed']);
+  expect(registry.sources.some((s) => s.id === 'unavailable:codex:healthy')).toBe(false);
+});

@@ -64,3 +64,14 @@ it('merges nullable IDs into the known mirror pool and retains original per-wind
   ] });
   expect(usage.reports({ rateLimits: { limitId: 'spark', primary: null } }, 400)[0].rateLimits[0]).toMatchObject({ percentUsed: 70, observedAt: 100 });
 });
+
+it('emits a timestamped spend-window tombstone only for an explicit full-read null', () => {
+  const usage = new CodexUsage();
+  usage.reports({ accountId: 'a', rateLimits: { limitId: 'codex', individualLimit: { remainingPercent: 25 } } }, 100);
+  const sparse = usage.reports({ rateLimits: { limitId: 'codex', individualLimit: null } }, 200)[0];
+  expect(sparse.rateLimits).toMatchObject([{ windowId: 'individualLimit', percentUsed: 75, observedAt: 100 }]);
+  expect(sparse.removedWindows).toBeUndefined();
+  expect(usage.reports({ accountId: 'a', rateLimits: { limitId: 'codex', individualLimit: null } }, 300)[0]).toMatchObject({
+    rateLimits: [], removedWindows: [{ windowId: 'individualLimit', observedAt: 300 }],
+  });
+});

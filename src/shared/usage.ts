@@ -7,10 +7,12 @@ export const usageStale = (source: UsageSource, now: number) => source.at !== un
 export function selectedUsage(node: NodeView | undefined, sources: UsageSource[] | undefined, legacy?: Usage): UsageSource[] {
   if (!node || !isAgentKind(node.kind)) return [];
   const tool = harnessFor(node);
+  const modelFamily = /^(?:claude-)?(opus|sonnet)(?:$|-|\[|\s)/i.exec(node.status.model ?? '')?.[1]?.toLowerCase();
+  const reporterUnavailable = sources?.some((s) => s.id.startsWith('unavailable:') && s.tool === tool && s.nodeIds.includes(node.id));
   if (sources !== undefined) return sources.filter((s) => s.tool === tool && s.rateLimits.length > 0 && s.nodeIds.includes(node.id) &&
-    (s.scope === 'account' || s.model === node.status.model)).map((source) => ({ ...source, rateLimits: source.rateLimits.filter((limit) => {
+    (s.scope === 'account' || s.model === node.status.model)).map((source) => ({ ...source, availability: reporterUnavailable ? 'unavailable' : source.availability, rateLimits: source.rateLimits.filter((limit) => {
       const family = /^seven_day_(opus|sonnet)$/.exec(limit.kind)?.[1];
-      return !family || node.status.model === family || node.status.model?.startsWith(`claude-${family}-`);
+      return !family || modelFamily === family;
     }) })).filter((source) => source.rateLimits.length > 0);
   // Older daemons only have one Claude report: safe to show it solely on its reporting node.
   return tool === 'claude' && legacy?.nodeId === node.id ? [{

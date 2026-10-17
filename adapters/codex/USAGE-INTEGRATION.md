@@ -74,7 +74,10 @@ Each normalized window carries `windowId` and `observedAt`. Sparse notifications
 keep the original observation time on cached windows, so the daemon can merge a
 shared account's reports without regressing a newer reading from another agent.
 Nullable IDs resolve to a known mirror pool or the single unambiguous known pool.
-Sparse null spend metadata is retained; full-read null can mark spend unavailable.
+Sparse null spend metadata is retained; a full-read null emits timestamped
+`removedWindows` entries so the registry removes that window and rejects older
+cached copies. Read failures remain scoped to the reporting node; healthy nodes
+sharing an identified account retain their available snapshot.
 
 Removed nodes lose their source bindings. At most one newest unidentified closed
 snapshot per tool is retained; unidentified accounts are never combined. Known

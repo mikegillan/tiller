@@ -302,6 +302,8 @@ export interface UsageSource {
 export interface UsageReport {
   provider?: string; accountId?: string; pool?: string; poolId?: string; model?: string;
   scope: 'account' | 'model'; rateLimits: RateLimit[];
+  /** Explicit full-read removals, ordered against window observations. Omission is a sparse update. */
+  removedWindows?: { windowId: string; observedAt: number }[];
 }
 
 // Daemon -> UI (WebSocket, JSON). One message per line.

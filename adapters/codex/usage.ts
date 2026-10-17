@@ -74,7 +74,8 @@ export class CodexUsage {
       if (spend && typeof spend.remainingPercent === 'number' && Number.isFinite(spend.remainingPercent)) {
         limits.push({ kind: 'spend control', windowId: 'individualLimit', observedAt: spend.observedAt as number, percentUsed: Math.max(0, 100 - spend.remainingPercent), resetsAt: reset(spend.resetsAt) });
       }
-      if (limits.length) changed.push({ provider: 'openai', accountId: this.accountId, poolId: id, pool: text(merged.limitName) ?? id, scope: 'account', rateLimits: limits });
+      const removedWindows = fullRead && bucket.individualLimit === null ? [{ windowId: 'individualLimit', observedAt: now }] : [];
+      if (limits.length || removedWindows.length) changed.push({ provider: 'openai', accountId: this.accountId, poolId: id, pool: text(merged.limitName) ?? id, scope: 'account', rateLimits: limits, ...(removedWindows.length ? { removedWindows } : {}) });
     }
     return changed;
   }

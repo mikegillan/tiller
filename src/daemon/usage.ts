@@ -11,6 +11,7 @@ export const usageReportsSchema = z.array(z.object({
   provider: z.string().min(1).max(128).optional(), accountId: z.string().min(1).max(256).optional(),
   pool: z.string().min(1).max(128).optional(), poolId: z.string().min(1).max(128).optional(), model: z.string().min(1).max(128).optional(),
   scope: z.enum(['account', 'model']), rateLimits: rateLimitsSchema,
+  removedWindows: z.array(z.object({ windowId: z.string().min(1).max(128), observedAt: z.number().finite().nonnegative() })).max(32).optional(),
 }).refine((r) => r.scope !== 'model' || !!r.model)).max(32);
 
 /** Match executable resolution in the daemon's launch PATH, without invoking a shell. */
@@ -92,7 +93,7 @@ export class UsageRegistry {
   unavailable(tool: UsageTool, nodeId: string, now: number): boolean {
     let changed = false;
     for (const [id, source] of this.reports) {
-      if (source.tool === tool && source.nodeIds.includes(nodeId) && source.availability !== 'unavailable') {
+      if (source.tool === tool && !source.accountId && source.nodeIds.includes(nodeId) && source.availability !== 'unavailable') {
         this.reports.set(id, { ...source, availability: 'unavailable' }); changed = true;
       }
     }
@@ -107,7 +108,7 @@ export class UsageRegistry {
   record(tool: UsageTool, nodeId: string, reports: UsageReport[], now: number): boolean {
     let changed = false;
     for (const report of reports) {
-      if (!report.rateLimits.length) continue;
+      if (!report.rateLimits.length && !report.removedWindows?.length) continue;
       // Unknown accounts remain isolated by node; never assume two CLI sessions share credentials.
       const id = JSON.stringify([tool, report.provider ?? '', report.accountId ?? `node:${nodeId}`, report.poolId ?? report.pool ?? '', report.scope, report.scope === 'model' ? report.model ?? '' : '']);
       for (const [key, previous] of this.reports) {
@@ -121,18 +122,24 @@ export class UsageRegistry {
       let accepted = false;
       for (const limit of report.rateLimits) {
         const key = limit.windowId ?? limit.kind, at = Math.min(limit.observedAt ?? now, now);
-        if (at < (times.get(key) ?? -1)) continue;
+        if (at < (times.get(key) ?? -1) || (at === times.get(key) && !limits.has(key))) continue;
         limits.set(key, limit.observedAt === undefined ? limit : { ...limit, observedAt: at }); times.set(key, at); accepted = true;
+      }
+      for (const removal of report.removedWindows ?? []) {
+        const at = Math.min(removal.observedAt, now);
+        if (at < (times.get(removal.windowId) ?? -1)) continue;
+        limits.delete(removal.windowId); times.set(removal.windowId, at); accepted = true;
       }
       if (!accepted) {
         if (old && !old.nodeIds.includes(nodeId)) { this.reports.set(id, { ...old, nodeIds: [...old.nodeIds, nodeId] }); changed = true; }
         continue;
       }
-      if (this.reports.delete(`unavailable:${tool}:${nodeId}`)) changed = true;
+      if (limits.size && this.reports.delete(`unavailable:${tool}:${nodeId}`)) changed = true;
       this.windowTimes.set(id, times);
       const at = Math.max(...times.values());
-      const source: UsageSource = { ...report, rateLimits: [...limits.values()], id, tool, nodeIds: [...new Set([...(old?.nodeIds ?? []), nodeId])],
-        installed: true, configured: true, authenticated: true, availability: 'available', at, checkedAt: at };
+      const { removedWindows: _removals, ...metadata } = report;
+      const source: UsageSource = { ...metadata, rateLimits: [...limits.values()], id, tool, nodeIds: [...new Set([...(old?.nodeIds ?? []), nodeId])],
+        installed: true, configured: true, authenticated: limits.size ? true : old?.authenticated ?? null, availability: limits.size ? 'available' : 'unavailable', at, checkedAt: at };
       if (JSON.stringify(source) !== JSON.stringify(old)) { this.reports.set(id, source); changed = true; }
     }
     return changed;
