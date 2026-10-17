@@ -29,7 +29,7 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
                                                       the nodes are not resumed on the next start
   tl reload                                           restart the daemon on the current code and resume the nodes that were live
   tl autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
-  tl doctor [--no-app] [--harness claude|pi]          check what tiller needs (bin/setup --check) and print the fix for anything missing
+  tl doctor [--no-app] [--harness claude|pi|codex]     check what tiller needs (bin/setup --check) and print the fix for anything missing
   tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--profile P] [--harness claude|pi|codex] [--worktree [--base B]]
                                                       start an agent node and show it in the app; --harness picks the agent CLI
   tl ps | list                                        show nodes
