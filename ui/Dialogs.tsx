@@ -17,12 +17,12 @@ const pickFolder = async (current: string): Promise<string | null> => {
   return ((await tauri?.invoke('plugin:dialog|open', { options: { directory: true, multiple: false, defaultPath, title: 'Choose a working directory' } })) as string | null | undefined) ?? null;
 };
 
-type SpawnChoice = 'claude' | 'pi' | 'terminal';
+type SpawnChoice = Harness | 'terminal';
 
-/** The node kind a spawn choice means: a Pi agent, a Claude agent, or a plain terminal. */
-const choiceKind = (choice: SpawnChoice): NodeKind => (choice === 'terminal' ? 'terminal' : choice === 'pi' ? 'agent' : 'claude');
+/** The node kind a spawn choice means: an agent for its harness, or a plain terminal. */
+const choiceKind = (choice: SpawnChoice): NodeKind => (choice === 'terminal' ? 'terminal' : choice !== 'claude' ? 'agent' : 'claude');
 /** The harness sent for a choice; omitted for claude and terminal so their records keep the legacy shape. */
-const choiceHarness = (choice: SpawnChoice): Harness | undefined => (choice === 'pi' ? 'pi' : undefined);
+const choiceHarness = (choice: SpawnChoice): Harness | undefined => (choice !== 'claude' && choice !== 'terminal' ? choice : undefined);
 
 /** What the spawn dialog sends: kind/harness from the choice, with the agent fields only for agent nodes. */
 export function spawnMsg(
@@ -44,7 +44,7 @@ export function spawnMsg(
 
 function SpawnDialog({ d }: { d: Spawn }) {
   const parent = useStore((s) => (d.parentId ? s.nodes[d.parentId] : undefined));
-  const [choice, setChoice] = useState<SpawnChoice>(parent?.harness === 'pi' ? 'pi' : 'claude');
+  const [choice, setChoice] = useState<SpawnChoice>(parent?.harness ?? 'claude');
   const [title, setTitle] = useState('');
   const [cwd, setCwd] = useState(d.cwd);
   const [prompt, setPrompt] = useState('');
@@ -64,7 +64,7 @@ function SpawnDialog({ d }: { d: Spawn }) {
     <Modal title={parent ? `New child of ${parent.title}` : 'New session'} onClose={close}>
       <form className="form" onSubmit={submit}>
         <div className="seg" role="radiogroup" aria-label="Kind">
-          {(['claude', 'pi', 'terminal'] as const).map((k) => (
+          {(['claude', 'pi', 'codex', 'terminal'] as const).map((k) => (
             <button type="button" key={k} role="radio" aria-checked={choice === k} className={choice === k ? 'on' : ''} onClick={() => setChoice(k)}>{k}</button>
           ))}
         </div>

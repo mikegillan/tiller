@@ -4,7 +4,7 @@ import { restartMsg, spawnMsg } from './Dialogs';
 vi.mock('./conn', () => ({ send: vi.fn() }));
 vi.mock('./hooks', () => ({ useNow: () => 0 })); // hooks.ts reaches for window on import
 
-type Choice = 'claude' | 'pi' | 'terminal';
+type Choice = 'claude' | 'pi' | 'codex' | 'terminal';
 const form = (choice: Choice, extra: Partial<Parameters<typeof spawnMsg>[1]> = {}): Parameters<typeof spawnMsg>[1] =>
   ({ choice, title: '', cwd: '/repo', prompt: '', model: '', role: 'orchestrator', defaultRole: 'orchestrator', isolate: false, ...extra });
 
@@ -22,6 +22,11 @@ describe('spawnMsg', () => {
   it('sends a terminal with no harness and no agent-only fields', () => {
     expect(spawnMsg({ parentId: null }, form('terminal', { prompt: 'go', isolate: true, role: 'worker', defaultRole: 'orchestrator', model: 'm' })))
       .toEqual({ t: 'spawn', kind: 'terminal', title: 'terminal', cwd: '/repo', parentId: null, model: 'm' });
+  });
+
+  it('sends a Codex agent with its selected model', () => {
+    expect(spawnMsg({ parentId: null }, form('codex', { prompt: 'go', model: 'model-id' })))
+      .toEqual({ t: 'spawn', kind: 'agent', harness: 'codex', title: 'codex', cwd: '/repo', parentId: null, prompt: 'go', model: 'model-id' });
   });
 });
 

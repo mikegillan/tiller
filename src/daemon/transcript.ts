@@ -2,6 +2,7 @@
 // Claude keeps one JSON object per line in <sessionId>.jsonl under ~/.claude/projects.
 // Pi keeps JSONL entries in <treeSessionDir>/agents/<nodeId>/<sessionId>.jsonl,
 // with a tree of id/parentId entries whose active branch is the current conversation.
+// The Codex bridge stores a header plus normalized user/assistant entries in the Claude content format.
 import { existsSync, realpathSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -147,7 +148,7 @@ export async function readMessages(path: string, harness: Harness = 'claude'): P
 export async function sessionMessages(n: Node, sessionId?: string): Promise<{ messages: Message[]; truncated: boolean; sessions: Transcript['sessions'] }> {
   if (!n.sessionId) throw new Error('no session on record');
   const harness = n.harness ?? 'claude';
-  if (harness === 'pi' && !n.transcriptPath) throw new Error('a Pi node needs its transcript path on record');
+  if (harness !== 'claude' && !n.transcriptPath) throw new Error(`a ${harness === 'pi' ? 'Pi' : 'Codex'} node needs its transcript path on record`);
   const current = n.transcriptPath ?? transcriptFor(n.cwd, n.sessionId);
   const sessions = [n.sessionId, ...[...(n.previousSessions ?? [])].reverse()].map((s) => ({ sessionId: s, current: s === n.sessionId }));
   const sid = sessionId ?? n.sessionId;

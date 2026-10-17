@@ -5,7 +5,7 @@ export const NODE_KINDS = ['claude', 'agent', 'terminal'] as const;
 export type NodeKind = (typeof NODE_KINDS)[number];
 
 /** The agent CLIs a node can run. A node with an agent kind defaults to claude when it names none (legacy records). */
-export const HARNESSES = ['claude', 'pi'] as const;
+export const HARNESSES = ['claude', 'pi', 'codex'] as const;
 export type Harness = (typeof HARNESSES)[number];
 
 /** An agent node runs an agent harness; a terminal node is a shell with no agent behind it. */

@@ -17,7 +17,7 @@ export const KIND_LABEL: Record<StatusKind, string> = {
   working: 'working', needs: 'needs you', done: 'done', errored: 'errored', exited: 'exited', unknown: 'idle', armed: 'armed', queued: 'queued',
 };
 
-/** The short tag shown for a node: an agent reads its harness ("claude" or "pi"), a terminal "terminal". */
+/** The short tag shown for a node: an agent reads its harness ("claude", "pi" or "codex"), a terminal "terminal". */
 export const kindTag = (n: Pick<NodeView, 'kind' | 'harness'>): string => (isAgentKind(n.kind) ? harnessFor(n) : 'terminal');
 
 export type Nodes = Record<string, NodeView>;

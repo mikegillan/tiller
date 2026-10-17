@@ -1,8 +1,31 @@
 # Agent harnesses
 
-Tiller supports **Claude Code** and **Pi** as agent nodes, alongside plain terminals. The daemon,
+Tiller supports **Claude Code**, **Pi** and **Codex** as agent nodes, alongside plain terminals. The daemon,
 UI, coordination tools, dependency queue, worktrees and outcome reporting are shared. Claude
 Code is not required to run a Pi-only tree.
+
+## Run Codex
+
+Install Codex CLI on your PATH and authenticate with `codex login`, then run:
+
+```sh
+cd /path/to/repo
+tl --harness codex
+tl new "Codex session" --harness codex --prompt "Inspect this repository"
+```
+
+The spawn dialog and MCP `spawn` tool also support Codex (`kind: "agent", harness: "codex"`).
+The bridge uses Codex app-server with Codex's own sandbox and approval settings. It provides
+streamed terminal output, inbox delivery and steering, lifecycle/context reporting, readable
+transcripts, resume, restart and follow-up. Follow-up forks the native Codex thread. Claude's
+role model defaults are not applied, and Claude-specific permission modes and restricted presets
+are rejected. Codex's native history must remain available for resume/follow-up.
+
+The terminal pane runs the real Codex CLI connected to the bridge's app-server, with native
+slash commands, composer and approval dialogs. Use Tiller restart/follow-up to change the managed
+conversation. Tiller workers use the MCP `spawn` tool; Codex's internal subagents do not create
+Tiller tree nodes. See the [Codex adapter README](../adapters/codex/README.md) for delivery
+guarantees, compatibility and limitations.
 
 ## Run Pi
 
@@ -102,7 +125,8 @@ presets work; the restricted built-in presets (reviewer, researcher) cannot run 
 `src/daemon/harness.ts` defines `HarnessAdapter`: validation, capabilities, launch command,
 working directory, transcript location and optional pre-launch storage preparation.
 Claude's adapter wraps the existing launch logic;
-Pi's adapter loads `adapters/pi/index.ts`. No runtime Pi package is installed with Tiller.
+Pi's adapter loads `adapters/pi/index.ts`; Codex's adapter launches `adapters/codex/index.ts`,
+which hosts the installed CLI's app-server. Neither CLI is installed with Tiller.
 
 Coordination stays on the existing interfaces:
 
@@ -115,7 +139,7 @@ Coordination stays on the existing interfaces:
   leaves messages unclaimed and withdrawable; a steer aborts the turn and is claimed once idle.
   A fire-and-forget CLI API return is not delivery proof.
 
-To add Codex/OpenCode/another CLI: add its harness identifier and adapter, provide an equivalent
+To add OpenCode/another CLI: add its harness identifier and adapter, provide an equivalent
 lifecycle/inbox bridge using that CLI's native API, and supply a transcript decoder. Declare
 unsupported capabilities, and reject unsupported restrictions in the adapter's `validate`. Do not duplicate the MCP tools
 or implement arbitrary executable configuration as a shortcut.

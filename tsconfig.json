@@ -9,5 +9,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src", "spike"]
+  "include": ["src", "spike", "adapters/codex"]
 }

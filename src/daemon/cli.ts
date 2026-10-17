@@ -22,7 +22,7 @@ import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, upDir
 const usage = () => `tl: control tiller. With no arguments, start the daemon if needed and open the app; tl . opens it on this directory.
 
   tl [up|app]                                         start the daemon if needed and open the app on the existing sessions
-  tl [up|app] PATH [--new] [--title T] [--prompt P] [--harness claude|pi]  open the app on (or create) PATH's orchestrator;
+  tl [up|app] PATH [--new] [--title T] [--prompt P] [--harness claude|pi|codex]  open the app on (or create) PATH's orchestrator;
                                                       --harness picks which agent CLI (default claude); without up/app, PATH
                                                       must start with . / or ~; any of these flags without a PATH means .
   tl status | stop                                    show or stop the daemon (tld runs it in the foreground); stop also means
@@ -30,8 +30,8 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
   tl reload                                           restart the daemon on the current code and resume the nodes that were live
   tl autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
   tl doctor [--no-app] [--harness claude|pi]          check what tiller needs (bin/setup --check) and print the fix for anything missing
-  tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--harness claude|pi] [--worktree [--base B]]
-                                                      start an agent node and show it in the app; --harness pi starts a Pi node
+  tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--harness claude|pi|codex] [--worktree [--base B]]
+                                                      start an agent node and show it in the app; --harness picks the agent CLI
   tl ps | list                                        show nodes
   tl usage                                            show account-level Claude usage (5-hour and 7-day windows) as nodes last reported it
   tl select <id>                                      show a node in the app (opens the app if it is built)
@@ -55,9 +55,9 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
                                                       title, first prompt or last message
   tl transcript <id> [--session SID]                  a live or closed node's conversation; SID picks one of its earlier sessions
   tl followup <id> --prompt P [--title T]             continue a closed node's session as a new node that starts on P
-  tl spawn --kind claude|agent|terminal [--harness claude|pi] --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree [--base B]] [--preset NAME] [--request-id ID]
+  tl spawn --kind claude|agent|terminal [--harness claude|pi|codex] --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree [--base B]] [--preset NAME] [--request-id ID]
            [--after ID,ID] [--after-success ID,ID] [--now] [--fork ID]
-                                                      --harness pi implies --kind agent when --kind is omitted; --after / --after-success
+                                                      --harness pi|codex implies --kind agent when --kind is omitted; --after / --after-success
                                                       arm the node until those finish a turn or report
                                                       succeeded; --now launches past daemon.maxWorking instead of queueing;
                                                       --fork starts from a copy of a live or closed node's conversation (cwd: its);
@@ -120,7 +120,7 @@ const { values: f, positionals: pos } = parseArgs({
 /** `--after a,b --after c` as [a, b, c]; undefined when absent. */
 const ids = (v: string[] | undefined) => v?.flatMap((x) => x.split(',')).map((x) => x.trim()).filter(Boolean);
 
-if (f.harness && !['claude', 'pi'].includes(f.harness)) fail(`unknown harness: ${f.harness} (expected claude or pi)`);
+if (f.harness && !['claude', 'pi', 'codex'].includes(f.harness)) fail(`unknown harness: ${f.harness} (expected claude, pi or codex)`);
 const isolation = () => (f.worktree ? 'worktree' : undefined);
 
 /**
@@ -147,7 +147,7 @@ switch (cmd) {
     break;
   case 'new': {
     if (!pos[0]) fail(usage());
-    const harness: Harness | undefined = f.harness === 'pi' ? 'pi' : undefined;
+    const harness: Harness | undefined = f.harness === 'claude' ? undefined : f.harness as Harness | undefined;
     const { data } = await call('spawn', { kind: harness ? 'agent' : 'claude', ...(harness ? { harness } : {}), title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, effort: f.effort, role: f.role, isolation: isolation(), base: f.base, preset: f.preset }, false);
     console.log(`started ${pos.join(' ')} (${data.nodeId})`);
     await call('select', { nodeId: data.nodeId }, false);
@@ -288,7 +288,7 @@ switch (cmd) {
       spawnSync('open', [`http://127.0.0.1:${port}/?k=${adminToken()}`]);
       break;
     }
-    const harness: Harness = f.harness === 'pi' ? 'pi' : 'claude';
+    const harness: Harness = (f.harness as Harness | undefined) ?? 'claude';
     const all = f.new ? [] : (((await call('list_nodes', {}, false)).data ?? []) as any[]);
     const existing = pickOrchestrator(all, cwd, false, harness);
     const dead = existing ? undefined : pickOrchestrator(all, cwd, true, harness);
@@ -302,7 +302,7 @@ switch (cmd) {
     }
     if (!id) {
       const title = f.title ?? basename(cwd);
-      id = (await call('spawn', { kind: harness === 'pi' ? 'agent' : 'claude', ...(harness === 'pi' ? { harness } : {}), title, cwd, prompt: f.prompt }, false)).data.nodeId as string;
+      id = (await call('spawn', { kind: harness !== 'claude' ? 'agent' : 'claude', ...(harness !== 'claude' ? { harness } : {}), title, cwd, prompt: f.prompt }, false)).data.nodeId as string;
       console.log(`started ${title} (${id})`);
     }
     const target = id;

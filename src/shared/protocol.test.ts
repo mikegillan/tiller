@@ -4,7 +4,7 @@ import { HARNESSES, harnessFor, isAgentKind, NODE_KINDS } from './protocol.js';
 describe('node kinds and harnesses', () => {
   it('keeps claude and terminal and adds agent, so legacy values stay valid', () => {
     expect(NODE_KINDS).toEqual(['claude', 'agent', 'terminal']);
-    expect(HARNESSES).toEqual(['claude', 'pi']);
+    expect(HARNESSES).toEqual(['claude', 'pi', 'codex']);
   });
 
   it('treats every kind but terminal as an agent', () => {

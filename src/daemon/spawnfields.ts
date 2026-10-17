@@ -10,6 +10,6 @@ export const SPAWN_FIELDS = {
   preset: z.string().min(1).optional(), after: z.array(id).optional(), afterSuccess: z.array(id).optional(), now: z.boolean().optional(), fork: id.optional(),
 };
 
-/** `tl spawn`'s kind when `--kind` is omitted: `--harness pi` means an agent node, anything else stays unset (legacy default). */
+/** `tl spawn`'s kind when `--kind` is omitted: a non-Claude `--harness` means an agent node, anything else stays unset (legacy default). */
 export const spawnKind = (kind: NodeKind | undefined, harness: Harness | undefined): NodeKind | undefined =>
-  kind ?? (harness === 'pi' ? 'agent' : undefined);
+  kind ?? (harness && harness !== 'claude' ? 'agent' : undefined);

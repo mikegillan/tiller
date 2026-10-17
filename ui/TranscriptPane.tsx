@@ -32,7 +32,7 @@ function Entry({ e, assistantName }: { e: TranscriptEntry; assistantName: string
 
 /** A conversation as a timeline; a session picker (current first) when there is more than one session. `sessionId` undefined is the current one. */
 export function TranscriptView({ data, sessionId, onSession, harness = 'claude' }: { data: Transcript; sessionId?: string; onSession: (id: string | undefined) => void; harness?: Harness }) {
-  const assistantName = harness === 'pi' ? 'Pi' : 'Claude';
+  const assistantName = harness === 'codex' ? 'Codex' : harness === 'pi' ? 'Pi' : 'Claude';
   return (
     <>
       {data.sessions.length > 1 && (

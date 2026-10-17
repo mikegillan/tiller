@@ -7,7 +7,7 @@
 
 # tiller
 
-Tiller is a local daemon that runs several agent CLI sessions (Claude Code or Pi) as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser. A Claude Code mod or Pi extension loaded into each agent node delivers messages and reports lifecycle events.
+Tiller is a local daemon that runs several agent CLI sessions (Claude Code, Pi or Codex) as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser. A Claude Code mod, Pi extension or Codex app-server bridge delivers messages and reports lifecycle events.
 
 ## Install
 
@@ -16,6 +16,8 @@ On a Mac, clone the repo and run:
     bin/setup
 
 It checks everything tiller needs, lists what is missing with the exact command for each, asks once, installs those pieces, then runs `npm install`, `npm link` and `npm run app:build`. It never uses `sudo` and does not edit your shell profile. `bin/setup --no-app` skips Rust and the app build; `bin/setup --harness pi` installs Pi instead of Claude Code when neither is present. Run `tl doctor` (or `bin/setup --check`) later to rerun the checks without changing anything; it prints the fix for anything broken.
+
+For Codex nodes, have `codex` on your PATH and authenticate with `codex login`; see the [Codex adapter](adapters/codex/README.md). The setup installer currently offers Claude Code or Pi.
 
 What it checks, for reference:
 
@@ -31,6 +33,7 @@ What it checks, for reference:
 
 - `tl` starts the daemon if it is not running and opens the app on the existing sessions (or the browser UI when the app is not built), like `code`. `tl .` or `tl ~/some/repo` (like `code .`) also finds, resumes or creates the orchestrator for that directory and opens the app on it. Without `up` or `app` in front, the path must start with `.`, `/` or `~`. `tl --new` always starts a fresh orchestrator, for the current directory unless a path is given.
 - `cd ~/some/repo && tl --harness pi` uses Pi instead of Claude Code; the spawn dialog also offers Pi. Claude Code is not needed for a Pi-only tree.
+- `cd ~/some/repo && tl --harness codex` runs Codex; the spawn dialog also offers Codex. See the [Codex adapter](adapters/codex/README.md) for terminal controls and approval handling.
 - `tl stop` shuts the daemon down and closes every node; the nodes are not resumed on the next start.
 - `tl reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
 - `tl autostart on|off|status` manages a launchd agent that starts the daemon at login and again after a crash.

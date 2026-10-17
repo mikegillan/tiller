@@ -345,23 +345,23 @@ export class NodeManager extends EventEmitter {
     // Legacy role defaults name Claude models; other CLIs keep their own defaults unless explicitly configured by a preset/request.
     const defaults = adapter?.id === 'claude' ? config.roles[isOrchestrator ? 'orchestrator' : 'worker'] : {};
     const parent = parentId ? this.registry.get(parentId) : undefined;
-    // Pi cannot carry Claude's restrictions. Selecting it is unrestricted delegation, not a permission override
-    // or a process sandbox: only the human, a Pi parent, or an already unrestricted Claude parent may do so.
-    if (adapter?.id === 'pi' && !req.byHuman && !(parent && isAgentKind(parent.kind) && harnessFor(parent) === 'pi')) {
+    // Other harnesses cannot carry Claude restrictions. Only the human, a same-harness parent,
+    // or an unrestricted Claude parent may select them. This is not a process sandbox.
+    if (adapter && adapter.id !== 'claude' && !req.byHuman && !(parent && isAgentKind(parent.kind) && harnessFor(parent) === adapter.id)) {
       const rt = parent ? this.runtimes.get(parent.id) : undefined;
       const mode = rt?.status?.permissionMode ?? parent?.permissionMode;
       // A restored/armed node has no launch snapshot. Its preset file may have changed since the old process;
       // do not infer that process's restrictions from today's file. A successful launch establishes the snapshot.
       if (parent?.preset && !rt?.launchedPreset) {
-        throw new Error('refused: Claude preset restrictions are unknown until the parent launches; only the human may spawn Pi');
+        throw new Error(`refused: Claude preset restrictions are unknown until the parent launches; only the human may spawn ${adapter.id === 'pi' ? 'Pi' : 'Codex'}`);
       }
       const preset = rt?.launchedPreset ?? {};
       const restricted = preset.tools !== undefined || preset.disallowedTools !== undefined || preset.maxTurns !== undefined;
       if (!parent || !isAgentKind(parent.kind) || mode !== 'bypassPermissions' || restricted) {
-        throw new Error('refused: only the human or an unrestricted agent parent may spawn Pi; Claude requires effective permissionMode bypassPermissions and no preset tools, disallowedTools or maxTurns restrictions');
+        throw new Error(`refused: only the human or an unrestricted agent parent may spawn ${adapter.id === 'pi' ? 'Pi' : 'Codex'}; Claude requires effective permissionMode bypassPermissions and no preset tools, disallowedTools or maxTurns restrictions`);
       }
     }
-    const inherited = req.byHuman || !parent || adapter?.id === 'pi' || (adapter && harnessFor(parent) !== adapter.id)
+    const inherited = req.byHuman || !parent || (adapter && adapter.id !== 'claude') || (adapter && harnessFor(parent) !== adapter.id)
       ? undefined : this.runtimes.get(parentId!)?.status?.permissionMode ?? parent.permissionMode;
     const permissionMode = req.permissionMode ?? p.permissionMode ?? (inherited === 'bypassPermissions' ? undefined : inherited);
     if (permissionMode === 'bypassPermissions' && !req.byHuman) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
@@ -383,8 +383,8 @@ export class NodeManager extends EventEmitter {
       parentId, kind: req.kind, ...(req.harness ? { harness: req.harness } : {}), title: req.title, cwd: req.cwd,
       model: req.model ?? p.model ?? defaults.model, effort: req.effort ?? p.effort ?? defaults.effort, permissionMode, role, preset: req.preset,
       sessionId: adapter ? req.followup?.sessionId ?? randomUUID() : undefined,
-      ...(adapter?.id === 'pi' && req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
-      ...(adapter?.id === 'pi' && req.followup?.previousSessions ? { previousSessions: req.followup.previousSessions } : {}),
+      ...(adapter && adapter.id !== 'claude' && req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
+      ...(adapter && adapter.id !== 'claude' && req.followup?.previousSessions ? { previousSessions: req.followup.previousSessions } : {}),
       rootId: parentId ? this.rootIdOf(parentId) : undefined,
       prompt: req.prompt, forkOf: req.fork, forkSession: from?.sessionId, followupOf: req.followup?.id,
       // A follow-up's resumed session keeps counting its cost from where the archived node's last measure left it.
@@ -442,7 +442,7 @@ export class NodeManager extends EventEmitter {
     const cwd = usableCwd(a.cwd);
     if (!cwd) throw new Error(`refused: ${a.cwd} no longer exists`);
     const parentId = a.parentId && this.registry.get(a.parentId) ? a.parentId : null;
-    return this.spawn({ kind: a.harness === 'pi' ? 'agent' : 'claude', ...(a.harness ? { harness: a.harness } : {}), title: title || a.title, cwd, prompt, model: a.model, effort: a.effort, role: a.role, parentId, isolation: 'none', byHuman: true, followup: a });
+    return this.spawn({ kind: a.harness && a.harness !== 'claude' ? 'agent' : 'claude', ...(a.harness ? { harness: a.harness } : {}), title: title || a.title, cwd, prompt, model: a.model, effort: a.effort, role: a.role, parentId, isolation: 'none', byHuman: true, followup: a });
   }
 
   /** A live or archived Claude node's conversation in one of its sessions (default: the current one). */
@@ -541,7 +541,7 @@ export class NodeManager extends EventEmitter {
     this.kill(id);
     rt.lastHookAt = undefined;
     const sessionId = isAgentKind(rec.kind) ? randomUUID() : undefined;
-    const transcriptPath = isAgentKind(rec.kind) && adapterFor(rec).id === 'pi' && rec.transcriptPath && sessionId
+    const transcriptPath = isAgentKind(rec.kind) && adapterFor(rec).id !== 'claude' && rec.transcriptPath && sessionId
       ? join(dirname(rec.transcriptPath), `${sessionId}.jsonl`) : undefined;
     this.registry.update(id, { sessionId, transcriptPath, previousSessions: [...(rec.previousSessions ?? []), ...(old ? [old] : [])].slice(-MAX_PREVIOUS_SESSIONS) });
     rt.status = { state: initialState(rec.kind), activity: 'restarting', changedAt: Date.now() };
@@ -721,7 +721,7 @@ export class NodeManager extends EventEmitter {
     if (ev.event === 'turn.start') {
       // Claude's UserPromptSubmit hook owns its turn boundary; a late/duplicate mod start must not clear state.
       const rec = this.registry.get(nodeId);
-      if (!rec || !isAgentKind(rec.kind) || harnessFor(rec) !== 'pi') return;
+      if (!rec || !isAgentKind(rec.kind) || harnessFor(rec) === 'claude') return;
       rt.lastHookAt = now;
       rt.turnStart = now;
       rt.starting = false;
@@ -729,9 +729,9 @@ export class NodeManager extends EventEmitter {
     } else if (ev.event === 'turn.complete') {
       const model = ev.payload.usage?.model;
       let base = typeof model === 'string' && model !== prev.model ? { ...prev, model } : prev;
-      // Claude's Stop hook owns its final message; only Pi reports it here.
+      // Claude's Stop hook owns its final message; other harnesses report it here.
       const rec = this.registry.get(nodeId);
-      if (rec && isAgentKind(rec.kind) && harnessFor(rec) === 'pi') {
+      if (rec && isAgentKind(rec.kind) && harnessFor(rec) !== 'claude') {
         rt.lastHookAt = now;
         rt.starting = false;
         if (typeof ev.payload.answer === 'string') base = { ...base, lastAssistantMessage: ev.payload.answer };
@@ -919,10 +919,10 @@ export class NodeManager extends EventEmitter {
     if (adapter && prompt) rt.starting = true;
     this.registry.update(id, { lastActiveAt: Date.now(), forkSession: undefined });
     this.liveChanged();
-    const pi = adapter?.id === 'pi';
-    let outputTail = ''; // only Pi's exit handler reads it
+    const native = adapter !== undefined && adapter.id !== 'claude';
+    let outputTail = ''; // native bridge failures are printed in the terminal
     s.onData((d) => {
-      if (pi) outputTail = (outputTail + d).slice(-8192);
+      if (native) outputTail = (outputTail + d).slice(-8192);
       this.emit('data', id, d);
     });
     s.onExit((code) => {
@@ -932,7 +932,7 @@ export class NodeManager extends EventEmitter {
       this.liveChanged();
       this.markUnread(id);
       let status = ptyExited(rt.status!, Date.now());
-      if (pi) {
+      if (native) {
         const lines = stripVTControlCharacters(outputTail).split(/[\r\n]+/).map((line) => line.trim());
         // The adapter's refusals (an incompatible Pi build, a bad launch environment) shut Pi down cleanly, often with code 0.
         const refusal = lines.findLast((line) => line.includes(PI_REFUSAL));
