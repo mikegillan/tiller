@@ -98,11 +98,12 @@ async function resolveRelease(repo: string, origin: string, release: PublishedRe
     return { ...release, sha, tagObject };
   } finally { await tryGit(repo, 'update-ref', '-d', ref); }
 }
-async function releaseTransport(repo: string, repository: string, source?: ReleaseSource): Promise<string> {
+async function releaseTransport(repo: string, origin: string, repository: string, source?: ReleaseSource): Promise<string> {
   if (source?.transport) return source.transport;
   const effective = await git(repo, 'remote', 'get-url', 'origin');
   if (githubRepo(effective)?.toLowerCase() !== repository.toLowerCase()) throw new Error('effective origin transport does not match the GitHub release repository');
-  return effective;
+  // Feed Git the original URL so it applies exactly the one rewrite validated above.
+  return origin;
 }
 export async function checkUpdate(repo: string, source: ReleaseSource = githubReleases()): Promise<UpdateStatus> {
   const sha = await tryGit(repo, 'rev-parse', 'HEAD') ?? '';
@@ -111,7 +112,7 @@ export async function checkUpdate(repo: string, source: ReleaseSource = githubRe
     const origin = await git(repo, 'config', '--get', 'remote.origin.url');
     const repository = githubRepo(origin);
     if (!repository) return { ...base, reason: 'origin must identify a GitHub repository (HTTPS or git SSH)' };
-    const transport = await releaseTransport(repo, repository, source);
+    const transport = await releaseTransport(repo, origin, repository, source);
     const rows = (await source.list(repository)).sort((a, b) => compareVersions(b.tag, a.tag));
     if (!rows.length) return { ...base, reason: 'no published stable releases' };
     if (new Set(rows.map((r) => r.tag)).size !== rows.length) throw new Error('duplicate release tags');
@@ -163,7 +164,7 @@ export async function applyUpdate(o: { repo: string; log: string; expected: Upda
     const publishedNow = await (o.source ?? githubReleases()).get(s.repository!, target.id);
     if (JSON.stringify(publishedNow) !== JSON.stringify({ id: target.id, tag: target.tag, name: target.name, body: target.body, publishedAt: target.publishedAt }))
       throw new Error('release changed; review its notes again');
-    if (await remoteTag(o.repo, await releaseTransport(o.repo, s.repository!, o.source), target.tag) !== target.tagObject) throw new Error('released tag moved; check again');
+    if (await remoteTag(o.repo, await releaseTransport(o.repo, s.origin!, s.repository!, o.source), target.tag) !== target.tagObject) throw new Error('released tag moved; check again');
     if (await safeCheckout(o.repo) || await git(o.repo, 'rev-parse', 'HEAD') !== s.sha) throw new Error('checkout changed; check again');
     const changed = (await git(o.repo, 'diff', '--name-only', s.sha, target.sha)).split('\n');
     const plan = planSteps(changed, existsSync(join(o.repo, 'src-tauri/target/release/bundle/macos/Tiller.app')));
@@ -172,13 +173,14 @@ export async function applyUpdate(o: { repo: string; log: string; expected: Upda
     for (const [needed, args] of [[plan.install, ['ci']], [plan.ui, ['run', 'ui:build']], [plan.app, ['run', 'app:build']]] as const) {
       if (needed) { started.push([...args]); await run('npm', [...args], 30 * 60_000); }
     }
+    if (await git(o.repo, 'rev-parse', 'HEAD') !== target.sha || await safeCheckout(o.repo)) throw new Error('checkout changed during build; refusing restart');
     if (o.restart) { restartAttempted = true; await o.restart(target.sha); }
     say(`updated to ${target.tag} at ${target.sha}`);
   } catch (e) {
     if (moved) {
       try {
         // --keep refuses to discard edits made during a build. Never reset a checkout someone moved.
-        if (await git(o.repo, 'rev-parse', 'HEAD') !== o.expected.target!.sha) throw new Error('HEAD changed during update');
+        if (await git(o.repo, 'rev-parse', 'HEAD') !== o.expected.target!.sha || await tryGit(o.repo, 'symbolic-ref', '--short', '-q', 'HEAD') !== 'main') throw new Error('HEAD or branch changed during update');
         await run('git', ['reset', '--keep', o.expected.sha]);
         for (const args of started) await run('npm', args, 30 * 60_000);
         if (restartAttempted && o.restart) await o.restart(o.expected.sha);

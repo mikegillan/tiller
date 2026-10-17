@@ -83,6 +83,15 @@ describe('release checkout', () => {
     const s = await checkUpdate(work, source); missed.body = 'edited missed notes';
     await expect(applyUpdate({ repo: work, log: join(dir, 'log'), expected: s, source })).rejects.toThrow('release or checkout changed');
   });
+  it('does not apply insteadOf twice when the first rewrite remains canonical', async () => {
+    git(work, 'config', 'url.git@github.com:example/tiller.git.insteadOf', 'https://github.com/example/tiller.git');
+    git(work, 'config', `url.${join(dir, 'origin.git')}.insteadOf`, 'git@github.com:example/tiller.git');
+    git(work, 'config', 'protocol.ssh.allow', 'never'); // The regression must never contact a live provider.
+    const s = await checkUpdate(work, { ...source, transport: undefined });
+    expect(s.eligible).toBe(false);
+    expect(s.target).toBeUndefined();
+    expect(s.fetchError).toContain("transport 'ssh' not allowed");
+  });
   it('rejects an effective origin rewritten to a different transport', async () => {
     git(work, 'config', `url.${join(dir, 'origin.git')}.insteadOf`, 'https://github.com/example/tiller.git');
     expect(await checkUpdate(work, { ...source, transport: undefined })).toMatchObject({ eligible: false, fetchError: 'effective origin transport does not match the GitHub release repository' });
@@ -142,6 +151,16 @@ describe('release checkout', () => {
     writeFileSync(join(bin, 'npm'), '#!/bin/sh\necho keep > ui/app\nexit 1\n'); chmodSync(join(bin, 'npm'), 0o755);
     await expect(applyUpdate({ repo: work, log: join(dir, 'log'), expected: s, source, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })).rejects.toThrow('rollback incomplete');
     expect(readFileSync(join(work, 'ui/app'), 'utf8')).toBe('keep\n');
+  });
+  it('refuses restart and preserves a checkout moved by a build', async () => {
+    mkdirSync(join(seed, 'ui')); commit('ui/app', 'new'); release('v0.1.1');
+    const s = await checkUpdate(work, source), bin = join(dir, 'bin'); mkdirSync(bin);
+    writeFileSync(join(bin, 'npm'), '#!/bin/sh\ngit checkout -qb user-branch\nexit 0\n'); chmodSync(join(bin, 'npm'), 0o755);
+    const restart = vi.fn(async () => {});
+    await expect(applyUpdate({ repo: work, log: join(dir, 'log'), expected: s, source, restart, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })).rejects.toThrow('HEAD or branch changed during update');
+    expect(restart).not.toHaveBeenCalled();
+    expect(git(work, 'symbolic-ref', '--short', 'HEAD')).toBe('user-branch');
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(s.target!.sha);
   });
   it('refuses a surviving lock without removing it or changing HEAD', async () => {
     commit('two'); release('v0.1.1'); const s = await checkUpdate(work, source);
