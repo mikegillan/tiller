@@ -95,6 +95,10 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
 
   const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
   const broadcast = (m: ServerMessage) => { for (const c of clients) if (c.authed) sendTo(c, m); };
+  const syncUpdateChecks = () => {
+    if ([...clients].some((c) => c.authed && c.kind)) updates.start();
+    else updates.stop();
+  };
   const appConnected = () => [...clients].some((c) => c.authed && c.kind === 'app');
   manager.isSelected = (id) => [...clients].some((c) => c.selected === id);
   const anyFocused = () => [...clients].some((c) => c.authed && c.focused);
@@ -214,6 +218,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     ws.on('close', () => {
       clearTimeout(authTimer);
       clients.delete(c);
+      syncUpdateChecks();
       for (const pending of pendingNotifications.values()) if (pending.client === c) pending.finish(true, 'app disconnected after dispatch; delivery uncertain, not resent');
       if (c.focused) noteAway();
     });
@@ -230,6 +235,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
         if (msg.t === 'auth' && isAdmin(msg.token)) {
           c.authed = true;
           c.kind = msg.client;
+          syncUpdateChecks();
           clearTimeout(authTimer);
           sendTo(c, { t: 'snapshot', update: updates.status(), nodes: manager.list(), usage: manager.usage, usageSources: manager.usageRegistry.sources, dnd });
         } else {
@@ -342,6 +348,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     async close() {
       updates.stop();
       for (const c of clients) c.ws.terminate();
+      clients.clear();
       wss.close();
       server.closeAllConnections();
       await new Promise<void>((ok) => server.close(() => ok()));
