@@ -117,7 +117,8 @@ export function settingsSnapshot(manager: NodeManager, scope: SettingsScope, nod
     for (const leaf of ['model', 'effort']) {
       const key = `profiles.claude.${profile}.${leaf}`, legacy = `roles.${role}.${leaf}`;
       if (entries[key].value === undefined) entries[key] = { ...entries[legacy] };
-      if (inherited[key].value === undefined) inherited[key] = { ...inherited[legacy] };
+      // Reset removes this profile field, retaining legacy role overrides in the selected file.
+      if (inherited[key].value === undefined) inherited[key] = { ...entries[legacy] };
     }
   }
   return { scope, path, projectPath, revision: revision(layer.raw), values: flatten(layer.data), entries, inherited };

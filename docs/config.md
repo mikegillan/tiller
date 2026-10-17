@@ -139,5 +139,8 @@ The profile preview assumes coordination role `orchestrator` for that profile
 and `worker` for implementation, explorer, mechanical and reviewer. An explicit
 coordination role at spawn can change the legacy fallback; explicit spawn options
 and preset values also take precedence over this configuration preview. Pi and
-Codex never inherit Claude legacy roles. Inherited entries apply the same rules
-to the layers below the selected scope.
+Codex never inherit Claude legacy roles. For ordinary fields, inherited entries
+come from layers below the selected scope. A profile field’s inherited entry
+previews resetting that field only: it uses a lower-layer profile value first,
+then the effective legacy role value, including role overrides retained in the
+selected file. This applies to both project and home resets.

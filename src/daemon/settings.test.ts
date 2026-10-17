@@ -59,6 +59,26 @@ describe('settings persistence', () => {
     save({ 'limits.maxDepth': 2 });
     expect(snapshot().values['roles.worker.effort']).toBe('invalid');
   });
+  it('shows the legacy worker model for an unset Claude implementation profile and its inherited source', () => {
+    fs.writeFileSync(join(home, 'config.json'), JSON.stringify({ roles: { worker: { model: 'legacy-model' } } }));
+    const expected = { value: 'legacy-model', source: join(home, 'config.json') };
+    expect(snapshot().entries['profiles.claude.implementation.model']).toEqual(expected);
+    expect(snapshot().inherited['profiles.claude.implementation.model']).toEqual(expected);
+    expect(snapshot('home').entries['profiles.claude.implementation.model']).toEqual(expected);
+    expect(snapshot('home').inherited['profiles.claude.implementation.model']).toEqual(expected);
+  });
+  it('previews profile reset using retained same-file legacy roles at project and home scopes', () => {
+    write({ roles: { worker: { model: 'project-legacy' } }, profiles: { claude: { implementation: { model: 'override' } } } });
+    const before = snapshot();
+    expect(before.inherited['profiles.claude.implementation.model']).toEqual({ value: 'project-legacy', source: file() });
+    const after = save({ 'profiles.claude.implementation.model': null }, before.revision);
+    expect(after.entries['profiles.claude.implementation.model']).toEqual(before.inherited['profiles.claude.implementation.model']);
+    fs.writeFileSync(join(home, 'config.json'), JSON.stringify({ roles: { worker: { model: 'home-legacy' } }, profiles: { claude: { implementation: { model: 'home-override' } } } }));
+    const homeBefore = snapshot('home');
+    expect(homeBefore.inherited['profiles.claude.implementation.model']).toEqual({ value: 'home-legacy', source: join(home, 'config.json') });
+    const homeAfter = updateSettings(manager, { scope: 'home', revision: homeBefore.revision, changes: { 'profiles.claude.implementation.model': null } });
+    expect(homeAfter.entries['profiles.claude.implementation.model']).toEqual(homeBefore.inherited['profiles.claude.implementation.model']);
+  });
   it('resolves each profile field across project/home before applying Claude legacy role fallback', () => {
     fs.writeFileSync(join(home, 'config.json'), JSON.stringify({
       profiles: { claude: { implementation: { model: 'home-profile' } }, codex: { explorer: { effort: 'max', model: 'home-codex' } } },
@@ -71,7 +91,7 @@ describe('settings persistence', () => {
     expect(s.inherited['profiles.claude.implementation.effort']).toEqual({ value: 'medium', source: join(home, 'config.json') });
     for (const profile of ['explorer', 'mechanical', 'reviewer']) {
       expect(s.entries[`profiles.claude.${profile}.model`]).toEqual({ value: 'project-worker', source: file() });
-      expect(s.inherited[`profiles.claude.${profile}.model`]).toEqual({ value: 'home-worker', source: join(home, 'config.json') });
+      expect(s.inherited[`profiles.claude.${profile}.model`]).toEqual({ value: 'project-worker', source: file() });
     }
     expect(s.entries['profiles.claude.orchestrator.model'].value).toBe('home-orchestrator');
     expect(s.entries['profiles.claude.orchestrator.effort'].value).toBe('low');
@@ -81,7 +101,7 @@ describe('settings persistence', () => {
     expect(s.values['profiles.claude.implementation.model']).toBe('');
     const h = snapshot('home');
     expect(h.entries['profiles.claude.reviewer.model'].value).toBe('home-worker');
-    expect(h.inherited['profiles.claude.reviewer.model'].value).toBeUndefined();
+    expect(h.inherited['profiles.claude.reviewer.model']).toEqual({ value: 'home-worker', source: join(home, 'config.json') });
   });
   it('rejects invalid leaves, groups, unknown keys and home-only project changes', () => {
     for (const changes of [{ 'limits.maxDepth': -1 }, { limits: {} }, { 'unknown.key': true }, { 'daemon.maxWorking': 2 }, { 'worktrees.taskBranch': 'bad' }, { 'gate.command': '' }, { 'profiles.codex.explorer.effort': 'invalid' }, { 'profiles.codex.reviewer.effort': 'max' }]) {
