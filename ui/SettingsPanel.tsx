@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { token } from './url';
-import { send } from './conn';
+import { refreshUsage } from './conn';
 import { useStore } from './store';
-import { buildChanges, codexRecommendations, efforts, formatValue, groups, inputValue, profileFields, type Field, type Scope, type SettingsSnapshot } from './settings-model';
+import { buildChanges, cliStatus, codexRecommendations, efforts, formatValue, groups, inputValue, profileFields, type Field, type Scope, type SettingsSnapshot } from './settings-model';
 import './settings.css';
 
 async function request(scope: Scope, nodeId: string | undefined, body?: unknown, signal?: AbortSignal): Promise<SettingsSnapshot> {
@@ -19,7 +19,8 @@ async function request(scope: Scope, nodeId: string | undefined, body?: unknown,
 }
 
 export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: () => void }) {
-  const usageSources = useStore((s) => (s as unknown as { usageSources?: { id: string; tool: 'claude' | 'codex' | 'pi'; installed: boolean | null; detail?: string; checkedAt: number }[] }).usageSources);
+  const usageSources = useStore((s) => s.usageSources);
+  const usageScanning = useStore((s) => s.usageScanning);
   const connected = useStore((s) => s.connected);
   const dialog = useRef<HTMLDialogElement>(null);
   const [scope, setScope] = useState<Scope>(nodeId ? 'project' : 'home');
@@ -109,12 +110,13 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
       {success && <p className="settings-success" role="status">{success}</p>}
       {!snapshot && busy && <p role="status">Loading settings…</p>}
       <section className="settings-clis" aria-labelledby="settings-clis-title">
-        <div className="settings-clis-heading"><h3 id="settings-clis-title">Supported CLIs</h3><button className="btn" disabled={!connected || !usageSources} onClick={() => send({ t: 'usageRefresh' } as unknown as Parameters<typeof send>[0])}>Rescan</button></div>
+        <div className="settings-clis-heading"><h3 id="settings-clis-title">Supported CLIs</h3><button className="btn" disabled={!connected || usageSources === undefined || usageScanning} onClick={refreshUsage}>{usageScanning ? 'Scanning tools…' : 'Rescan'}</button></div>
         {!usageSources && <p>CLI detection is unavailable from this daemon. Update the daemon to enable discovery and rescan.</p>}
-        <p>Availability reported by the daemon. This does not check sign-in or credentials.</p>
+        <p>Executable checks use the daemon’s launch PATH. Sign-in and quota availability are separate.</p>
+        {!connected && <p>Daemon disconnected. Showing retained checks.</p>}
         <ul>{(['claude', 'codex', 'pi'] as const).map((tool) => {
-          const source = usageSources?.find((source) => source.id.startsWith('discovery:') && source.tool === tool);
-          return <li key={tool}><strong>{tool}</strong><span>{source?.installed === true ? 'Installed' : source?.installed === false ? 'Not detected' : 'Unknown'}</span>{source?.detail && <small>{source.detail}</small>}</li>;
+          const source = usageSources?.find((source) => source.id === `discovery:${tool}`);
+          return <li key={tool}><strong>{tool}</strong><span>{cliStatus(source)}</span>{source?.version && <small>Version: {source.version}</small>}{source?.detail && <small>{source.detail}</small>}{source?.checkedAt !== undefined && <small>Checked <time dateTime={new Date(source.checkedAt).toISOString()}>{new Date(source.checkedAt).toLocaleString()}</time></small>}</li>;
         })}</ul>
       </section>
       {snapshot && <form id="settings-form" onSubmit={(e) => { e.preventDefault(); void save(); }}>

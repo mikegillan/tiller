@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildChanges, groups, profileFields, type SettingsSnapshot } from './settings-model';
+import { buildChanges, cliStatus, groups, profileFields, type SettingsSnapshot } from './settings-model';
 const snapshot: SettingsSnapshot = { scope: 'project', path: '/tmp/project/.tiller/config.json', projectPath: '/tmp/project', revision: 'a', values: { 'limits.maxDepth': 3, 'worktrees.include': ['local'], 'approvals.merge': true }, entries: {}, inherited: {} };
 const fields = [...groups.flatMap((g) => g.fields), ...profileFields('codex')];
 describe('settings drafts', () => {
@@ -20,5 +20,18 @@ describe('settings drafts', () => {
   it('keeps model IDs literal and rejects blank strings without treating them as resets', () => {
     expect(buildChanges(snapshot, { 'profiles.codex.explorer.model': 'model/custom-id' }, fields)).toEqual({ 'profiles.codex.explorer.model': 'model/custom-id' });
     expect(() => buildChanges(snapshot, { 'profiles.codex.explorer.model': '' }, fields)).toThrow('reset to inherit');
+  });
+});
+
+describe('CLI executable status', () => {
+  it('keeps unknown and absent distinct from detected executables', () => {
+    expect(cliStatus()).toBe('Unknown');
+    expect(cliStatus({ installed: null, executableStatus: 'unknown' })).toBe('Unknown');
+    expect(cliStatus({ installed: false })).toBe('Not detected');
+    expect(cliStatus({ installed: true })).toBe('Detected · check unknown');
+  });
+  it('shows a broken version check separately from missing installation', () => {
+    expect(cliStatus({ installed: true, executableStatus: 'broken' })).toBe('Detected · version check failed');
+    expect(cliStatus({ installed: true, executableStatus: 'ready' })).toBe('Detected · ready');
   });
 });

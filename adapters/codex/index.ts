@@ -11,15 +11,18 @@ let bridge: CodexBridge | undefined;
 let terminal: CodexTerminal | undefined;
 let tui: ChildProcess | undefined;
 let closing = false;
+let diagnostics = '';
+let backendError: Error | undefined;
 async function close(error?: Error): Promise<void> {
   if (closing) return;
   closing = true;
+  bridge?.beginShutdown();
   tui?.kill();
   terminal?.close();
-  rpc?.close();
+  await rpc?.shutdown();
   try { await bridge?.stop(); } catch { /* Daemon shutdown can close HTTP first. */ }
   client?.dispose();
-  if (error) console.error(`Error: ${error.message}`);
+  if (error) console.error(`Error: ${backendError ? diagnostics.trim() || backendError.message : error.message}`);
   process.exit(error ? 1 : 0);
 }
 
@@ -31,11 +34,10 @@ try {
   client = new TillerClient({ endpoint, nodeId, token });
   const fatal = (error: Error) => { void close(error); };
   // Keep backend diagnostics off the TUI's screen unless startup fails.
-  let diagnostics = '';
   rpc = new CodexRpc({ ...process.env, TL_CODEX_AUTHORIZATION: `Bearer ${token}` }, (text) => { diagnostics = (diagnostics + text).slice(-8192); });
-  rpc.onClose = (error) => fatal(new Error(diagnostics.trim() || error.message));
+  rpc.onClose = (error) => { backendError = error; fatal(error); };
   bridge = new CodexBridge(options, rpc, client, (text) => process.stderr.write(text), fatal);
-  rpc.onPacket = (packet) => { terminal?.forward(packet); bridge!.handle(packet); };
+  rpc.onPacket = (packet) => { bridge!.handle(packet); if (!closing) terminal?.forward(packet); };
   process.on('SIGTERM', () => { void close(); });
   process.on('SIGHUP', () => { void close(); });
   await bridge.start(endpoint, nodeId);
@@ -44,7 +46,7 @@ try {
   await terminal.listen();
   const args = ['--remote', `unix://${terminal.socketPath}`];
   if (options.model) args.push('--model', options.model);
-  if (options.effort) args.push('-c', `model_reasoning_effort=${JSON.stringify(options.effort)}`);
+  if (options.effort && bridge.freshThread) args.push('-c', `model_reasoning_effort=${JSON.stringify(options.effort)}`);
   if (bridge.hasHistory) args.push('resume', bridge.nativeThreadId);
   if (options.prompt) args.push('--', options.prompt);
   tui = spawn('codex', args, { env: process.env, stdio: 'inherit' });
