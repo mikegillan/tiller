@@ -8,6 +8,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { dndActive, EFFORTS, finished, ISOLATIONS, NODE_KINDS, ROLES, type ArchivedNode, type Diff, type Dnd, type NodeView, type Outcome } from '../shared/protocol.js';
+import { updateLine, type Updater } from './update.js';
 import { fmtUsd, subtreeSpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { loadConfig, type Config } from './config.js';
@@ -29,7 +30,7 @@ const TRANSCRIPT_CAP = 200_000;
 const HISTORY_LINES = 50;
 
 /** dnd sets do not disturb when `on` is given, and returns it. */
-interface Ctx { manager: NodeManager; confirm: (text: string) => Promise<boolean>; focus: (from: string, id: string) => void; dnd: (on?: boolean, minutes?: number) => Dnd; caller: string }
+interface Ctx { updates?: Updater; manager: NodeManager; confirm: (text: string) => Promise<boolean>; focus: (from: string, id: string) => void; dnd: (on?: boolean, minutes?: number) => Dnd; caller: string }
 interface Out { text?: string; data?: unknown }
 
 /** How long report_outcome waits for a completion gate before replying that it is still running. */
@@ -424,6 +425,17 @@ const tools = {
       return { text, data: d };
     }, true),
 
+  update: tool(
+    'Check published stable GitHub releases and roll-up notes. With apply, install the exact reviewed tag and commit, rebuild and restart the daemon, resuming live nodes. Human only.',
+    { apply: z.boolean().optional(), tag: z.string().optional(), sha: z.string().optional() },
+    async (c, a) => {
+      if (!c.updates) throw new Error('updates unavailable');
+      if (!a.apply) { const s = await c.updates.check(); return { text: updateLine(s), data: s }; }
+      if (!a.tag || !a.sha) throw new Error('check and supply the reviewed tag and sha');
+      const result = await c.updates.apply({ tag: a.tag, sha: a.sha });
+      return { text: `Updating to ${a.tag}; the daemon will restart and resume live nodes. Log: ${result.log}`, data: result };
+    }, true),
+
   sessions_clean: tool(
     'Delete the session directories that daemon.sessionsKeepDays has expired now, rather than at the daily sweep. Only the human may call this.',
     {},
@@ -471,7 +483,7 @@ const tools = {
  * Handler for `/mcp` (MCP over stateless streamable HTTP) and `POST /api/<tool>` (the same tools as plain JSON, for the CLI).
  * Both authenticate with `Authorization: Bearer` + `X-TL-Node`. Node id `human` takes the admin token written to `<home>/admin-token`.
  */
-export function mountMcp(manager: NodeManager, confirm: Ctx['confirm'], focus: Ctx['focus'], dnd: Ctx['dnd'] = () => ({ on: false })): {
+export function mountMcp(manager: NodeManager, confirm: Ctx['confirm'], focus: Ctx['focus'], dnd: Ctx['dnd'] = () => ({ on: false }), updates?: Updater): {
   handler: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void>;
   /** Write the admin token file. Call once the server is listening, so a daemon that fails to bind leaves the running daemon's token alone. */
   publishAdminToken: () => void;
@@ -519,7 +531,7 @@ export function mountMcp(manager: NodeManager, confirm: Ctx['confirm'], focus: C
   const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const caller = authenticate(req);
     if (!caller) return void res.writeHead(401).end();
-    const ctx: Ctx = { manager, confirm, focus, dnd, caller };
+    const ctx: Ctx = { manager, confirm, focus, dnd, updates, caller };
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     if (path.startsWith('/api/')) return api(req, res, path.slice(5), ctx);
 

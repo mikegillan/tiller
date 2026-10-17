@@ -1,13 +1,15 @@
 // Client-side helpers for `tl` / `tl up`: find or start the daemon, pick the orchestrator for a directory.
 import { spawn } from 'node:child_process';
-import { mkdirSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { agentMatches, agentStatus, kickstart } from './autostart.js';
+import type { UpdateStatus } from '../shared/protocol.js';
 import { harnessFor, isAgentKind, type Harness, type NodeKind } from '../shared/protocol.js';
 
-export interface Health { ok: true; pid: number; home: string; version: string }
+export interface Health { ok: true; pid: number; home: string; version: string; sha?: string }
 
 /** GET /health; undefined if nothing answers within `timeoutMs`. */
 export async function findDaemon(port: number, timeoutMs = 500): Promise<Health | undefined> {
@@ -78,3 +80,35 @@ export function humanEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 /** Hand `tl reload` to a detached `tl reload --detached`, which outlives the terminal of the node that ran it. */
 export const spawnReload = (home: string, port: number): string => detach('tl', ['reload', '--detached'], home, port, humanEnv(process.env));
+
+/** Detached updater retains the reviewed release across the daemon restart. */
+export function spawnUpdate(home: string, port: number, expected: UpdateStatus, onExit: (code: number | null) => void): string {
+  const log = join(home, 'update.log');
+  const fd = openSync(log, 'a');
+  try {
+    const child = spawn(fileURLToPath(new URL('../../bin/tl', import.meta.url)), ['update', '--detached'], {
+      detached: true, stdio: ['pipe', fd, fd], env: { ...humanEnv(process.env), TL_HOME: home, TL_PORT: String(port) },
+    });
+    child.stdin!.on('error', () => {}); // Spawn failure is reported by the child's error handler.
+    child.stdin!.end(JSON.stringify(expected));
+    child.once('exit', onExit);
+    child.once('error', () => onExit(1));
+    child.unref();
+  } finally { closeSync(fd); }
+  return log;
+}
+
+/** SIGTERM preserves live nodes; keep launchd ownership when enabled. */
+export async function restartDaemon(home: string, port: number, expectedSha?: string): Promise<void> {
+  const old = await findDaemon(port);
+  if (old) {
+    if (old.home !== home) throw new Error('refusing to stop a daemon from another home');
+    process.kill(old.pid, 'SIGTERM');
+    for (const end = Date.now() + 10_000; await findDaemon(port); await sleep(200))
+      if (Date.now() > end) throw new Error(`daemon pid ${old.pid} did not stop`);
+  }
+  const agent = agentStatus().loaded && agentMatches(home, port);
+  if (agent) kickstart();
+  const h = await (agent ? waitForDaemon(port, join(home, 'daemon.log')) : startDaemon(home, port));
+  if (h.home !== home || (expectedSha && h.sha !== expectedSha)) throw new Error(`restarted daemon does not report expected commit ${expectedSha}`);
+}
