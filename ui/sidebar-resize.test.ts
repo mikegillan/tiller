@@ -30,6 +30,19 @@ describe('sidebar width boundaries and preference', () => {
     expect(setItem).toHaveBeenCalledWith('tl.sidebarWidth', '480');
   });
 
+  it('normalizes explicit narrow minimum/drag widths before save so reload restores the same preference', () => {
+    let stored = '600';
+    vi.stubGlobal('localStorage', { getItem: () => stored, setItem: (_key: string, value: string) => { stored = value; } });
+    for (const explicitWidth of [sidebarBounds(500).min, sidebarWidth(100, 500), sidebarBounds(900, true).min]) {
+      saveSidebarWidth(explicitWidth);
+      expect(stored).toBe('240');
+      const reloaded = readSidebarWidth();
+      expect(reloaded).toBe(240);
+      expect(sidebarWidth(reloaded, 500)).toBe(200);
+      expect(sidebarWidth(reloaded, 1400)).toBe(240);
+    }
+  });
+
   it.each([null, '', 'NaN', 'Infinity', 'nonsense', '239', '641'])('rejects invalid stored width %s', (raw) => {
     vi.stubGlobal('localStorage', { getItem: () => raw });
     expect(readSidebarWidth()).toBe(320);

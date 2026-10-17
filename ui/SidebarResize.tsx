@@ -4,6 +4,7 @@ const DEFAULT_WIDTH = 320;
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 640;
 const STORAGE_KEY = 'tl.sidebarWidth';
+const clampPreference = (width: number) => Math.round(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, width)));
 
 /** Reserve the open details panel, then keep 360px for the terminal (60% of narrower remaining space). */
 export function sidebarBounds(viewport: number, panelOpen = false) {
@@ -26,7 +27,7 @@ export function readSidebarWidth(): number {
 }
 
 export function saveSidebarWidth(width: number) {
-  try { localStorage.setItem(STORAGE_KEY, String(width)); } catch { /* resizing still works without storage */ }
+  try { localStorage.setItem(STORAGE_KEY, String(clampPreference(width))); } catch { /* resizing still works without storage */ }
 }
 
 /** Local layout preference: resizing the window clamps the view without changing the saved desktop width. */
@@ -39,7 +40,11 @@ export function SidebarResize({ panelOpen }: { panelOpen: boolean }) {
   const drag = useRef<{ id: number; x: number; width: number; preferred: number } | null>(null);
   const { min, max } = sidebarBounds(viewport, panelOpen);
   const width = sidebarWidth(preferred, viewport, panelOpen);
-  const change = (value: number) => { latest.current = value; setPreferred(value); };
+  const change = (value: number) => {
+    const next = clampPreference(value);
+    latest.current = next;
+    setPreferred(next);
+  };
 
   useLayoutEffect(() => {
     const el = handle.current!, app = el.closest<HTMLElement>('.app')!;
