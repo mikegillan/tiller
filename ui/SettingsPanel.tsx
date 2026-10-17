@@ -20,6 +20,7 @@ async function request(scope: Scope, nodeId: string | undefined, body?: unknown,
 
 export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: () => void }) {
   const usageSources = useStore((s) => (s as unknown as { usageSources?: { id: string; tool: 'claude' | 'codex' | 'pi'; installed: boolean | null; detail?: string; checkedAt: number }[] }).usageSources);
+  const connected = useStore((s) => s.connected);
   const dialog = useRef<HTMLDialogElement>(null);
   const [scope, setScope] = useState<Scope>(nodeId ? 'project' : 'home');
   const [snapshot, setSnapshot] = useState<SettingsSnapshot>();
@@ -108,10 +109,11 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
       {success && <p className="settings-success" role="status">{success}</p>}
       {!snapshot && busy && <p role="status">Loading settings…</p>}
       <section className="settings-clis" aria-labelledby="settings-clis-title">
-        <div className="settings-clis-heading"><h3 id="settings-clis-title">Supported CLIs</h3><button className="btn" onClick={() => send({ t: 'usageRefresh' } as unknown as Parameters<typeof send>[0])}>Rescan</button></div>
+        <div className="settings-clis-heading"><h3 id="settings-clis-title">Supported CLIs</h3><button className="btn" disabled={!connected || !usageSources} onClick={() => send({ t: 'usageRefresh' } as unknown as Parameters<typeof send>[0])}>Rescan</button></div>
+        {!usageSources && <p>CLI detection is unavailable from this daemon. Update the daemon to enable discovery and rescan.</p>}
         <p>Availability reported by the daemon. This does not check sign-in or credentials.</p>
         <ul>{(['claude', 'codex', 'pi'] as const).map((tool) => {
-          const source = usageSources?.find((source) => source.tool === tool);
+          const source = usageSources?.find((source) => source.id.startsWith('discovery:') && source.tool === tool);
           return <li key={tool}><strong>{tool}</strong><span>{source?.installed === true ? 'Installed' : source?.installed === false ? 'Not detected' : 'Unknown'}</span>{source?.detail && <small>{source.detail}</small>}</li>;
         })}</ul>
       </section>
