@@ -14,6 +14,7 @@ import type { NodeManager, NotifyEvent } from './manager.js';
 import { history } from './archive.js';
 import { mountMcp } from './mcp.js';
 import { modApi } from './modapi.js';
+import { settingsApi } from './settings.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
 import type { HookEvent } from './status.js';
 import { deliver, HUMAN } from './messaging.js';
@@ -76,6 +77,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
   const focus = (from: string, id: string) => broadcast({ t: 'focus', from, id });
   const { handler: mcp, publishAdminToken, authenticate, isAdmin } = mountMcp(manager, (text) => daemon.confirm(text), focus, (on, minutes) => setDnd(on, minutes));
+  const settings = settingsApi(manager, isAdmin);
   const mod = modApi(manager, authenticate, focus, () => [...new Set([...clients].filter((c) => c.authed && c.kind).map((c) => c.kind!))]);
 
   const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
@@ -220,6 +222,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       return void res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, pid: process.pid, home: manager.home, version: VERSION }));
     }
     if (req.method === 'POST' && url.pathname === '/hook') return hook(req, res);
+    if (url.pathname === '/api/settings') return settings(req, res, url);
     if (await mod(req, res, url.pathname)) return;
     if (url.pathname === '/mcp' || url.pathname.startsWith('/api/')) return mcp(req, res);
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/assets/'))) {
