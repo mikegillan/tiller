@@ -91,7 +91,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     const needsCommand = (key === 'gate.retries' || key === 'gate.timeoutMinutes') && !(typeof gateCommand === 'string' && gateCommand.trim());
     const value = !explicit && !drafted && !previewUnavailable ? inputValue(entry?.value, field) : raw;
     const defaultSuffix = !explicit && !previewUnavailable ? ' (default)' : '';
-    const showDetail = !field.options || explicit || drafted || previewUnavailable;
+    const showDetail = previewUnavailable || explicit || drafted;
     const props = { id, disabled: busy || needsCommand, value, placeholder: previewUnavailable ? 'Preview available after save' : key === 'gate.command' ? 'No completion check configured' : undefined, 'aria-describedby': `${id}-help`, onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => edit(key, e.target.value) };
     return <div className={`settings-field${key === 'gate.command' ? ' settings-command-field' : ''}`} key={key}>
       <div className="settings-label"><label id={`${id}-label`} htmlFor={id}>{key.startsWith('profiles.') ? key.endsWith('.model') ? 'Model' : 'Effort' : label}</label>
@@ -105,7 +105,8 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
           {field.options.map((option) => <option key={option} value={option}>{optionLabel(key, option)}{option === value ? defaultSuffix : ''}</option>)}
         </select> : field.type === 'lines' ? <textarea {...props} rows={3} /> : <input {...props} list={key.startsWith('profiles.claude.') && key.endsWith('.model') ? 'settings-claude-models' : undefined} type={field.type === 'number' ? 'number' : 'text'} min={field.min} step={field.integer ? 1 : 'any'} />}
         {showDetail && <div className="settings-detail">
-          {previewUnavailable ? <span>Preview unavailable until legacy role changes are saved.</span> : (explicit || !field.options) && <span>{explicit ? 'Custom setting' : 'Using default'}</span>}
+          {previewUnavailable && <span>Preview unavailable until legacy role changes are saved.</span>}
+          {explicit && <span>Custom setting</span>}
           {explicit && <><span aria-hidden="true">·</span><button type="button" className="settings-reset" disabled={busy} aria-label={`${action}: ${label}`} onClick={() => edit(key, null)}>Reset to default</button></>}
           {drafted && <span className="settings-pending">Unsaved</span>}
         </div>}
