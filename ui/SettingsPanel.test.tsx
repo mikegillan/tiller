@@ -299,3 +299,19 @@ it('stages boolean switches as explicit overrides and preserves false in the sav
   const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
   expect(JSON.parse(String(saved[1]?.body)).changes).toEqual({ 'approvals.merge': false });
 });
+
+it('resets a saved boolean override to the inherited switch state and sends only its removal', async () => {
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({
+    ...snapshot, scope: 'home',
+    values: { 'approvals.merge': true },
+    entries: { 'approvals.merge': { value: true, source: '/home/config.json' } },
+    inherited: { 'approvals.merge': { value: false, source: 'default' } },
+  }) }));
+  changeScope('home'); await settle(); click('Approvals & checks');
+  expect(input('approvals.merge').props['aria-checked']).toBe(true);
+  elements(tree).find((e) => e.props['aria-label'] === 'Use inherited default: Merge without approval')!.props.onClick(); render();
+  expect(input('approvals.merge').props['aria-checked']).toBe(false);
+  await submit();
+  const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
+  expect(JSON.parse(String(saved[1]?.body))).toEqual({ scope: 'home', revision: 'r1', changes: { 'approvals.merge': null } });
+});
