@@ -287,6 +287,8 @@ export interface UsageSource {
   scope: 'account' | 'model';
   nodeIds: string[];
   installed: boolean | null;
+  version?: string;
+  executableStatus?: 'ready' | 'broken' | 'unknown';
   configured: boolean | null;
   authenticated: boolean | null;
   availability: 'available' | 'unavailable' | 'unknown';

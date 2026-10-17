@@ -113,7 +113,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     switch (m.t) {
       case 'auth': return;
       case 'usageRefresh':
-        manager.usageRegistry.refresh();
+        await manager.usageRegistry.refresh();
         sendTo(c, { t: 'usageSources', sources: manager.usageRegistry.sources });
         return;
       case 'attach': {

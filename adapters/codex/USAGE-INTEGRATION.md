@@ -47,8 +47,11 @@ Rolling updates are sparse and omit account metadata. `normalModelSlug` describe
 a quota alias and does not prove a model-exclusive quota. Unix reset timestamps
 are seconds. Credits and dollar balances are not quota percentages.
 
-Discovery is local filesystem evidence, refreshed at most once per minute when
-requested. Authentication is unknown until a quota report arrives. Pi does not
+Discovery automatically checks the daemon launch PATH even with no live nodes.
+Opening the overview or choosing Rescan runs at most three `--version` probes,
+concurrently, with 1.5-second deadlines and 16 KiB output limits. Results are
+cached for one minute and concurrent requests coalesce. Failed probes remain
+detected tools with an explicit version-check failure. Authentication is unknown until a quota report arrives. Pi does not
 expose provider account quotas through the current adapter. Unknown accounts are
 isolated by reporting node; identified account/provider/pool reports may be shared
 only between nodes that actually reported that identity. Reports survive node

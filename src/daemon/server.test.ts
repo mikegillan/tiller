@@ -47,6 +47,14 @@ async function until<T>(find: () => T | undefined, ms = 5000): Promise<T> {
 }
 
 describe('websocket', () => {
+  it('discovers all supported tools in the initial snapshot with no live nodes', async () => {
+    await connect();
+    const snapshot = await until(() => seen.find((m) => m.t === 'snapshot'));
+    expect(snapshot?.t === 'snapshot' && snapshot.nodes).toEqual([]);
+    expect(snapshot?.t === 'snapshot' && snapshot.usageSources?.map((s) => s.tool)).toEqual(['claude', 'codex', 'pi']);
+    expect(snapshot?.t === 'snapshot' && snapshot.usageSources?.every((s) => s.authenticated === null && s.rateLimits.length === 0)).toBe(true);
+  });
+
   it('rejects a bad token', async () => {
     await connect('wrong');
     const code = await new Promise((ok) => ws!.once('close', ok));

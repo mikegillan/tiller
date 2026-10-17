@@ -42,6 +42,7 @@ export interface State {
   /** Account-level rate limits, as the newest node report gave them. */
   usage?: Usage;
   usageSources?: UsageSource[];
+  usageScanning?: boolean;
   /** What happened while no client was focused, until dismissed. */
   digest?: { since: number; items: DigestItem[] };
   /** The Diff tab is showing instead of the terminal (for worktree nodes). */
@@ -90,7 +91,7 @@ export const toast = (text: string, nodeId?: string, tone: Tone = 'info') =>
   update((s) => ({ toasts: [...s.toasts, { id: ++toastSeq, text, nodeId, tone }] }));
 export const dismissToast = (id: number) => update((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
 export const dropConfirm = (confirmId: string) => update((s) => ({ confirms: s.confirms.filter((c) => c.confirmId !== confirmId) }));
-export const setConnected = (connected: boolean, retry = 0) => update(() => ({ connected, retry }));
+export const setConnected = (connected: boolean, retry = 0) => update(() => ({ connected, retry, ...(!connected ? { usageScanning: false } : {}) }));
 export const openDialog = (dialog: Dialog | null) => update(() => ({ dialog }));
 export const dismissDigest = () => update(() => ({ digest: undefined }));
 export const setRenaming = (renaming: string | null) => update(() => ({ renaming }));
@@ -148,7 +149,7 @@ export function applyServer(m: ServerMessage) {
     case 'dnd':
       return update(() => ({ dnd: { on: m.on, until: m.until } }));
     case 'usageSources':
-      return update(() => ({ usageSources: m.sources }));
+      return update(() => ({ usageSources: m.sources, usageScanning: false }));
     case 'usage':
       return update(() => ({ usage: m.usage }));
     case 'node':

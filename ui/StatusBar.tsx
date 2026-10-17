@@ -5,7 +5,7 @@ import { fmtUsd, todaySpend } from '../src/shared/spend';
 import { toggleDnd, useNow } from './hooks';
 import { useStore } from './store';
 import { selectedUsage, usageScope, usageStale, usageToolName } from '../src/shared/usage';
-import { send } from './conn';
+import { refreshUsage } from './conn';
 import { UsagePanel, UsageWindows } from './UsagePanel';
 
 export function StatusBar() {
@@ -33,7 +33,7 @@ export function StatusBar() {
         {connected ? `daemon connected · ${location.host}` : `reconnecting to ${location.host}${retry > 1 ? ` (attempt ${retry})` : ''}…`}
       </span>
       <span>{total} nodes{needs > 0 && <b className="warn"> · {needs} need you</b>}{queued > 0 && ` · ${queued} queued`}</span>
-      <button ref={usageButton} className="usage-button" aria-haspopup="dialog" aria-expanded={usageOpen} onClick={() => { send({ t: 'usageRefresh' }); setUsageOpen(true); }}>Usage</button>
+      <button ref={usageButton} className="usage-button" aria-haspopup="dialog" aria-expanded={usageOpen} onClick={() => { refreshUsage(); setUsageOpen(true); }}>Usage</button>
       <div className="selected-usage" aria-label="Selected agent usage" tabIndex={0}>
         {selected && isAgentKind(selected.kind) ? <>
           <span>{usageToolName(harnessFor(selected))} · {selected.status.model || 'model unknown'}</span>

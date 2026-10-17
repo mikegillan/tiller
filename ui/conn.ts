@@ -1,5 +1,5 @@
 import type { ClientMessage, ServerMessage } from '../src/shared/protocol';
-import { applyServer, setConnected } from './store';
+import { applyServer, setConnected, update } from './store';
 import { getTerm } from './terminals';
 import { armOnFirstClick, handleNotify } from './notify';
 import { IN_APP, token } from './url';
@@ -9,6 +9,13 @@ let attempt = 0;
 
 export function send(m: ClientMessage) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
+}
+
+/** Discovery runs only on a connected explicit overview request, never on a timer. */
+export function refreshUsage() {
+  if (ws?.readyState !== WebSocket.OPEN) return;
+  update(() => ({ usageScanning: true }));
+  send({ t: 'usageRefresh' });
 }
 
 /** Tell the daemon whether this window is in front, so it skips OS notifications for the node being looked at. */
