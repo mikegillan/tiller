@@ -1,0 +1,101 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { isValidElement, type ReactElement, type ReactNode } from 'react';
+import { actionsFor, ActionButtons } from './ActionButtons';
+import { TitleBar } from './TitleBar';
+import { mk } from './fixtures';
+import { getState, openDialog, showPane, togglePanel, update } from './store';
+import { send } from './conn';
+
+vi.mock('./conn', () => ({ send: vi.fn() }));
+vi.mock('./store', async (importOriginal) => {
+  const store = await importOriginal<typeof import('./store')>();
+  return { ...store, useStore: (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()) };
+});
+
+const worktree = { repo: '/w', path: '/w/child', branch: 'tl/child', base: 'main', baseSha: 'abc' };
+const git = { branch: 'tl/child', base: 'main', ahead: 2, behind: 0, dirty: 0, additions: 12, deletions: 3 };
+const child = () => ({ ...mk('child', 'root', 0, { state: 'done', git }), worktree });
+const run = (node: ReturnType<typeof mk>, key: string) => actionsFor(node).find((a) => a.key === key)!.run();
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  update(() => ({ nodes: {}, renaming: null, panel: false }));
+  openDialog(null); showPane('terminal');
+});
+
+describe('node action operations', () => {
+  it('retains root restart and routes child kill through its confirmation dialog', () => {
+    run(mk('root', null, 0), 'restart');
+    expect(getState().dialog).toEqual({ kind: 'restart', id: 'root' });
+    run(child(), 'kill');
+    expect(getState().dialog).toEqual({ kind: 'kill', id: 'child' });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('protects exited worktrees from direct removal while allowing ordinary exited nodes to close', () => {
+    const exited = { ...child(), status: { ...child().status, exited: true } };
+    run(exited, 'remove');
+    expect(getState().dialog).toEqual({ kind: 'kill', id: 'child' });
+    expect(send).not.toHaveBeenCalled();
+    run({ ...exited, worktree: undefined }, 'remove');
+    expect(send).toHaveBeenCalledWith({ t: 'close', id: 'child' });
+    expect(actionsFor(exited).map((a) => a.key)).toContain('resume');
+    expect(actionsFor(exited).map((a) => a.key)).not.toContain('child');
+  });
+
+  it('preserves spawn, rename, mute, fork, resume and merge operations', () => {
+    const node = child();
+    run(node, 'child'); expect(getState().dialog).toEqual({ kind: 'spawn', parentId: 'child', cwd: '/w/child' });
+    run(node, 'rename'); expect(getState().renaming).toBe('child');
+    run(node, 'mute'); expect(send).toHaveBeenLastCalledWith({ t: 'mute', id: 'child', muted: true });
+    run({ ...node, muted: true }, 'mute'); expect(send).toHaveBeenLastCalledWith({ t: 'mute', id: 'child', muted: false });
+    run(node, 'fork'); expect(getState().dialog).toEqual({ kind: 'fork', from: 'child', title: 'child', cwd: '/w/child', parentId: 'root' });
+    run({ ...node, status: { ...node.status, exited: true } }, 'resume'); expect(send).toHaveBeenLastCalledWith({ t: 'resume', id: 'child' });
+    run(node, 'merge'); expect(send).toHaveBeenLastCalledWith({ t: 'merge', id: 'child' });
+  });
+
+  it('keeps only New child and eligible Merge outside overflow in labelled and compact modes', () => {
+    for (const labels of [true, false]) {
+      const html = renderToStaticMarkup(<ActionButtons node={child()} labels={labels} />);
+      expect(html).toContain('aria-label="New child"');
+      expect(html).toContain('aria-label="Merge into main"');
+      expect(html).toContain('aria-haspopup="menu"');
+      expect(html).not.toContain('aria-label="Kill"');
+      expect(html).not.toContain('aria-label="Rename"');
+    }
+    const working = { ...child(), status: { ...child().status, state: 'working' as const } };
+    expect(renderToStaticMarkup(<ActionButtons node={working} labels />)).not.toContain('Merge into');
+    expect(actionsFor({ ...child(), kind: 'agent', harness: 'codex' }).map((a) => a.key)).not.toContain('fork');
+  });
+});
+
+// Exercise the view controls' real handlers without adding a DOM test dependency.
+function buttons(node: ReactNode): ReactElement<{ children?: ReactNode; onClick?: () => void; 'aria-label'?: string }>[] {
+  if (!isValidElement<{ children?: ReactNode }>(node)) return [];
+  return [ ...(node.type === 'button' ? [node] : []), ...[node.props.children].flat().flatMap(buttons) ];
+}
+
+describe('header views', () => {
+  it('switches panes and the independent supporting panel through the visible controls', () => {
+    const controls = buttons(TitleBar({ node: child() }));
+    controls.find((b) => b.props.children === 'Diff')!.props.onClick!();
+    expect(getState().diffOpen).toBe(true); expect(getState().transcriptOpen).toBe(false);
+    controls.find((b) => b.props.children === 'Transcript')!.props.onClick!();
+    expect(getState().diffOpen).toBe(false); expect(getState().transcriptOpen).toBe(true);
+    controls.find((b) => b.props['aria-label'] === 'Toggle last response panel')!.props.onClick!();
+    expect(getState().panel).toBe(true); expect(getState().transcriptOpen).toBe(true);
+    controls.find((b) => b.props.children === 'Terminal')!.props.onClick!();
+    expect(getState().diffOpen).toBe(false); expect(getState().transcriptOpen).toBe(false);
+    togglePanel();
+  });
+
+  it('shows only supported views and never treats a hidden view as active', () => {
+    const html = (node: ReturnType<typeof mk>) => renderToStaticMarkup(<TitleBar node={node} />);
+    showPane('diff');
+    expect(html(mk('root', null, 0))).toContain('aria-pressed="true">Terminal');
+    expect(html(child())).toContain('aria-pressed="true">Diff');
+    expect(html({ ...child(), kind: 'terminal' })).not.toContain('>Transcript<');
+    expect(html({ ...mk('shell', null, 0), kind: 'terminal' })).not.toContain('aria-label="Pane"');
+  });
+});

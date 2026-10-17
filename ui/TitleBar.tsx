@@ -42,22 +42,25 @@ export function TitleBar({ node }: { node: NodeView }) {
         <span className={`badge ${kind}`}><StateDot kind={kind} />{KIND_LABEL[kind]}{s.errored && s.interrupted ? ' (interrupted)' : ''}</span>
         <span className="spacer" />
         <ActionButtons node={node} labels />
-        {tabs.filter((t) => t.show).length > 1 && (
-          <div className="seg tabs" role="group" aria-label="Pane">
-            {tabs.filter((t) => t.show).map((t) => (
-              <button key={t.key} className={t.on ? 'on' : ''} aria-pressed={t.on} onClick={() => showPane(t.key)}>{t.label}</button>
-            ))}
-          </div>
-        )}
-        <button className={`btn icon${panel ? ' on' : ''}`} title="Last message" aria-label="Toggle last message panel" aria-pressed={panel} onClick={togglePanel}>
-          <Icon name="panel" size={14} />
-        </button>
       </div>
       <div className="tb2">
         <span className="cwd" title={node.cwd}>{node.cwd}</span>
         <span className="tag">{kindTag(node)}</span>
         {s.permissionMode && s.permissionMode !== 'default' && <span className="tag">{s.permissionMode}</span>}
         <NodeMeta node={node} detail />
+      </div>
+      <div className="tb-views">
+        {tabs.filter((t) => t.show).length > 1 && (
+          <div className="pane-tabs" role="group" aria-label="Pane">
+            {tabs.filter((t) => t.show).map((t) => (
+              <button key={t.key} className={t.on ? 'on' : ''} aria-pressed={t.on} onClick={() => showPane(t.key)}>{t.label}</button>
+            ))}
+          </div>
+        )}
+        <span className="spacer" />
+        <button className={`btn panel-toggle${panel ? ' on' : ''}`} title="Last response" aria-label="Toggle last response panel" aria-pressed={panel} onClick={togglePanel}>
+          <Icon name="panel" size={14} /><span>Last response</span>
+        </button>
       </div>
     </header>
   );

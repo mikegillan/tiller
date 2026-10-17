@@ -4,16 +4,40 @@
 [data-app] .app { grid-template-rows: 38px 1fr 24px; }
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
-.titlebar { container: titlebar / inline-size; flex: none; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--surface); display: grid; gap: 4px; }
+.titlebar { container: titlebar / inline-size; flex: none; padding: 14px 20px 0; border-bottom: 1px solid var(--line); background: var(--surface); display: grid; gap: 8px; }
 .tb1, .tb2 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.titlebar .tb1 { gap: 12px; }
 .tb2 { color: var(--dim); font-size: 12px; flex-wrap: wrap; }
 .crumbs { display: flex; align-items: center; gap: 4px; min-width: 0; color: var(--dim); }
 .crumb-wrap { display: flex; align-items: center; gap: 4px; flex: none; }
-.crumb { background: none; border: 0; padding: 2px 4px; border-radius: 4px; color: var(--dim); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumb { background: none; border: 0; padding: 2px 4px; border-radius: 4px; color: var(--dim); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .crumb:hover { background: var(--hover); color: var(--fg); }
-.crumbs h1 { margin: 0; font-size: 15px; font-weight: 600; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumbs h1 { margin: 0; font-size: 17px; font-weight: 600; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.titlebar .crumbs { flex: 0 1 auto; }
+.titlebar .badge { font-size: 11px; }
 .cwd { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60ch; }
 .tag { padding: 0 6px; border: 1px solid var(--line); border-radius: 8px; font-size: 11px; }
+.titlebar .tb2 { gap: 6px 10px; }
+.titlebar .meta { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; font-size: 12px; }
+.titlebar .meta .branch { overflow-wrap: anywhere; }
+.tb-views { display: flex; align-items: center; min-width: 0; gap: 12px; border-top: 1px solid var(--line); margin-top: 2px; min-height: 42px; }
+.pane-tabs { display: flex; align-self: stretch; gap: 16px; }
+.pane-tabs button { position: relative; border: 0; padding: 0 2px; background: transparent; color: var(--dim); }
+.pane-tabs button:hover { color: var(--fg); }
+.pane-tabs button.on { color: var(--fg); font-weight: 600; }
+.pane-tabs button.on::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); }
+.titlebar .panel-toggle { height: 28px; padding: 0 6px; background: transparent; border-color: transparent; color: var(--dim); }
+.titlebar .panel-toggle.on { color: var(--accent); background: var(--surface-2); }
+@container titlebar (max-width: 620px) {
+  .titlebar .tb1 { flex-wrap: wrap; gap: 8px; }
+  .titlebar .tb1 > .spacer { display: none; }
+  .titlebar .node-actions { margin-left: auto; }
+  .titlebar .crumb-wrap { max-width: 80px; }
+  .titlebar .crumb-wrap .crumb { max-width: 60px; }
+  .titlebar .tb2 .cwd { max-width: 100%; }
+  .pane-tabs { gap: 10px; }
+  .titlebar .panel-toggle span { display: none; }
+}
 
 .work { flex: 1; display: flex; min-height: 0; }
 .stage { flex: 1; position: relative; min-width: 0; background: var(--bg); }
@@ -50,8 +74,6 @@
 .statusbar b { font-weight: 500; }
 
 /* Diff tab: a worktree node's changes, over the terminal (which stays mounted and measurable underneath). */
-.seg.tabs { grid-template-columns: none; grid-auto-flow: column; flex: none; }
-.seg.tabs button { padding: 0 10px; }
 .branchline { font: 12px var(--mono); }
 .counts { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .counts .add { color: var(--done); }
