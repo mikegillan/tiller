@@ -58,6 +58,22 @@ describe('release checkout', () => {
     expect(readFileSync(join(work, '.git/config'), 'utf8')).toBe(config);
     expect(git(work, 'status', '--porcelain')).toBe('');
   });
+  it('checks releases without changing the checkout, dependency lock or user settings', async () => {
+    commit('.gitignore', '.tiller/\n'); commit('package-lock.json', '{"lockfileVersion":3}\n'); release('v0.1.1');
+    git(work, 'merge', '--ff-only', (await checkUpdate(work, source)).target!.sha);
+    mkdirSync(join(work, '.tiller'));
+    const settings = join(work, '.tiller/config.json');
+    writeFileSync(settings, '{"roles":{"worker":{"model":"custom"}}}\n');
+    const paths = ['package-lock.json', '.tiller/config.json', '.git/config'];
+    const before = paths.map((p) => readFileSync(join(work, p), 'utf8'));
+    const head = git(work, 'rev-parse', 'HEAD');
+    commit('two'); release('v0.1.2');
+    expect(await checkUpdate(work, source)).toMatchObject({ eligible: true, target: { tag: 'v0.1.2' } });
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(head);
+    expect(git(work, 'status', '--porcelain')).toBe('');
+    expect(paths.map((p) => readFileSync(join(work, p), 'utf8'))).toEqual(before);
+    expect(existsSync(join(work, '.git/update.lock'))).toBe(false);
+  });
   it('preserves ignored local files when the release begins tracking their path', async () => {
     commit('.gitignore', 'private\n'); release('v0.1.1');
     git(work, 'merge', '--ff-only', (await checkUpdate(work, source)).target!.sha);

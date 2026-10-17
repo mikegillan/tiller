@@ -13,13 +13,13 @@ import { listPresets } from './presets.js';
 import { SPAWN_FIELDS, spawnKind } from './spawnfields.js';
 import { setProjectTrust } from './trust.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
-import { agentStatus, install, kickstart, LABEL, TLD, plistPath, uninstall } from './autostart.js';
+import { agentStatus, install, LABEL, TLD, plistPath, uninstall } from './autostart.js';
 import { buildChildEnv, loginShellPath } from './pty.js';
 import { formatEvent, listSessions, parseSince, readEvents, sessionDir, type SessionEvent } from './sessions.js';
 import { fmtAge } from '../shared/format.js';
 import type { Harness, NodeKind } from '../shared/protocol.js';
 import { mainCheckout, runCommands, WORKTREES_DIR } from './worktree.js';
-import { restartDaemon, findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, upDir, waitForDaemon, type OrchestratorCandidate } from './up.js';
+import { restartDaemon, findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, upDir, type OrchestratorCandidate } from './up.js';
 
 const usage = () => `tl: control tiller. With no arguments, start the daemon if needed and open the app; tl . opens it on this directory.
 
@@ -356,19 +356,9 @@ switch (cmd) {
       console.log(`reloading daemon; the new one resumes the nodes that were live; log in ${spawnReload(home, port)}`);
       break;
     }
-    // The detached helper: stdout is daemon.log. SIGTERM, unlike `tl stop`, keeps the live set for the new daemon to resume.
-    const say = (s: string) => console.log(`tl reload: ${s}`);
-    const old = await findDaemon(port);
-    if (old) {
-      say(`stopping daemon pid ${old.pid}`);
-      process.kill(old.pid, 'SIGTERM');
-      for (const end = Date.now() + 10_000; await findDaemon(port); await new Promise((r) => setTimeout(r, 200)))
-        if (Date.now() > end) fail(`tl reload: daemon pid ${old.pid} did not stop`);
-    }
-    const agent = agentStatus().loaded;
-    if (agent) kickstart(); // keep the daemon under launchd when autostart is on
-    const h = await (agent ? waitForDaemon(port, join(home, 'daemon.log')) : startDaemon(home, port)).catch((e: Error) => fail(`tl reload: ${e.message}`));
-    say(`started daemon pid ${h.pid}${agent ? ' through launchd' : ''}; it resumes the nodes that were live`);
+    // The detached helper revalidates daemon and launchd ownership before restarting.
+    await restartDaemon(home, port, undefined, (s) => console.log(`tl reload: ${s}`))
+      .catch((e: Error) => fail(`tl reload: ${e.message}`));
     break;
   }
   case 'autostart': {

@@ -163,8 +163,8 @@ checks() {
   if command -v terminal-notifier >/dev/null; then line ok terminal-notifier
   else line missing "terminal-notifier (optional: clicking a notification selects the node)" "brew install terminal-notifier"; step "brew install terminal-notifier"; fi
 
-  if [ -d "$root/node_modules" ]; then line ok "node_modules"; else bad missing "node_modules in $root" "npm install"; fi
-  step "npm install"
+  if [ -d "$root/node_modules" ]; then line ok "node_modules"; else bad missing "node_modules in $root" "npm ci"; fi
+  step "npm ci"
 
   local tl
   if ! tl=$(command -v tl); then bad missing "tl on PATH" "npm link (in $root)"

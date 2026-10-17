@@ -61,7 +61,7 @@ export function agentStatus(label = LABEL, path = plistPath(label)): { installed
   return { installed: existsSync(path), loaded: r.status === 0, ...(pid ? { pid } : {}) };
 }
 
-/** Compare the installed agent's explicit home and effective port before using it for an update restart. */
+/** Compare the installed agent's explicit home and effective port before using it for a daemon restart. */
 export function agentMatches(home: string, port: number, path = plistPath()): boolean {
   try {
     const r = spawnSync('plutil', ['-extract', 'EnvironmentVariables', 'json', '-o', '-', path], { encoding: 'utf8' });

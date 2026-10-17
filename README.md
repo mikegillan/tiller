@@ -15,7 +15,7 @@ On a Mac, clone the repo and run:
 
     bin/setup
 
-It checks everything tiller needs, lists what is missing with the exact command for each, asks once, installs those pieces, then runs `npm install`, `npm link` and `npm run app:build`. It never uses `sudo` and does not edit your shell profile. `bin/setup --no-app` skips Rust and the app build; `bin/setup --harness pi` installs Pi instead of Claude Code when neither is present. Run `tl doctor` (or `bin/setup --check`) later to rerun the checks without changing anything; it prints the fix for anything broken.
+It checks everything tiller needs, lists what is missing with the exact command for each, asks once, installs those pieces, then runs `npm ci` (installing the locked dependencies without changing `package-lock.json`), `npm link` and `npm run app:build`. It never uses `sudo` and does not edit your shell profile. `bin/setup --no-app` skips Rust and the app build; `bin/setup --harness pi` installs Pi instead of Claude Code when neither is present. Run `tl doctor` (or `bin/setup --check`) later to rerun the checks without changing anything; it prints the fix for anything broken.
 
 For Codex nodes, have `codex` on your PATH and authenticate with `codex login`; see the [Codex adapter](adapters/codex/README.md). The setup installer currently offers Claude Code or Pi.
 
