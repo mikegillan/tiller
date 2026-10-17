@@ -144,3 +144,22 @@ come from layers below the selected scope. A profile field’s inherited entry
 previews resetting that field only: it uses a lower-layer profile value first,
 then the effective legacy role value, including role overrides retained in the
 selected file. This applies to both project and home resets.
+
+## Native notifications
+
+The daemon applies mute, do not disturb, watched-node suppression, quiet hours,
+notification levels, throttling and tree summaries before requesting an OS
+notification. When a ready Tiller app is connected, one app client submits that
+approved notification through Tauri, using the release app's Tiller identity and
+icon. Clicking it opens the app and selects the node if it still exists. macOS
+may require you to allow notifications for Tiller; the app can request permission
+but does not grant it for you.
+
+With no ready native app, or after a definite native submission failure, the
+daemon uses its existing terminal-notifier/AppleScript fallback. A fully quit app
+is not started just to notify; fallback notifications may retain their sender's
+icon. If the app disconnects or its receipt times out after dispatch, the daemon
+logs uncertain delivery and does not resend, avoiding duplicate notifications.
+The native plugin acknowledges submission, not eventual OS display. After an
+update, rebuild and relaunch the release app and restart the updated daemon to
+use native delivery; a browser tab alone uses the fallback.
