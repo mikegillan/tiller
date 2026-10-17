@@ -1,7 +1,7 @@
 import type { ClientMessage, ServerMessage } from '../src/shared/protocol';
 import { applyServer, setConnected } from './store';
 import { getTerm } from './terminals';
-import { armOnFirstClick, handleNotify } from './notify';
+import { armOnFirstClick, handleNativeNotification, handleNotify, initializeNativeNotifications } from './notify';
 import { IN_APP, token } from './url';
 
 let ws: WebSocket | undefined;
@@ -27,6 +27,7 @@ function open() {
     attempt = 0;
     send({ t: 'auth', token: token(), client: IN_APP ? 'app' : 'browser' });
     sendVisibility();
+    if (IN_APP) void initializeNativeNotifications(send);
     setConnected(true); // TermViews re-attach on this transition
   };
   sock.onmessage = (e) => {
@@ -34,6 +35,7 @@ function open() {
     try { m = JSON.parse(String(e.data)); } catch { return; }
     if (m.t === 'data') getTerm(m.id)?.term.write(m.data);
     else if (m.t === 'notify') handleNotify(m);
+    else if (m.t === 'nativeNotify') void handleNativeNotification(m, send);
     else applyServer(m);
   };
   sock.onclose = () => {

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import { NodeManager } from './manager.js';
@@ -22,6 +22,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   ws?.terminate();
   await manager.shutdown();
   await server.close();
@@ -291,5 +292,82 @@ describe('client tracking', () => {
     await watching(0);
     ws!.terminate();
     await until(() => (server.appConnected() ? undefined : true));
+  });
+});
+
+
+describe('approved native notification delivery', () => {
+  const notification = { id: 'n-approved', title: 'Build', body: 'Finished', sound: false };
+  const offer = () => until(() => seen.find((m) => m.t === 'nativeNotify')) as Promise<Extract<ServerMessage, { t: 'nativeNotify' }>>;
+  const ready = async () => {
+    await connect(adminToken(), 'app');
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    await new Promise<void>((ok) => {
+      ws!.once('pong', () => ok());
+      send({ t: 'nativeNotifyReady', ok: true });
+      ws!.ping();
+    });
+  };
+
+  it('uses fallback when no ready native app is connected', async () => {
+    expect(await server.notifyNative(notification)).toBe(false);
+    await connect(adminToken(), 'app');
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    expect(await server.notifyNative(notification)).toBe(false);
+    send({ t: 'nativeNotifyReady', ok: false, error: 'plugin unavailable' });
+  });
+
+  it('dispatches to exactly one ready app and ignores receipts from another client', async () => {
+    await ready();
+    const other = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const otherSeen: ServerMessage[] = [];
+    other.on('message', (raw) => otherSeen.push(JSON.parse(raw.toString())));
+    await new Promise((ok) => other.once('open', ok));
+    other.send(JSON.stringify({ t: 'auth', token: adminToken(), client: 'app' }));
+    await until(() => otherSeen.find((m) => m.t === 'snapshot'));
+    await new Promise<void>((ok) => {
+      other.once('pong', () => ok());
+      other.send(JSON.stringify({ t: 'nativeNotifyReady', ok: true }));
+      other.ping();
+    });
+    const delivered = server.notifyNative(notification);
+    const request = await offer();
+    expect(request.notification).toEqual(notification);
+    other.send(JSON.stringify({ t: 'nativeNotifyResult', requestId: request.requestId, ok: false }));
+    send({ t: 'nativeNotifyResult', requestId: request.requestId, ok: true });
+    expect(await delivered).toBe(true);
+    expect(otherSeen.filter((m) => m.t === 'nativeNotify')).toEqual([]);
+    other.terminate();
+  });
+
+  it('falls back on definitive plugin failure and surfaces the error', async () => {
+    await ready();
+    const delivered = server.notifyNative(notification);
+    const request = await offer();
+    send({ t: 'nativeNotifyResult', requestId: request.requestId, ok: false, error: 'permission denied' });
+    expect(await delivered).toBe(false);
+    expect(await until(() => seen.find((m) => m.t === 'error'))).toMatchObject({ message: 'Native notification: permission denied' });
+  });
+
+  it('does not retry or use fallback when a dispatched notification has no receipt', async () => {
+    await ready();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const received = new Promise<Extract<ServerMessage, { t: 'nativeNotify' }>>((ok) => ws!.once('message', (raw) => ok(JSON.parse(raw.toString()))));
+    const delivered = server.notifyNative(notification);
+    const request = await received;
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect(await delivered).toBe(true); // fallback could duplicate the OS notification
+    vi.useRealTimers();
+    send({ t: 'nativeNotifyResult', requestId: request.requestId, ok: false, error: 'late failure' });
+    await new Promise((ok) => setTimeout(ok, 25));
+    expect(seen.filter((m) => m.t === 'nativeNotify')).toHaveLength(1);
+  });
+
+  it('does not retry after the nominated app disconnects following dispatch', async () => {
+    await ready();
+    const delivered = server.notifyNative(notification);
+    await offer();
+    ws!.terminate();
+    expect(await delivered).toBe(true);
   });
 });

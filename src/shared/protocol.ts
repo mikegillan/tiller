@@ -274,6 +274,9 @@ export interface RateLimit { kind: string; percentUsed: number; resetsAt?: strin
 /** Account-level Claude usage: the newest non-empty rateLimits any node's mod reported. Limits are per account, so there is one. */
 export interface Usage { rateLimits: RateLimit[]; nodeId: string; at: number }
 
+/** Prepared by the daemon only after notification suppression, grouping and sound policy. */
+export interface NativeNotification { id: string; title: string; subtitle?: string; body: string; sound: boolean }
+
 // Daemon -> UI (WebSocket, JSON). One message per line.
 export type ServerMessage =
   | { t: 'snapshot'; nodes: NodeView[]; usage?: Usage; dnd?: Dnd }
@@ -282,6 +285,7 @@ export type ServerMessage =
   | { t: 'node'; node: NodeView }            // created or updated (full record)
   | { t: 'removed'; id: string }
   | { t: 'data'; id: string; data: string }  // raw PTY output
+  | { t: 'nativeNotify'; requestId: string; notification: NativeNotification }
   | { t: 'notify'; id: string; kind: 'done' | 'needsYou' | 'errored' | 'exited'; title: string; body?: string }
   | { t: 'confirm'; confirmId: string; text: string } // ask the human to approve an agent action
   | { t: 'confirmDone'; confirmId: string }  // that confirm was answered or timed out; close the modal
@@ -300,6 +304,8 @@ export interface DigestItem { id: string; title: string; kind: 'needsYou' | 'err
 // UI -> Daemon.
 export type ClientMessage =
   | { t: 'auth'; token: string; client?: 'app' | 'browser' } // must be the first message; token comes from the ?k= query param of the served UI URL
+  | { t: 'nativeNotifyReady'; ok: boolean; error?: string }
+  | { t: 'nativeNotifyResult'; requestId: string; ok: boolean; error?: string }
   | { t: 'visibility'; focused: boolean }       // whether this client's window is in front; the daemon skips OS notifications for a node a focused client has selected
   | { t: 'attach'; id: string; cols: number; rows: number } // start receiving data; replies with a data message holding the serialized screen
   | { t: 'detach'; id: string }

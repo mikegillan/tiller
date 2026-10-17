@@ -27,7 +27,7 @@ function onKey(e: React.KeyboardEvent, rows: Row[], selected: string | null) {
   else if (row && (e.key === 'l' || e.key === 'ArrowRight') && row.collapsed) toggleCollapsed(row.node.id);
 }
 
-export function Sidebar() {
+export function Sidebar({ onSettings }: { onSettings: () => void }) {
   const rows = useRows();
   const selected = useStore((s) => s.selected);
   const exited = useStore((s) => Object.values(s.nodes).filter((n) => n.status.exited).length);
@@ -41,6 +41,7 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <SessionSwitcher />
+      <button className="btn" style={{ margin: '8px' }} onClick={onSettings}>Settings</button>
       {history ? <HistoryPanel /> : (
         <div className="tree" role="tree" tabIndex={0} ref={tree} onKeyDown={(e) => onKey(e, rows, selected)}>
           {rows.map((r) => <NodeRow key={r.node.id} row={r} />)}
