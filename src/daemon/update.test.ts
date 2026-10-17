@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -251,9 +251,9 @@ describe('installed unread release notes', () => {
     const changed = vi.fn(), current = updater(changed);
     const notes = (await current.check()).installedNotes!;
     expect(updater().status().installedNotes).toEqual(notes);
-    current.acknowledgeNotes('stale');
+    await current.acknowledgeNotes('stale');
     expect(current.status().installedNotes).toEqual(notes);
-    current.acknowledgeNotes(notes.identity);
+    await current.acknowledgeNotes(notes.identity);
     expect(changed.mock.lastCall![0].installedNotes).toBeUndefined();
     expect((await current.check()).installedNotes).toBeUndefined();
     source.list = async () => { throw new Error('offline'); };
@@ -270,9 +270,9 @@ describe('installed unread release notes', () => {
     const current = updater(), notes = (await current.check()).installedNotes!;
     expect(notes.identity).not.toBe(old.identity);
     expect(notes.releases.map((r) => r.tag)).toEqual(['v0.1.2', 'v0.1.1']);
-    current.acknowledgeNotes(old.identity);
+    await current.acknowledgeNotes(old.identity);
     expect(current.status().installedNotes).toEqual(notes);
-    current.acknowledgeNotes(notes.identity);
+    await current.acknowledgeNotes(notes.identity);
     expect(updater().status().installedNotes).toBeUndefined();
   });
 
@@ -328,9 +328,58 @@ describe('installed unread release notes', () => {
     source.list = async (repo) => { await new Promise<void>((r) => { finish = r; }); return list(repo); };
     const checking = current.check();
     await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
-    current.acknowledgeNotes(notes.identity);
+    await current.acknowledgeNotes(notes.identity);
     finish();
     expect((await checking).installedNotes).toBeUndefined();
     expect(updater().status().installedNotes).toBeUndefined();
   });
+
+  it('does not resurrect another instance acknowledgment after its paused check finishes', async () => {
+    await updater().check(); await install('v0.1.1');
+    const a = updater(), notes = (await a.check()).installedNotes!;
+    const b = updater(), list = source.list;
+    let finish!: () => void;
+    source.list = async (repo) => { await new Promise<void>((r) => { finish = r; }); return list(repo); };
+    const checking = b.check();
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    await a.acknowledgeNotes(notes.identity);
+    finish();
+    expect((await checking).installedNotes).toBeUndefined();
+    expect(updater().status().installedNotes).toBeUndefined();
+  });
+
+  it('keeps a newer persisted release when an old daemon acknowledges its stale identity', async () => {
+    await updater().check(); await install('v0.1.1');
+    const old = updater(), previous = (await old.check()).installedNotes!;
+    await install('v0.1.2');
+    const current = updater(), newer = (await current.check()).installedNotes!;
+    await old.acknowledgeNotes(previous.identity);
+    source.list = async () => { throw new Error('offline'); };
+    expect((await updater().check()).installedNotes).toEqual(newer);
+    expect(current.status().installedNotes).toEqual(newer);
+  });
+
+  it('waits for brief notes-lock contention without blocking daemon initialization', async () => {
+    await updater().check(); await install('v0.1.1');
+    const lock = join(dir, 'update-notes.json.lock');
+    writeFileSync(lock, 'fixture');
+    const current = updater();
+    const checking = current.check();
+    setTimeout(() => rmSync(lock), 50);
+    expect((await checking).installedNotes?.releases[0].tag).toBe('v0.1.1');
+  });
+
+  it('retains unread notes and does not broadcast read state when persistence fails', async () => {
+    await updater().check(); await install('v0.1.1');
+    const changed = vi.fn(), current = updater(changed), notes = (await current.check()).installedNotes!;
+    changed.mockClear();
+    const path = join(dir, 'update-notes.json'), saved = `${path}.saved`;
+    renameSync(path, saved); mkdirSync(path);
+    await expect(current.acknowledgeNotes(notes.identity)).rejects.toThrow();
+    expect(changed).not.toHaveBeenCalled();
+    expect(current.status().installedNotes).toEqual(notes);
+    rmSync(path, { recursive: true }); renameSync(saved, path);
+    expect(updater().status().installedNotes).toEqual(notes);
+  });
+
 });

@@ -138,7 +138,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
         return;
       }
       case 'updateCheck': await updates.check(); return;
-      case 'updateNotesRead': updates.acknowledgeNotes(m.identity); return;
+      case 'updateNotesRead': await updates.acknowledgeNotes(m.identity); return;
       case 'update': await updates.apply(m); return;
       case 'usageRefresh':
         await manager.usageRegistry.refresh();

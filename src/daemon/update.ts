@@ -1,9 +1,10 @@
 // Source-checkout updater. Release discovery never follows main or changes remote configuration.
 import { execFile, execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, linkSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import type { InstalledReleaseNotes, ReleaseUpdate, UpdateStatus } from '../shared/protocol.js';
 
@@ -234,12 +235,35 @@ function readNotes(path: string, repository: string, runtimeSha: string): NotesS
         || typeof r.publishedAt !== 'string' || !Number.isFinite(Date.parse(r.publishedAt)))
       || n.identity !== createHash('sha256').update(JSON.stringify([repository, n.releases])).digest('hex'))) throw new Error('invalid cached notes');
     return s;
-  } catch { return { repository, baselineSha: runtimeSha }; }
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code && code !== 'ENOENT') throw e;
+    return { repository, baselineSha: runtimeSha };
+  }
 }
-function writeNotes(path: string, state: NotesState) {
+function writeNotes(path: string, state: NotesState, initial = false) {
   const temp = `${path}.${randomUUID()}.tmp`;
-  try { writeFileSync(temp, JSON.stringify(state), { mode: 0o600 }); renameSync(temp, path); }
+  try {
+    writeFileSync(temp, JSON.stringify(state), { mode: 0o600 });
+    if (initial) {
+      try { linkSync(temp, path); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
+    } else renameSync(temp, path);
+  }
   finally { rmSync(temp, { force: true }); }
+}
+
+/** Only notes transactions use this lock; never hold it across Git or network work. */
+async function notesTransaction<T>(path: string, change: () => T): Promise<T> {
+  const lock = `${path}.lock`;
+  for (let attempt = 0; ; attempt++) {
+    try { writeFileSync(lock, String(process.pid), { flag: 'wx', mode: 0o600 }); break; }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      if (attempt === 50) throw new Error(`release notes state busy; inspect ${lock} before removing an interrupted notes lock`);
+      await delay(20);
+    }
+  }
+  try { return change(); } finally { rmSync(lock); }
 }
 
 export function createUpdater(o: { repo: string; home: string; onChange(s: UpdateStatus): void; spawnHelper: (expected: UpdateStatus, onExit: (code: number | null) => void) => string; source?: ReleaseSource }) {
@@ -249,7 +273,8 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
   const notesPath = join(o.home, UPDATE_NOTES);
   let notes = readNotes(notesPath, repository, runtimeSha);
   // Establish the first-observation baseline before any network request, including offline starts.
-  writeNotes(notesPath, notes);
+  writeNotes(notesPath, notes, true);
+  notes = readNotes(notesPath, repository, runtimeSha);
   const unread = () => notes.unread?.releases[0]?.sha === runtimeSha ? notes.unread : undefined;
   let status: UpdateStatus = { installedNotes: unread(), runtimeSha, sha: runtimeSha, checkedAt: 0, eligible: false, releases: [], reason: 'not checked yet' };
   let checking: Promise<UpdateStatus> | undefined;
@@ -258,24 +283,36 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
   const set = (s: UpdateStatus) => { status = { ...s, installedNotes: unread(), runtimeSha, applying }; o.onChange(status); return status; };
   const check = () => {
     if (checking) return checking;
-    const baseline = notes.baselineSha;
-    return checking = checkUpdate(o.repo, o.source, baseline).then((s) => {
-      // A running old daemon must never announce the checkout another process just moved.
-      if (notes.baselineSha === baseline && s.repository === repository && s.sha === runtimeSha && s.installedNotes) {
-        const next = { ...notes, unread: s.installedNotes };
+    notes = readNotes(notesPath, repository, runtimeSha);
+    const observed = JSON.stringify(notes);
+    const previousInstalled = notes.unread?.releases[0].sha;
+    return checking = checkUpdate(o.repo, o.source, notes.baselineSha).then(async (s) => {
+      const canAdvance = !previousInstalled || await ancestor(o.repo, previousInstalled, runtimeSha);
+      notes = await notesTransaction(notesPath, () => {
+        const current = readNotes(notesPath, repository, runtimeSha);
+        // Another daemon may have acknowledged or discovered newer notes during this check.
+        if (JSON.stringify(current) !== observed) return current;
+        const next = canAdvance && s.repository === repository && s.sha === runtimeSha && s.installedNotes
+          ? { ...current, unread: s.installedNotes } : current;
         writeNotes(notesPath, next);
-        notes = next;
-      }
+        return next;
+      });
       return set(s);
     }).finally(() => { checking = undefined; });
   };
   return {
-    status: () => status, check,
-    acknowledgeNotes(identity: string) {
-      if (identity !== unread()?.identity) return;
-      const next: NotesState = { repository, baselineSha: runtimeSha };
-      writeNotes(notesPath, next);
-      notes = next;
+    status: () => {
+      try { notes = readNotes(notesPath, repository, runtimeSha); } catch { /* Retain proven state on an unreadable file. */ }
+      return status = { ...status, installedNotes: unread() };
+    }, check,
+    async acknowledgeNotes(identity: string) {
+      notes = await notesTransaction(notesPath, () => {
+        const current = readNotes(notesPath, repository, runtimeSha);
+        if (current.unread?.identity !== identity || current.unread.releases[0].sha !== runtimeSha) return current;
+        const next: NotesState = { repository, baselineSha: runtimeSha };
+        writeNotes(notesPath, next);
+        return next;
+      });
       set(status);
     },
     start() { void check(); timer = setInterval(() => { if (!applying) void check(); }, 6 * 3600_000); timer.unref(); },
