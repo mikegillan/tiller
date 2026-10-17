@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyUpdate, checkUpdate, compareVersions, createUpdater, githubReleases, githubRepo, type PublishedRelease, type ReleaseSource } from './update.js';
+import { applyUpdate, checkUpdate, compareVersions, createUpdater, githubReleases, githubRepo, UPDATE_CHECK_INTERVAL, type PublishedRelease, type ReleaseSource } from './update.js';
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
   cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.com' },
 }).trim();
@@ -23,7 +23,7 @@ beforeEach(() => {
   git(work, 'remote', 'set-url', 'origin', 'https://github.com/example/tiller.git');
 
 });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); });
 
 describe('published releases', () => {
   it('accepts only safe GitHub repository origins', () => {
@@ -382,4 +382,168 @@ describe('installed unread release notes', () => {
     expect(updater().status().installedNotes).toEqual(notes);
   });
 
+});
+
+
+describe('automatic discovery while a UI is connected', () => {
+  // Fake only the scheduler; fixture Git subprocesses still run normally.
+  const fakeClock = () => vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+  const setup = () => {
+    const changed = vi.fn();
+    const spawnHelper = vi.fn(() => 'unused');
+    const list = vi.spyOn(source, 'list');
+    const updater = createUpdater({ repo: work, home: dir, source, onChange: changed, spawnHelper });
+    const tick = async (ms: number) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      // The automatic callback has already started the check; this only joins it.
+      await updater.check();
+    };
+    return { updater, changed, spawnHelper, list, tick };
+  };
+  it('discovers a newly published release on one shared timer, without installing or marking notes unread', async () => {
+    fakeClock();
+    const { updater, changed, spawnHelper, list } = setup();
+    updater.start(); updater.start();
+    expect(vi.getTimerCount()).toBe(1);
+    const firstBroadcast = new Promise((resolve) => changed.mockImplementationOnce(resolve));
+    await vi.advanceTimersByTimeAsync(0);
+    await firstBroadcast; await updater.check();
+    expect(list).toHaveBeenCalledTimes(1);
+    commit('automatic'); release('v0.1.1');
+    const calls = changed.mock.calls.length;
+    const discovery = new Promise((resolve) => changed.mockImplementationOnce(resolve));
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL);
+    await discovery; await updater.check();
+    expect(changed.mock.calls.length).toBe(calls + 1);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(updater.status()).toMatchObject({ target: { tag: 'v0.1.1' }, eligible: true });
+    expect(updater.status().installedNotes).toBeUndefined();
+    expect(git(work, 'describe', '--tags', '--exact-match', 'HEAD')).toBe('v0.1.0');
+    expect(spawnHelper).not.toHaveBeenCalled();
+    updater.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('pauses when closed, avoids reconnect bursts, and checks immediately when reopened stale', async () => {
+    fakeClock();
+    const { updater, list, tick } = setup();
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL);
+    expect(list).not.toHaveBeenCalled();
+    updater.start(); await tick(0); updater.stop();
+    updater.start();
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL - 1);
+    expect(list).toHaveBeenCalledTimes(1);
+    updater.stop();
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL * 4);
+    expect(list).toHaveBeenCalledTimes(1);
+    updater.start(); await tick(0);
+    expect(list).toHaveBeenCalledTimes(2);
+    updater.stop();
+  });
+  it('coalesces manual checks with discovery and does not rearm after closing during a request', async () => {
+    fakeClock();
+    const { updater, list } = setup();
+    let finish!: (rows: PublishedRelease[]) => void;
+    list.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    updater.start(); await vi.advanceTimersByTimeAsync(0);
+    const first = updater.check();
+    expect(updater.check()).toBe(first);
+    updater.stop();
+    // Wait until the real Git subprocess reaches the mocked release request.
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    finish([...rows]); await first;
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('backs off offline failures, recovers automatically, and allows an explicit retry sooner', async () => {
+    fakeClock();
+    const { updater, list, tick } = setup();
+    list.mockRejectedValueOnce(new Error('offline'));
+    updater.start(); await tick(0);
+    expect(updater.status()).toMatchObject({ eligible: false, fetchError: 'offline' });
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL);
+    expect(list).toHaveBeenCalledTimes(1);
+    await tick(UPDATE_CHECK_INTERVAL);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(updater.status().fetchError).toBeUndefined();
+    await updater.check();
+    expect(list).toHaveBeenCalledTimes(3);
+    updater.stop();
+  });
+  it('pauses discovery during an explicitly approved install and resumes after helper failure', async () => {
+    fakeClock();
+    commit('approved'); release('v0.1.1');
+    let exit!: (code: number | null) => void;
+    const list = vi.spyOn(source, 'list');
+    const updater = createUpdater({ repo: work, home: dir, source, onChange: vi.fn(), spawnHelper: (_expected, onExit) => { exit = onExit; return 'fixture'; } });
+    updater.start(); await vi.advanceTimersByTimeAsync(0); await updater.check();
+    const target = updater.status().target!;
+    await updater.apply({ tag: target.tag, sha: target.sha });
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL);
+    expect((await updater.check()).applying).toBe(true);
+    expect(list).toHaveBeenCalledTimes(1);
+    exit(1);
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL); await updater.check();
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(updater.status().applying).toBe(false);
+    updater.stop();
+  });
+  it('does not check while another update holds the checkout lock', async () => {
+    fakeClock();
+    const { updater, list, tick } = setup();
+    writeFileSync(join(work, '.git/update.lock'), 'fixture');
+    updater.start(); await vi.advanceTimersByTimeAsync(0);
+    expect(list).not.toHaveBeenCalled();
+    rmSync(join(work, '.git/update.lock'));
+    await tick(UPDATE_CHECK_INTERVAL);
+    expect(list).toHaveBeenCalledTimes(1);
+    updater.stop();
+  });
+});
+
+describe('GitHub polling transport', () => {
+  it('revalidates each cached list page with ETags, while individual install validation stays fresh', async () => {
+    const row = { id: 1, tag_name: 'v0.1.0', name: null, body: 'original', draft: false, prerelease: false, published_at: '2026-10-17T00:00:00Z' };
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(Array(100).fill(row)), { headers: { etag: 'page1' } }))
+      .mockResolvedValueOnce(new Response('[]', { headers: { etag: 'page2' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...row, body: 'edited' })));
+    const api = githubReleases(request);
+    expect(await api.list('a/b')).toHaveLength(100);
+    expect(await api.list('a/b')).toHaveLength(100);
+    expect(request.mock.calls[2][1]?.headers).toHaveProperty('If-None-Match', 'page1');
+    expect(request.mock.calls[3][1]?.headers).toHaveProperty('If-None-Match', 'page2');
+    expect((await api.get('a/b', 1)).body).toBe('edited');
+    expect(request.mock.calls[4][1]?.headers).not.toHaveProperty('If-None-Match');
+    expect(request.mock.calls.every(([, init]) => !('Authorization' in init!.headers!))).toBe(true);
+  });
+  it('honors both retry-after and primary reset, including manual retries, without serving stale success', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('[]', { headers: { etag: 'first' } }))
+      .mockResolvedValueOnce(new Response('', { status: 429, headers: { 'retry-after': '120', 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Date.now() / 1000 + 3600) } }))
+      .mockResolvedValueOnce(new Response('[]'));
+    const api = githubReleases(request);
+    await api.list('a/b');
+    await expect(api.list('a/b')).rejects.toThrow('rate limit');
+    vi.setSystemTime(Date.now() + 120_000);
+    await expect(api.list('a/b')).rejects.toThrow('cooldown');
+    expect(request).toHaveBeenCalledTimes(2);
+    vi.setSystemTime(Date.now() + 3600_000);
+    expect(await api.list('a/b')).toEqual([]);
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+  it('backs off repeated limit responses with no headers', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response('', { status: 403 }));
+    const api = githubReleases(request);
+    await expect(api.list('a/b')).rejects.toThrow('rate limit');
+    await expect(api.list('a/b')).rejects.toThrow('cooldown');
+    vi.setSystemTime(Date.now() + 60_000);
+    await expect(api.list('a/b')).rejects.toThrow('rate limit');
+    vi.setSystemTime(Date.now() + 60_000);
+    await expect(api.list('a/b')).rejects.toThrow('cooldown');
+    expect(request).toHaveBeenCalledTimes(2);
+  });
 });

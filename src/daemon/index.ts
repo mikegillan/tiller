@@ -55,8 +55,6 @@ const sweepSessions = () => { try { for (const id of manager.sweepSessions()) co
 sweepSessions();
 setInterval(sweepSessions, 86_400_000).unref();
 
-server.updates.start();
-
 process.on('unhandledRejection', logError);
 
 function stop(): void {
