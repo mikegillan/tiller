@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { token } from './url';
 import { refreshUsage } from './conn';
 import { useStore } from './store';
-import { buildChanges, cliStatus, claudeRecommendations, codexRecommendations, efforts, fieldPreview, formatValue, groups, inputValue, optionLabel, profileFields, profiles, type Field, type Scope, type SettingsSnapshot } from './settings-model';
+import { buildChanges, cliStatus, efforts, fieldPreview, formatValue, groups, inputValue, optionLabel, profileFields, profiles, type Field, type Scope, type SettingsSnapshot } from './settings-model';
 import './settings.css';
 
 async function request(scope: Scope, nodeId: string | undefined, body?: unknown, signal?: AbortSignal): Promise<SettingsSnapshot> {
@@ -43,7 +43,6 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   const matches = (field: Field, title = '') => !search.trim() || `${title} ${field.label} ${field.key} ${field.help ?? ''}`.toLowerCase().includes(search.trim().toLowerCase());
   const active = sections.find((section) => section.title === category) ?? sections[0];
   const visibleFields = active.fields.filter((field) => matches(field, active.title));
-  const scopeLabel = scope === 'project' ? 'repository' : 'global';
   const fields = sections.flatMap((group) => group.fields);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -91,6 +90,8 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     const gateCommand = Object.hasOwn(drafts, 'gate.command') ? drafts['gate.command'] === null ? snapshot.inherited['gate.command']?.value : drafts['gate.command'] : snapshot.entries['gate.command']?.value;
     const needsCommand = (key === 'gate.retries' || key === 'gate.timeoutMinutes') && !(typeof gateCommand === 'string' && gateCommand.trim());
     const value = !explicit && !drafted && !previewUnavailable ? inputValue(entry?.value, field) : raw;
+    const defaultSuffix = !explicit && !previewUnavailable ? ' (default)' : '';
+    const showDetail = !field.options || explicit || drafted || previewUnavailable;
     const props = { id, disabled: busy || needsCommand, value, placeholder: previewUnavailable ? 'Preview available after save' : key === 'gate.command' ? 'No completion check configured' : undefined, 'aria-describedby': `${id}-help`, onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => edit(key, e.target.value) };
     return <div className={`settings-field${key === 'gate.command' ? ' settings-command-field' : ''}`} key={key}>
       <div className="settings-label"><label id={`${id}-label`} htmlFor={id}>{key.startsWith('profiles.') ? key.endsWith('.model') ? 'Model' : 'Effort' : label}</label>
@@ -99,15 +100,15 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
       <div className="settings-control">
         {field.type === 'boolean' ? <button id={id} className="settings-toggle" type="button" role="switch" aria-checked={value === 'true'} aria-labelledby={`${id}-label`} aria-describedby={`${id}-help`} disabled={busy} onClick={() => edit(key, value === 'true' ? 'false' : 'true')}><span className="settings-switch-track"><span /></span><span>{value === 'true' ? 'On' : 'Off'}</span></button>
         : field.options ? <select {...props}>
-          {!value && <option value="">{previewUnavailable ? 'Preview available after save' : 'Harness default / unset'}</option>}
-          {value && !field.options.includes(value) && <option value={value}>{value} (current)</option>}
-          {field.options.map((option) => <option key={option} value={option}>{optionLabel(key, option)}</option>)}
+          {!value && <option value="">{previewUnavailable ? 'Preview available after save' : `Harness default / unset${defaultSuffix}`}</option>}
+          {value && !field.options.includes(value) && <option value={value}>{value}{defaultSuffix || ' (current)'}</option>}
+          {field.options.map((option) => <option key={option} value={option}>{optionLabel(key, option)}{option === value ? defaultSuffix : ''}</option>)}
         </select> : field.type === 'lines' ? <textarea {...props} rows={3} /> : <input {...props} list={key.startsWith('profiles.claude.') && key.endsWith('.model') ? 'settings-claude-models' : undefined} type={field.type === 'number' ? 'number' : 'text'} min={field.min} step={field.integer ? 1 : 'any'} />}
-        <div className="settings-detail">
-          {previewUnavailable ? <span>Preview unavailable until legacy role changes are saved.</span> : <span>{explicit ? 'Custom setting' : 'Using default'}</span>}
+        {showDetail && <div className="settings-detail">
+          {previewUnavailable ? <span>Preview unavailable until legacy role changes are saved.</span> : (explicit || !field.options) && <span>{explicit ? 'Custom setting' : 'Using default'}</span>}
           {explicit && <><span aria-hidden="true">·</span><button type="button" className="settings-reset" disabled={busy} aria-label={`${action}: ${label}`} onClick={() => edit(key, null)}>Reset to default</button></>}
           {drafted && <span className="settings-pending">Unsaved</span>}
-        </div>
+        </div>}
       </div>
     </div>;
   }
@@ -156,17 +157,6 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
           <div className="settings-page-heading"><h1 id="settings-category-title">{active.title}{['Claude', 'Codex', 'Pi'].includes(active.title) ? ' task profiles' : ''}</h1>
           {active.help && <p>{active.help}</p>}</div>
           {['Claude', 'Codex', 'Pi'].includes(active.title) ? <>
-            {active.title === 'Claude' && <details className="settings-inheritance"><summary>How Claude inherits defaults</summary><p>Profile values take precedence over legacy role defaults, regardless of scope. Preview assumes orchestrator role for orchestration and worker role for other profiles. While legacy role changes are pending, dependent previews are unavailable until you save.</p></details>}
-            {active.title !== 'Pi' && <details className="settings-recommendations"><summary>Recommended {active.title} defaults</summary>
-              <p>Tiller supplies these defaults automatically when no configured profile or legacy role value applies. Staging customizes the listed values for this scope; review below, then save to {scopeLabel} settings.</p>
-              <table><thead><tr><th>Task profile</th><th>Model</th><th>Effort</th></tr></thead><tbody>{profiles.map((profile) => {
-                const recommended = active.title === 'Claude' ? claudeRecommendations : codexRecommendations;
-                const prefix = `profiles.${active.title.toLowerCase()}.${profile}`;
-                return <tr key={profile}><th scope="row">{profile}</th><td>{recommended[`${prefix}.model`]}</td><td>{recommended[`${prefix}.effort`] ?? 'CLI default when unset'}</td></tr>;
-              })}</tbody></table>
-              {active.title === 'Claude' && <p>Stable Claude CLI aliases; their versions and availability depend on your provider. Effort is left to the CLI when unset. Staging changes models only and retains every configured effort. Custom model IDs remain editable. <a href="https://code.claude.com/docs/en/model-config#model-aliases" target="_blank" rel="noreferrer">Claude model reference</a></p>}
-              <button className="btn" type="button" disabled={busy} onClick={() => { setDrafts((d) => ({ ...d, ...(active.title === 'Claude' ? claudeRecommendations : codexRecommendations) })); setSuccess(`${active.title} defaults staged. Review the values, then save ${scopeLabel} settings.`); setError(''); }}>Stage recommended {active.title} defaults</button>
-            </details>}
             {profiles.filter((profile) => visibleFields.some((field) => field.key.includes(`.${profile}.`))).map((profile) => <fieldset className="settings-profile" key={profile}><legend>{profile.charAt(0).toUpperCase() + profile.slice(1)}</legend>{visibleFields.filter((field) => field.key.includes(`.${profile}.`)).map(renderField)}</fieldset>)}
           </> : active.title === 'Approvals & checks' ? <>
             {visibleFields.some((field) => field.key.startsWith('approvals.')) && <section className="settings-subsection"><h2>Approvals</h2>{visibleFields.filter((field) => field.key.startsWith('approvals.')).map(renderField)}</section>}

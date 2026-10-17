@@ -1,5 +1,5 @@
 import type { UsageSource } from '../src/shared/protocol';
-import { SETTINGS_FIELDS, SETTINGS_EFFORTS, SETTINGS_PROFILES, SETTINGS_PROFILE_DEFAULTS, type SettingsField } from '../src/shared/settings';
+import { SETTINGS_FIELDS, SETTINGS_EFFORTS, SETTINGS_PROFILES, type SettingsField } from '../src/shared/settings';
 export type { SettingsSnapshot } from '../src/shared/settings';
 import type { SettingsSnapshot } from '../src/shared/settings';
 export type { SettingsScope as Scope } from '../src/shared/settings';
@@ -31,11 +31,6 @@ function field(key: string, label: string, extra: { help?: string } = {}): Field
   if (!metadata) throw new Error(`Missing settings metadata: ${key}`);
   return { ...metadata, help: fieldHelp[key], label: label.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase()), ...extra };
 }
-function recommendations(harness: keyof typeof efforts): Record<string, string> {
-  return Object.fromEntries(Object.entries(SETTINGS_PROFILE_DEFAULTS[harness]).flatMap(([profile, defaults]) => Object.entries(defaults).map(([leaf, value]) => [`profiles.${harness}.${profile}.${leaf}`, value])));
-}
-export const claudeRecommendations = recommendations('claude');
-export const codexRecommendations = recommendations('codex');
 export const profileFields = (harness: keyof typeof efforts): Field[] => profiles.flatMap((profile) => [
   field(`profiles.${harness}.${profile}.model`, `${profile} model`, { help: harness === 'pi' ? 'Provider/model ID accepted by Pi.' : 'Model ID accepted by this harness.' }),
   field(`profiles.${harness}.${profile}.effort`, `${profile} effort`),
