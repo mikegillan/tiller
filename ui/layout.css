@@ -138,3 +138,10 @@
 @media (max-width: 760px) { .statusbar { gap: 8px; padding: 0 8px; } .statusbar .conn, .statusbar .dnd { display: none; } }
 
 .usage-scan { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; color: var(--dim); font-size: 12px; }
+
+.statusbar .update-button { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+.statusbar .update-button:hover { text-decoration: underline; }
+.statusbar .update-button:disabled { color: var(--dim); cursor: default; }
+.release-notes { max-height: 40vh; overflow: auto; }
+.release-notes h3 { margin: 1.5em 0 .5em; }
+.release-body { white-space: pre-wrap; overflow-wrap: anywhere; }

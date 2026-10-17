@@ -15,7 +15,7 @@ On a Mac, clone the repo and run:
 
     bin/setup
 
-It checks everything tiller needs, lists what is missing with the exact command for each, asks once, installs those pieces, then runs `npm install`, `npm link` and `npm run app:build`. It never uses `sudo` and does not edit your shell profile. `bin/setup --no-app` skips Rust and the app build; `bin/setup --harness pi` installs Pi instead of Claude Code when neither is present. Run `tl doctor` (or `bin/setup --check`) later to rerun the checks without changing anything; it prints the fix for anything broken.
+It checks everything tiller needs, lists what is missing with the exact command for each, asks once, installs those pieces, then runs `npm ci` (installing the locked dependencies without changing `package-lock.json`), `npm link` and `npm run app:build`. It never uses `sudo` and does not edit your shell profile. `bin/setup --no-app` skips Rust and the app build; `bin/setup --harness pi` installs Pi instead of Claude Code when neither is present. Run `tl doctor` (or `bin/setup --check`) later to rerun the checks without changing anything; it prints the fix for anything broken.
 
 For Codex nodes, have `codex` on your PATH and authenticate with `codex login`; see the [Codex adapter](adapters/codex/README.md). The setup installer currently offers Claude Code or Pi.
 
@@ -36,6 +36,7 @@ What it checks, for reference:
 - `cd ~/some/repo && tl --harness codex` runs Codex; the spawn dialog also offers Codex. See the [Codex adapter](adapters/codex/README.md) for terminal controls and approval handling.
 - `tl stop` shuts the daemon down and closes every node; the nodes are not resumed on the next start.
 - `tl reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
+- `tl update --check` checks published stable GitHub releases and prints the latest version and notes for every missed release. `tl update` installs that exact release, rebuilds changed dependencies/UI/app and restarts the daemon; live nodes are interrupted and resumed. The status bar's **Updates** control shows the same notes and asks before applying. If the native app is rebuilt, quit and reopen Tiller.
 - `tl autostart on|off|status` manages a launchd agent that starts the daemon at login and again after a crash.
 
 Workers that edit code in parallel get their own git worktrees, each on a branch forked from a base branch. The base is a task branch, one per task, named after the repo's convention (`tl spawn --base feature/x`, or `base` on the spawn tool); when none is given and the checkout is on a protected branch (`main`, `master` or the remote's default), tiller makes one named `tl/<slug>` from the worker's title. Merges go into that base and never into a protected branch, so you push the task branch and open a pull request yourself. See [docs/worktrees.md](docs/worktrees.md).
@@ -44,13 +45,19 @@ Workers that edit code in parallel get their own git worktrees, each on a branch
 
 ## Where files live
 
+Updates use the GitHub repository identified by the checkout's `origin` (HTTPS or git SSH). Only published, non-draft, non-prerelease `vX.Y.Z` releases qualify; unreleased commits on `main` are never an update target. Checks run at daemon startup and every six hours. A failed/offline/rate-limited check disables applying until a successful check; there is no cached-main fallback. Release versions are compared numerically, and skipped release notes are rolled up newest first. Notes display as text, including any Markdown supplied by the release.
+
+Updating is human-only and requires the primary checkout on `main`, no uncommitted or untracked files, no git operation in progress, and an ancestor relationship allowing a fast-forward to the release. Local or unreleased commits are preserved by refusing the update. Linked worktrees and detached checkouts cannot apply updates. Tags and commits are pinned and checked again before applying, including release publication and notes; a changed target requires another review. No remotes are reconfigured or pushed.
+
+The detached helper logs to `<TL_HOME>/update.log` and holds a checkout-wide `.git/update.lock`, including while rebuilding and restarting. A failed update attempts `git reset --keep` to the original commit, reinstalls/rebuilds the steps it started, and verifies the restarted daemon's commit. Edits that prevent a safe rollback are retained and reported with the log path. An interrupted helper can leave the lock behind: inspect the log and checkout, confirm no helper is running, repair/rebuild if necessary, then remove the lock manually before retrying. Never remove a live helper's lock. This updater rebuilds a source checkout; it does not download prebuilt app assets.
+
 Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the node registry (`state.json`), per-node files under `nodes/<id>/`, the admin token `tl` uses, `config.json` ([docs/config.md](docs/config.md)), presets under `agents/` and the log `daemon.log`. Each tree of nodes has a session directory, `sessions/<rootId>/`, for notes and the event log ([docs/sessions.md](docs/sessions.md)). The daemon listens on 127.0.0.1, port 7788 unless `TL_PORT` says otherwise.
 
 ## Configuration
 
 Tiller reads two JSON files, both optional: a per-repo file at `<repo>/.tiller/config.json`, which you commit so everyone who runs tiller in that repo gets the same behaviour, and a global file at `~/.tiller/config.json` for your own defaults across repos. Each key resolves on its own: the repo file wins over the global file, which wins over the built-in default. Keys in the `daemon` group (resume, retention, node caps) are daemon-wide and are read from the global file only. Both files are re-read on every use, so an edit applies without restarting the daemon. `tl config` prints the effective value of every key for the current directory and which file it came from.
 
-Task profiles (`orchestrator`, `implementation`, `explorer`, `mechanical`, `reviewer`) select portable task guidance independently of coordination roles (`orchestrator`, `worker`, `none`). Default profiles follow the effective role: orchestrator maps to orchestrator, worker/none to implementation (normally root and child respectively). Use `--profile` with `tl new` / `tl spawn`, or the spawn dialog. Optional model/effort defaults live under `profiles.<harness>.<profile>`; [configuration](docs/config.md#opt-in-codex-task-defaults) includes recommended Codex choices. Existing Claude `roles` settings remain compatible.
+Task profiles (`orchestrator`, `implementation`, `explorer`, `mechanical`, `reviewer`) select portable task guidance independently of coordination roles (`orchestrator`, `worker`, `none`). Default profiles follow the effective role: orchestrator maps to orchestrator, worker/none to implementation (normally root and child respectively). Use `--profile` with `tl new` / `tl spawn`, or the spawn dialog. Built-in [task defaults](docs/config.md#task-defaults-on-installation) apply when model/effort overrides under `profiles.<harness>.<profile>` are unset. Existing Claude `roles` settings remain compatible and take precedence over built-in defaults.
 
 A typical legacy Claude repo file sets the models for each role, gives workers their own worktrees with task branches named in the repo's convention, defines the check that must pass before a worker may report success, and lets the orchestrator close finished workers without asking:
 

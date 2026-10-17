@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -33,11 +33,12 @@ const run = (args: string[], env: Record<string, string> = {}) =>
 
 describe('bin/setup --check', () => {
   it('exits 0 when everything required is present and current', () => {
-    stubs({ node: 'v24.1.0', claude: '2.1.0 (Claude Code)', pi: '1.2.3' });
+    stubs({ node: 'v24.1.0', claude: '2.1.0 (Claude Code)', pi: '1.2.3', npm: '' }, ['npm']);
     const r = run(['--check']);
     expect(r.stdout).toContain('ok             Node v24.1.0');
     expect(r.stdout).toContain(`ok             tl (${dir}/tl)`);
     expect(r.status).toBe(0);
+    expect(() => readFileSync(join(dir, 'log'))).toThrow();
   });
 
   it('exits 1 and names an old Node and the missing agent CLI', () => {
@@ -69,11 +70,17 @@ describe('bin/setup install', () => {
     stubs({ node: 'v24.1.0', npm: '' }, ['brew', 'npm']);
     rmSync(join(dir, 'terminal-notifier'));
     writeFileSync(join(dir, 'answer'), 'y\n');
+    mkdirSync(join(dir, '.tiller'));
+    const settings = join(dir, '.tiller/config.json');
+    writeFileSync(settings, '{"roles":{"worker":{"model":"custom"}}}\n');
+    const lock = readFileSync(join(ROOT, 'package-lock.json'), 'utf8');
     const r = run(['--harness', 'pi', '--no-app'], { TL_SETUP_TTY: join(dir, 'answer') });
-    expect(r.stdout).toContain('Plan:\n  1. npm install -g @earendil-works/pi-coding-agent@~1.2.0\n  2. brew install terminal-notifier\n  3. npm install\n  4. npm link\n');
+    expect(r.stdout).toContain('Plan:\n  1. npm install -g @earendil-works/pi-coding-agent@~1.2.0\n  2. brew install terminal-notifier\n  3. npm ci\n  4. npm link\n');
     const log = readFileSync(join(dir, 'log'), 'utf8').split('\n').filter((l) => !l.startsWith('brew --prefix'));
-    expect(log).toEqual(['npm install -g @earendil-works/pi-coding-agent@~1.2.0', 'brew install terminal-notifier', 'npm install', 'npm link', '']);
+    expect(log).toEqual(['npm install -g @earendil-works/pi-coding-agent@~1.2.0', 'brew install terminal-notifier', 'npm ci', 'npm link', '']);
     expect(r.stdout).toContain('Checking again:');
+    expect(readFileSync(join(ROOT, 'package-lock.json'), 'utf8')).toBe(lock);
+    expect(readFileSync(settings, 'utf8')).toBe('{"roles":{"worker":{"model":"custom"}}}\n');
   });
 });
 

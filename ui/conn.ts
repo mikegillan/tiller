@@ -6,6 +6,7 @@ import { IN_APP, token } from './url';
 
 let ws: WebSocket | undefined;
 let attempt = 0;
+let loadedSha: string | undefined;
 let usageTimer: ReturnType<typeof setTimeout> | undefined;
 
 export function send(m: ClientMessage) {
@@ -44,6 +45,10 @@ function open() {
     let m: ServerMessage;
     try { m = JSON.parse(String(e.data)); } catch { return; }
     if (m.t === 'usageSources' || m.t === 'error') clearTimeout(usageTimer);
+    if (m.t === 'snapshot' && m.update?.runtimeSha) {
+      loadedSha ??= m.update.runtimeSha;
+      if (loadedSha !== m.update.runtimeSha) return location.reload();
+    }
     if (m.t === 'data') getTerm(m.id)?.term.write(m.data);
     else if (m.t === 'notify') handleNotify(m);
     else if (m.t === 'nativeNotify') void handleNativeNotification(m, send);

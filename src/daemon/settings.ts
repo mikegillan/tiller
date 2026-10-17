@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import type http from 'node:http';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import { SETTINGS_FIELDS, SETTINGS_PROFILES, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
-import { ConfigFile, DEFAULTS, configEntries } from './config.js';
+import { SETTINGS_FIELDS, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
+import { ConfigFile, DEFAULTS, configEntries, effectiveProfileEntries } from './config.js';
 import type { NodeManager } from './manager.js';
 import { readBody } from './util.js';
 
@@ -86,17 +86,11 @@ export function settingsSnapshot(manager: NodeManager, scope: SettingsScope, nod
     entries[key] = effective[runtimeKey];
     inherited[key] = below ? below[runtimeKey] : { value: (DEFAULTS as Record<string, unknown>)[key], source: 'default' };
   }
-  // Profiles resolve before legacy roles, regardless of the file supplying either field.
-  // Preview the usual coordination role: orchestrator for that profile, worker for the rest.
-  for (const profile of SETTINGS_PROFILES) {
-    const role = profile === 'orchestrator' ? 'orchestrator' : 'worker';
-    for (const leaf of ['model', 'effort']) {
-      const key = `profiles.claude.${profile}.${leaf}`, legacy = `roles.${role}.${leaf}`;
-      if (entries[key].value === undefined) entries[key] = { ...entries[legacy] };
-      // Reset removes this profile field, retaining legacy role overrides in the selected file.
-      if (inherited[key].value === undefined) inherited[key] = { ...entries[legacy] };
-    }
-  }
+  // Reset removes only the profile leaf, retaining legacy overrides in this file.
+  const resetEntries = { ...inherited };
+  for (const [key, entry] of Object.entries(effective)) if (key.startsWith('roles.')) resetEntries[key] = entry;
+  Object.assign(entries, effectiveProfileEntries(effective));
+  for (const [key, entry] of Object.entries(effectiveProfileEntries(resetEntries))) if (key.startsWith('profiles.')) inherited[key] = entry;
   return { scope, path, projectPath, revision: revision(layer.raw), values: flatten(layer.data), entries, inherited };
 }
 export function updateSettings(manager: NodeManager, update: SettingsUpdate): SettingsSnapshot {

@@ -18,6 +18,8 @@ import { settingsApi } from './settings.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
 import type { HookEvent } from './status.js';
 import { deliver, HUMAN } from './messaging.js';
+import { spawnUpdate } from './up.js';
+import { createUpdater, REPO, type Updater } from './update.js';
 import { readBody } from './util.js';
 
 const UI_DIR = fileURLToPath(new URL('../../ui/dist', import.meta.url));
@@ -37,6 +39,8 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('nativeNotifyReady'), ok: z.boolean(), error: z.string().max(1000).optional() }),
   z.object({ t: z.literal('nativeNotifyResult'), requestId: id, ok: z.boolean(), error: z.string().max(1000).optional() }),
   z.object({ t: z.literal('usageRefresh') }),
+  z.object({ t: z.literal('updateCheck') }),
+  z.object({ t: z.literal('update'), tag: z.string(), sha: z.string() }),
   z.object({ t: z.literal('visibility'), focused: z.boolean() }),
   z.object({ t: z.literal('attach'), id, cols: size, rows: size }),
   z.object({ t: z.literal('detach'), id }),
@@ -72,6 +76,7 @@ export interface DaemonServer {
   notifyNative(notification: NativeNotification): Promise<boolean>;
   /** Do not disturb, as the human last set it; check dndActive for whether it has expired. */
   dnd(): Dnd;
+  updates: Updater;
   close(): Promise<void>;
 }
 
@@ -82,7 +87,8 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   const pendingNotifications = new Map<string, { client: Client; finish(ok: boolean, error?: string): void }>();
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
   const focus = (from: string, id: string) => broadcast({ t: 'focus', from, id });
-  const { handler: mcp, publishAdminToken, authenticate, isAdmin } = mountMcp(manager, (text) => daemon.confirm(text), focus, (on, minutes) => setDnd(on, minutes));
+  const updates = createUpdater({ repo: REPO, home: manager.home, onChange: (update) => broadcast({ t: 'update', update }), spawnHelper: (expected, onExit) => spawnUpdate(manager.home, daemon.port, expected, onExit) });
+  const { handler: mcp, publishAdminToken, authenticate, isAdmin } = mountMcp(manager, (text) => daemon.confirm(text), focus, (on, minutes) => setDnd(on, minutes), updates);
   const settings = settingsApi(manager, isAdmin);
   const mod = modApi(manager, authenticate, focus, () => [...new Set([...clients].filter((c) => c.authed && c.kind).map((c) => c.kind!))]);
 
@@ -130,6 +136,8 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
         if (pending?.client === c) pending.finish(m.ok, m.error);
         return;
       }
+      case 'updateCheck': await updates.check(); return;
+      case 'update': await updates.apply(m); return;
       case 'usageRefresh':
         await manager.usageRegistry.refresh();
         sendTo(c, { t: 'usageSources', sources: manager.usageRegistry.sources });
@@ -221,7 +229,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
           c.authed = true;
           c.kind = msg.client;
           clearTimeout(authTimer);
-          sendTo(c, { t: 'snapshot', nodes: manager.list(), usage: manager.usage, usageSources: manager.usageRegistry.sources, dnd });
+          sendTo(c, { t: 'snapshot', update: updates.status(), nodes: manager.list(), usage: manager.usage, usageSources: manager.usageRegistry.sources, dnd });
         } else {
           ws.close(4401, 'auth required');
         }
@@ -242,7 +250,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   async function route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://x');
     if (req.method === 'GET' && url.pathname === '/health') {
-      return void res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, pid: process.pid, home: manager.home, version: VERSION }));
+      return void res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, pid: process.pid, home: manager.home, version: VERSION, sha: updates.status().runtimeSha }));
     }
     if (req.method === 'POST' && url.pathname === '/hook') return hook(req, res);
     if (url.pathname === '/api/settings') return settings(req, res, url);
@@ -328,7 +336,9 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       });
     },
     dnd: () => dnd,
+    updates,
     async close() {
+      updates.stop();
       for (const c of clients) c.ws.terminate();
       wss.close();
       server.closeAllConnections();

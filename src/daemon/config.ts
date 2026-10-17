@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { EFFORTS, ISOLATIONS, type Harness, type Profile, type Role } from '../shared/protocol.js';
+import { SETTINGS_HARNESSES, SETTINGS_PROFILES, SETTINGS_PROFILE_DEFAULTS, type SettingsEntry } from '../shared/settings.js';
 import { homeDir } from './home.js';
 
 export const MERGE_STYLES = ['merge', 'squash', 'ff-only'] as const;
@@ -187,6 +188,22 @@ export function configEntries(cwd: string | null, home = homeDir()): Record<Key,
   })) as Record<Key, { value: unknown; source: string }>;
 }
 
+/** Display profile values for the usual role, without feeding legacy or built-in
+ * values back into loadConfig (which must still support an explicit spawn role).
+ */
+export function effectiveProfileEntries(entries: Record<string, SettingsEntry>): Record<string, SettingsEntry> {
+  const resolved = { ...entries };
+  for (const harness of SETTINGS_HARNESSES) for (const profile of SETTINGS_PROFILES) {
+    const role = profile === 'orchestrator' ? 'orchestrator' : 'worker';
+    for (const leaf of ['model', 'effort'] as const) {
+      const key = `profiles.${harness}.${profile}.${leaf}`;
+      const legacy = harness === 'claude' ? entries[`roles.${role}.${leaf}`] : undefined;
+      resolved[key] = entries[key]?.value !== undefined ? entries[key] : legacy?.value !== undefined ? legacy : { value: SETTINGS_PROFILE_DEFAULTS[harness][profile][leaf], source: 'default' };
+    }
+  }
+  return resolved;
+}
+
 export function loadConfig(cwd: string | null, home = homeDir()): Config {
   const config: any = {};
   for (const [key, { value }] of Object.entries(configEntries(cwd, home))) {
@@ -201,5 +218,6 @@ export function loadConfig(cwd: string | null, home = homeDir()): Config {
 export function profileDefaults(config: Config, harness: Harness, profile: Profile, role: Role) {
   const selected = config.profiles[harness][profile];
   const legacy = harness === 'claude' ? config.roles[role === 'orchestrator' ? 'orchestrator' : 'worker'] : {};
-  return { model: selected.model ?? legacy.model, effort: selected.effort ?? legacy.effort };
+  const fallback = SETTINGS_PROFILE_DEFAULTS[harness][profile];
+  return { model: selected.model ?? legacy.model ?? fallback.model, effort: selected.effort ?? legacy.effort ?? fallback.effort };
 }

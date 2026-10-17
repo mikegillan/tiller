@@ -203,8 +203,37 @@ function ForkDialog({ d }: { d: Fork }) {
   );
 }
 
+function UpdateDialog() {
+  const upd = useStore((s) => s.update);
+  const available = upd?.target && upd.sha !== upd.target.sha;
+  return (
+    <Modal title="Tiller releases" onClose={close}>
+      <p>{upd?.currentVersion ? `Checkout: ${upd.currentVersion}` : 'Source checkout'}{upd?.sha && ` · ${upd.sha.slice(0, 7)}`}</p>
+      {upd?.target && <p>Latest stable release: <b>{upd.target.tag}</b></p>}
+      {upd?.reason && <p>{upd.reason}</p>}
+      {upd?.fetchError && <p role="alert">{upd.fetchError}</p>}
+      {upd?.failed && <p role="alert">{upd.failed}</p>}
+      <div className="release-notes">
+        {(upd?.releases.length ? upd.releases : upd?.target ? [upd.target] : []).map((r) => <section key={r.id}>
+          <h3>{r.tag} · {r.name === r.tag ? 'Release notes' : r.name}</h3>
+          <p className="release-body">{r.body || 'No release notes provided.'}</p>
+        </section>)}
+      </div>
+      {available && <p>Install this release in the clean main checkout, rebuild changed packages, UI and app, then restart the daemon. Working agents will be interrupted and resumed. If the app is rebuilt, quit and reopen Tiller.</p>}
+      <div className="btns">
+        <button className="btn" autoFocus onClick={close}>Close</button>
+        <button className="btn" disabled={upd?.applying} onClick={() => send({ t: 'updateCheck' })}>Check releases</button>
+        {available && <button className="btn primary" disabled={!upd?.eligible || upd.applying} onClick={() => send({ t: 'update', tag: upd!.target!.tag, sha: upd!.target!.sha })}>
+          {upd?.applying ? 'Updating…' : `Update ${upd?.target?.tag}`}
+        </button>}
+      </div>
+    </Modal>
+  );
+}
+
 export function Dialogs() {
   const d = useStore((s) => s.dialog);
+  if (d?.kind === 'update') return <UpdateDialog />;
   if (d?.kind === 'spawn') return <SpawnDialog d={d} />;
   if (d?.kind === 'kill') return <KillDialog id={d.id} />;
   if (d?.kind === 'restart') return <RestartDialog id={d.id} />;

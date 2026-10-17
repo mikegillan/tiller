@@ -205,6 +205,18 @@ describe('NodeManager harness delegation and lifecycle', () => {
   const pi = (parentId?: string, extra = {}) => m.spawn({ kind: 'agent', harness: 'pi', title: 'Pi', cwd: home, parentId, ...extra });
   const claude = (extra = {}) => m.spawn({ kind: 'claude', title: 'Claude', cwd: home, byHuman: true, ...extra });
 
+  it('uses portable Tiller defaults on a fresh home without creating configuration', async () => {
+    expect(await claude()).toMatchObject({ profile: 'orchestrator', model: 'opus', effort: undefined });
+    for (const [profile, model] of [['implementation', 'sonnet'], ['explorer', 'haiku'], ['mechanical', 'haiku']] as const) {
+      const node = await claude({ profile });
+      expect(node.model).toBe(model);
+      expect(node.effort).toBeUndefined();
+    }
+    expect(await m.spawn({ kind: 'agent', harness: 'codex', title: 'fresh', cwd: home, byHuman: true })).toMatchObject({ model: 'gpt-6-astra', effort: 'medium' });
+    expect(await pi(undefined, { byHuman: true })).toMatchObject({ model: undefined, effort: undefined });
+    expect(() => readFileSync(join(home, 'config.json'))).toThrow();
+  });
+
   it('selects profiles independently of roles and resolves each spawn field before persisting it', async () => {
     writeFileSync(join(home, 'config.json'), JSON.stringify({
       roles: { worker: { model: 'claude-only', effort: 'max' } },
@@ -214,7 +226,7 @@ describe('NodeManager harness delegation and lifecycle', () => {
     const spawn = (extra = {}) => m.spawn({ kind: 'agent', harness: 'codex', title: 'Codex', cwd: home, byHuman: true, ...extra });
     const root = await spawn();
     expect(root).toMatchObject({ profile: 'orchestrator' });
-    expect(root.model).toBeUndefined(); // Claude role settings never leak into Codex
+    expect(root).toMatchObject({ model: 'gpt-6-astra', effort: 'medium' }); // Claude role settings never leak into Codex
     const child = await spawn({ parentId: root.id, role: 'none' });
     expect(child).toMatchObject({ profile: 'implementation', role: 'none', model: 'impl', effort: 'medium', status: { model: 'impl', effort: 'medium' } });
     expect(await spawn({ parentId: root.id, preset: 'task' })).toMatchObject({ profile: 'reviewer', model: 'preset-model', effort: 'high' });
@@ -396,11 +408,11 @@ describe('NodeManager harness delegation and lifecycle', () => {
     const { id } = await claude({ kind, prompt: 'work' });
     const modStart = () => m.applyModEvent(id, { event: 'turn.start', payload: { text: 'work', turnId: 'mod-id' } });
     const unchanged = () => {
-      const prev = m.view(id)!.status;
+      const prev = m.runtimes.get(id)!.status;
       const rt = m.runtimes.get(id)!;
       const before = { lastHookAt: rt.lastHookAt, turnStart: rt.turnStart, starting: rt.starting };
       modStart();
-      expect(m.view(id)!.status).toBe(prev);
+      expect(m.runtimes.get(id)!.status).toBe(prev);
       expect({ lastHookAt: rt.lastHookAt, turnStart: rt.turnStart, starting: rt.starting }).toEqual(before);
     };
     unchanged(); // no mod-start transition even before UserPromptSubmit
@@ -419,10 +431,10 @@ describe('NodeManager harness delegation and lifecycle', () => {
     const { id } = await claude({ prompt: 'work' });
     m.applyHook(id, { hook_event_name: 'UserPromptSubmit', prompt_id: 'hook-id' });
     m.applyHook(id, { hook_event_name: 'Stop', last_assistant_message: 'From the hook.' });
-    const prev = m.view(id)!.status;
+    const prev = m.runtimes.get(id)!.status;
     expect(prev).toMatchObject({ state: 'done', lastAssistantMessage: 'From the hook.' });
     m.applyModEvent(id, { event: 'turn.complete', payload: { answer: 'From the mod.', durationMs: 10, isAborted: false, turnId: 'mod-id', reason: 'answer' } });
-    expect(m.view(id)!.status).toBe(prev);
+    expect(m.runtimes.get(id)!.status).toBe(prev);
   });
 
   it('accepts Pi native turn.start as a turn boundary and settles normally', async () => {
@@ -465,7 +477,7 @@ describe('NodeManager harness delegation and lifecycle', () => {
     if (harness === 'pi') {
       expect(m.view(id)!.status).toMatchObject({ exited: true, errored: true, activity: 'Error: launch failed' });
       expect(m.view(id)!.status).not.toBe(prev);
-    } else expect(m.view(id)!.status).toBe(prev);
+    } else expect(m.runtimes.get(id)!.status).toBe(prev);
   });
 
   it.each([0, 3])('reports Pi exit %s immutably, with generic error fallback and clean activity clearing', async (code) => {

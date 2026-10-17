@@ -4,7 +4,7 @@ Tiller reads JSON config from two files: the project file `<repo>/.tiller/config
 
 ## Resolution
 
-Each config key resolves independently: project file, then home file, then built-in default. For spawn model and effort, each field resolves in this order: explicit spawn argument, preset frontmatter, `profiles.<harness>.<profile>` config, legacy `roles` config (Claude only), then the harness’s own default. A home profile setting therefore wins over a project legacy role setting; project beats home within the same config key. Profile selection resolves from the explicit spawn argument, then preset, then effective coordination role (`orchestrator` → `orchestrator`, `worker`/`none` → `implementation`). Coordination role resolves separately: explicit argument, preset, then root `orchestrator` or child `worker`. The project file is the one in the node's directory; for a node in its own git worktree it is the main checkout's. Both files are read on every use, so an edit applies without restarting the daemon.
+Each config key resolves independently: project file, then home file, then built-in default. For spawn model and effort, each field resolves in this order: explicit spawn argument, preset frontmatter, `profiles.<harness>.<profile>` config, legacy `roles` config (Claude only), then Tiller’s built-in task defaults, then the harness’s own default. A home profile setting therefore wins over a project legacy role setting; project beats home within the same config key. Profile selection resolves from the explicit spawn argument, then preset, then effective coordination role (`orchestrator` → `orchestrator`, `worker`/`none` → `implementation`). Coordination role resolves separately: explicit argument, preset, then root `orchestrator` or child `worker`. The project file is the one in the node's directory; for a node in its own git worktree it is the main checkout's. Both files are read on every use, so an edit applies without restarting the daemon.
 
 Keys in the `daemon` group are daemon-wide and come from the home file only. A `daemon` group in a project file is ignored with a warning.
 
@@ -18,8 +18,8 @@ The layer column says where a key may be set: "project, home" means either file,
 
 | Key | Type | Default | Layer | Meaning |
 |---|---|---|---|---|
-| `profiles.<harness>.<profile>.model` | string | harness default, or legacy Claude role | project, home | Model for the selected harness and task profile. Harness: `claude`, `codex`, `pi`; profile: `orchestrator`, `implementation`, `explorer`, `mechanical`, `reviewer`. |
-| `profiles.<harness>.<profile>.effort` | `low`, `medium`, `high`, `xhigh`, `max` | harness default, or legacy Claude role | project, home | Effort for that harness/profile. Codex supports through `xhigh`; `max` is rejected as an invalid config leaf. Unsupported resolved Codex effort is rejected before node or worktree allocation, including queued spawns. |
+| `profiles.<harness>.<profile>.model` | string | See [task defaults](#task-defaults-on-installation) | project, home | Model for the selected harness and task profile. Harness: `claude`, `codex`, `pi`; profile: `orchestrator`, `implementation`, `explorer`, `mechanical`, `reviewer`. |
+| `profiles.<harness>.<profile>.effort` | `low`, `medium`, `high`, `xhigh`, `max` | See [task defaults](#task-defaults-on-installation) | project, home | Effort for that harness/profile. Codex supports through `xhigh`; `max` is rejected as an invalid config leaf. Unsupported resolved Codex effort is rejected before node or worktree allocation, including queued spawns. |
 | `roles.orchestrator.model` | string | Claude's default | project, home | Model for an orchestrator spawned without one. |
 | `roles.orchestrator.effort` | `low`, `medium`, `high`, `xhigh`, `max` | Claude's default | project, home | Effort (passed to claude as `--effort`) for an orchestrator spawned without one. |
 | `roles.worker.model` | string | Claude's default | project, home | Model for a worker, or a node with role `none`, spawned without one. |
@@ -68,11 +68,39 @@ For notification levels, `sound` is a banner with a sound and `silent` sends not
 }
 ```
 
-## Opt-in Codex task defaults
+<a id="opt-in-codex-task-defaults"></a>
 
-No profile model or effort is forced on existing users. Existing `roles` settings continue to apply only to Claude; they never supply Claude model IDs to Codex or Pi. Model IDs in explicit spawn arguments and presets are passed to the selected harness unchanged, so use a compatible preset/model. Resolved profile, model and effort are retained through resume, restart and follow-up; config edits affect new spawns. The UI metadata and `tl list` show the selected profile and available model/effort (live harness reports take precedence for display).
+## Task defaults on installation
 
-To opt into the recommended Codex choices, add this to either config file:
+Fresh installations immediately use Tiller’s built-in task defaults. Upgrading
+also fills previously unset defaults effectively on the next read or new spawn,
+including existing installations with partial configuration. No setup
+step, staging action, or config-file write is required. Explicit spawn arguments,
+presets, configured task profiles, and legacy Claude roles all take precedence;
+each model and effort resolves independently. Existing config files are never
+rewritten. Pi uses its provider’s defaults because its model IDs are provider-specific.
+
+| Task profile | Claude model | Claude effort | Codex model | Codex effort |
+| --- | --- | --- | --- | --- |
+| Orchestrator | `opus` | CLI default | `gpt-6-astra` | medium |
+| Implementation | `sonnet` | CLI default | `gpt-6.1-sol` | medium |
+| Explorer | `haiku` | CLI default | `gpt-6-luna` | high |
+| Mechanical | `haiku` | CLI default | `gpt-6-luna` | low |
+| Reviewer | `opus` | CLI default | `gpt-6.1-sol` | high |
+
+Claude aliases and custom models can resolve to models that do not support effort
+controls, so Tiller does not force Claude effort. User-configured effort remains
+unchanged. Staging Claude recommendations changes models only. Global Settings
+labels shipped values **Tiller default**;
+these are effective defaults, not overrides stored in your global file.
+
+Existing `roles` settings apply only to Claude; they never supply Claude model IDs
+to Codex or Pi. Model IDs in explicit spawn arguments and presets pass through
+unchanged. Resolved profile, model and effort are retained through resume, restart
+and follow-up; config edits affect new spawns. Live harness reports take precedence
+for model/effort display.
+
+To customize Codex task defaults, add the desired fields to either config file:
 
 ```json
 {
@@ -92,6 +120,32 @@ For example, `tl config --cwd /path/to/repo` includes `profiles.codex.reviewer.m
 
 ## Settings HTTP API
 
+Open **Settings** and choose **Global · all repositories** for shared defaults or
+**Repository** for the selected node’s repository. The repository name and path
+identify the target; repository overrides take precedence over global values.
+**Daemon** settings are global only. Select a category to edit task profiles,
+notifications, limits, worktrees, approvals, or legacy Claude roles. CLI discovery
+is available separately under **CLI diagnostics**.
+
+Each field shows its effective value. **Customize for this repository** or
+**Customize globally** starts an override; **Remove repository override** (repository) or
+**Use inherited default** (global) removes it. Claude profile resets can retain a
+legacy role fallback; expand **Value source** to see where a value comes from.
+Draft changes show an **After save** preview. When legacy role edits are pending,
+Claude profile previews that may depend on them are marked unavailable until
+saving; they do not show a predicted value. Model and effort inherit independently.
+Removing a repository profile override can retain a repository legacy role value
+rather than the global value.
+
+Claude and Codex each show their built-in **Recommended defaults** in a model/effort table.
+**Stage recommended defaults** customizes only that harness’s listed profile values
+in the draft. Claude effort rows marked CLI default retain any configured effort. Review or cancel them before choosing **Save repository settings** or
+**Save global settings**. Claude suggestions use the supported `opus`, `sonnet`,
+and `haiku` CLI aliases; versions and availability depend on your provider
+([Claude model reference](https://code.claude.com/docs/en/model-config#model-aliases)).
+Custom model IDs remain editable. Nothing is written until Save; changing scope
+or closing with unsaved edits requires choosing whether to discard them.
+
 The human Settings editor uses `GET /api/settings?scope=home` or
 `GET /api/settings?scope=project&nodeId=<existing-node-id>`. Both require
 `Authorization: Bearer <admin-token>`; node tokens cannot read or save Settings.
@@ -102,8 +156,8 @@ directories that are symlinks are rejected.
 
 A snapshot contains `scope`, `path`, `projectPath`, `revision`, flattened explicit
 `values`, effective `entries`, and `inherited` entries from below the selected
-layer. Each entry has `value` (omitted if unset) and `source` (a config path or
-`default`). Home inherits built-in defaults; project inherits home and defaults.
+layer, with legacy-role and final Tiller defaults applied to profile previews. Each entry has `value` (omitted if unset) and `source` (a config path or
+`default`). Home inherits Tiller defaults; project inherits home and defaults, with Claude legacy-role fallback preserved.
 The `daemon` group is editable only at home scope.
 
 Save with `POST /api/settings` and a JSON body such as:

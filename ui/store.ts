@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { ArchivedNode, Diff, DigestItem, Dnd, ServerMessage, Transcript, Usage, UsageSource } from '../src/shared/protocol';
+import type { ArchivedNode, Diff, DigestItem, Dnd, ServerMessage, Transcript, UpdateStatus, Usage, UsageSource } from '../src/shared/protocol';
 import type { ReviewComment } from './diff';
 import { pickInitial, rootOf } from './sessions';
 import { insertSorted, type Nodes } from './tree';
@@ -20,7 +20,8 @@ export type Dialog =
   | { kind: 'followup'; id: string; title: string }
   /** Spawn a Claude node that starts from `from`'s conversation (a live or archived node). */
   | { kind: 'fork'; from: string; title: string; cwd: string; parentId: string | null }
-  | { kind: 'palette' };
+  | { kind: 'palette' }
+  | { kind: 'update' };
 
 export interface State {
   nodes: Nodes;
@@ -48,6 +49,7 @@ export interface State {
   dnd?: Dnd;
   /** Account-level rate limits, as the newest node report gave them. */
   usage?: Usage;
+  update?: UpdateStatus;
   usageSources?: UsageSource[];
   usageScanning?: boolean;
   /** What happened while no client was focused, until dismissed. */
@@ -162,8 +164,11 @@ export function applyServer(m: ServerMessage) {
         for (const n of fresh) order = insertSorted(order, nodes, n);
         const base = { ...s, order, opened: s.opened.filter((id) => nodes[id]) };
         const sel = s.selected && nodes[s.selected] ? s.selected : pickInitial(nodes, order, s.selected ? undefined : wantedNode);
-        return { order, opened: base.opened, usage: m.usage ?? s.usage, usageSources: m.usageSources ?? s.usageSources, dnd: m.dnd, ...choose(base, nodes, sel) };
+        return { order, opened: base.opened, update: m.update, usage: m.usage ?? s.usage, usageSources: m.usageSources ?? s.usageSources, dnd: m.dnd, ...choose(base, nodes, sel) };
       });
+    case 'update':
+      if (m.update.failed && m.update.failed !== state.update?.failed) toast(m.update.failed, undefined, 'bad');
+      return update(() => ({ update: m.update }));
     case 'dnd':
       return update(() => ({ dnd: { on: m.on, until: m.until } }));
     case 'usageSources':
