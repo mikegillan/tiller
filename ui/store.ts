@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { ArchivedNode, Diff, DigestItem, Dnd, ServerMessage, Transcript, UpdateStatus, Usage, UsageSource } from '../src/shared/protocol';
+import type { ArchivedNode, InstalledReleaseNotes, Diff, DigestItem, Dnd, ServerMessage, Transcript, UpdateStatus, Usage, UsageSource } from '../src/shared/protocol';
 import type { ReviewComment } from './diff';
 import { pickInitial, rootOf } from './sessions';
 import { insertSorted, type Nodes } from './tree';
@@ -21,7 +21,8 @@ export type Dialog =
   /** Spawn a Claude node that starts from `from`'s conversation (a live or archived node). */
   | { kind: 'fork'; from: string; title: string; cwd: string; parentId: string | null }
   | { kind: 'palette' }
-  | { kind: 'update' };
+  | { kind: 'update' }
+  | { kind: 'whatsNew'; notes: InstalledReleaseNotes };
 
 export interface State {
   nodes: Nodes;

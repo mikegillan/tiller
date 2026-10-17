@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { PROFILES, PROFILE_LABELS, profileFor, EFFORTS, type Profile, type Effort, isAgentKind, type ClientMessage, type Harness, type NodeKind, type Role } from '../src/shared/protocol';
+import { useEffect, useRef, useState } from 'react';
+import { PROFILES, PROFILE_LABELS, profileFor, EFFORTS, type InstalledReleaseNotes, type Profile, type Effort, isAgentKind, type ClientMessage, type Harness, type NodeKind, type Role } from '../src/shared/protocol';
 import { send } from './conn';
 import type { TauriWindow } from './hooks';
 import { Modal } from './Modal';
@@ -203,6 +203,36 @@ function ForkDialog({ d }: { d: Fork }) {
   );
 }
 
+/** Mounted by Modal only after the native dialog is open and its notes are visible. */
+function InstalledNotes({ notes, onClose }: { notes: InstalledReleaseNotes; onClose: () => void }) {
+  const connected = useStore((s) => s.connected);
+  useEffect(() => {
+    if (connected && notes.releases.length) send({ t: 'updateNotesRead', identity: notes.identity });
+  }, [connected, notes]);
+  return <>
+    <div className="release-notes" tabIndex={0} aria-label="Installed release notes">
+      {notes.releases.map((release) => <section key={release.id}>
+        <h3>{release.tag}{release.name !== release.tag && ` · ${release.name}`}</h3>
+        <p className="release-body">{release.body || 'No release notes provided.'}</p>
+      </section>)}
+    </div>
+    <div className="btns"><button className="btn" autoFocus onClick={onClose}>Close</button></div>
+  </>;
+}
+
+function WhatsNewDialog({ notes }: { notes: InstalledReleaseNotes }) {
+  const opener = useRef(document.activeElement);
+  const onClose = () => {
+    close();
+    requestAnimationFrame(() => {
+      const target = opener.current;
+      if (target instanceof HTMLElement && target.isConnected) target.focus();
+      else document.querySelector<HTMLElement>('.tree')?.focus();
+    });
+  };
+  return <Modal title="What’s new" onClose={onClose}><InstalledNotes notes={notes} onClose={onClose} /></Modal>;
+}
+
 function UpdateDialog() {
   const upd = useStore((s) => s.update);
   const available = upd?.target && upd.sha !== upd.target.sha;
@@ -233,6 +263,7 @@ function UpdateDialog() {
 
 export function Dialogs() {
   const d = useStore((s) => s.dialog);
+  if (d?.kind === 'whatsNew') return <WhatsNewDialog notes={d.notes} />;
   if (d?.kind === 'update') return <UpdateDialog />;
   if (d?.kind === 'spawn') return <SpawnDialog d={d} />;
   if (d?.kind === 'kill') return <KillDialog id={d.id} />;

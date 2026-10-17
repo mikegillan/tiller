@@ -1,0 +1,109 @@
+import { beforeEach, expect, it, vi } from 'vitest';
+import type { ReactElement, ReactNode } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { StatusBar } from './StatusBar';
+import { Dialogs } from './Dialogs';
+import { Palette } from './Palette';
+import { getState, update } from './store';
+import { send } from './conn';
+import { toggleDnd } from './hooks';
+
+const effects = vi.hoisted(() => [] as (() => unknown)[]);
+vi.mock('./Modal', () => ({ Modal: ({ children }: { children: ReactNode }) => children }));
+vi.mock('./store', async (original) => {
+  const store = await original<typeof import('./store')>();
+  return { ...store, useStore: (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()) };
+});
+vi.mock('./conn', () => ({ send: vi.fn(), refreshUsage: vi.fn() }));
+vi.mock('./hooks', () => ({ useNow: () => 100, toggleDnd: vi.fn() }));
+vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useState: (initial: unknown) => [initial, vi.fn()], useRef: () => ({ current: null }), useMemo: (fn: () => unknown) => fn(), useEffect: (fn: () => unknown) => effects.push(fn) }));
+type Element = ReactElement<Record<string, any>>;
+function elements(node: ReactNode): Element[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!node || typeof node !== 'object' || !('props' in node)) return [];
+  const element = node as Element;
+  return [element, ...elements(element.props.children)];
+}
+function command(key: string) {
+  const element = elements(Palette()).find((el) => el.key === `cmd:${key}`);
+  if (!element) throw Error(`Missing command ${key}`);
+  return element;
+}
+beforeEach(() => {
+  vi.clearAllMocks();
+  effects.splice(0);
+  vi.stubGlobal('document', { activeElement: null });
+  vi.stubGlobal('location', { host: 'localhost' });
+  vi.stubGlobal('requestAnimationFrame', (fn: () => void) => fn());
+  update(() => ({ nodes: {}, order: [], connected: true, dnd: undefined, update: undefined, dialog: { kind: 'palette' }, activityOpen: false }));
+});
+
+it('removes persistent footer commands and shortcut text, even while a future update is available', () => {
+  update(() => ({ update: { sha: 'old', runtimeSha: 'old', checkedAt: 1, eligible: true, releases: [], target: { id: 2, tag: 'v2', sha: 'new', name: 'v2', body: 'Future notes', tagObject: 'new', publishedAt: '' } } }));
+  const html = renderToStaticMarkup(<StatusBar />);
+  expect(html).toContain('Usage');
+  for (const label of ['Updates', 'Update v2', 'disturb', 'Activity', '<kbd', 'What’s new']) expect(html).not.toContain(label);
+});
+
+it('keeps Activity, notification toggling, and update management reachable through palette handlers', () => {
+  command('activity').props.onClick();
+  expect(getState().activityOpen).toBe(true);
+  expect(getState().dialog).toBeNull();
+  command('dnd').props.onClick();
+  expect(toggleDnd).toHaveBeenCalledOnce();
+  command('updates').props.onClick();
+  expect(getState().dialog).toEqual({ kind: 'update' });
+  expect(send).not.toHaveBeenCalled();
+  command('check-updates').props.onClick();
+  expect(send).toHaveBeenCalledWith({ t: 'updateCheck' });
+  expect(getState().dialog).toEqual({ kind: 'update' });
+  update(() => ({ dnd: { on: true } }));
+  expect(JSON.stringify(command('dnd').props.children)).toContain('Turn off do not disturb');
+});
+
+
+it('shows only backend installed unread notes and acknowledges their loaded identity, preserving newer notes', () => {
+  const release = { id: 1, tag: 'v1', name: 'Installed release', body: 'Installed changes', sha: 'installed', tagObject: 'tag', publishedAt: '' };
+  const notes = { identity: 'installed-identity', releases: [release] };
+  const status = { sha: 'installed', checkedAt: 1, eligible: false, releases: [], installedNotes: notes };
+  update(() => ({ update: status }));
+  expect(renderToStaticMarkup(<StatusBar />)).toContain('What’s new');
+  expect(send).not.toHaveBeenCalled(); // Merely noticing the badge does not mark it read.
+  elements(StatusBar()).find((el) => el.props.className === 'whats-new')!.props.onClick();
+  expect(getState().dialog).toEqual({ kind: 'whatsNew', notes });
+  // A newer update arriving while the dialog opens must never change which notes were read.
+  const newer = { identity: 'newer-identity', releases: [{ ...release, id: 2, body: 'Newer changes' }] };
+  update(() => ({ update: { ...status, installedNotes: newer } }));
+  const html = renderToStaticMarkup(<Dialogs />);
+  expect(html).toContain('Installed changes');
+  expect(html).not.toContain('Newer changes');
+  effects.splice(0).forEach((effect) => effect());
+  expect(send).toHaveBeenCalledExactlyOnceWith({ t: 'updateNotesRead', identity: notes.identity });
+  expect(getState().update?.installedNotes).toBe(newer); // No optimistic clearing of newer state.
+  update(() => ({ update: { ...status, installedNotes: undefined } }));
+  expect(renderToStaticMarkup(<StatusBar />)).not.toContain('What’s new');
+});
+
+it('manual release management never acknowledges installed notes', () => {
+  command('updates').props.onClick();
+  renderToStaticMarkup(<Dialogs />);
+  effects.splice(0).forEach((effect) => effect());
+  expect(send).not.toHaveBeenCalled();
+});
+
+it('closes the palette before opening release management so the native close event cannot dismiss it', () => {
+  let nextFrame: (() => void) | undefined;
+  vi.stubGlobal('requestAnimationFrame', (fn: () => void) => { nextFrame = fn; });
+  command('updates').props.onClick();
+  expect(getState().dialog).toBeNull();
+  nextFrame!();
+  expect(getState().dialog).toEqual({ kind: 'update' });
+});
+
+it('retains unread installed notes while disconnected instead of pretending an acknowledgement succeeded', () => {
+  const notes = { identity: 'offline-identity', releases: [{ id: 1, tag: 'v1', name: 'v1', body: 'Loaded notes', sha: 'a', tagObject: 'a', publishedAt: '' }] };
+  update(() => ({ connected: false, dialog: { kind: 'whatsNew', notes } }));
+  expect(renderToStaticMarkup(<Dialogs />)).toContain('Loaded notes');
+  effects.splice(0).forEach((effect) => effect());
+  expect(send).not.toHaveBeenCalled();
+});

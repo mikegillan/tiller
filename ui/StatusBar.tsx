@@ -1,14 +1,14 @@
-import { useRef, useState, type ReactNode } from 'react';
-import { dndActive, harnessFor, isAgentKind, needsYou } from '../src/shared/protocol';
+import { useRef, useState } from 'react';
+import { harnessFor, isAgentKind, needsYou } from '../src/shared/protocol';
 import { fmtAge } from '../src/shared/format';
 import { fmtUsd, todaySpend } from '../src/shared/spend';
-import { toggleDnd, useNow } from './hooks';
+import { useNow } from './hooks';
 import { openDialog, useStore } from './store';
 import { selectedUsage, usageScope, usageStale, usageToolName } from '../src/shared/usage';
 import { refreshUsage } from './conn';
 import { UsagePanel, UsageWindows } from './UsagePanel';
 
-export function StatusBar({ children }: { children?: ReactNode }) {
+export function StatusBar() {
   const connected = useStore((s) => s.connected);
   const retry = useStore((s) => s.retry);
   const total = useStore((s) => Object.keys(s.nodes).length);
@@ -24,9 +24,7 @@ export function StatusBar({ children }: { children?: ReactNode }) {
   const unavailable = selected && sources?.some((s) => s.tool === harnessFor(selected) && s.nodeIds.includes(selected.id) && s.availability === 'unavailable');
   const now = useNow();
   const today = useStore((s) => todaySpend(Object.values(s.nodes), now));
-  const dnd = useStore((s) => s.dnd);
-  const upd = useStore((s) => s.update);
-  const quiet = dndActive(dnd, now);
+  const notes = useStore((s) => s.update?.installedNotes);
   return (
     <>
     <footer className="statusbar" role="status">
@@ -48,14 +46,7 @@ export function StatusBar({ children }: { children?: ReactNode }) {
       </div>
       {today > 0 && <span title="spent today, all nodes">{fmtUsd(today)} today</span>}
       <span className="spacer" />
-      <button className="update-button" disabled={!connected || upd?.applying} onClick={() => openDialog({ kind: 'update' })}>
-        {upd?.applying ? 'Updating…' : upd?.target && upd.sha !== upd.target.sha ? `Update ${upd.target.tag}` : 'Updates'}
-      </button>
-      <button className={`dnd${quiet ? ' on' : ''}`} onClick={toggleDnd} title={quiet ? 'Turn off do not disturb' : 'No OS notifications for an hour'}>
-        {quiet ? `do not disturb${dnd!.until ? ` · ${Math.ceil((dnd!.until - now) / 60_000)} min left` : ''}` : 'do not disturb 1 h'}
-      </button>
-      {children}
-      <span className="keys"><kbd>⌘K</kbd> jump <kbd>⌘1–9</kbd> row <kbd>⌘0</kbd> sidebar</span>
+      {!!notes?.releases.length && <button className="whats-new" onClick={() => openDialog({ kind: 'whatsNew', notes })} aria-haspopup="dialog">What’s new</button>}
     </footer>
     {usageOpen && <UsagePanel onClose={closeUsage} />}
     </>
