@@ -29,21 +29,23 @@ export const fmtTokens = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` 
 /** Rate-limit use: amber above 80%, red above 95%. */
 const usageLevel = (pct: number): CtxLevel => (pct > 95 ? 'bad' : pct > 80 ? 'warn' : 'ok');
 
-const WINDOWS: Record<string, string> = { five_hour: '5h', seven_day: '7d' };
+const WINDOWS: Record<string, string> = { five_hour: '5h', seven_day: '7d', seven_day_opus: '7d Opus pool', seven_day_sonnet: '7d Sonnet pool' };
 
 /** Local "14:30" within a day of `now`, else "Wed 14:30"; '' for a bad timestamp. */
 function fmtReset(iso: string, now: number): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  if (now - d.getTime() >= 86_400_000 || d.getTime() - now >= 7 * 86_400_000) return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${hm}`;
   return d.getTime() - now < 86_400_000 ? hm : `${d.toLocaleDateString([], { weekday: 'short' })} ${hm}`;
 }
 
 /** One part per window, such as "5h 42% · resets 14:30"; compact leaves out the reset. Join the parts with " · ". */
 export function usageParts(limits: readonly RateLimit[], compact = false, now = Date.now()): { text: string; level: CtxLevel }[] {
   return limits.map((l) => {
+    if (l.resetsAt && Date.parse(l.resetsAt) <= now) return { text: `${WINDOWS[l.kind] ?? l.kind} · reset passed · awaiting report`, level: 'warn' };
     const reset = compact || !l.resetsAt ? '' : fmtReset(l.resetsAt, now);
-    return { text: `${WINDOWS[l.kind] ?? l.kind} ${Math.round(l.percentUsed)}%${reset && ` · resets ${reset}`}`, level: usageLevel(l.percentUsed) };
+    return { text: `${WINDOWS[l.kind] ?? l.kind} ${Math.round(l.percentUsed)}%${reset && ` · resets ${reset}`}${l.observedAt !== undefined && now - l.observedAt > 300_000 ? ` · stale (${fmtAge(now - l.observedAt)} ago)` : ''}`, level: usageLevel(l.percentUsed) };
   });
 }
 

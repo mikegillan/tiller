@@ -1,14 +1,24 @@
 import type { ClientMessage, ServerMessage } from '../src/shared/protocol';
-import { applyServer, setConnected } from './store';
+import { applyServer, getState, setConnected, update } from './store';
 import { getTerm } from './terminals';
 import { armOnFirstClick, handleNotify } from './notify';
 import { IN_APP, token } from './url';
 
 let ws: WebSocket | undefined;
 let attempt = 0;
+let usageTimer: ReturnType<typeof setTimeout> | undefined;
 
 export function send(m: ClientMessage) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
+}
+
+/** Discovery runs only on a connected explicit overview request, never on a timer. */
+export function refreshUsage() {
+  if (ws?.readyState !== WebSocket.OPEN || getState().usageSources === undefined) return;
+  clearTimeout(usageTimer);
+  update(() => ({ usageScanning: true }));
+  send({ t: 'usageRefresh' });
+  usageTimer = setTimeout(() => update(() => ({ usageScanning: false })), 5000);
 }
 
 /** Tell the daemon whether this window is in front, so it skips OS notifications for the node being looked at. */
@@ -32,12 +42,14 @@ function open() {
   sock.onmessage = (e) => {
     let m: ServerMessage;
     try { m = JSON.parse(String(e.data)); } catch { return; }
+    if (m.t === 'usageSources' || m.t === 'error') clearTimeout(usageTimer);
     if (m.t === 'data') getTerm(m.id)?.term.write(m.data);
     else if (m.t === 'notify') handleNotify(m);
     else applyServer(m);
   };
   sock.onclose = () => {
     if (ws !== sock) return;
+    clearTimeout(usageTimer);
     setConnected(false, attempt + 1);
     setTimeout(open, Math.min(10000, 500 * 2 ** attempt++));
   };

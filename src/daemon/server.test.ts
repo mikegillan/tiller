@@ -47,6 +47,14 @@ async function until<T>(find: () => T | undefined, ms = 5000): Promise<T> {
 }
 
 describe('websocket', () => {
+  it('discovers all supported tools in the initial snapshot with no live nodes', async () => {
+    await connect();
+    const snapshot = await until(() => seen.find((m) => m.t === 'snapshot'));
+    expect(snapshot?.t === 'snapshot' && snapshot.nodes).toEqual([]);
+    expect(snapshot?.t === 'snapshot' && snapshot.usageSources?.map((s) => s.tool)).toEqual(['claude', 'codex', 'pi']);
+    expect(snapshot?.t === 'snapshot' && snapshot.usageSources?.every((s) => s.authenticated === null && s.rateLimits.length === 0)).toBe(true);
+  });
+
   it('rejects a bad token', async () => {
     await connect('wrong');
     const code = await new Promise((ok) => ws!.once('close', ok));
@@ -185,17 +193,23 @@ describe('POST /hook', () => {
   it('mod-event rateLimits: keeps the newest report from any node, broadcasts it, drops a malformed one', async () => {
     const a = (await manager.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir() }));
     const b = (await manager.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir() }));
+    // Real shell processes keep this test inference-free; mark their reporting harness explicitly.
+    manager.registry.update(a.id, { kind: 'claude' });
+    manager.registry.update(b.id, { kind: 'claude' });
     const post = (id: string, payload: unknown) => fetch(`http://127.0.0.1:${server.port}/mod-event`, {
       method: 'POST', body: JSON.stringify({ event: 'session.measure', payload }),
       headers: { Authorization: `Bearer ${manager.tokenFor(id)}`, 'X-TL-Node': id, 'Content-Type': 'application/json' },
     });
     await connect();
     await until(() => seen.find((m) => m.t === 'snapshot'));
+    let sourceChanges = 0; manager.on('usageSources', () => sourceChanges++);
     const first = [{ kind: 'five_hour', percentUsed: 10, resetsAt: '2026-10-13T14:30:00Z' }];
     const newer = [{ kind: 'five_hour', percentUsed: 12 }, { kind: 'seven_day', percentUsed: 3 }];
     expect((await post(a.id, { rateLimits: first })).status).toBe(204);
     expect((await post(b.id, { rateLimits: newer })).status).toBe(204);
     expect((await post(a.id, { rateLimits: [] })).status).toBe(204); // no reading: keeps b's
+    await post(a.id, { context: { tokens: 5, window: 10, percent: 50 } });
+    expect(sourceChanges).toBe(2); // context-only and empty measures do not broadcast quota snapshots
     expect(manager.usage).toMatchObject({ rateLimits: newer, nodeId: b.id });
     const sent = await until(() => { const u = seen.filter((m) => m.t === 'usage'); return u.length === 2 ? u : undefined; });
     expect(sent.map((m) => m.t === 'usage' && m.usage.nodeId)).toEqual([a.id, b.id]);
@@ -205,12 +219,21 @@ describe('POST /hook', () => {
     expect((await post(a.id, { rateLimits: 'nope' })).status).toBe(204);
     expect(manager.usage).toMatchObject({ rateLimits: newer, nodeId: b.id });
     expect(manager.view(a.id)?.status).toMatchObject({ contextPct: 50, costUsd: 1 });
+    expect((await post(a.id, { usageUnavailable: true })).status).toBe(204);
+    expect(manager.usageRegistry.sources.find((s) => s.nodeIds.includes(a.id) && s.rateLimits.length > 0)).toMatchObject({ availability: 'unavailable', rateLimits: first });
+    expect(manager.usage).toMatchObject({ rateLimits: newer, nodeId: b.id });
 
     ws!.terminate();
     seen = [];
     await connect();
     const snap = await until(() => seen.find((m) => m.t === 'snapshot'));
     expect(snap).toMatchObject({ usage: { rateLimits: newer, nodeId: b.id } });
+    expect(snap?.t === 'snapshot' && snap.usageSources?.filter((s) => s.at).map((s) => [s.nodeIds, s.rateLimits])).toEqual([[[a.id], first], [[b.id], newer]]);
+    send({ t: 'usageRefresh' });
+    const refreshed = await until(() => seen.find((m) => m.t === 'usageSources'));
+    expect(refreshed?.t === 'usageSources' && refreshed.sources.filter((s) => s.id.startsWith('discovery:'))).toHaveLength(3);
+    expect((await post(a.id, { usageReports: [{ scope: 'model', rateLimits: first }] })).status).toBe(204);
+    expect(manager.usageRegistry.sources.filter((s) => s.rateLimits.length)).toHaveLength(2);
   });
 
   it('GET /tree: the whole tree from the root, the caller marked self', async () => {

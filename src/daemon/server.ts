@@ -33,6 +33,7 @@ const id = z.string().min(1);
 const size = z.number().int().min(1).max(1000);
 const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('auth'), token: z.string(), client: z.enum(['app', 'browser']).optional() }),
+  z.object({ t: z.literal('usageRefresh') }),
   z.object({ t: z.literal('visibility'), focused: z.boolean() }),
   z.object({ t: z.literal('attach'), id, cols: size, rows: size }),
   z.object({ t: z.literal('detach'), id }),
@@ -105,11 +106,16 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     for (const c of clients) if (c.authed && c.attached.has(rid)) sendTo(c, { t: 'data', id: rid, data });
   });
   manager.on('notify', (n: NotifyEvent) => broadcast({ t: 'notify', ...n }));
+  manager.on('usageSources', (sources) => broadcast({ t: 'usageSources', sources }));
   manager.on('usage', (usage: Usage) => broadcast({ t: 'usage', usage }));
 
   async function handle(c: Client, m: ClientMessage): Promise<void> {
     switch (m.t) {
       case 'auth': return;
+      case 'usageRefresh':
+        await manager.usageRegistry.refresh();
+        sendTo(c, { t: 'usageSources', sources: manager.usageRegistry.sources });
+        return;
       case 'attach': {
         // Snapshot first, then subscribe, so live output is not also part of the snapshot. attach() resolves
         // and we add the client in the same tick, so no chunk can fall between the two.
@@ -196,7 +202,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
           c.authed = true;
           c.kind = msg.client;
           clearTimeout(authTimer);
-          sendTo(c, { t: 'snapshot', nodes: manager.list(), usage: manager.usage, dnd });
+          sendTo(c, { t: 'snapshot', nodes: manager.list(), usage: manager.usage, usageSources: manager.usageRegistry.sources, dnd });
         } else {
           ws.close(4401, 'auth required');
         }
