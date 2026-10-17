@@ -22,5 +22,29 @@
   },
   "worktrees": {
     "protected": []
+  },
+  "profiles": {
+    "codex": {
+      "orchestrator": {
+        "model": "gpt-6-astra",
+        "effort": "medium"
+      },
+      "implementation": {
+        "model": "gpt-6.1-sol",
+        "effort": "medium"
+      },
+      "explorer": {
+        "model": "gpt-6-luna",
+        "effort": "high"
+      },
+      "mechanical": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "reviewer": {
+        "model": "gpt-6.1-sol",
+        "effort": "high"
+      }
+    }
   }
 }
