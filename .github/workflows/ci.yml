@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Keep this namespace distinct from the caller's concurrency group. Release
+# callers get a unique group; only superseded PR validations are cancelled.
+concurrency:
+  group: tiller-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: Validate on macOS
+    # Exercise node-pty and the native Tauri app on their supported platform.
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      # Preserve lifecycle scripts: postinstall fixes node-pty's macOS helper.
+      - run: npm ci
+
+      - name: Typecheck daemon and Pi adapter
+        run: npm run typecheck
+
+      - name: Typecheck UI
+        run: npx --no-install tsc -p ui/tsconfig.json
+
+      - name: Run all Vitest tests
+        run: npm test
+
+      - name: Build production UI
+        run: npm run ui:build
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: src-tauri
+
+      - name: Validate native app
+        working-directory: src-tauri
+        run: cargo test --locked --all-targets
