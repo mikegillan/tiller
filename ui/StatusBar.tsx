@@ -24,7 +24,9 @@ export function StatusBar() {
   const unavailable = selected && sources?.some((s) => s.tool === harnessFor(selected) && s.nodeIds.includes(selected.id) && s.availability === 'unavailable');
   const now = useNow();
   const today = useStore((s) => todaySpend(Object.values(s.nodes), now));
-  const notes = useStore((s) => s.update?.installedNotes);
+  const update = useStore((s) => s.update);
+  const notes = update?.installedNotes;
+  const available = update?.target && update.sha !== update.target.sha && update.releases.length > 0 && !update.fetchError && !update.applying;
   return (
     <>
     <footer className="statusbar" role="status">
@@ -46,6 +48,7 @@ export function StatusBar() {
       </div>
       {today > 0 && <span title="spent today, all nodes">{fmtUsd(today)} today</span>}
       <span className="spacer" />
+      {available && <button className="update-available" onClick={() => openDialog({ kind: 'update' })} aria-haspopup="dialog">Update available</button>}
       {!!notes?.releases.length && <button className="whats-new" onClick={() => openDialog({ kind: 'whatsNew', notes })} aria-haspopup="dialog">What’s new</button>}
     </footer>
     {usageOpen && <UsagePanel onClose={closeUsage} />}
