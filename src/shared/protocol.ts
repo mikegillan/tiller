@@ -270,7 +270,7 @@ export interface ArchivedNode {
 }
 
 /** One rate-limit window as Claude Code's `session.measure` reports it; `kind` is five_hour, seven_day or a gateway's spend_limit. */
-export interface RateLimit { kind: string; percentUsed: number; resetsAt?: string }
+export interface RateLimit { kind: string; percentUsed: number; resetsAt?: string; windowId?: string; observedAt?: number }
 /** Legacy latest Claude account report, retained for CLI consumers. */
 export interface Usage { rateLimits: RateLimit[]; nodeId: string; at: number }
 
@@ -376,7 +376,7 @@ export interface InboxMessage { id: string; from: string; text: string; enqueued
 export type ModEvent =
   | { event: 'turn.start'; payload: { text: string; turnId: string } }
   | { event: 'turn.complete'; payload: { answer?: string; durationMs: number; isAborted: boolean; turnId: string; reason: 'answer' | 'aborted' | 'refusal' | 'error'; usage?: Record<string, unknown> } }
-  | { event: 'session.measure'; payload: { model?: string; context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: RateLimit[]; usageReports?: UsageReport[] } };
+  | { event: 'session.measure'; payload: { model?: string; context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: RateLimit[]; usageReports?: UsageReport[]; usageUnavailable?: boolean } };
 /** POST /focus { id } → 204; the daemon broadcasts `focus` to ws clients (PLAN §14). */
 /** GET /tree → ChildView[]: the calling node's whole tree from its root, depth-first. */
 export interface ChildView {

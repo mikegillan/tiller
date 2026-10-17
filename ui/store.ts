@@ -200,6 +200,7 @@ export function applyServer(m: ServerMessage) {
       return toast(outcome === 'queued' ? `Queued for ${title}; it arrives when the node is idle` : `Sent to ${title}`, m.id, 'ok');
     }
     case 'error':
+      if (state.usageScanning) update(() => ({ usageScanning: false }));
       // A spawn or follow-up that failed answers only with an error: stop waiting, or the next node anyone spawns gets selected.
       if (state.awaitSpawn) update(() => ({ awaitSpawn: false }));
       return toast(m.message, m.id, 'bad');

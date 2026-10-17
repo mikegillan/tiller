@@ -21,6 +21,7 @@ export function StatusBar() {
   const sources = useStore((s) => s.usageSources);
   const legacy = useStore((s) => s.usage);
   const reports = selectedUsage(selected, sources, legacy);
+  const unavailable = selected && sources?.some((s) => s.tool === harnessFor(selected) && s.nodeIds.includes(selected.id) && s.availability === 'unavailable');
   const now = useNow();
   const today = useStore((s) => todaySpend(Object.values(s.nodes), now));
   const dnd = useStore((s) => s.dnd);
@@ -41,7 +42,7 @@ export function StatusBar() {
             <span>{source.pool && `${source.pool} · `}{usageScope(source)}</span>
             <UsageWindows source={source} now={now} />
             {(usageStale(source, now) || selected.status.exited || !connected) && <span>stale · {fmtAge(now - source.at!)} ago</span>}
-          </span>) : <span>{harnessFor(selected) === 'pi' ? 'provider quota unavailable' : 'no quota report for this agent'}</span>}
+          </span>) : <span>{unavailable || harnessFor(selected) === 'pi' ? 'account quota unavailable' : 'no quota report for this agent'}</span>}
         </> : <span>{selected ? 'Terminal · no model quota' : 'Select an agent to see its quota'}</span>}
       </div>
       {today > 0 && <span title="spent today, all nodes">{fmtUsd(today)} today</span>}

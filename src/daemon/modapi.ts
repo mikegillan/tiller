@@ -70,6 +70,7 @@ export function modApi(manager: NodeManager, authenticate: (req: http.IncomingMe
         const ev = modEvent.parse(body) as ModEvent;
         if (ev.event === 'session.measure') {
           // A malformed rateLimits is dropped; the node's context and cost still apply.
+          ev.payload.usageUnavailable = ev.payload.usageUnavailable === true;
           const reports = usageReportsSchema.safeParse(ev.payload.usageReports);
           ev.payload.usageReports = reports.success ? reports.data : undefined;
           const rl = rateLimitsSchema.safeParse(ev.payload.rateLimits);

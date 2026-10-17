@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -73,5 +74,61 @@ it('probes versions without sessions, labels broken executables, bounds hangs an
     expect(registry.sources.find((s) => s.id === 'discovery:codex')).toMatchObject({ installed: false });
     expect(registry.sources.find((s) => s.at)?.rateLimits[0].percentUsed).toBe(40);
     expect(readFileSync(marker, 'utf8')).toBe('version\nversion\n');
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+it('unavailable API reports retain exact snapshots as stale and recover only on new quota data', () => {
+  const registry = new UsageRegistry('');
+  const report = { scope: 'account' as const, rateLimits: [{ kind: '5h', percentUsed: 25 }] };
+  registry.record('codex', 'a', [report], 100);
+  registry.record('codex', 'b', [{ ...report, rateLimits: [{ kind: '5h', percentUsed: 75 }] }], 200);
+  registry.unavailable('codex', 'a', 300);
+  expect(registry.sources.find((s) => s.at === 100)).toMatchObject({ availability: 'unavailable', rateLimits: report.rateLimits, at: 100 });
+  expect(registry.sources.find((s) => s.at === 200)?.availability).toBe('available');
+  expect(registry.sources.find((s) => s.id === 'unavailable:codex:a')).toMatchObject({ rateLimits: [], authenticated: null, nodeIds: ['a'], availability: 'unavailable' });
+  registry.record('codex', 'a', [report], 400);
+  expect(registry.sources.some((s) => s.id === 'unavailable:codex:a')).toBe(false);
+  expect(registry.sources.find((s) => s.at === 400)?.availability).toBe('available');
+});
+
+it('bounds removed unidentified snapshots per tool without blending active accounts or sending empty changes', () => {
+  const registry = new UsageRegistry('');
+  const report = { scope: 'account' as const, rateLimits: [{ kind: '5h', percentUsed: 5 }] };
+  expect(registry.record('claude', 'live', [report], 1)).toBe(true);
+  expect(registry.record('claude', 'live', [], 2)).toBe(false);
+  for (let i = 0; i < 100; i++) {
+    const id = `closed-${i}`;
+    registry.record('claude', id, [{ ...report, rateLimits: [{ kind: '5h', percentUsed: i }] }], i + 10);
+    registry.remove(id);
+  }
+  const reports = registry.sources.filter((s) => s.at !== undefined);
+  expect(reports).toHaveLength(2);
+  expect(reports.find((s) => s.nodeIds.includes('live'))?.rateLimits[0].percentUsed).toBe(5);
+  expect(reports.find((s) => !s.nodeIds.length)?.rateLimits[0].percentUsed).toBe(99);
+  expect(registry.remove('never-existed')).toBe(false);
+});
+
+it('merges shared pools by window observation time instead of regressing to another reporter’s cached window', () => {
+  const registry = new UsageRegistry('');
+  const report = { accountId: 'shared', poolId: 'codex', scope: 'account' as const, rateLimits: [
+    { kind: '5h', windowId: 'primary', percentUsed: 20, observedAt: 100 },
+    { kind: '7d', windowId: 'secondary', percentUsed: 40, observedAt: 100 },
+  ] };
+  registry.record('codex', 'a', [report], 100);
+  registry.record('codex', 'b', [{ ...report, rateLimits: [{ kind: '7d', windowId: 'secondary', percentUsed: 45, observedAt: 200 }] }], 200);
+  registry.record('codex', 'a', [{ ...report, rateLimits: [{ ...report.rateLimits[0], percentUsed: 21, observedAt: 300 }, report.rateLimits[1]] }], 300);
+  expect(registry.sources.find((s) => s.accountId === 'shared')?.rateLimits.map((l) => l.percentUsed)).toEqual([21, 45]);
+  expect(registry.record('codex', 'a', [{ ...report, rateLimits: [report.rateLimits[1]] }], 400)).toBe(false);
+});
+
+
+it('ignores empty PATH entries instead of detecting an executable in the daemon working directory', () => {
+  const home = mkdtempSync(join(tmpdir(), 'tl-usage-cwd-'));
+  try {
+    writeFileSync(join(home, 'claude'), '#!/bin/sh\necho must-not-run\n'); chmodSync(join(home, 'claude'), 0o755);
+    const moduleUrl = new URL('./usage.ts', import.meta.url).href;
+    const result = execFileSync(process.execPath, ['--import', import.meta.resolve('tsx'), '--input-type=module', '-e',
+      `import { discoverUsage } from ${JSON.stringify(moduleUrl)}; console.log(JSON.stringify(discoverUsage('::').map(s => s.installed)));`], { cwd: home, encoding: 'utf8' });
+    expect(JSON.parse(result)).toEqual([false, false, false]);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });

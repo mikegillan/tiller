@@ -18,3 +18,9 @@ it('legacy reports remain available only on the reporting Claude agent', () => {
   expect(selectedUsage(node('b'), undefined, legacy)).toEqual([]);
   expect(selectedUsage(node('a'), [], legacy)).toEqual([]);
 });
+
+it('expired windows are stale and model-family windows do not leak to another Claude model', () => {
+  expect(usageStale({ ...source, at: 1000, rateLimits: [{ kind: '5h', percentUsed: 80, resetsAt: new Date(2000).toISOString() }] }, 3000)).toBe(true);
+  const modelPools = { ...source, rateLimits: [...source.rateLimits, { kind: 'seven_day_opus', percentUsed: 30 }, { kind: 'seven_day_sonnet', percentUsed: 40 }] };
+  expect(selectedUsage(node('a', 'claude', 'claude-opus-5-5'), [modelPools])[0].rateLimits.map((l) => l.kind)).toEqual(['5h', 'seven_day_opus']);
+});

@@ -1,35 +1,47 @@
 # Codex account quota integration
 
-This branch contains the normalizer only because the Codex bridge is not in its
-baseline. Integrate these hooks in `adapters/codex/bridge.ts` after bringing this
-branch onto the Codex/profile integration baseline:
+The branch has been rebased onto reviewed Codex/profile baseline `012b2fc`.
+The parent owns the bridge hookup; integrate this focused diff in
+`adapters/codex/bridge.ts` after landing the usage API. These exact hook additions
+were typechecked in a temporary copy of that bridge (then removed):
 
-```ts
-import { CodexUsage } from './usage.js';
-// On CodexBridge:
-private readonly accountUsage = new CodexUsage();
+```diff
+ import { RpcError, type Packet } from './rpc.js';
++import { CodexUsage, readCodexUsage } from './usage.js';
+
+ export class CodexBridge {
++  private readonly accountUsage = new CodexUsage();
+
+     this.rpc.send({ method: 'initialized' });
++    void readCodexUsage(this.accountUsage, () => this.rpc.request('account/rateLimits/read', {}))
++      .then((measure) => this.client.modEvent('session.measure', measure))
++      .catch(() => {}); // telemetry transport failure must not stop the agent
+
+   private async event(p: Packet): Promise<void> {
+     if (this.stopped) return;
+     const v = p.params ?? {};
++    // Account notifications are not thread-scoped; handle them BEFORE filtering threadId.
++    if (p.method === 'account/rateLimits/updated' && p.id === undefined) {
++      await this.client.modEvent('session.measure', this.accountUsage.measure(v)).catch(() => {});
++      return;
++    }
+     if (v.threadId && v.threadId !== this.threadId) return;
 ```
 
-After `initialize` / `initialized`, perform one read on the existing RPC connection.
-Do not start an extra app-server, thread, or turn. It must not block bridge startup
-or fail the bridge if the account does not support rate-limit reads:
+`readCodexUsage` issues exactly one read on the existing RPC connection, with a
+2-second deadline. Invoke it without `await` so it never blocks startup. It never
+starts an app-server, thread or turn, and returns `{ usageUnavailable: true }` on
+RPC failure, timeout, or a response without reportable quota windows. Publishing
+that measure retains prior snapshots and marks them stale/unavailable. Publishing
+must also be caught separately so HTTP telemetry failures cannot call the bridge's
+fatal handler. There is no automatic retry or recurring quota probe.
 
-```ts
-void this.rpc.request('account/rateLimits/read', {})
-  .then((v) => this.client.modEvent('session.measure', {
-    usageReports: this.accountUsage.reports(v),
-  }))
-  .catch(() => {}); // unavailable quotas do not prevent an agent from running
-```
-
-In the existing notification handler (before turn-specific branches):
-
-```ts
-} else if (p.method === 'account/rateLimits/updated') {
-  await this.client.modEvent('session.measure', {
-    usageReports: this.accountUsage.reports(v),
-  });
-```
+`CodexUsage.measure(payload)` returns `{ usageReports }` for real quota windows,
+or `{ usageUnavailable: true }` for unavailable data. `reports(payload)` remains
+available for normalization alone. Keep one instance for the bridge lifetime so
+sparse updates preserve unrelated pools and account identity; a reported account
+switch clears prior-account pool state. Neither method fabricates model-specific
+quotas or converts token counts, credits or dollar balances into quota use.
 
 The manager derives tool identity from the authenticated node. It accepts `codex`
 when the integration branch adds it to `Harness`, with no other registry edits.
@@ -57,3 +69,21 @@ isolated by reporting node; identified account/provider/pool reports may be shar
 only between nodes that actually reported that identity. Reports survive node
 exit/removal and websocket reconnects for the daemon lifetime, but not daemon
 restart. No background provider polling or inference is performed.
+
+Each normalized window carries `windowId` and `observedAt`. Sparse notifications
+keep the original observation time on cached windows, so the daemon can merge a
+shared account's reports without regressing a newer reading from another agent.
+Nullable IDs resolve to a known mirror pool or the single unambiguous known pool.
+Sparse null spend metadata is retained; full-read null can mark spend unavailable.
+
+Removed nodes lose their source bindings. At most one newest unidentified closed
+snapshot per tool is retained; unidentified accounts are never combined. Known
+accounts retain their pools, and context-only measures do not broadcast snapshots.
+Expired reset windows display “reset passed · awaiting report” with no old percent.
+
+Claude Code 2.1.302 was inspected locally (read-only native binary): its mod
+`session.measure` normalization currently emits `five_hour`, `seven_day`, and
+`spend_limit` for gateway usage. Native Opus/Sonnet windows exist elsewhere but are
+not emitted by that conversion. If explicit `seven_day_opus` / `seven_day_sonnet`
+windows arrive, Tiller labels their family pools and filters unrelated families
+from the selected-agent bar. It does not infer exact-model quotas from model names.

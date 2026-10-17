@@ -750,8 +750,9 @@ export class NodeManager extends EventEmitter {
       const rec = this.registry.get(nodeId);
       const tool = rec && isAgentKind(rec.kind) ? harnessFor(rec) : undefined;
       if (tool) {
-        this.usageRegistry.record(tool, nodeId, ev.payload.usageReports ?? (rateLimits?.length ? [{ scope: 'account', rateLimits }] : []), now);
-        this.emit('usageSources', this.usageRegistry.sources);
+        const unavailable = ev.payload.usageUnavailable ? this.usageRegistry.unavailable(tool, nodeId, now) : false;
+        const changed = this.usageRegistry.record(tool, nodeId, ev.payload.usageReports ?? (rateLimits?.length ? [{ scope: 'account', rateLimits }] : []), now);
+        if (changed || unavailable) this.emit('usageSources', this.usageRegistry.sources);
       }
       if (rateLimits?.length && (!tool || tool === 'claude')) { // empty off a subscription or before the first reading: keep the last report
         this.usage = { rateLimits, nodeId, at: now };
@@ -901,6 +902,7 @@ export class NodeManager extends EventEmitter {
     clearTimeout(rt?.interruptTimer);
     this.runtimes.delete(id);
     this.registry.remove(id);
+    if (this.usageRegistry.remove(id)) this.emit('usageSources', this.usageRegistry.sources);
     rmSync(this.nodeDir(id), { recursive: true, force: true });
   }
 

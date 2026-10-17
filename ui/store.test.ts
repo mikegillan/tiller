@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { mk } from './fixtures';
-import { applyServer, diffRequested, expectSpawn, getState, transcriptRequested } from './store';
+import { applyServer, diffRequested, expectSpawn, getState, update, transcriptRequested } from './store';
 
 it('the diff panel shows the diff reply\'s own failure, not another error for the same node', () => {
   diffRequested('a');
@@ -55,4 +55,10 @@ it('retains source reports through selection, removal and older snapshots, and a
   expect(getState().usageSources?.[0].at).toBe(200);
   applyServer({ t: 'snapshot', nodes: [], usageSources: [] });
   expect(getState().usageSources).toEqual([]);
+});
+
+it('a legacy-daemon refresh error clears the scanning state', () => {
+  update(() => ({ usageScanning: true }));
+  applyServer({ t: 'error', message: 'Malformed message' });
+  expect(getState().usageScanning).toBe(false);
 });

@@ -50,9 +50,12 @@ describe('format', () => {
   });
 });
 
-it('dates expired and distant reset windows so an old reset is not mistaken for today', () => {
+it('marks expired windows without presenting the prior percentage as current', () => {
   const now = new Date(2026, 9, 17, 12).getTime();
   const date = new Date(2026, 9, 13, 14, 30);
-  const label = date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  expect(usageParts([{ kind: 'five_hour', percentUsed: 10, resetsAt: date.toISOString() }], false, now)[0].text).toBe(`5h 10% · resets ${label} 14:30`);
+  expect(usageParts([{ kind: 'five_hour', percentUsed: 10, resetsAt: date.toISOString() }], false, now)[0].text).toBe('5h · reset passed · awaiting report');
+});
+
+it('marks stale individual windows even while another window refreshed recently', () => {
+  expect(usageParts([{ kind: '7d', percentUsed: 45, observedAt: 1000 }], false, 601000)[0].text).toBe('7d 45% · stale (10m ago)');
 });
