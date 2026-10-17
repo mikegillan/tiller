@@ -29,6 +29,33 @@ async function request(method = 'GET', query = '?scope=home', body?: unknown, to
 }
 
 describe('settings persistence', () => {
+  it('shows fresh-home Tiller defaults at both scopes without creating config files', () => {
+    for (const s of [snapshot('home'), snapshot()]) {
+      expect(s.values).toEqual({});
+      expect(s.entries['profiles.claude.orchestrator.model']).toEqual({ value: 'opus', source: 'default' });
+      expect(s.entries['profiles.claude.implementation.model']).toEqual({ value: 'sonnet', source: 'default' });
+      expect(s.entries['profiles.claude.explorer.model']).toEqual({ value: 'haiku', source: 'default' });
+      expect(s.entries['profiles.claude.reviewer.effort'].value).toBeUndefined();
+      expect(s.entries['profiles.codex.implementation.model']).toEqual({ value: 'gpt-6.1-sol', source: 'default' });
+      expect(s.entries['profiles.codex.implementation.effort']).toEqual({ value: 'medium', source: 'default' });
+      expect(s.inherited['profiles.claude.implementation.model']).toEqual({ value: 'sonnet', source: 'default' });
+    }
+    expect(fs.existsSync(join(home, 'config.json'))).toBe(false);
+    expect(fs.existsSync(file())).toBe(false);
+  });
+
+  it('applies mixed legacy edits and profile removal together, then refreshes the effective preview', () => {
+    fs.writeFileSync(join(home, 'config.json'), JSON.stringify({ roles: { worker: { model: 'sonnet' } } }));
+    write({ roles: { worker: { model: 'opus' } }, profiles: { claude: { implementation: { model: 'custom' } } } });
+    const before = snapshot();
+    expect(before.inherited['profiles.claude.implementation.model']).toEqual({ value: 'opus', source: file() });
+    const saved = save({ 'profiles.claude.implementation.model': null, 'roles.worker.model': 'haiku' }, before.revision);
+    expect(saved.entries['profiles.claude.implementation.model']).toEqual({ value: 'haiku', source: file() });
+    expect(saved.entries['profiles.claude.explorer.model']).toEqual({ value: 'haiku', source: file() });
+    expect(saved.inherited['roles.worker.model']).toEqual({ value: 'sonnet', source: join(home, 'config.json') });
+    expect(profileDefaults(loadConfig(project, home), 'claude', 'implementation', 'worker')).toEqual({ model: 'haiku', effort: undefined });
+  });
+
   it('distinguishes explicit, effective, inherited and default values and removes overrides', () => {
     fs.writeFileSync(join(home, 'config.json'), JSON.stringify({ limits: { maxDepth: 9 }, daemon: { maxWorking: 3 } }));
     write({ limits: { maxDepth: 4 }, custom: { future: ['kept'] } });
@@ -102,7 +129,7 @@ describe('settings persistence', () => {
     }
     expect(s.entries['profiles.claude.orchestrator.model'].value).toBe('home-orchestrator');
     expect(s.entries['profiles.claude.orchestrator.effort'].value).toBe('low');
-    expect(s.entries['profiles.codex.explorer.effort'].value).toBeUndefined();
+    expect(s.entries['profiles.codex.explorer.effort']).toEqual({ value: 'high', source: 'default' });
     expect(s.entries['profiles.codex.explorer.model'].value).toBe('home-codex');
     expect(s.entries['profiles.pi.implementation.model'].value).toBeUndefined();
     expect(s.values['profiles.claude.implementation.model']).toBe('');

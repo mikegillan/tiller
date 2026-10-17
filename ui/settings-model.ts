@@ -1,5 +1,5 @@
 import type { UsageSource } from '../src/shared/protocol';
-import { SETTINGS_FIELDS, SETTINGS_EFFORTS, SETTINGS_PROFILES, type SettingsField } from '../src/shared/settings';
+import { SETTINGS_FIELDS, SETTINGS_EFFORTS, SETTINGS_PROFILES, SETTINGS_PROFILE_DEFAULTS, type SettingsField } from '../src/shared/settings';
 export type { SettingsSnapshot } from '../src/shared/settings';
 import type { SettingsSnapshot } from '../src/shared/settings';
 export type { SettingsScope as Scope } from '../src/shared/settings';
@@ -11,10 +11,11 @@ function field(key: string, label: string, extra: { help?: string } = {}): Field
   if (!metadata) throw new Error(`Missing settings metadata: ${key}`);
   return { ...metadata, label: label.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase()), ...extra };
 }
-export const codexRecommendations: Record<string, string> = Object.fromEntries([
-  ['orchestrator', 'gpt-6-astra', 'medium'], ['implementation', 'gpt-6.1-sol', 'medium'],
-  ['explorer', 'gpt-6-luna', 'high'], ['mechanical', 'gpt-6-luna', 'low'], ['reviewer', 'gpt-6.1-sol', 'high'],
-].flatMap(([profile, model, effort]) => [[`profiles.codex.${profile}.model`, model], [`profiles.codex.${profile}.effort`, effort]]));
+function recommendations(harness: keyof typeof efforts): Record<string, string> {
+  return Object.fromEntries(Object.entries(SETTINGS_PROFILE_DEFAULTS[harness]).flatMap(([profile, defaults]) => Object.entries(defaults).map(([leaf, value]) => [`profiles.${harness}.${profile}.${leaf}`, value])));
+}
+export const claudeRecommendations = recommendations('claude');
+export const codexRecommendations = recommendations('codex');
 export const profileFields = (harness: keyof typeof efforts): Field[] => profiles.flatMap((profile) => [
   field(`profiles.${harness}.${profile}.model`, `${profile} model`, { help: harness === 'pi' ? 'Provider/model ID accepted by Pi.' : 'Model ID accepted by this harness.' }),
   field(`profiles.${harness}.${profile}.effort`, `${profile} effort`),
@@ -34,10 +35,10 @@ export const groups: { title: string; homeOnly?: boolean; help?: string; fields:
   { title: 'Approvals & completion gate', fields: [
     field('approvals.close', 'Agent close approval', { help: 'Skip human approval: never; only when every node is done, exited or has an outcome; or always.' }),
     field('approvals.merge', 'Allow agent merges without approval'),
-    field('gate.command', 'Completion gate command', { help: 'Must pass before a worker reports success. Saving does not run it. Reset to inherit to remove a local gate.' }),
+    field('gate.command', 'Completion gate command', { help: 'Must pass before a worker reports success. Saving does not run it. Use the inherited value to remove this scope’s gate.' }),
     field('gate.retries', 'Gate retries'), field('gate.timeoutMinutes', 'Gate timeout (minutes)'),
   ] },
-  { title: 'Legacy Claude roles', homeOnly: true, help: 'Fallback model and effort for legacy Claude role defaults. Task profiles take precedence.', fields: ['orchestrator', 'worker'].flatMap((role) => [field(`roles.${role}.model`, `${role} model`), field(`roles.${role}.effort`, `${role} effort`)]) },
+  { title: 'Legacy Claude roles', help: 'Fallback model and effort for legacy Claude role defaults. Task profiles take precedence.', fields: ['orchestrator', 'worker'].flatMap((role) => [field(`roles.${role}.model`, `${role} model`), field(`roles.${role}.effort`, `${role} effort`)]) },
   { title: 'Daemon', homeOnly: true, help: 'Global daemon settings. maxWorking = 0 means unlimited.', fields: [field('daemon.resumeOnStart', 'Resume on start'), ...['resumeMaxAgeDays', 'sessionsKeepDays', 'digestAfterMinutes', 'maxLiveNodes', 'maxWorking'].map((key) => field(`daemon.${key}`, key))] },
 ];
 export function formatValue(value: unknown): string { return value === undefined ? 'Harness default / unset' : typeof value === 'string' ? value : JSON.stringify(value); }
@@ -55,7 +56,7 @@ export function buildChanges(snapshot: SettingsSnapshot, drafts: Record<string, 
       if (f.type === 'number') { if (!raw.trim() || !Number.isFinite(Number(raw))) throw new Error(`${f.label}: enter a number.`); value = Number(raw); }
       else if (f.type === 'boolean') value = raw === 'true';
       else if (f.type === 'lines') value = raw === '' ? [] : raw.split('\n').filter((line) => line.trim());
-      else if (!raw.trim()) throw new Error(`${f.label}: enter a value or reset to inherit.`);
+      else if (!raw.trim()) throw new Error(`${f.label}: enter a value or use the inherited default.`);
     }
     if (value === null ? Object.hasOwn(snapshot.values, key) : JSON.stringify(value) !== JSON.stringify(snapshot.values[key])) changes[key] = value;
   }
@@ -68,4 +69,18 @@ export function cliStatus(source?: Pick<UsageSource, 'installed' | 'executableSt
   if (source.executableStatus === 'broken') return 'Detected · version check failed';
   if (source.executableStatus === 'ready') return 'Detected · ready';
   return 'Detected · check unknown';
+}
+
+// The API snapshot resolves one reset at a time. It cannot reliably identify a
+// lower-layer profile versus a legacy-role fallback from source paths alone.
+export function fieldPreview(snapshot: SettingsSnapshot, drafts: Record<string, string | null>, field: Field) {
+  const drafted = Object.hasOwn(drafts, field.key);
+  const explicit = drafted ? drafts[field.key] !== null : Object.hasOwn(snapshot.values, field.key);
+  const profile = /^profiles\.claude\.([^.]+)\.(model|effort)$/.exec(field.key);
+  const role = profile?.[1] === 'orchestrator' ? 'orchestrator' : 'worker';
+  const profileValueWins = drafted ? drafts[field.key] !== null : explicit && snapshot.values[field.key] === snapshot.entries[field.key]?.value;
+  const previewUnavailable = !!profile && Object.hasOwn(drafts, `roles.${role}.${profile[2]}`) && !profileValueWins;
+  const entry = previewUnavailable ? undefined : drafted ? drafts[field.key] === null ? snapshot.inherited[field.key] : { value: drafts[field.key], source: 'Unsaved change' } : snapshot.entries[field.key];
+  const raw = previewUnavailable && !explicit ? '' : drafted && drafts[field.key] !== null ? drafts[field.key]! : inputValue(explicit ? snapshot.values[field.key] : snapshot.inherited[field.key]?.value, field);
+  return { drafted, explicit, entry, raw, previewUnavailable };
 }
