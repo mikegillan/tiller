@@ -4,6 +4,7 @@ import { HistoryPanel } from './History';
 import { Icon } from './icons';
 import { NodeRow } from './NodeRow';
 import { SessionSwitcher } from './SessionSwitcher';
+import { SidebarResize } from './SidebarResize';
 import { flattenSession, type Row } from './tree';
 import { openDialog, selectNode, toggleCollapsed, toggleHistory, useStore } from './store';
 
@@ -34,6 +35,7 @@ export function Sidebar() {
   const tree = useRef<HTMLDivElement>(null);
   const cur = useStore((s) => (s.selected ? s.nodes[s.selected] : undefined));
   const history = useStore((s) => s.historyOpen);
+  const panelOpen = useStore((s) => s.panel);
 
   // Keep the selected row in view when selection moves (keyboard, palette, focus message).
   useEffect(() => { tree.current?.querySelector('.row.sel')?.scrollIntoView({ block: 'nearest' }); }, [selected]);
@@ -58,6 +60,7 @@ export function Sidebar() {
           <Icon name="history" size={14} />
         </button>
       </footer>
+      <SidebarResize panelOpen={panelOpen} />
     </aside>
   );
 }
