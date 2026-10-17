@@ -56,6 +56,15 @@ describe('websocket', () => {
     expect(snapshot?.t === 'snapshot' && snapshot.usageSources?.every((s) => s.authenticated === null && s.rateLimits.length === 0)).toBe(true);
   });
 
+  it('forwards a human UI read acknowledgment with its exact identity', async () => {
+    const acknowledge = vi.spyOn(server.updates, 'acknowledgeNotes');
+    await connect();
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    send({ t: 'updateNotesRead', identity: 'reviewed-release-identity' });
+    await until(() => acknowledge.mock.calls.length || undefined);
+    expect(acknowledge).toHaveBeenCalledWith('reviewed-release-identity');
+  });
+
   it('rejects a bad token', async () => {
     await connect('wrong');
     const code = await new Promise((ok) => ws!.once('close', ok));

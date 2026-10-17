@@ -1,17 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { activityUnread, clearActivity, markActivityRead, selectNode, setActivityOpen, useStore } from './store';
 
-export function ActivityButton() {
-  const open = useStore((s) => s.activityOpen);
-  const unread = useStore((s) => activityUnread(s.activity));
-  return (
-    <button className="activity-toggle" aria-expanded={open} aria-controls="activity-drawer"
-      aria-label={`Activity${unread ? `, ${unread} unread` : ''}`} onClick={() => setActivityOpen(!open)}>
-      Activity{unread > 0 && <span className="activity-count">{unread}</span>}
-    </button>
-  );
-}
-
 const LABEL = { info: 'Status', ok: 'Done', warn: 'Needs you', bad: 'Error' } as const;
 
 function OpenDrawer() {

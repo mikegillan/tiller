@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react';
-import { harnessFor, isAgentKind, type NodeView } from '../src/shared/protocol';
+import { dndActive, harnessFor, isAgentKind, type NodeView } from '../src/shared/protocol';
 import { StateDot } from './Bits';
 import { cwdBase } from './format';
 import { Modal } from './Modal';
 import { ancestry } from './sessions';
-import { openDialog, selectNode, toggleHistory, useStore } from './store';
+import { activityUnread, openDialog, selectNode, setActivityOpen, toggleHistory, useStore, type Dialog } from './store';
+import { toggleDnd, useNow } from './hooks';
+import { send } from './conn';
 import { statusKind } from './tree';
 
 export function Palette() {
@@ -18,12 +20,20 @@ export function Palette() {
   }), [nodes, order]);
   const cur = useStore((s) => (s.selected ? s.nodes[s.selected] : undefined));
   const historyOpen = useStore((s) => s.historyOpen);
+  const unread = useStore((s) => activityUnread(s.activity));
+  const dnd = useStore((s) => s.dnd);
+  const quiet = dndActive(dnd, useNow());
   const needle = q.toLowerCase();
   const close = () => openDialog(null);
+  const replace = (dialog: Dialog) => { close(); requestAnimationFrame(() => openDialog(dialog)); };
   const nodeHits = all.filter((h) => `${h.n.title} ${h.where}`.toLowerCase().includes(needle))
     .map((h) => ({ key: h.n.id, title: h.n.title, sub: h.where, n: h.n, run: () => { selectNode(h.n.id); close(); } }));
   // Commands follow the nodes; each opens its own view or dialog in place of the palette.
   const cmds = [
+    { key: 'cmd:activity', title: 'Activity', sub: `recent agent events${unread ? ` · ${unread} unread` : ''}`, run: () => { close(); requestAnimationFrame(() => setActivityOpen(true)); } },
+    { key: 'cmd:dnd', title: quiet ? 'Turn off do not disturb' : 'Do not disturb for 1 hour', sub: 'toggle OS notifications', run: () => { toggleDnd(); close(); } },
+    { key: 'cmd:updates', title: 'Manage updates…', sub: 'available releases and installation', run: () => replace({ kind: 'update' }) },
+    { key: 'cmd:check-updates', title: 'Check for updates', sub: 'check releases and open update management', run: () => { send({ t: 'updateCheck' }); replace({ kind: 'update' }); } },
     { key: 'cmd:history', title: historyOpen ? 'Hide history' : 'History', sub: 'closed nodes: read, follow up or fork', run: () => { toggleHistory(); close(); } },
     ...(cur && isAgentKind(cur.kind) && harnessFor(cur) === 'claude' ? [{ key: 'cmd:fork', title: `Fork ${cur.title}…`, sub: 'new node from its conversation', run: () => openDialog({ kind: 'fork', from: cur.id, title: cur.title, cwd: cur.cwd, parentId: cur.parentId }) }] : []),
   ].filter((c) => `${c.title} ${c.sub}`.toLowerCase().includes(needle));
@@ -34,7 +44,7 @@ export function Palette() {
     else if (e.key === 'Enter' && hits[i]) hits[i].run();
   };
   return (
-    <Modal label="Jump to node" className="palette" onClose={close}>
+    <Modal label="Command palette" className="palette" onClose={close}>
       <input autoFocus placeholder="Jump to a node or run a command…" value={q} onChange={(e) => { setQ(e.target.value); setI(0); }} onKeyDown={onKey} />
       <div className="hits">
         {hits.map((h, j) => (
