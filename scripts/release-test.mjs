@@ -151,11 +151,34 @@ test('wrong checkout, stale SHA, missing published tag and invalid SHA fail clos
 
 test('release discovery paginates; non-semver releases do not establish a baseline', async t => {
   const f = fixture(t);
-  for (let i = 0; i < 100; i++) f.releases.push({ tag_name: `nightly-${i}`, draft: false });
+  for (let i = 0; i < 100; i++) f.addRelease(`nightly-${i}`, f.first);
   f.addRelease('v2.3.4', f.first);
   assert.equal((await publishRelease({ sha: f.third, api: f.api, git: f.git })).tag, 'v2.3.5');
   assert(f.calls.some(c => c.path.endsWith('page=2')));
   assert.equal(f.calls.filter(c => c.path === '/git/matching-refs/tags/v').length, 1);
+});
+
+test('malformed release metadata cannot reset the published version baseline', async t => {
+  const f = fixture(t);
+  f.addRelease('v2.0.0', f.first);
+  const valid = f.releases[0];
+  for (const malformed of [
+    { ...valid, published_at: undefined },
+    { ...valid, published_at: null },
+    { ...valid, published_at: 'invalid' },
+    { ...valid, draft: undefined },
+    { ...valid, prerelease: undefined },
+    { ...valid, tag_name: undefined },
+    null,
+    'v2.0.0',
+  ]) {
+    f.releases.splice(0, f.releases.length, malformed);
+    await assert.rejects(publishRelease({ sha: f.third, api: f.api, git: f.git }), /Malformed GitHub release metadata/);
+    assert(!f.calls.some(c => c.method === 'POST'), 'malformed metadata must never publish v0.1.0');
+    assert(!f.tags.has('v0.1.0'));
+  }
+  f.releases.splice(0, f.releases.length, valid);
+  assert.equal((await publishRelease({ sha: f.third, api: f.api, git: f.git })).tag, 'v2.0.1');
 });
 
 test('force-pushed divergent source cannot replace the latest stable source', async t => {

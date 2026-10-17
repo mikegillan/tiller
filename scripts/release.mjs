@@ -60,10 +60,19 @@ export async function publishRelease({ sha, api, git = args => execFileSync('git
   for (let page = 1; ; page++) {
     const batch = await api('GET', `/releases?per_page=100&page=${page}`);
     if (!Array.isArray(batch)) throw new Error('Cannot list releases');
+    for (const release of batch) {
+      const hasPublicationTime = typeof release?.published_at === 'string' && Number.isFinite(Date.parse(release.published_at));
+      const unpublishedDraft = release?.draft === true && release.published_at === null;
+      if (!release || typeof release.tag_name !== 'string' || !release.tag_name ||
+          typeof release.draft !== 'boolean' || typeof release.prerelease !== 'boolean' ||
+          (!hasPublicationTime && !unpublishedDraft)) {
+        throw new Error('Malformed GitHub release metadata; refusing to allocate a version');
+      }
+    }
     releases.push(...batch);
     if (batch.length < 100) break;
   }
-  const stable = releases.filter(r => !r.draft && !r.prerelease && r.published_at && version(r.tag_name)).sort(compareVersions);
+  const stable = releases.filter(r => !r.draft && !r.prerelease && version(r.tag_name)).sort(compareVersions);
   // One ref listing keeps ordinary lightweight release histories within API limits.
   const refs = await api('GET', '/git/matching-refs/tags/v');
   if (!Array.isArray(refs)) throw new Error('Cannot list release tags');
