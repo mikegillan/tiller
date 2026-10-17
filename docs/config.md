@@ -130,3 +130,14 @@ also detects external edits made before rename. Portable filesystem rename has
 no cross-process compare-and-swap, so an external editor writing in the interval
 between that check and rename can still race. Avoid simultaneous external edits
 while saving through Settings.
+
+Effective Settings entries use the same invalid-leaf filtering as runtime config
+resolution; an invalid known override remains visible in raw `values` for repair
+or reset but does not supply an effective value. Profile fields resolve
+independently from project, then home, before Claude falls back to legacy roles.
+The profile preview assumes coordination role `orchestrator` for that profile
+and `worker` for implementation, explorer, mechanical and reviewer. An explicit
+coordination role at spawn can change the legacy fallback; explicit spawn options
+and preset values also take precedence over this configuration preview. Pi and
+Codex never inherit Claude legacy roles. Inherited entries apply the same rules
+to the layers below the selected scope.

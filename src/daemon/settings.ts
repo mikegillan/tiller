@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import type http from 'node:http';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import { SETTINGS_EFFORTS, SETTINGS_FIELDS, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
-import { ConfigFile, DEFAULTS } from './config.js';
+import { SETTINGS_EFFORTS, SETTINGS_FIELDS, SETTINGS_PROFILES, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
+import { ConfigFile, DEFAULTS, configEntries } from './config.js';
 import type { NodeManager } from './manager.js';
 import { readBody } from './util.js';
 
@@ -87,13 +87,38 @@ export function settingsSnapshot(manager: NodeManager, scope: SettingsScope, nod
   const { path, projectPath, homePath } = target(manager, scope, nodeId);
   const layer = read(path);
   const lower = scope === 'project' ? read(homePath).data : {};
+  const home = dirname(homePath);
+  const effective = configEntries(scope === 'project' ? projectPath : null, home);
+  const below = scope === 'project' ? configEntries(null, home) : null;
   const inherited: SettingsSnapshot['inherited'] = {}, entries: SettingsSnapshot['entries'] = {};
+  // Before the profile schema is integrated, validate just those leaves independently.
+  // Once configEntries includes them, use its results, including invalid-layer filtering.
+  const profileValue = (data: Record<string, unknown>, key: string) => {
+    const value = get(data, key);
+    if (value === undefined || value === null) return undefined;
+    try { validate(key, value); return value; } catch (e) { if (e instanceof SettingsError) return undefined; throw e; }
+  };
   for (const key of keys) {
-    const fallback = (DEFAULTS as Record<string, unknown>)[key];
-    const homeValue = get(lower, key);
-    inherited[key] = homeValue === undefined ? { value: fallback, source: 'default' } : { value: homeValue, source: homePath };
-    const value = key.startsWith('daemon.') && scope === 'project' ? undefined : get(layer.data, key);
-    entries[key] = value === undefined ? inherited[key] : { value, source: path };
+    const fallback = { value: (DEFAULTS as Record<string, unknown>)[key], source: 'default' };
+    if (Object.hasOwn(effective, key)) {
+      entries[key] = effective[key as keyof typeof effective];
+      inherited[key] = below ? below[key as keyof typeof below] : fallback;
+    } else {
+      const homeValue = profileValue(lower, key);
+      inherited[key] = homeValue === undefined ? fallback : { value: homeValue, source: homePath };
+      const value = profileValue(layer.data, key);
+      entries[key] = value === undefined ? inherited[key] : { value, source: path };
+    }
+  }
+  // Profiles resolve before legacy roles, regardless of the file supplying either field.
+  // Preview the usual coordination role: orchestrator for that profile, worker for the rest.
+  for (const profile of SETTINGS_PROFILES) {
+    const role = profile === 'orchestrator' ? 'orchestrator' : 'worker';
+    for (const leaf of ['model', 'effort']) {
+      const key = `profiles.claude.${profile}.${leaf}`, legacy = `roles.${role}.${leaf}`;
+      if (entries[key].value === undefined) entries[key] = { ...entries[legacy] };
+      if (inherited[key].value === undefined) inherited[key] = { ...inherited[legacy] };
+    }
   }
   return { scope, path, projectPath, revision: revision(layer.raw), values: flatten(layer.data), entries, inherited };
 }

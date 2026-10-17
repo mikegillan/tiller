@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { configEntries } from './config.js';
 import { NodeManager } from './manager.js';
 import { startServer, type DaemonServer } from './server.js';
 import { settingsSnapshot, updateSettings } from './settings.js';
@@ -41,6 +42,46 @@ describe('settings persistence', () => {
     expect(next.values['custom.future']).toEqual(['kept']);
     expect(fs.existsSync(join(project, 'never-executed'))).toBe(false);
     expect(next.revision).not.toBe(s.revision);
+  });
+  it('matches runtime invalid-leaf filtering while retaining invalid explicit values for repair', () => {
+    fs.writeFileSync(join(home, 'config.json'), JSON.stringify({ limits: { maxDepth: 7, maxChildren: -2 }, roles: { worker: { model: 'home-model' } } }));
+    write({ limits: { maxDepth: -1, maxChildren: 4 }, roles: { worker: { effort: 'invalid' } }, custom: 'kept' });
+    const s = snapshot();
+    const runtime = configEntries(project, home), homeRuntime = configEntries(null, home);
+    for (const key of Object.keys(runtime) as (keyof typeof runtime)[]) {
+      expect(s.entries[key]).toEqual(runtime[key]);
+      expect(s.inherited[key]).toEqual(homeRuntime[key]);
+    }
+    expect(s.values['limits.maxDepth']).toBe(-1);
+    expect(s.values['roles.worker.effort']).toBe('invalid');
+    expect(s.entries['limits.maxDepth'].value).toBe(7);
+    expect(s.inherited['limits.maxChildren'].value).toBe(8);
+    save({ 'limits.maxDepth': 2 });
+    expect(snapshot().values['roles.worker.effort']).toBe('invalid');
+  });
+  it('resolves each profile field across project/home before applying Claude legacy role fallback', () => {
+    fs.writeFileSync(join(home, 'config.json'), JSON.stringify({
+      profiles: { claude: { implementation: { model: 'home-profile' } }, codex: { explorer: { effort: 'max', model: 'home-codex' } } },
+      roles: { worker: { model: 'home-worker', effort: 'medium' }, orchestrator: { model: 'home-orchestrator' } },
+    }));
+    write({ profiles: { claude: { implementation: { model: '', effort: 'high' } } }, roles: { worker: { model: 'project-worker' }, orchestrator: { effort: 'low' } } });
+    const s = snapshot();
+    expect(s.entries['profiles.claude.implementation.model']).toEqual({ value: 'home-profile', source: join(home, 'config.json') });
+    expect(s.entries['profiles.claude.implementation.effort']).toEqual({ value: 'high', source: file() });
+    expect(s.inherited['profiles.claude.implementation.effort']).toEqual({ value: 'medium', source: join(home, 'config.json') });
+    for (const profile of ['explorer', 'mechanical', 'reviewer']) {
+      expect(s.entries[`profiles.claude.${profile}.model`]).toEqual({ value: 'project-worker', source: file() });
+      expect(s.inherited[`profiles.claude.${profile}.model`]).toEqual({ value: 'home-worker', source: join(home, 'config.json') });
+    }
+    expect(s.entries['profiles.claude.orchestrator.model'].value).toBe('home-orchestrator');
+    expect(s.entries['profiles.claude.orchestrator.effort'].value).toBe('low');
+    expect(s.entries['profiles.codex.explorer.effort'].value).toBeUndefined();
+    expect(s.entries['profiles.codex.explorer.model'].value).toBe('home-codex');
+    expect(s.entries['profiles.pi.implementation.model'].value).toBeUndefined();
+    expect(s.values['profiles.claude.implementation.model']).toBe('');
+    const h = snapshot('home');
+    expect(h.entries['profiles.claude.reviewer.model'].value).toBe('home-worker');
+    expect(h.inherited['profiles.claude.reviewer.model'].value).toBeUndefined();
   });
   it('rejects invalid leaves, groups, unknown keys and home-only project changes', () => {
     for (const changes of [{ 'limits.maxDepth': -1 }, { limits: {} }, { 'unknown.key': true }, { 'daemon.maxWorking': 2 }, { 'worktrees.taskBranch': 'bad' }, { 'gate.command': '' }, { 'profiles.codex.explorer.effort': 'invalid' }, { 'profiles.codex.reviewer.effort': 'max' }]) {
