@@ -11,6 +11,7 @@ import type { InstalledReleaseNotes, ReleaseUpdate, UpdateStatus } from '../shar
 export const REPO = fileURLToPath(new URL('../..', import.meta.url));
 export const UPDATE_LOG = 'update.log';
 export const UPDATE_LOCK = 'update.lock';
+export const UPDATE_CHECK_INTERVAL = 10 * 60_000;
 const exec = promisify(execFile);
 const git = async (repo: string, ...args: string[]) => (await exec('git', args, {
   cwd: repo, timeout: 60_000, maxBuffer: 8 * 1024 * 1024,
@@ -46,19 +47,35 @@ function published(value: unknown): PublishedRelease | undefined {
 }
 /** Public REST API, deliberately unauthenticated: no local tokens are sent to GitHub. */
 export function githubReleases(request: typeof fetch = fetch): ReleaseSource {
-  const json = async (path: string) => {
+  const cache = new Map<string, { etag: string; value: unknown }>();
+  let retryAt = 0;
+  let rateFailures = 0;
+  const json = async (path: string, conditional = false) => {
+    if (Date.now() < retryAt) throw new Error('GitHub rate limit cooldown; try again later');
+    const cached = conditional ? cache.get(path) : undefined;
     const r = await request(`https://api.github.com/repos/${path}`, {
-      headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+      headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(cached ? { 'If-None-Match': cached.etag } : {}) },
       signal: AbortSignal.timeout(20_000), redirect: 'error',
     });
+    const limited = r.status === 403 || r.status === 429;
+    if (limited || r.headers.get('x-ratelimit-remaining') === '0') {
+      const retry = r.headers.get('retry-after');
+      const reset = Number(r.headers.get('x-ratelimit-reset')) * 1000;
+      const after = retry === null ? 0 : /^\d+$/.test(retry) ? Date.now() + Number(retry) * 1000 : Date.parse(retry);
+      retryAt = Math.max(Date.now() + (limited ? Math.min(6 * 3600_000, 60_000 * 2 ** Math.min(rateFailures++, 9)) : 0), reset || 0, after || 0);
+    } else rateFailures = 0;
+    if (r.status === 304 && cached) return cached.value;
     if (!r.ok) throw new Error(r.status === 403 || r.status === 429 ? 'GitHub rate limit or access denied; try again later' : `GitHub releases unavailable (HTTP ${r.status})`);
-    return r.json() as Promise<unknown>;
+    const value: unknown = await r.json();
+    if (conditional && r.headers.has('etag')) cache.set(path, { etag: r.headers.get('etag')!, value });
+    else cache.delete(path);
+    return value;
   };
   return {
     async list(repo) {
       const releases: PublishedRelease[] = [];
       for (let page = 1; page <= 10; page++) {
-        const rows = await json(`${repo}/releases?per_page=100&page=${page}`);
+        const rows = await json(`${repo}/releases?per_page=100&page=${page}`, true);
         if (!Array.isArray(rows)) throw new Error('invalid GitHub releases response');
         releases.push(...rows.flatMap((r) => { const p = published(r); return p ? [p] : []; }));
         if (rows.length < 100) return releases;
@@ -267,6 +284,8 @@ async function notesTransaction<T>(path: string, change: () => T): Promise<T> {
 }
 
 export function createUpdater(o: { repo: string; home: string; onChange(s: UpdateStatus): void; spawnHelper: (expected: UpdateStatus, onExit: (code: number | null) => void) => string; source?: ReleaseSource }) {
+  // Keep conditional-response validators and rate-limit cooldown across checks.
+  const source = o.source ?? githubReleases();
   const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: o.repo, encoding: 'utf8' }).trim();
   let repository = '';
   try { repository = githubRepo(execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: o.repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) ?? ''; } catch { /* No origin: release discovery remains unavailable. */ }
@@ -279,14 +298,34 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
   let status: UpdateStatus = { installedNotes: unread(), runtimeSha, sha: runtimeSha, checkedAt: 0, eligible: false, releases: [], reason: 'not checked yet' };
   let checking: Promise<UpdateStatus> | undefined;
   let applying = false;
-  let timer: ReturnType<typeof setInterval> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let active = false;
+  let nextCheckAt = 0;
+  let failures = 0;
+  const schedule = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    if (!active || checking) return;
+    timer = setTimeout(poll, Math.max(0, nextCheckAt - Date.now()));
+    timer.unref();
+  };
+  const poll = () => {
+    timer = undefined;
+    // A helper (possibly another daemon's) owns Git while applying an update.
+    let locked = applying;
+    try { locked ||= updateLocked(o.repo); } catch { /* Let check report an unavailable checkout. */ }
+    if (locked) { nextCheckAt = Date.now() + UPDATE_CHECK_INTERVAL; schedule(); return; }
+    void check().catch(() => { /* check publishes a recoverable failure and schedules a retry. */ });
+  };
   const set = (s: UpdateStatus) => { status = { ...s, installedNotes: unread(), runtimeSha, applying }; o.onChange(status); return status; };
   const check = () => {
     if (checking) return checking;
-    notes = readNotes(notesPath, repository, runtimeSha);
-    const observed = JSON.stringify(notes);
-    const previousInstalled = notes.unread?.releases[0].sha;
-    return checking = checkUpdate(o.repo, o.source, notes.baselineSha).then(async (s) => {
+    if (applying) return Promise.resolve(status);
+    const perform = async () => {
+      notes = readNotes(notesPath, repository, runtimeSha);
+      const observed = JSON.stringify(notes);
+      const previousInstalled = notes.unread?.releases[0].sha;
+      const s = await checkUpdate(o.repo, source, notes.baselineSha);
       const canAdvance = !previousInstalled || await ancestor(o.repo, previousInstalled, runtimeSha);
       notes = await notesTransaction(notesPath, () => {
         const current = readNotes(notesPath, repository, runtimeSha);
@@ -298,7 +337,13 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
         return next;
       });
       return set(s);
-    }).finally(() => { checking = undefined; });
+    };
+    checking = perform().catch((e: unknown) => set({ ...status, checkedAt: Date.now(), eligible: false, reason: 'release check unavailable; try again later', fetchError: e instanceof Error ? e.message : String(e) })).then((s) => {
+      failures = s.fetchError ? failures + 1 : 0;
+      nextCheckAt = Date.now() + Math.min(6 * 3600_000, UPDATE_CHECK_INTERVAL * 2 ** Math.min(failures, 6));
+      return s;
+    }).finally(() => { checking = undefined; schedule(); });
+    return checking;
   };
   return {
     status: () => {
@@ -315,9 +360,12 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
       });
       set(status);
     },
-    start() { void check(); timer = setInterval(() => { if (!applying) void check(); }, 6 * 3600_000); timer.unref(); },
-    stop() { if (timer) clearInterval(timer); },
+    // Called for authenticated app/browser connections; reconnects keep the shared freshness budget.
+    start() { if (!active) { active = true; schedule(); } },
+    stop() { active = false; if (timer) clearTimeout(timer); timer = undefined; },
     async apply(expected: { tag: string; sha: string }) {
+      // Finish discovery before handing Git to the detached install helper.
+      if (checking) await checking;
       if (applying) throw new Error('an update is already running');
       if (!status.target || expected.tag !== status.target.tag || expected.sha !== status.target.sha) throw new Error('release changed; check and review again');
       if (!status.eligible) throw new Error(`cannot update: ${status.reason}`);

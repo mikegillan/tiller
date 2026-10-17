@@ -38,11 +38,42 @@ beforeEach(() => {
   update(() => ({ nodes: {}, order: [], connected: true, dnd: undefined, update: undefined, dialog: { kind: 'palette' }, activityOpen: false }));
 });
 
-it('removes persistent footer commands and shortcut text, even while a future update is available', () => {
-  update(() => ({ update: { sha: 'old', runtimeSha: 'old', checkedAt: 1, eligible: true, releases: [], target: { id: 2, tag: 'v2', sha: 'new', name: 'v2', body: 'Future notes', tagObject: 'new', publishedAt: '' } } }));
+it('removes persistent footer commands and shortcut text when current', () => {
+  update(() => ({ update: { sha: 'current', checkedAt: 1, eligible: true, releases: [] } }));
   const html = renderToStaticMarkup(<StatusBar />);
   expect(html).toContain('Usage');
-  for (const label of ['Updates', 'Update v2', 'disturb', 'Activity', '<kbd', 'What’s new']) expect(html).not.toContain(label);
+  for (const label of ['Updates', 'Update available', 'Update v2', 'disturb', 'Activity', '<kbd', 'What’s new']) expect(html).not.toContain(label);
+});
+
+it('shows discovered availability and opens release management without installing or acknowledging installed notes', () => {
+  const release = { id: 2, tag: 'v0.1.1', sha: 'future', name: 'v0.1.1', body: 'Future notes', tagObject: 'future', publishedAt: '' };
+  const notes = { identity: 'installed-identity', releases: [{ ...release, id: 1, sha: 'installed', body: 'Installed notes' }] };
+  // Availability is still useful when a dirty checkout temporarily prevents installation.
+  const status = { sha: 'installed', checkedAt: 1, eligible: false, reason: 'uncommitted or untracked files', releases: [release], target: release, installedNotes: notes };
+  update(() => ({ update: status, dialog: null }));
+  const html = renderToStaticMarkup(<StatusBar />);
+  expect(html).toContain('Update available');
+  expect(html).toContain('What’s new');
+  expect(getState().dialog).toBeNull();
+  expect(send).not.toHaveBeenCalled();
+  const button = elements(StatusBar()).find((el) => el.props.className === 'update-available')!;
+  expect(button.props['aria-haspopup']).toBe('dialog');
+  button.props.onClick();
+  expect(getState().dialog).toEqual({ kind: 'update' });
+  expect(renderToStaticMarkup(<Dialogs />)).toContain('Future notes');
+  effects.splice(0).forEach((effect) => effect());
+  expect(send).not.toHaveBeenCalled();
+  expect(getState().update?.installedNotes).toEqual(notes);
+  for (const state of [
+    { ...status, sha: 'future', releases: [] },
+    { ...status, releases: [] }, // Development checkout already includes the latest release.
+    { ...status, fetchError: 'offline' },
+    { ...status, applying: true },
+  ]) {
+    update(() => ({ update: state }));
+    expect(renderToStaticMarkup(<StatusBar />)).not.toContain('Update available');
+    expect(renderToStaticMarkup(<StatusBar />)).toContain('What’s new');
+  }
 });
 
 it('keeps Activity, notification toggling, and update management reachable through palette handlers', () => {

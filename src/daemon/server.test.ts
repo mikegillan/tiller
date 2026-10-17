@@ -18,6 +18,9 @@ beforeEach(async () => {
   home = mkdtempSync(join(tmpdir(), 'tl-'));
   manager = new NodeManager({ home, shell: '/bin/sh' });
   server = await startServer(manager, { port: 0 });
+  // Lifecycle tests must not poll the live GitHub API.
+  vi.spyOn(server.updates, 'start').mockImplementation(() => {});
+  vi.spyOn(server.updates, 'stop');
   seen = [];
 });
 
@@ -27,6 +30,7 @@ afterEach(async () => {
   await manager.shutdown();
   await server.close();
   rmSync(home, { recursive: true, force: true });
+  vi.restoreAllMocks();
 });
 
 const adminToken = () => readFileSync(join(home, 'admin-token'), 'utf8');
@@ -63,6 +67,26 @@ describe('websocket', () => {
     send({ t: 'updateNotesRead', identity: 'reviewed-release-identity' });
     await until(() => acknowledge.mock.calls.length || undefined);
     expect(acknowledge).toHaveBeenCalledWith('reviewed-release-identity');
+  });
+
+  it('runs one updater lifecycle for authenticated app/browser clients only', async () => {
+    await connect();
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    expect(server.updates.start).not.toHaveBeenCalled();
+    const initialStops = vi.mocked(server.updates.stop).mock.calls.length;
+    ws!.terminate();
+    await until(() => vi.mocked(server.updates.stop).mock.calls.length > initialStops || undefined);
+    await connect(adminToken(), 'app');
+    await until(() => vi.mocked(server.updates.start).mock.calls.length || undefined);
+    const app = ws!;
+    await connect(adminToken(), 'browser');
+    await until(() => vi.mocked(server.updates.start).mock.calls.length === 2 || undefined);
+    const stopped = vi.mocked(server.updates.stop).mock.calls.length;
+    app.terminate();
+    await until(() => vi.mocked(server.updates.start).mock.calls.length === 3 || undefined);
+    expect(server.updates.stop).toHaveBeenCalledTimes(stopped);
+    ws!.terminate();
+    await until(() => vi.mocked(server.updates.stop).mock.calls.length > stopped || undefined);
   });
 
   it('rejects a bad token', async () => {
