@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { profileDefaults, configEntries, loadConfig } from './config.js';
+import { profileDefaults, effectiveProfileEntries, configEntries, loadConfig } from './config.js';
 
 describe('loadConfig', () => {
   let dir = '';
@@ -58,7 +59,7 @@ describe('loadConfig', () => {
     );
     const c = loadConfig(cwd, homeDir);
     expect(profileDefaults(c, 'codex', 'implementation', 'worker')).toEqual({ model: 'project-codex', effort: 'high' });
-    expect(profileDefaults(c, 'codex', 'explorer', 'none')).toEqual({ model: 'home-explorer', effort: undefined });
+    expect(profileDefaults(c, 'codex', 'explorer', 'none')).toEqual({ model: 'home-explorer', effort: 'high' });
     expect(profileDefaults(c, 'pi', 'implementation', 'worker')).toEqual({ model: undefined, effort: undefined });
     expect(profileDefaults(c, 'claude', 'implementation', 'worker')).toEqual({ model: 'home-profile', effort: 'low' });
     expect(profileDefaults(c, 'claude', 'reviewer', 'none')).toEqual({ model: 'project-claude', effort: 'max' });
@@ -79,12 +80,49 @@ describe('loadConfig', () => {
     err.mockRestore();
   });
 
-  it('defaults to no model, never and no gate when there are no files', () => {
+  it('leaves configured profiles empty, with default guardrails and no gate when there are no files', () => {
     const { cwd, homeDir } = setup(undefined, undefined);
     const c = loadConfig(cwd, homeDir);
     expect(c).toMatchObject({ roles: { orchestrator: {}, worker: {} }, approvals: { close: 'never', merge: false }, worktrees: { isolation: 'none', branchPrefix: 'tl/' }, daemon: { resumeOnStart: true, resumeMaxAgeDays: 3 } });
     expect(c.worktrees.include).toBeUndefined();
     expect(c.gate).toBeUndefined();
+  });
+
+  it('uses shipped global defaults in a fresh home and tl config without creating files', () => {
+    const { cwd, homeDir } = setup(undefined, undefined);
+    const config = loadConfig(cwd, homeDir);
+    expect(profileDefaults(config, 'claude', 'orchestrator', 'orchestrator')).toEqual({ model: 'opus', effort: undefined });
+    expect(profileDefaults(config, 'claude', 'implementation', 'worker')).toEqual({ model: 'sonnet', effort: undefined });
+    expect(profileDefaults(config, 'claude', 'mechanical', 'worker')).toEqual({ model: 'haiku', effort: undefined });
+    expect(profileDefaults(config, 'codex', 'reviewer', 'worker')).toEqual({ model: 'gpt-6.1-sol', effort: 'high' });
+    expect(profileDefaults(config, 'pi', 'implementation', 'worker')).toEqual({ model: undefined, effort: undefined });
+    expect(configEntries(cwd, homeDir)['profiles.claude.orchestrator.model'].value).toBeUndefined();
+    expect(effectiveProfileEntries(configEntries(cwd, homeDir))['profiles.claude.orchestrator.model']).toEqual({ value: 'opus', source: 'default' });
+    const cli = spawnSync(process.execPath, ['--import', 'tsx', join(import.meta.dirname, 'cli.ts'), 'config', '--cwd', cwd], { env: { ...process.env, TL_HOME: homeDir }, encoding: 'utf8' });
+    expect(cli.status, cli.stderr).toBe(0);
+    expect(cli.stdout).toContain('profiles.claude.orchestrator.model: opus  [default]');
+    expect(cli.stdout).toContain('profiles.codex.reviewer.effort: high  [default]');
+    expect(existsSync(join(homeDir, 'config.json'))).toBe(false);
+    expect(existsSync(join(cwd, '.tiller', 'config.json'))).toBe(false);
+  });
+
+  it('fills missing defaults on upgrade while preserving existing profile and legacy choices and config bytes', () => {
+    const project = JSON.stringify({ roles: { worker: { model: 'custom-legacy', effort: 'low' } }, profiles: { claude: { reviewer: { effort: 'max' } }, codex: { reviewer: { model: 'custom-codex' } } } });
+    const global = JSON.stringify({ roles: { orchestrator: { model: 'global-legacy' } }, profiles: { claude: { implementation: { model: 'global-profile' } }, codex: { implementation: { effort: 'low' } } } });
+    const { cwd, homeDir } = setup(project, global);
+    const config = loadConfig(cwd, homeDir);
+    expect(profileDefaults(config, 'claude', 'implementation', 'worker')).toEqual({ model: 'global-profile', effort: 'low' });
+    expect(profileDefaults(config, 'claude', 'reviewer', 'worker')).toEqual({ model: 'custom-legacy', effort: 'max' });
+    expect(profileDefaults(config, 'claude', 'reviewer', 'orchestrator')).toEqual({ model: 'global-legacy', effort: 'max' });
+    expect(profileDefaults(config, 'codex', 'reviewer', 'worker')).toEqual({ model: 'custom-codex', effort: 'high' });
+    expect(profileDefaults(config, 'codex', 'implementation', 'worker')).toEqual({ model: 'gpt-6.1-sol', effort: 'low' });
+    const cli = spawnSync(process.execPath, ['--import', 'tsx', join(import.meta.dirname, 'cli.ts'), 'config', '--cwd', cwd], { env: { ...process.env, TL_HOME: homeDir }, encoding: 'utf8' });
+    expect(cli.status, cli.stderr).toBe(0);
+    expect(cli.stdout).toContain('profiles.codex.implementation.model: gpt-6.1-sol  [default]');
+    expect(cli.stdout).toContain('profiles.claude.reviewer.model: custom-legacy');
+    expect(cli.stdout).toContain('profiles.claude.implementation.model: global-profile');
+    expect(readFileSync(join(homeDir, 'config.json'), 'utf8')).toBe(global);
+    expect(readFileSync(join(cwd, '.tiller', 'config.json'), 'utf8')).toBe(project);
   });
 
   it('drops only the bad key of a file, naming it in one log line, and falls back to home for it', () => {

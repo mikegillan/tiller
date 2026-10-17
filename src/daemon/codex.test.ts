@@ -131,7 +131,7 @@ describe('Codex harness', () => {
     const n = await manager!.spawn({ kind: 'agent', harness: 'codex', title: 'Codex', cwd: home, effort: 'high', byHuman: true });
     await ready(n.id);
     expect(packets().filter((p) => p.method === 'tui/launch').at(-1).params.args).toContain('model_reasoning_effort="high"');
-    expect(manager!.view(n.id)?.status.model).toBe('codex-default');
+    expect(manager!.view(n.id)?.status.model).toBe('gpt-6-astra');
     expect(manager!.view(n.id)?.sessionId).toBe(n.sessionId);
     const sent = await deliver(manager!, HUMAN, n.id, 'hello');
     await expect.poll(() => messageStatus(manager!, HUMAN, sent.messageId!)?.outcome).toBe('delivered');

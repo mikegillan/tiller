@@ -60,7 +60,7 @@ it('guards scope changes and closing, keeps edits on request, and discards only 
 });
 
 it('previews a reset using the server fallback and sends only the removed repository override', async () => {
-  const reset = elements(tree).find((e) => e.type === 'button' && e.props['aria-label'] === 'Use global default: Implementation model')!;
+  const reset = elements(tree).find((e) => e.type === 'button' && e.props['aria-label'] === 'Remove repository override: Implementation model')!;
   reset.props.onClick(); render();
   expect(input('profiles.claude.implementation.model').props.value).toBe('legacy-worker');
   expect(text(tree)).toContain('After save: legacy-worker');
@@ -100,4 +100,33 @@ it('retains drafts and disables saving on a revision conflict until reload', asy
   expect(button('Save repository settings').props.disabled).toBe(true);
   click('Reload latest settings'); await settle();
   expect(input('profiles.claude.implementation.model').props.value).toBe('custom');
+});
+
+
+it('withholds stale profile reset and inherited previews while a legacy model draft is pending', async () => {
+  click('Legacy Claude roles');
+  elements(tree).find((e) => e.type === 'button' && e.props['aria-label'] === 'Customize for this repository: Worker model')!.props.onClick(); render();
+  input('roles.worker.model').props.onChange({ target: { value: 'haiku' } }); render();
+  click('Claude');
+  // The still-explicit profile remains accurate despite role edits.
+  expect(input('profiles.claude.implementation.model').props.value).toBe('custom');
+  elements(tree).find((e) => e.type === 'button' && e.props['aria-label'] === 'Remove repository override: Implementation model')!.props.onClick(); render();
+  expect(input('profiles.claude.implementation.model').props.value).toBe('');
+  expect(text(tree)).toContain('Preview unavailable until legacy role changes are saved.');
+  expect(text(tree)).not.toContain('After save: legacy-worker');
+  await submit();
+  const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
+  expect(body.changes).toEqual({ 'roles.worker.model': 'haiku', 'profiles.claude.implementation.model': null });
+});
+
+it('stages Claude models while retaining a separately configured effort draft', async () => {
+  elements(tree).find((e) => e.type === 'button' && e.props['aria-label'] === 'Customize for this repository: Implementation effort')!.props.onClick(); render();
+  input('profiles.claude.implementation.effort').props.onChange({ target: { value: 'max' } }); render();
+  click('Stage recommended Claude defaults');
+  expect(input('profiles.claude.implementation.effort').props.value).toBe('max');
+  expect(text(tree)).toContain('CLI default when unset');
+  expect(text(tree)).toContain('Staging changes models only and retains every configured effort.');
+  await submit();
+  const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
+  expect(body.changes).toEqual({ ...claudeRecommendations, 'profiles.claude.implementation.effort': 'max' });
 });

@@ -76,25 +76,25 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   function renderField(field: Field) {
     if (!snapshot) return null;
     const { key, label } = field;
-    const { drafted, explicit, entry, raw } = fieldPreview(snapshot, drafts, field);
+    const { drafted, explicit, entry, raw, previewUnavailable } = fieldPreview(snapshot, drafts, field);
     const fallback = snapshot.inherited[key];
-    const action = explicit ? scope === 'project' ? 'Use global default' : 'Use inherited default' : scope === 'project' ? 'Customize for this repository' : 'Customize globally';
+    const action = explicit ? scope === 'project' ? 'Remove repository override' : 'Use inherited default' : scope === 'project' ? 'Customize for this repository' : 'Customize globally';
     const id = `setting-${key}`;
-    const props = { id, disabled: busy || !explicit, value: raw, 'aria-describedby': `${id}-help`, onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => edit(key, e.target.value) };
+    const props = { id, disabled: busy || !explicit, value: raw, placeholder: previewUnavailable ? 'Preview available after save' : undefined, 'aria-describedby': `${id}-help`, onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => edit(key, e.target.value) };
     return <div className="settings-field" key={key}>
       <label htmlFor={id}>{key.startsWith('profiles.') ? key.endsWith('.model') ? 'Model' : 'Effort' : label}</label>
       <div className="settings-control">
         {field.options || field.type === 'boolean' ? <select {...props}>
-          {!raw && <option value="">Harness default / unset</option>}
+          {!raw && <option value="">{previewUnavailable ? 'Preview available after save' : 'Harness default / unset'}</option>}
           {field.options && raw && !field.options.includes(raw) && <option value={raw}>{raw} (current)</option>}
           {(field.options ?? ['true', 'false']).map((option) => <option key={option} value={option}>{option}</option>)}
         </select> : field.type === 'lines' ? <textarea {...props} rows={3} /> : <input {...props} list={key.startsWith('profiles.claude.') && key.endsWith('.model') ? 'settings-claude-models' : undefined} type={field.type === 'number' ? 'number' : 'text'} min={field.min} step={field.integer ? 1 : 'any'} />}
-        <button className="btn" type="button" disabled={busy} aria-label={`${action}: ${label}`} onClick={() => edit(key, explicit ? null : inputValue(fallback?.value ?? (field.type === 'boolean' ? false : ''), field))}>{action}</button>
+        <button className="btn" type="button" disabled={busy} aria-label={`${action}: ${label}`} onClick={() => edit(key, explicit ? null : inputValue(previewUnavailable ? undefined : fallback?.value ?? (field.type === 'boolean' ? false : ''), field))}>{action}</button>
       </div>
       <div className="settings-detail" id={`${id}-help`}>
         {field.help && !key.startsWith('profiles.') && <div>{field.help}</div>}
-        <div className={drafted ? 'settings-pending' : undefined}><span>{drafted ? 'After save: ' : 'Effective: '}</span><code>{formatValue(entry?.value)}</code><span> · {explicit ? `Customized ${scope === 'project' ? 'for this repository' : 'globally'}` : 'Inherited'}</span></div>
-        <details className="settings-source"><summary>Value source</summary><code>{entry?.source ?? 'Harness default'}</code></details>
+        {previewUnavailable ? <div className="settings-pending">Preview unavailable until legacy role changes are saved.</div> : <><div className={drafted ? 'settings-pending' : undefined}><span>{drafted ? 'After save: ' : 'Effective: '}</span><code>{formatValue(entry?.value)}</code><span> · {explicit ? `Customized ${scope === 'project' ? 'for this repository' : 'globally'}` : entry?.source === 'default' && entry?.value !== undefined ? 'Tiller default' : 'Inherited'}</span></div>
+        <details className="settings-source"><summary>Value source</summary><code>{entry?.source === 'default' ? entry.value === undefined ? 'Harness default / unset' : 'Tiller default' : entry?.source ?? 'Harness default'}</code></details></>}
       </div>
     </div>;
   }
@@ -106,7 +106,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
       {!nodeId && <span>Select a node to edit its repository settings.</span>}
     </div>
     <div className="settings-target"><strong>{scope === 'project' ? snapshot?.projectPath?.split('/').filter(Boolean).at(-1) ?? 'Repository settings' : 'Defaults for all repositories'}</strong>
-      <p>{scope === 'project' ? 'Overrides global defaults for this repository. Fields you leave inherited follow global settings.' : 'Used by every repository unless it has an override. Daemon settings are global only.'}</p>
+      <p>{scope === 'project' ? 'Overrides shared defaults for this repository. Unset fields use global or built-in defaults; Claude profiles can also fall back to repository legacy roles.' : 'Used by every repository unless it has an override. Daemon settings are global only.'}</p>
       <details className="settings-path"><summary>{scope === 'project' ? snapshot?.projectPath ?? 'Loading repository…' : 'Configuration file'}</summary><code>{snapshot?.path ?? 'Loading target…'}</code></details>
     </div>
     <nav className="settings-categories" aria-label="Settings categories">{sections.map((section) => <button key={section.title} className="btn" aria-pressed={active.title === section.title && category !== 'CLI diagnostics'} onClick={() => setCategory(section.title)}>{section.title}{section.title === 'Daemon' ? ' (global only)' : ''}</button>)}<button className="btn" aria-pressed={category === 'CLI diagnostics'} onClick={() => setCategory('CLI diagnostics')}>CLI diagnostics</button></nav>
@@ -131,15 +131,15 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
           <h3 id="settings-category-title">{active.title}{['Claude', 'Codex', 'Pi'].includes(active.title) ? ' task profiles' : ''}</h3>
           {active.help && <p>{active.help}</p>}
           {['Claude', 'Codex', 'Pi'].includes(active.title) ? <>
-            {active.title === 'Claude' && <details className="settings-inheritance"><summary>How Claude inherits defaults</summary><p>Profile values take precedence over legacy role defaults, regardless of scope. Preview assumes orchestrator role for orchestration and worker role for other profiles. Save legacy role changes to refresh fallback previews.</p></details>}
+            {active.title === 'Claude' && <details className="settings-inheritance"><summary>How Claude inherits defaults</summary><p>Profile values take precedence over legacy role defaults, regardless of scope. Preview assumes orchestrator role for orchestration and worker role for other profiles. While legacy role changes are pending, dependent previews are unavailable until you save.</p></details>}
             {active.title !== 'Pi' && <details className="settings-recommendations"><summary>Recommended {active.title} defaults</summary>
-              <p>A starting point for new tasks. Staging replaces this draft’s {active.title} profile values only; review below, then save to {scopeLabel} settings.</p>
+              <p>Tiller supplies these defaults automatically when no configured profile or legacy role value applies. Staging customizes the listed values for this scope; review below, then save to {scopeLabel} settings.</p>
               <table><thead><tr><th>Task profile</th><th>Model</th><th>Effort</th></tr></thead><tbody>{profiles.map((profile) => {
                 const recommended = active.title === 'Claude' ? claudeRecommendations : codexRecommendations;
                 const prefix = `profiles.${active.title.toLowerCase()}.${profile}`;
-                return <tr key={profile}><th scope="row">{profile}</th><td>{recommended[`${prefix}.model`]}</td><td>{recommended[`${prefix}.effort`]}</td></tr>;
+                return <tr key={profile}><th scope="row">{profile}</th><td>{recommended[`${prefix}.model`]}</td><td>{recommended[`${prefix}.effort`] ?? 'CLI default when unset'}</td></tr>;
               })}</tbody></table>
-              {active.title === 'Claude' && <p>Stable Claude CLI aliases; their versions and availability depend on your provider. Custom model IDs remain editable. <a href="https://code.claude.com/docs/en/model-config#model-aliases" target="_blank" rel="noreferrer">Claude model reference</a></p>}
+              {active.title === 'Claude' && <p>Stable Claude CLI aliases; their versions and availability depend on your provider. Effort is left to the CLI when unset. Staging changes models only and retains every configured effort. Custom model IDs remain editable. <a href="https://code.claude.com/docs/en/model-config#model-aliases" target="_blank" rel="noreferrer">Claude model reference</a></p>}
               <button className="btn" type="button" disabled={busy} onClick={() => { setDrafts((d) => ({ ...d, ...(active.title === 'Claude' ? claudeRecommendations : codexRecommendations) })); setSuccess(`${active.title} defaults staged. Review the values, then save ${scopeLabel} settings.`); setError(''); }}>Stage recommended {active.title} defaults</button>
             </details>}
             {profiles.map((profile, index) => <fieldset className="settings-profile" key={profile}><legend>{profile.charAt(0).toUpperCase() + profile.slice(1)}</legend>{active.fields.slice(index * 2, index * 2 + 2).map(renderField)}</fieldset>)}

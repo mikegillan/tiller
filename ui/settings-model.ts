@@ -1,5 +1,5 @@
 import type { UsageSource } from '../src/shared/protocol';
-import { SETTINGS_FIELDS, SETTINGS_EFFORTS, SETTINGS_PROFILES, type SettingsField } from '../src/shared/settings';
+import { SETTINGS_FIELDS, SETTINGS_EFFORTS, SETTINGS_PROFILES, SETTINGS_PROFILE_DEFAULTS, type SettingsField } from '../src/shared/settings';
 export type { SettingsSnapshot } from '../src/shared/settings';
 import type { SettingsSnapshot } from '../src/shared/settings';
 export type { SettingsScope as Scope } from '../src/shared/settings';
@@ -11,15 +11,11 @@ function field(key: string, label: string, extra: { help?: string } = {}): Field
   if (!metadata) throw new Error(`Missing settings metadata: ${key}`);
   return { ...metadata, label: label.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase()), ...extra };
 }
-// Stable CLI aliases: https://code.claude.com/docs/en/model-config#model-aliases
-export const claudeRecommendations: Record<string, string> = Object.fromEntries([
-  ['orchestrator', 'opus', 'high'], ['implementation', 'sonnet', 'medium'],
-  ['explorer', 'haiku', 'medium'], ['mechanical', 'haiku', 'low'], ['reviewer', 'opus', 'high'],
-].flatMap(([profile, model, effort]) => [[`profiles.claude.${profile}.model`, model], [`profiles.claude.${profile}.effort`, effort]]));
-export const codexRecommendations: Record<string, string> = Object.fromEntries([
-  ['orchestrator', 'gpt-6-astra', 'medium'], ['implementation', 'gpt-6.1-sol', 'medium'],
-  ['explorer', 'gpt-6-luna', 'high'], ['mechanical', 'gpt-6-luna', 'low'], ['reviewer', 'gpt-6.1-sol', 'high'],
-].flatMap(([profile, model, effort]) => [[`profiles.codex.${profile}.model`, model], [`profiles.codex.${profile}.effort`, effort]]));
+function recommendations(harness: keyof typeof efforts): Record<string, string> {
+  return Object.fromEntries(Object.entries(SETTINGS_PROFILE_DEFAULTS[harness]).flatMap(([profile, defaults]) => Object.entries(defaults).map(([leaf, value]) => [`profiles.${harness}.${profile}.${leaf}`, value])));
+}
+export const claudeRecommendations = recommendations('claude');
+export const codexRecommendations = recommendations('codex');
 export const profileFields = (harness: keyof typeof efforts): Field[] => profiles.flatMap((profile) => [
   field(`profiles.${harness}.${profile}.model`, `${profile} model`, { help: harness === 'pi' ? 'Provider/model ID accepted by Pi.' : 'Model ID accepted by this harness.' }),
   field(`profiles.${harness}.${profile}.effort`, `${profile} effort`),
@@ -75,11 +71,16 @@ export function cliStatus(source?: Pick<UsageSource, 'installed' | 'executableSt
   return 'Detected · check unknown';
 }
 
-// Drafts preview each leaf independently, using the server's resolver and reset fallback.
+// The API snapshot resolves one reset at a time. It cannot reliably identify a
+// lower-layer profile versus a legacy-role fallback from source paths alone.
 export function fieldPreview(snapshot: SettingsSnapshot, drafts: Record<string, string | null>, field: Field) {
   const drafted = Object.hasOwn(drafts, field.key);
   const explicit = drafted ? drafts[field.key] !== null : Object.hasOwn(snapshot.values, field.key);
-  const entry = drafted ? drafts[field.key] === null ? snapshot.inherited[field.key] : { value: drafts[field.key], source: 'Unsaved change' } : snapshot.entries[field.key];
-  const raw = drafted && drafts[field.key] !== null ? drafts[field.key]! : inputValue(explicit ? snapshot.values[field.key] : snapshot.inherited[field.key]?.value, field);
-  return { drafted, explicit, entry, raw };
+  const profile = /^profiles\.claude\.([^.]+)\.(model|effort)$/.exec(field.key);
+  const role = profile?.[1] === 'orchestrator' ? 'orchestrator' : 'worker';
+  const profileValueWins = drafted ? drafts[field.key] !== null : explicit && snapshot.values[field.key] === snapshot.entries[field.key]?.value;
+  const previewUnavailable = !!profile && Object.hasOwn(drafts, `roles.${role}.${profile[2]}`) && !profileValueWins;
+  const entry = previewUnavailable ? undefined : drafted ? drafts[field.key] === null ? snapshot.inherited[field.key] : { value: drafts[field.key], source: 'Unsaved change' } : snapshot.entries[field.key];
+  const raw = previewUnavailable && !explicit ? '' : drafted && drafts[field.key] !== null ? drafts[field.key]! : inputValue(explicit ? snapshot.values[field.key] : snapshot.inherited[field.key]?.value, field);
+  return { drafted, explicit, entry, raw, previewUnavailable };
 }

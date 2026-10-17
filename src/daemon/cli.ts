@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { configEntries } from './config.js';
+import { configEntries, effectiveProfileEntries } from './config.js';
 import { gateFor } from './manager.js';
 import { promptPath } from './launch.js';
 import { listPresets } from './presets.js';
@@ -177,7 +177,7 @@ switch (cmd) {
     break;
   }
   case 'config':
-    for (const [k, { value, source }] of Object.entries(configEntries(realpathSync(resolve(f.cwd ?? process.cwd())), home))) {
+    for (const [k, { value, source }] of Object.entries(effectiveProfileEntries(configEntries(realpathSync(resolve(f.cwd ?? process.cwd())), home)))) {
       const unset = k.startsWith('roles.') ? '(claude default)' : k === 'worktrees.include' ? '(.worktreeinclude)' : '(none)';
       console.log(`${k}: ${value === undefined ? unset : Array.isArray(value) ? JSON.stringify(value) : value}  [${source}]`);
     }

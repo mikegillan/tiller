@@ -22,6 +22,21 @@ export const SETTINGS_EFFORTS = {
   pi: ['low', 'medium', 'high', 'xhigh', 'max'],
   codex: ['low', 'medium', 'high', 'xhigh'],
 } as const;
+/** Portable defaults used only after explicit profiles and legacy Claude roles.
+ * Sonnet/Haiku aliases can resolve to older provider models without effort support:
+ * https://code.claude.com/docs/en/model-config#adjust-effort-level
+ */
+export const SETTINGS_PROFILE_DEFAULTS: { [Harness in typeof SETTINGS_HARNESSES[number]]: Record<typeof SETTINGS_PROFILES[number], { model?: string; effort?: (typeof SETTINGS_EFFORTS)[Harness][number] }> } = {
+  claude: {
+    orchestrator: { model: 'opus' }, implementation: { model: 'sonnet' },
+    explorer: { model: 'haiku' }, mechanical: { model: 'haiku' }, reviewer: { model: 'opus' },
+  },
+  codex: {
+    orchestrator: { model: 'gpt-6-astra', effort: 'medium' }, implementation: { model: 'gpt-6.1-sol', effort: 'medium' },
+    explorer: { model: 'gpt-6-luna', effort: 'high' }, mechanical: { model: 'gpt-6-luna', effort: 'low' }, reviewer: { model: 'gpt-6.1-sol', effort: 'high' },
+  },
+  pi: { orchestrator: {}, implementation: {}, explorer: {}, mechanical: {}, reviewer: {} },
+};
 const field = (key: string, type: SettingsField['type'], extra: Partial<SettingsField> = {}): SettingsField => ({ key, label: key.split('.').at(-1)!, type, ...extra });
 export const SETTINGS_FIELDS: SettingsField[] = [
   ...SETTINGS_HARNESSES.flatMap(h => SETTINGS_PROFILES.flatMap(p => [field(`profiles.${h}.${p}.model`, 'text'), field(`profiles.${h}.${p}.effort`, 'select', { options: SETTINGS_EFFORTS[h] })])),
