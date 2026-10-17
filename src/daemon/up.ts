@@ -99,10 +99,11 @@ export function spawnUpdate(home: string, port: number, expected: UpdateStatus, 
 }
 
 /** SIGTERM preserves live nodes; keep launchd ownership when enabled. */
-export async function restartDaemon(home: string, port: number, expectedSha?: string): Promise<void> {
+export async function restartDaemon(home: string, port: number, expectedSha?: string, say: (s: string) => void = () => {}): Promise<void> {
   const old = await findDaemon(port);
   if (old) {
     if (old.home !== home) throw new Error('refusing to stop a daemon from another home');
+    say(`stopping daemon pid ${old.pid}`);
     process.kill(old.pid, 'SIGTERM');
     for (const end = Date.now() + 10_000; await findDaemon(port); await sleep(200))
       if (Date.now() > end) throw new Error(`daemon pid ${old.pid} did not stop`);
@@ -111,4 +112,5 @@ export async function restartDaemon(home: string, port: number, expectedSha?: st
   if (agent) kickstart();
   const h = await (agent ? waitForDaemon(port, join(home, 'daemon.log')) : startDaemon(home, port));
   if (h.home !== home || (expectedSha && h.sha !== expectedSha)) throw new Error(`restarted daemon does not report expected commit ${expectedSha}`);
+  say(`started daemon pid ${h.pid}${agent ? ' through launchd' : ''}; it resumes the nodes that were live`);
 }
