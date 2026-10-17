@@ -10,7 +10,7 @@ let dir: string, bridge: CodexBridge;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'tl-codex-bridge-')); });
 afterEach(async () => { await bridge?.stop(); rmSync(dir, { recursive: true, force: true }); });
 
-async function setup(messages: InboxMessage[], resumeHistory?: string, effort?: string) {
+async function setup(messages: InboxMessage[], resumeHistory?: string, effort?: string, resumeMethod?: 'thread/resume' | 'thread/fork') {
   const client = new TillerClient({ endpoint: 'http://unused', nodeId: 'n-1', token: 'node-token' });
   vi.spyOn(client, 'hook').mockResolvedValue();
   vi.spyOn(client, 'modEvent').mockResolvedValue();
@@ -20,11 +20,11 @@ async function setup(messages: InboxMessage[], resumeHistory?: string, effort?: 
   vi.spyOn(client, 'release').mockResolvedValue(true);
   vi.spyOn(client, 'unconfirmed').mockResolvedValue();
   const rpc = { send: vi.fn(), request: vi.fn(async (method: string, _params: Record<string, unknown>) => {
-    if (method === 'thread/resume') throw new RpcError('no rollout found for thread id old');
+    if (method === 'thread/resume' && !resumeMethod) throw new RpcError('no rollout found for thread id old');
     return method.startsWith('thread/') ? { thread: { id: 'native' }, model: 'test' } : { turn: { id: 'turn' } };
   }) };
   const fatal = vi.fn();
-  if (resumeHistory !== undefined) writeFileSync(join(dir, 'session.jsonl'), JSON.stringify({ type: 'codex_session', threadId: 'old' }) + '\n' + resumeHistory);
+  if (resumeHistory !== undefined) writeFileSync(join(dir, 'session.jsonl'), JSON.stringify({ type: 'codex_session', threadId: 'old', ...(resumeMethod === 'thread/fork' ? { fork: true } : {}) }) + '\n' + resumeHistory);
   bridge = new CodexBridge({ transcriptPath: join(dir, 'session.jsonl'), sessionId: 'tiller-id', resume: resumeHistory !== undefined, instructions: 'role', effort }, rpc, client, vi.fn(), fatal);
   await bridge.start('http://unused', 'n-1');
   return { client, rpc, fatal };
@@ -160,6 +160,34 @@ describe('Codex shutdown', () => {
     expect(client.hook).toHaveBeenLastCalledWith({ hook_event_name: 'SessionEnd' });
   });
 
+  it('does not deadlock when a submission timeout initiates shutdown through fatal', async () => {
+    const { client, rpc, fatal } = await setup([{ id: 'pending', text: 'hello' }]);
+    let stopped: Promise<void> | undefined;
+    fatal.mockImplementation(() => { stopped = bridge.stop(); });
+    rpc.request.mockRejectedValueOnce(new Error('Codex turn/start response timed out; its outcome is unknown'));
+    await expect(bridge.poll()).rejects.toThrow('response timed out');
+    expect(stopped).toBeDefined();
+    await stopped;
+    expect(client.unconfirmed).toHaveBeenCalledWith('pending');
+    expect(client.release).not.toHaveBeenCalled();
+    expect(client.hook).toHaveBeenLastCalledWith({ hook_event_name: 'SessionEnd' });
+  });
+
+  it('drains the remaining accepted events when an event failure initiates fatal shutdown', async () => {
+    const { client, fatal } = await setup([]);
+    let stopped: Promise<void> | undefined;
+    fatal.mockImplementation(() => { stopped = bridge.stop(); });
+    vi.mocked(client.modEvent).mockRejectedValueOnce(new Error('daemon request timed out'));
+    bridge.handle({ method: 'turn/started', params: { turn: { id: 'last' } } });
+    bridge.handle({ method: 'item/completed', params: { item: { type: 'agentMessage', text: 'retained answer' } } });
+    bridge.handle({ method: 'turn/completed', params: { turn: { id: 'last', status: 'completed' } } });
+    await expect.poll(() => stopped !== undefined).toBe(true);
+    await stopped;
+    expect(readFileSync(join(dir, 'session.jsonl'), 'utf8')).toContain('retained answer');
+    expect(client.modEvent).toHaveBeenLastCalledWith('turn.complete', expect.objectContaining({ answer: 'retained answer' }));
+    expect(client.hook).toHaveBeenLastCalledWith({ hook_event_name: 'SessionEnd' });
+  });
+
   it('retries a pending receipt during shutdown without resubmitting', async () => {
     const { client, rpc } = await setup([{ id: 'pending', text: 'hello' }]);
     vi.mocked(client.ack).mockRejectedValueOnce(new Error('temporary failure'));
@@ -171,6 +199,13 @@ describe('Codex shutdown', () => {
 });
 
 describe('Codex inbox effort', () => {
+  it.each(['thread/resume', 'thread/fork'] as const)('seeds explicit effort in %s configuration', async (method) => {
+    const { rpc } = await setup([], '', 'high', method);
+    expect(rpc.request).toHaveBeenLastCalledWith(method, expect.objectContaining({
+      threadId: 'old', config: expect.objectContaining({ model_reasoning_effort: 'high' }),
+    }));
+  });
+
   it.each([
     { model: 'test', effort: 'low' },
     { model: 'other-model', effort: null },
