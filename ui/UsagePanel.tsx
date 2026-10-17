@@ -55,19 +55,20 @@ export function UsagePanel({ onClose }: { onClose: () => void }) {
       const name = usageToolName(tool);
       const discovery = sources?.find((source) => source.id === `discovery:${tool}`);
       const reports = sources?.filter((source) => source.tool === tool && source.at !== undefined && source.rateLimits.length > 0) ?? [];
+      const unavailable = sources?.some((source) => source.tool === tool && source.id !== `discovery:${tool}` && source.availability === 'unavailable');
       return <section className="usage-cli" key={tool} aria-label={name}>
         <div className="usage-brand" aria-hidden="true">{tool !== 'pi' && <img className={tool === 'codex' ? 'usage-openai-logo' : undefined} src={tool === 'codex' ? openaiLogo : claudeLogo} alt="" width="24" height="24" />}</div>
         <div className="usage-cli-content">
           <h3 className={reports.length === 1 ? 'usage-sr-only' : ''}>{name}</h3>
           {reports.map((source, index) => {
-            const unavailable = sources?.some((candidate) => candidate.tool === tool && candidate.at === undefined && candidate.availability === 'unavailable' && candidate.nodeIds.some((id) => source.nodeIds.includes(id)));
+            const unavailable = source.availability === 'unavailable';
             return <div className="usage-quota-report" key={source.id}>
             {reports.length > 1 && <p className="usage-report-label">Separate quota {index + 1}{source.scope === 'model' && source.model ? ` · ${source.model}` : ''}</p>}
             {source.rateLimits.map((limit, i) => <QuotaWindow key={limit.windowId ?? `${limit.kind}:${i}`} limit={limit} title={i === 0 && reports.length === 1 ? name : undefined} now={now} />)}
             {(usageStale(source, now) || source.nodeIds.every((id) => !nodes[id] || nodes[id].status.exited) || unavailable) && <p className="usage-caption">{unavailable ? 'Usage unavailable · ' : ''}Last report: {fmtAge(now - source.at!)}{now - source.at! >= 1000 ? ' ago' : ''} · may be out of date</p>}
             {reports.length === 1 && source.scope === 'model' && source.model && <p className="usage-caption">{source.model} model limit</p>}
           </div>; })}
-          {!reports.length && <p className="usage-caption" role="status">{discovery?.executableStatus === 'broken' ? `Unable to run ${name}. Check the CLI installation.` : tool === 'pi' ? 'Pi does not report account limits.' : scanning ? 'Checking usage…' : `Open ${name} to load usage.`}</p>}
+          {!reports.length && <p className="usage-caption" role="status">{discovery?.executableStatus === 'broken' ? `Unable to run ${name}. Check the CLI installation.` : tool === 'pi' ? 'Pi does not report account limits.' : unavailable ? 'Usage unavailable. Try refreshing later.' : scanning ? 'Checking usage…' : `Open ${name} to load usage.`}</p>}
         </div>
       </section>;
     })}

@@ -44,7 +44,7 @@ it('shows honest loading, empty, broken, unavailable and disconnected states', (
   fixture.state.usageSources = undefined; expect(render()).toContain('Waiting for CLI usage');
   fixture.state.usageSources = []; expect(render()).toContain('No supported CLIs detected');
   fixture.state.usageSources = [source({ executableStatus: 'broken' })]; expect(render()).toContain('Unable to run Codex');
-  fixture.state.usageSources = [source(), report(), source({ id: 'unavailable:codex:n1', nodeIds: ['private-node'], availability: 'unavailable' })]; expect(render()).toContain('Usage unavailable');
+  fixture.state.usageSources = [source(), report({ availability: 'unavailable' }), source({ id: 'unavailable:codex:n1', nodeIds: ['private-node'], availability: 'unavailable' })]; expect(render()).toContain('Usage unavailable');
   fixture.state.connected = false; expect(render()).toContain('Disconnected');
   fixture.state.usageScanning = true; expect(render()).toContain('Refreshing…');
 });
@@ -54,4 +54,27 @@ it('honors current installation discovery over retained reports and does not bor
   fixture.state.usageSources = [source({ installed: false }), report()]; expect(render()).not.toContain('42% used');
   fixture.state.usageSources = [source(), report(), source({ id: 'unavailable:codex:other', nodeIds: ['other'], availability: 'unavailable' })];
   expect(render()).not.toContain('Usage unavailable');
+});
+
+
+it('reports unavailable usage when a running CLI cannot supply any limits', () => {
+  fixture.state.usageSources = [source(), source({ id: 'unavailable:codex:running-node', installed: null, nodeIds: ['running-node'], availability: 'unavailable' })];
+  const html = render();
+  expect(html).toContain('Usage unavailable');
+  expect(html).not.toContain('Open Codex to load usage.');
+});
+
+it('reports unavailable usage after the final quota window is removed', () => {
+  fixture.state.usageSources = [source(), report({ rateLimits: [], availability: 'unavailable' })];
+  const html = render();
+  expect(html).toContain('Usage unavailable');
+  expect(html).not.toContain('Open Codex to load usage.');
+  expect(html).not.toContain('<progress');
+});
+
+it('keeps healthy shared-account usage available when another reporter fails', () => {
+  fixture.state.usageSources = [source(), report({ nodeIds: ['healthy', 'failed'] }), source({ id: 'unavailable:codex:failed', installed: null, nodeIds: ['failed'], availability: 'unavailable' })];
+  const html = render();
+  expect(html).toContain('42% used');
+  expect(html).not.toContain('Usage unavailable');
 });
