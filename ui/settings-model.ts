@@ -1,42 +1,57 @@
 import type { UsageSource } from '../src/shared/protocol';
-import { SETTINGS_FIELDS, SETTINGS_EFFORTS, SETTINGS_PROFILES, SETTINGS_PROFILE_DEFAULTS, type SettingsField } from '../src/shared/settings';
+import { SETTINGS_FIELDS, SETTINGS_EFFORTS, SETTINGS_PROFILES, type SettingsField } from '../src/shared/settings';
 export type { SettingsSnapshot } from '../src/shared/settings';
 import type { SettingsSnapshot } from '../src/shared/settings';
 export type { SettingsScope as Scope } from '../src/shared/settings';
 export type Field = SettingsField & { help?: string };
 export const profiles = SETTINGS_PROFILES;
 export const efforts = SETTINGS_EFFORTS;
+const fieldHelp: Record<string, string> = {
+  'notifications.kinds.needsYou': 'An agent is waiting for your input or approval.',
+  'notifications.kinds.errored': 'An agent encounters an error.',
+  'notifications.kinds.done': 'An agent finishes its current work.',
+  'notifications.kinds.exited': 'An agent process exits.',
+  'notifications.treeDoneSummary': 'Combine completion notifications into one summary for the tree.',
+  'limits.maxDepth': 'Maximum number of nested agent generations.',
+  'limits.maxChildren': 'Maximum live children per agent.',
+  'limits.stallMinutes': 'Minutes without progress before an agent is considered stalled.',
+  'limits.maxMessagesPer10Min': 'Maximum messages one agent can send to one recipient in ten minutes.',
+  'worktrees.isolation': 'Default isolation for Claude workers when spawn options do not specify it.',
+  'worktrees.branchPrefix': 'Prefix used when creating worktree branches.',
+  'worktrees.mergeStyle': 'Default strategy for merging worktree branches.',
+  'daemon.resumeOnStart': 'Resume eligible sessions when the daemon starts.',
+  'daemon.resumeMaxAgeDays': 'Oldest session age eligible for automatic resume, in days.',
+  'daemon.sessionsKeepDays': 'Days to retain a session directory after its root closes.',
+  'daemon.digestAfterMinutes': 'Minutes away from the app before returning shows an activity digest.',
+  'daemon.maxLiveNodes': 'Maximum live nodes managed by the daemon.',
+  'daemon.maxWorking': 'Maximum Claude agents working at once. Additional spawns queue. Zero means unlimited.',
+};
 function field(key: string, label: string, extra: { help?: string } = {}): Field {
   const metadata = SETTINGS_FIELDS.find((entry) => entry.key === key);
   if (!metadata) throw new Error(`Missing settings metadata: ${key}`);
-  return { ...metadata, label: label.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase()), ...extra };
+  return { ...metadata, help: fieldHelp[key], label: label.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase()), ...extra };
 }
-function recommendations(harness: keyof typeof efforts): Record<string, string> {
-  return Object.fromEntries(Object.entries(SETTINGS_PROFILE_DEFAULTS[harness]).flatMap(([profile, defaults]) => Object.entries(defaults).map(([leaf, value]) => [`profiles.${harness}.${profile}.${leaf}`, value])));
-}
-export const claudeRecommendations = recommendations('claude');
-export const codexRecommendations = recommendations('codex');
 export const profileFields = (harness: keyof typeof efforts): Field[] => profiles.flatMap((profile) => [
   field(`profiles.${harness}.${profile}.model`, `${profile} model`, { help: harness === 'pi' ? 'Provider/model ID accepted by Pi.' : 'Model ID accepted by this harness.' }),
   field(`profiles.${harness}.${profile}.effort`, `${profile} effort`),
 ]);
 export const groups: { title: string; homeOnly?: boolean; help?: string; fields: Field[] }[] = [
-  { title: 'Notifications', fields: [
+  { title: 'Notifications', help: 'Choose how Tiller gets your attention when agents need you or finish work.', fields: [
     ...['needsYou', 'errored', 'done', 'exited'].map((kind) => field(`notifications.kinds.${kind}`, kind)),
     field('notifications.treeDoneSummary', 'One completion summary per tree'),
     field('notifications.quietHours', 'Quiet hours', { help: 'Local time HH:MM-HH:MM; can cross midnight. Needs-you banners remain visible without sound.' }),
   ] },
   { title: 'Limits', help: 'Spawn caps apply to agents; the human is exempt.', fields: ['maxDepth', 'maxChildren', 'stallMinutes', 'maxMessagesPer10Min'].map((key) => field(`limits.${key}`, key)) },
-  { title: 'Worktrees', fields: [
+  { title: 'Worktrees', help: 'Control repository isolation, branches, and worktree lifecycle commands.', fields: [
     field('worktrees.isolation', 'Default isolation'), field('worktrees.branchPrefix', 'Branch prefix'),
     field('worktrees.taskBranch', 'Task branch', { help: 'Must contain {slug}.' }), field('worktrees.mergeStyle', 'Merge style'),
     ...['include', 'protected', 'setup', 'teardown'].map((key) => field(`worktrees.${key}`, key, { help: key === 'include' ? 'One pattern per line. Inherit to use .worktreeinclude; an empty list copies nothing.' : key === 'protected' ? 'One branch per line. An empty list protects no branches.' : 'One shell command per line. Saving does not execute commands.' })),
   ] },
-  { title: 'Approvals & completion gate', fields: [
-    field('approvals.close', 'Agent close approval', { help: 'Skip human approval: never; only when every node is done, exited or has an outcome; or always.' }),
-    field('approvals.merge', 'Allow agent merges without approval'),
-    field('gate.command', 'Completion gate command', { help: 'Must pass before a worker reports success. Saving does not run it. Use the inherited value to remove this scope’s gate.' }),
-    field('gate.retries', 'Gate retries'), field('gate.timeoutMinutes', 'Gate timeout (minutes)'),
+  { title: 'Approvals & checks', help: 'Control when agents need your approval and what must pass before work is complete.', fields: [
+    field('approvals.close', 'Close nodes without approval', { help: 'Choose when agents can close nodes without asking you first.' }),
+    field('approvals.merge', 'Merge without approval', { help: 'Allow agents to merge their work without asking you first.' }),
+    field('gate.command', 'Check command', { help: 'Must pass before a worker reports success. Saving does not run it. Use the inherited value to remove this scope’s gate.' }),
+    field('gate.retries', 'Retry attempts', { help: 'Additional attempts allowed after a completion check fails.' }), field('gate.timeoutMinutes', 'Timeout (minutes)', { help: 'Maximum time each completion check can run.' }),
   ] },
   { title: 'Legacy Claude roles', help: 'Fallback model and effort for legacy Claude role defaults. Task profiles take precedence.', fields: ['orchestrator', 'worker'].flatMap((role) => [field(`roles.${role}.model`, `${role} model`), field(`roles.${role}.effort`, `${role} effort`)]) },
   { title: 'Daemon', homeOnly: true, help: 'Global daemon settings. maxWorking = 0 means unlimited.', fields: [field('daemon.resumeOnStart', 'Resume on start'), ...['resumeMaxAgeDays', 'sessionsKeepDays', 'digestAfterMinutes', 'maxLiveNodes', 'maxWorking'].map((key) => field(`daemon.${key}`, key))] },
@@ -83,4 +98,13 @@ export function fieldPreview(snapshot: SettingsSnapshot, drafts: Record<string, 
   const entry = previewUnavailable ? undefined : drafted ? drafts[field.key] === null ? snapshot.inherited[field.key] : { value: drafts[field.key], source: 'Unsaved change' } : snapshot.entries[field.key];
   const raw = previewUnavailable && !explicit ? '' : drafted && drafts[field.key] !== null ? drafts[field.key]! : inputValue(explicit ? snapshot.values[field.key] : snapshot.inherited[field.key]?.value, field);
   return { drafted, explicit, entry, raw, previewUnavailable };
+}
+
+export function optionLabel(key: string, value: string): string {
+  const labels: Record<string, Record<string, string>> = {
+    'approvals.close': { never: 'Always ask for approval', done: 'When all nodes are finished', always: 'Always allow' },
+    'worktrees.isolation': { none: 'Shared working directory', worktree: 'Separate worktree' },
+    'worktrees.mergeStyle': { merge: 'Merge commit', squash: 'Squash merge', 'ff-only': 'Fast-forward only' },
+  };
+  return labels[key]?.[value] ?? ({ banner: 'Banner', sound: 'Banner and sound', silent: 'Silent', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum' }[value] ?? value);
 }
