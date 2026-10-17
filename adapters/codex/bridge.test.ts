@@ -260,12 +260,27 @@ describe('Codex shutdown', () => {
 
 describe('Codex inbox effort', () => {
   it.each(['thread/resume', 'thread/fork'] as const)('preserves native effort on %s instead of replaying spawn effort', async (method) => {
-    const { rpc } = await setup([], '', 'high', method);
+    const initial = await setup([], undefined, 'high');
+    bridge.handle({ method: 'thread/settings/updated', params: {
+      threadId: 'native', threadSettings: { model: 'test', effort: 'low' },
+    } });
+    bridge.handle({ method: 'item/completed', params: { item: {
+      type: 'userMessage', content: [{ type: 'text', text: 'previous turn' }],
+    } } });
+    await bridge.stop();
+    expect(initial.client.modEvent).toHaveBeenCalledWith('session.measure', { model: 'test' });
+    const history = readFileSync(join(dir, 'session.jsonl'), 'utf8').split('\n').slice(1).join('\n');
+    const { rpc } = await setup([{ id: 'next', text: 'after native picker change' }], history, 'high', method);
     expect(rpc.request).toHaveBeenLastCalledWith(method, expect.objectContaining({
       threadId: 'old',
     }));
     expect(rpc.request.mock.calls.at(-1)?.[1].config).not.toHaveProperty('model_reasoning_effort');
     expect(bridge.freshThread).toBe(false);
+    expect(bridge.hasHistory).toBe(true);
+    await bridge.poll();
+    expect(rpc.request).toHaveBeenLastCalledWith('turn/start', {
+      threadId: 'native', input: [{ type: 'text', text: 'after native picker change', text_elements: [] }],
+    });
   });
 
   it('seeds effort on the genuine new-thread fallback but not the preceding resume attempt', async () => {

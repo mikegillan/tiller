@@ -21,7 +21,9 @@ are supported (`low`, `medium`, `high`, `xhigh`); omitted values keep Codex's de
 Explicit effort seeds only a fresh native thread, including restart or an untouched-session
 fallback that actually creates a new thread. Inbox turns, reload/resume, and fork/follow-up
 preserve native effort settings, including changes made with the model picker. The native TUI
-also omits the original effort override when attaching an existing thread.
+also omits the original effort override when attaching an existing thread. Tiller retains the
+original effort in node metadata for fresh starts; saved native effort controls attached threads.
+Explicit model overrides still reapply on resume/fork; that existing model policy is unchanged.
 Claude role model defaults are not applied. Claude `permissionMode`, preset `tools`,
 `disallowedTools`, `maxTurns`, and spawn `fork` are rejected.
 
