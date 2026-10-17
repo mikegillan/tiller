@@ -1,3 +1,5 @@
+import { applyUpdate, updateLocked, REPO, UPDATE_LOG } from './update.js';
+import type { UpdateStatus } from '../shared/protocol.js';
 // Thin client for the daemon's POST /api/<tool>. Inside a node it uses TL_NODE_ID / TL_TOKEN_FILE / TL_ENDPOINT;
 // outside it acts as `human` with the admin token in <home>/admin-token.
 import { spawnSync } from 'node:child_process';
@@ -17,7 +19,7 @@ import { formatEvent, listSessions, parseSince, readEvents, sessionDir, type Ses
 import { fmtAge } from '../shared/format.js';
 import type { Harness, NodeKind } from '../shared/protocol.js';
 import { mainCheckout, runCommands, WORKTREES_DIR } from './worktree.js';
-import { findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, upDir, waitForDaemon, type OrchestratorCandidate } from './up.js';
+import { restartDaemon, findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, upDir, waitForDaemon, type OrchestratorCandidate } from './up.js';
 
 const usage = () => `tl: control tiller. With no arguments, start the daemon if needed and open the app; tl . opens it on this directory.
 
@@ -27,6 +29,7 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
                                                       must start with . / or ~; any of these flags without a PATH means .
   tl status | stop                                    show or stop the daemon (tld runs it in the foreground); stop also means
                                                       the nodes are not resumed on the next start
+  tl update [--check]                                check stable releases or install/build/restart at the latest release
   tl reload                                           restart the daemon on the current code and resume the nodes that were live
   tl autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
   tl doctor [--no-app] [--harness claude|pi|codex]     check what tiller needs (bin/setup --check) and print the fix for anything missing
@@ -112,7 +115,7 @@ const { values: f, positionals: pos } = parseArgs({
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
     'permission-mode': { type: 'string' }, role: { type: 'string' }, profile: { type: 'string' }, harness: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
-    worktree: { type: 'boolean' }, 'no-app': { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' }, preset: { type: 'string' },
+    worktree: { type: 'boolean' }, 'no-app': { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, check: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' }, preset: { type: 'string' },
     after: { type: 'string', multiple: true }, 'after-success': { type: 'string', multiple: true }, now: { type: 'boolean' },
     fork: { type: 'string' }, root: { type: 'string' }, session: { type: 'string' }, base: { type: 'string' },
   },
@@ -327,7 +330,23 @@ switch (cmd) {
     await call('shutdown', {}, false);
     console.log('daemon stopped');
     break;
+  case 'update': {
+    if (process.env.TL_NODE_ID) fail('updates are human-only; run outside a Tiller node');
+    if (f.detached) {
+      const expected = JSON.parse(readFileSync(0, 'utf8')) as UpdateStatus;
+      await applyUpdate({ repo: REPO, log: join(home, UPDATE_LOG), expected, restart: (sha) => restartDaemon(home, daemonPort(), sha) })
+        .catch((e: Error) => fail(`tl update: ${e.message}; see ${join(home, UPDATE_LOG)}`));
+      break;
+    }
+    const result = await call('update', {}, true);
+    if (f.check) break;
+    const s = result.data;
+    if (!s?.eligible || !s.target || s.sha === s.target.sha) break;
+    await call('update', { apply: true, tag: s.target.tag, sha: s.target.sha });
+    break;
+  }
   case 'reload': {
+    if (updateLocked(REPO)) fail('an update holds this checkout; inspect update.log and wait for it before reloading');
     process.env = humanEnv(process.env); // run from a node's terminal, still restart as the human
     const port = daemonPort();
     if (!f.detached) {

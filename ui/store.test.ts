@@ -62,3 +62,19 @@ it('a legacy-daemon refresh error clears the scanning state', () => {
   applyServer({ t: 'error', message: 'Malformed message' });
   expect(getState().usageScanning).toBe(false);
 });
+
+it('accepts release snapshots and update progress while preserving settings-era usage and activity', () => {
+  const releases = { sha: 'a'.repeat(40), runtimeSha: 'a'.repeat(40), eligible: false, releases: [], checkedAt: 1, reason: 'offline' };
+  applyServer({ t: 'snapshot', nodes: [], update: releases });
+  const sources = getState().usageSources;
+  const activity = getState().activity;
+  expect(getState().update).toEqual(releases);
+  applyServer({ t: 'update', update: { ...releases, applying: true } });
+  expect(getState().update?.applying).toBe(true);
+  expect(getState().usageSources).toBe(sources);
+  expect(getState().activity).toBe(activity);
+  const count = getState().toasts.length;
+  applyServer({ t: 'update', update: { ...releases, failed: 'build failed; see update.log' } });
+  applyServer({ t: 'update', update: { ...releases, failed: 'build failed; see update.log' } });
+  expect(getState().toasts.length).toBe(count + 1);
+});

@@ -36,6 +36,7 @@ What it checks, for reference:
 - `cd ~/some/repo && tl --harness codex` runs Codex; the spawn dialog also offers Codex. See the [Codex adapter](adapters/codex/README.md) for terminal controls and approval handling.
 - `tl stop` shuts the daemon down and closes every node; the nodes are not resumed on the next start.
 - `tl reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
+- `tl update --check` checks published stable GitHub releases and prints the latest version and notes for every missed release. `tl update` installs that exact release, rebuilds changed dependencies/UI/app and restarts the daemon; live nodes are interrupted and resumed. The status bar's **Updates** control shows the same notes and asks before applying. If the native app is rebuilt, quit and reopen Tiller.
 - `tl autostart on|off|status` manages a launchd agent that starts the daemon at login and again after a crash.
 
 Workers that edit code in parallel get their own git worktrees, each on a branch forked from a base branch. The base is a task branch, one per task, named after the repo's convention (`tl spawn --base feature/x`, or `base` on the spawn tool); when none is given and the checkout is on a protected branch (`main`, `master` or the remote's default), tiller makes one named `tl/<slug>` from the worker's title. Merges go into that base and never into a protected branch, so you push the task branch and open a pull request yourself. See [docs/worktrees.md](docs/worktrees.md).
@@ -43,6 +44,12 @@ Workers that edit code in parallel get their own git worktrees, each on a branch
 `tl help` lists every command and flag.
 
 ## Where files live
+
+Updates use the GitHub repository identified by the checkout's `origin` (HTTPS or git SSH). Only published, non-draft, non-prerelease `vX.Y.Z` releases qualify; unreleased commits on `main` are never an update target. Checks run at daemon startup and every six hours. A failed/offline/rate-limited check disables applying until a successful check; there is no cached-main fallback. Release versions are compared numerically, and skipped release notes are rolled up newest first. Notes display as text, including any Markdown supplied by the release.
+
+Updating is human-only and requires the primary checkout on `main`, no uncommitted or untracked files, no git operation in progress, and an ancestor relationship allowing a fast-forward to the release. Local or unreleased commits are preserved by refusing the update. Linked worktrees and detached checkouts cannot apply updates. Tags and commits are pinned and checked again before applying, including release publication and notes; a changed target requires another review. No remotes are reconfigured or pushed.
+
+The detached helper logs to `<TL_HOME>/update.log` and holds a checkout-wide `.git/update.lock`, including while rebuilding and restarting. A failed update attempts `git reset --keep` to the original commit, reinstalls/rebuilds the steps it started, and verifies the restarted daemon's commit. Edits that prevent a safe rollback are retained and reported with the log path. An interrupted helper can leave the lock behind: inspect the log and checkout, confirm no helper is running, repair/rebuild if necessary, then remove the lock manually before retrying. Never remove a live helper's lock. This updater rebuilds a source checkout; it does not download prebuilt app assets.
 
 Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the node registry (`state.json`), per-node files under `nodes/<id>/`, the admin token `tl` uses, `config.json` ([docs/config.md](docs/config.md)), presets under `agents/` and the log `daemon.log`. Each tree of nodes has a session directory, `sessions/<rootId>/`, for notes and the event log ([docs/sessions.md](docs/sessions.md)). The daemon listens on 127.0.0.1, port 7788 unless `TL_PORT` says otherwise.
 
