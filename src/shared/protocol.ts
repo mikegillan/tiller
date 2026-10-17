@@ -271,13 +271,42 @@ export interface ArchivedNode {
 
 /** One rate-limit window as Claude Code's `session.measure` reports it; `kind` is five_hour, seven_day or a gateway's spend_limit. */
 export interface RateLimit { kind: string; percentUsed: number; resetsAt?: string }
-/** Account-level Claude usage: the newest non-empty rateLimits any node's mod reported. Limits are per account, so there is one. */
+/** Legacy latest Claude account report, retained for CLI consumers. */
 export interface Usage { rateLimits: RateLimit[]; nodeId: string; at: number }
+
+/** Usage discovery is independent of live nodes. null means not verified, not absent. */
+export type UsageTool = 'claude' | 'codex' | 'pi';
+export interface UsageSource {
+  id: string;
+  tool: UsageTool;
+  provider?: string;
+  accountId?: string;
+  pool?: string;
+  poolId?: string;
+  model?: string;
+  scope: 'account' | 'model';
+  nodeIds: string[];
+  installed: boolean | null;
+  configured: boolean | null;
+  authenticated: boolean | null;
+  availability: 'available' | 'unavailable' | 'unknown';
+  detail?: string;
+  rateLimits: RateLimit[];
+  /** Last quota report; discovery alone never makes a retained report fresh. */
+  at?: number;
+  checkedAt: number;
+}
+/** A quota report from an adapter; tool identity comes from the authenticated node. */
+export interface UsageReport {
+  provider?: string; accountId?: string; pool?: string; poolId?: string; model?: string;
+  scope: 'account' | 'model'; rateLimits: RateLimit[];
+}
 
 // Daemon -> UI (WebSocket, JSON). One message per line.
 export type ServerMessage =
-  | { t: 'snapshot'; nodes: NodeView[]; usage?: Usage; dnd?: Dnd }
+  | { t: 'snapshot'; nodes: NodeView[]; usage?: Usage; usageSources?: UsageSource[]; dnd?: Dnd }
   | ({ t: 'dnd' } & Dnd)                     // do not disturb changed
+  | { t: 'usageSources'; sources: UsageSource[] }
   | { t: 'usage'; usage: Usage }             // a node reported new account-level rate limits
   | { t: 'node'; node: NodeView }            // created or updated (full record)
   | { t: 'removed'; id: string }
@@ -300,6 +329,7 @@ export interface DigestItem { id: string; title: string; kind: 'needsYou' | 'err
 // UI -> Daemon.
 export type ClientMessage =
   | { t: 'auth'; token: string; client?: 'app' | 'browser' } // must be the first message; token comes from the ?k= query param of the served UI URL
+  | { t: 'usageRefresh' }                    // bounded local CLI discovery; never starts inference
   | { t: 'visibility'; focused: boolean }       // whether this client's window is in front; the daemon skips OS notifications for a node a focused client has selected
   | { t: 'attach'; id: string; cols: number; rows: number } // start receiving data; replies with a data message holding the serialized screen
   | { t: 'detach'; id: string }
@@ -344,7 +374,7 @@ export interface InboxMessage { id: string; from: string; text: string; enqueued
 export type ModEvent =
   | { event: 'turn.start'; payload: { text: string; turnId: string } }
   | { event: 'turn.complete'; payload: { answer?: string; durationMs: number; isAborted: boolean; turnId: string; reason: 'answer' | 'aborted' | 'refusal' | 'error'; usage?: Record<string, unknown> } }
-  | { event: 'session.measure'; payload: { model?: string; context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: RateLimit[] } };
+  | { event: 'session.measure'; payload: { model?: string; context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: RateLimit[]; usageReports?: UsageReport[] } };
 /** POST /focus { id } → 204; the daemon broadcasts `focus` to ws clients (PLAN §14). */
 /** GET /tree → ChildView[]: the calling node's whole tree from its root, depth-first. */
 export interface ChildView {

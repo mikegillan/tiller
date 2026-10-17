@@ -43,3 +43,16 @@ it('a failed spawn stops the wait, so the next node someone else spawns is not s
   applyServer({ t: 'node', node: mk('other', 'r', 2) });
   expect(getState().selected).toBe('r');
 });
+
+it('retains source reports through selection, removal and older snapshots, and accepts authoritative new snapshots', () => {
+  const source = { id: 'source', tool: 'claude' as const, scope: 'account' as const, nodeIds: ['usage-a'], rateLimits: [{ kind: '5h', percentUsed: 30 }], at: 100, checkedAt: 100, installed: true, configured: true, authenticated: true, availability: 'available' as const };
+  applyServer({ t: 'snapshot', nodes: [mk('usage-a', null, 1), mk('usage-b', null, 2)], usageSources: [source] });
+  applyServer({ t: 'focus', from: 'human', id: 'usage-b' });
+  applyServer({ t: 'removed', id: 'usage-a' });
+  applyServer({ t: 'snapshot', nodes: [] });
+  expect(getState().usageSources).toEqual([source]);
+  applyServer({ t: 'usageSources', sources: [{ ...source, at: 200 }] });
+  expect(getState().usageSources?.[0].at).toBe(200);
+  applyServer({ t: 'snapshot', nodes: [], usageSources: [] });
+  expect(getState().usageSources).toEqual([]);
+});

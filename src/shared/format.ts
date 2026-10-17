@@ -36,6 +36,7 @@ function fmtReset(iso: string, now: number): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  if (now - d.getTime() >= 86_400_000 || d.getTime() - now >= 7 * 86_400_000) return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${hm}`;
   return d.getTime() - now < 86_400_000 ? hm : `${d.toLocaleDateString([], { weekday: 'short' })} ${hm}`;
 }
 

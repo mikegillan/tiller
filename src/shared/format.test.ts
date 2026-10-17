@@ -49,3 +49,10 @@ describe('format', () => {
     expect(usageLine({ rateLimits: limits.slice(0, 1), nodeId: 'n-1', at: now - 120_000 }, now)).toBe('usage: 5h 42% · resets 14:30 (from n-1, 2m ago)');
   });
 });
+
+it('dates expired and distant reset windows so an old reset is not mistaken for today', () => {
+  const now = new Date(2026, 9, 17, 12).getTime();
+  const date = new Date(2026, 9, 13, 14, 30);
+  const label = date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  expect(usageParts([{ kind: 'five_hour', percentUsed: 10, resetsAt: date.toISOString() }], false, now)[0].text).toBe(`5h 10% · resets ${label} 14:30`);
+});

@@ -185,6 +185,9 @@ describe('POST /hook', () => {
   it('mod-event rateLimits: keeps the newest report from any node, broadcasts it, drops a malformed one', async () => {
     const a = (await manager.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir() }));
     const b = (await manager.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir() }));
+    // Real shell processes keep this test inference-free; mark their reporting harness explicitly.
+    manager.registry.update(a.id, { kind: 'claude' });
+    manager.registry.update(b.id, { kind: 'claude' });
     const post = (id: string, payload: unknown) => fetch(`http://127.0.0.1:${server.port}/mod-event`, {
       method: 'POST', body: JSON.stringify({ event: 'session.measure', payload }),
       headers: { Authorization: `Bearer ${manager.tokenFor(id)}`, 'X-TL-Node': id, 'Content-Type': 'application/json' },
@@ -211,6 +214,12 @@ describe('POST /hook', () => {
     await connect();
     const snap = await until(() => seen.find((m) => m.t === 'snapshot'));
     expect(snap).toMatchObject({ usage: { rateLimits: newer, nodeId: b.id } });
+    expect(snap?.t === 'snapshot' && snap.usageSources?.filter((s) => s.at).map((s) => [s.nodeIds, s.rateLimits])).toEqual([[[a.id], first], [[b.id], newer]]);
+    send({ t: 'usageRefresh' });
+    const refreshed = await until(() => seen.find((m) => m.t === 'usageSources'));
+    expect(refreshed?.t === 'usageSources' && refreshed.sources.filter((s) => s.id.startsWith('discovery:'))).toHaveLength(3);
+    expect((await post(a.id, { usageReports: [{ scope: 'model', rateLimits: first }] })).status).toBe(204);
+    expect(manager.usageRegistry.sources.filter((s) => s.at)).toHaveLength(2);
   });
 
   it('GET /tree: the whole tree from the root, the caller marked self', async () => {

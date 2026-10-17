@@ -6,6 +6,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { profileFor, type Profile, harnessFor, isAgentKind, NEEDS_YOU_STATES, type Harness, type ArchivedNode, type Diff, type DigestItem, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { profileDefaults, loadConfig, type Config, type MergeStyle } from './config.js';
+import { UsageRegistry } from './usage.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
 import { roleFor, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
@@ -149,6 +150,7 @@ export class NodeManager extends EventEmitter {
   readonly registry: NodeRegistry;
   /** Newest account-level rate limits from any node. Not persisted: the next measure after a restart refills it. */
   usage?: Usage;
+  readonly usageRegistry: UsageRegistry;
   /** Base URL of the daemon, set by the server once it knows its port. */
   endpoint = '';
   /** Whether any connected UI client has node `id` selected; set by the server. A selected node never turns unread. */
@@ -172,6 +174,7 @@ export class NodeManager extends EventEmitter {
     this.home = opts.home ?? homeDir();
     this.shell = opts.shell ?? process.env.SHELL ?? '/bin/sh';
     this.path = opts.path ?? process.env.PATH ?? '';
+    this.usageRegistry = new UsageRegistry(this.path);
     mkdirSync(join(this.home, 'nodes'), { recursive: true, mode: 0o700 });
     chmodSync(this.home, 0o700); // mkdir's mode does not apply to a directory that already existed
     ensurePresets(this.home);
@@ -744,7 +747,13 @@ export class NodeManager extends EventEmitter {
       refreshGit(this, nodeId).catch(logError);
     } else if (ev.event === 'session.measure') {
       const { context, cost, rateLimits } = ev.payload;
-      if (rateLimits?.length) { // empty off a subscription or before the first reading: keep the last report
+      const rec = this.registry.get(nodeId);
+      const tool = rec && isAgentKind(rec.kind) ? harnessFor(rec) : undefined;
+      if (tool) {
+        this.usageRegistry.record(tool, nodeId, ev.payload.usageReports ?? (rateLimits?.length ? [{ scope: 'account', rateLimits }] : []), now);
+        this.emit('usageSources', this.usageRegistry.sources);
+      }
+      if (rateLimits?.length && (!tool || tool === 'claude')) { // empty off a subscription or before the first reading: keep the last report
         this.usage = { rateLimits, nodeId, at: now };
         this.emit('usage', this.usage);
       }

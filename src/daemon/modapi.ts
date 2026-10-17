@@ -3,11 +3,11 @@ import { z } from 'zod';
 import type { ChildView, ModEvent, NodeView } from '../shared/protocol.js';
 import { treeOrder } from '../shared/tree.js';
 import { ack, claim, HUMAN, inbox, markModLive, release, unconfirmed } from './messaging.js';
+import { rateLimitsSchema, usageReportsSchema } from './usage.js';
 import type { NodeManager } from './manager.js';
 import { PREVIEW_CHARS, readBody } from './util.js';
 
 const modEvent = z.object({ event: z.enum(['turn.start', 'turn.complete', 'session.measure']), payload: z.record(z.string(), z.unknown()).default({}) });
-const rateLimits = z.array(z.object({ kind: z.string().min(1).max(64), percentUsed: z.number().finite(), resetsAt: z.string().max(64).optional() })).max(16);
 
 /** `root` (or every root) and its descendants depth-first (a root is depth 0); the row for `selfId`, if any, is marked self. */
 function treeViews(manager: NodeManager, root?: NodeView, selfId?: string): ChildView[] {
@@ -70,7 +70,9 @@ export function modApi(manager: NodeManager, authenticate: (req: http.IncomingMe
         const ev = modEvent.parse(body) as ModEvent;
         if (ev.event === 'session.measure') {
           // A malformed rateLimits is dropped; the node's context and cost still apply.
-          const rl = rateLimits.safeParse(ev.payload.rateLimits);
+          const reports = usageReportsSchema.safeParse(ev.payload.usageReports);
+          ev.payload.usageReports = reports.success ? reports.data : undefined;
+          const rl = rateLimitsSchema.safeParse(ev.payload.rateLimits);
           ev.payload.rateLimits = rl.success ? rl.data : undefined;
         }
         if (caller !== HUMAN) {
