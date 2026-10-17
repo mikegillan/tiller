@@ -23,6 +23,7 @@ async function setup(): Promise<void> {
 const { createInterface } = require('node:readline');
 const { appendFileSync } = require('node:fs');
 if (process.argv.includes('--remote')) {
+ appendFileSync(${JSON.stringify(join(home, 'rpc.jsonl'))}, JSON.stringify({ method: 'tui/launch', params: { args: process.argv.slice(2) } }) + '\\n');
  const WebSocket = require(${JSON.stringify(fileURLToPath(new URL('../../node_modules/ws/index.js', import.meta.url)))});
  const remote = process.argv[process.argv.indexOf('--remote') + 1];
  const ws = new WebSocket('ws+unix://' + remote.slice('unix://'.length) + ':/');
@@ -106,8 +107,9 @@ describe('Codex harness', () => {
 
   it('delivers once, reports lifecycle/context and preserves a separate native thread on follow-up', async () => {
     await setup();
-    const n = await manager!.spawn({ kind: 'agent', harness: 'codex', title: 'Codex', cwd: home, byHuman: true });
+    const n = await manager!.spawn({ kind: 'agent', harness: 'codex', title: 'Codex', cwd: home, effort: 'high', byHuman: true });
     await ready(n.id);
+    expect(packets().filter((p) => p.method === 'tui/launch').at(-1).params.args).toContain('model_reasoning_effort="high"');
     expect(manager!.view(n.id)?.status.model).toBe('codex-default');
     expect(manager!.view(n.id)?.sessionId).toBe(n.sessionId);
     const sent = await deliver(manager!, HUMAN, n.id, 'hello');
@@ -123,6 +125,7 @@ describe('Codex harness', () => {
     const nativeId = codexHeader(original).threadId;
     await manager!.close(n.id, true);
     const next = await manager!.followup(n.id, ''); await ready(next.id);
+    expect(packets().filter((p) => p.method === 'tui/launch').at(-1).params.args).not.toContain('-c');
     expect(next.harness).toBe('codex');
     expect(next.transcriptPath).not.toBe(path);
     expect(codexHeader(readFileSync(next.transcriptPath!, 'utf8')).threadId).not.toBe(nativeId);
@@ -132,7 +135,9 @@ describe('Codex harness', () => {
     manager!.kill(next.id);
     expect((await manager!.resume(next.id)).ok).toBe(true); await ready(next.id);
     expect(packets().filter((p) => p.method === 'thread/resume').length).toBeGreaterThanOrEqual(2);
+    expect(packets().filter((p) => p.method === 'tui/launch').at(-1).params.args).not.toContain('-c');
     expect(manager!.restart(next.id).ok).toBe(true); await ready(next.id);
+    expect(packets().filter((p) => p.method === 'tui/launch').at(-1).params.args).toContain('model_reasoning_effort="high"');
     expect(manager!.view(next.id)?.previousSessions).toContain(n.sessionId);
     expect((await manager!.transcript(next.id, n.sessionId)).entries).toEqual(entries);
   });

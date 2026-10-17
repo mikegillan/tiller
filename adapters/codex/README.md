@@ -18,8 +18,10 @@ Unix-socket WebSocket bridge connects `codex --remote` to that same app-server.
 It uses Codex's own models, authentication, instructions, sandbox, and approval settings.
 Tiller's role prompt is supplied as `developerInstructions`. Explicit model and effort overrides
 are supported (`low`, `medium`, `high`, `xhigh`); omitted values keep Codex's defaults.
-The initial effort seeds the native thread default; later inbox turns inherit native settings,
-including changes made with the model picker.
+Explicit effort seeds only a fresh native thread, including restart or an untouched-session
+fallback that actually creates a new thread. Inbox turns, reload/resume, and fork/follow-up
+preserve native effort settings, including changes made with the model picker. The native TUI
+also omits the original effort override when attaching an existing thread.
 Claude role model defaults are not applied. Claude `permissionMode`, preset `tools`,
 `disallowedTools`, `maxTurns`, and spawn `fork` are rejected.
 
@@ -57,8 +59,14 @@ the host and leaves the claim to retire as unconfirmed. Inherited claims are ret
 replaying them. The daemon bounds unresolved claims at 60 seconds. Do not automatically resend
 an unconfirmed message: it may already have run.
 
-On shutdown, the bridge stops accepting events and inbox work, drains accepted transcript and
-lifecycle events, and settles in-flight submission receipts before ending the session.
+On shutdown, inbox intake stops first. Native stdout gets up to 250 ms to drain buffered
+notifications after termination; the bridge then stops event intake and has an overall 5-second
+budget for lifecycle reports and pending receipts. Individual failed receipts do not block the
+others. At the deadline, outstanding HTTP/native requests are canceled and accepted local
+transcript events still drain; undelivered lifecycle reports cannot be guaranteed when the
+daemon is unavailable. Unknown claims remain unconfirmed for daemon retirement, never replayed
+or falsely acknowledged. Native events not written to stdout before termination, or arriving
+after the 250 ms cutoff, cannot be retained. A forced process kill can bypass all cleanup.
 
 The bridge writes readable normalized JSONL transcripts under
 `sessions/<rootId>/agents/<nodeId>/<Tiller-sessionId>.jsonl`. The header stores Codex's separate

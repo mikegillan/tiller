@@ -8,7 +8,7 @@ import { RpcError } from './rpc.js';
 
 let dir: string, bridge: CodexBridge;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'tl-codex-bridge-')); });
-afterEach(async () => { await bridge?.stop(); rmSync(dir, { recursive: true, force: true }); });
+afterEach(async () => { vi.useRealTimers(); await bridge?.stop(); rmSync(dir, { recursive: true, force: true }); });
 
 async function setup(messages: InboxMessage[], resumeHistory?: string, effort?: string, resumeMethod?: 'thread/resume' | 'thread/fork') {
   const client = new TillerClient({ endpoint: 'http://unused', nodeId: 'n-1', token: 'node-token' });
@@ -176,7 +176,7 @@ describe('Codex shutdown', () => {
   it('drains the remaining accepted events when an event failure initiates fatal shutdown', async () => {
     const { client, fatal } = await setup([]);
     let stopped: Promise<void> | undefined;
-    fatal.mockImplementation(() => { stopped = bridge.stop(); });
+    fatal.mockImplementation(async () => { stopped = bridge.stop(); await stopped; });
     vi.mocked(client.modEvent).mockRejectedValueOnce(new Error('daemon request timed out'));
     bridge.handle({ method: 'turn/started', params: { turn: { id: 'last' } } });
     bridge.handle({ method: 'item/completed', params: { item: { type: 'agentMessage', text: 'retained answer' } } });
@@ -185,6 +185,66 @@ describe('Codex shutdown', () => {
     await stopped;
     expect(readFileSync(join(dir, 'session.jsonl'), 'utf8')).toContain('retained answer');
     expect(client.modEvent).toHaveBeenLastCalledWith('turn.complete', expect.objectContaining({ answer: 'retained answer' }));
+    expect(client.hook).toHaveBeenLastCalledWith({ hook_event_name: 'SessionEnd' });
+  });
+
+  it('bounds shutdown with hung HTTP, retains queued transcripts and cancels pending requests', async () => {
+    const { client } = await setup([]);
+    const dispose = vi.spyOn(client, 'dispose');
+    vi.useFakeTimers();
+    vi.mocked(client.modEvent).mockImplementationOnce(() => new Promise(() => {}));
+    bridge.handle({ method: 'turn/started', params: { turn: { id: 'last' } } });
+    bridge.handle({ method: 'item/completed', params: { item: { type: 'commandExecution', command: 'echo answer' } } });
+    bridge.handle({ method: 'item/completed', params: { item: { type: 'agentMessage', text: 'answer despite hung HTTP' } } });
+    bridge.handle({ method: 'turn/completed', params: { turn: { id: 'last', status: 'completed' } } });
+    const stopped = bridge.stop();
+    let done = false;
+    void stopped.then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(done).toBe(true);
+    await stopped;
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(readFileSync(join(dir, 'session.jsonl'), 'utf8')).toContain('answer despite hung HTTP');
+    expect(readFileSync(join(dir, 'session.jsonl'), 'utf8')).toContain('tool_use');
+    expect(client.modEvent).toHaveBeenCalledTimes(1);
+    expect(client.hook).not.toHaveBeenCalledWith({ hook_event_name: 'SessionEnd' });
+  });
+
+  it('bounds an unresolved submission and never acknowledges its late acceptance', async () => {
+    const { client, rpc } = await setup([{ id: 'unknown', text: 'possibly accepted' }]);
+    let resolve!: (value: any) => void;
+    rpc.request.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const poll = bridge.poll();
+    await expect.poll(() => rpc.request.mock.calls.some(([method]) => method === 'turn/start')).toBe(true);
+    vi.useFakeTimers();
+    const stopped = bridge.stop();
+    await vi.advanceTimersByTimeAsync(5000);
+    await stopped;
+    expect(client.ack).not.toHaveBeenCalled();
+    resolve({ turn: { id: 'late' } });
+    await poll;
+    expect(client.ack).not.toHaveBeenCalled();
+    expect(client.release).not.toHaveBeenCalled();
+  });
+
+  it('attempts all pending receipts despite individual failures and never acknowledges unknown outcomes', async () => {
+    const { client } = await setup([]);
+    // Restore a pending ledger directly: ordinary polling will not submit new work
+    // while a previous receipt is failing.
+    const pending = bridge as unknown as { receipts: Set<string>; ambiguous: Set<string> };
+    pending.receipts.add('failed');
+    pending.receipts.add('accepted');
+    pending.ambiguous.add('unknown');
+    vi.mocked(client.ack).mockRejectedValueOnce(new Error('ack unavailable'));
+    await bridge.stop();
+    expect(client.ack).toHaveBeenCalledWith('failed');
+    expect(client.ack).toHaveBeenCalledWith('accepted');
+    expect(client.unconfirmed).toHaveBeenCalledWith('unknown');
+    expect(client.ack).not.toHaveBeenCalledWith('unknown');
+    expect(pending.receipts).toEqual(new Set(['failed']));
+    expect(pending.ambiguous.size).toBe(0);
     expect(client.hook).toHaveBeenLastCalledWith({ hook_event_name: 'SessionEnd' });
   });
 
@@ -199,10 +259,22 @@ describe('Codex shutdown', () => {
 });
 
 describe('Codex inbox effort', () => {
-  it.each(['thread/resume', 'thread/fork'] as const)('seeds explicit effort in %s configuration', async (method) => {
+  it.each(['thread/resume', 'thread/fork'] as const)('preserves native effort on %s instead of replaying spawn effort', async (method) => {
     const { rpc } = await setup([], '', 'high', method);
     expect(rpc.request).toHaveBeenLastCalledWith(method, expect.objectContaining({
-      threadId: 'old', config: expect.objectContaining({ model_reasoning_effort: 'high' }),
+      threadId: 'old',
+    }));
+    expect(rpc.request.mock.calls.at(-1)?.[1].config).not.toHaveProperty('model_reasoning_effort');
+    expect(bridge.freshThread).toBe(false);
+  });
+
+  it('seeds effort on the genuine new-thread fallback but not the preceding resume attempt', async () => {
+    const { rpc } = await setup([], '', 'high');
+    expect(bridge.freshThread).toBe(true);
+    expect(rpc.request.mock.calls.find(([method]) => method === 'thread/resume')?.[1].config)
+      .not.toHaveProperty('model_reasoning_effort');
+    expect(rpc.request).toHaveBeenLastCalledWith('thread/start', expect.objectContaining({
+      config: expect.objectContaining({ model_reasoning_effort: 'high' }),
     }));
   });
 

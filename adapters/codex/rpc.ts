@@ -12,12 +12,18 @@ export class CodexRpc {
   private nextId = 0;
   private pending = new Map<number, { resolve: (result: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private closed = false;
+  private readonly drained: Promise<void>;
+  private readonly exited: Promise<void>;
+  private shutdownTask?: Promise<void>;
   onPacket: (packet: Packet) => void = () => {};
   onClose: (error: Error) => void = () => {};
 
   constructor(env: NodeJS.ProcessEnv, stderr: (text: string) => void) {
     this.child = spawn('codex', ['app-server', '--listen', 'stdio://'], { env, stdio: 'pipe' });
-    createInterface({ input: this.child.stdout }).on('line', (line) => {
+    this.exited = new Promise<void>((resolve) => { this.child.once('exit', () => resolve()); });
+    const lines = createInterface({ input: this.child.stdout });
+    this.drained = new Promise<void>((resolve) => { lines.once('close', resolve); });
+    lines.on('line', (line) => {
       let packet: Packet;
       try { packet = JSON.parse(line); } catch { this.fail(new Error('invalid JSON from Codex app-server')); return; }
       if (!packet || typeof packet !== 'object' || Array.isArray(packet)) {
@@ -35,7 +41,9 @@ export class CodexRpc {
     this.child.stderr.on('data', (data) => stderr(data.toString()));
     this.child.stdin.on('error', (error) => this.fail(error));
     this.child.on('error', (error) => this.fail(error));
-    this.child.on('exit', (code) => this.fail(new Error(`Codex app-server exited (${code})`)));
+    this.child.on('exit', (code) => {
+      if (!this.closed) void this.shutdown().then(() => this.onClose(new Error(`Codex app-server exited (${code})`)));
+    });
   }
 
   private fail(error: Error): void {
@@ -63,6 +71,27 @@ export class CodexRpc {
         reject(error);
       }
     });
+  }
+
+  /** Let the stdout reader consume final buffered notifications, with a hard cutoff. */
+  shutdown(): Promise<void> {
+    return this.shutdownTask ??= this.drain();
+  }
+
+  private async drain(): Promise<void> {
+    this.close();
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([Promise.all([this.drained, this.exited]), new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 250);
+      })]);
+    } finally {
+      clearTimeout(timer);
+      this.child.kill('SIGKILL');
+      this.child.stdout.destroy();
+      this.child.stderr.destroy();
+      this.child.stdin.destroy();
+    }
   }
 
   close(error = new Error('Codex connection closed')): void {
