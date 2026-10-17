@@ -308,9 +308,20 @@ export interface UsageReport {
   removedWindows?: { windowId: string; observedAt: number }[];
 }
 
+/** Published stable GitHub release, pinned to its tag object and peeled commit. */
+export interface ReleaseUpdate {
+  id: number; tag: string; name: string; body: string; publishedAt: string; sha: string; tagObject: string;
+}
+export interface UpdateStatus {
+  runtimeSha?: string; sha: string; checkedAt: number; eligible: boolean; reason?: string; fetchError?: string;
+  repository?: string; origin?: string; currentVersion?: string; target?: ReleaseUpdate; releases: ReleaseUpdate[];
+  applying?: boolean; failed?: string;
+}
+
 // Daemon -> UI (WebSocket, JSON). One message per line.
 export type ServerMessage =
-  | { t: 'snapshot'; nodes: NodeView[]; usage?: Usage; usageSources?: UsageSource[]; dnd?: Dnd }
+  | { t: 'update'; update: UpdateStatus }
+  | { t: 'snapshot'; nodes: NodeView[]; update?: UpdateStatus; usage?: Usage; usageSources?: UsageSource[]; dnd?: Dnd }
   | ({ t: 'dnd' } & Dnd)                     // do not disturb changed
   | { t: 'usageSources'; sources: UsageSource[] }
   | { t: 'usage'; usage: Usage }             // a node reported new account-level rate limits
@@ -335,6 +346,8 @@ export interface DigestItem { id: string; title: string; kind: 'needsYou' | 'err
 
 // UI -> Daemon.
 export type ClientMessage =
+  | { t: 'update'; tag: string; sha: string }
+  | { t: 'updateCheck' }
   | { t: 'auth'; token: string; client?: 'app' | 'browser' } // must be the first message; token comes from the ?k= query param of the served UI URL
   | { t: 'nativeNotifyReady'; ok: boolean; error?: string }
   | { t: 'nativeNotifyResult'; requestId: string; ok: boolean; error?: string }
