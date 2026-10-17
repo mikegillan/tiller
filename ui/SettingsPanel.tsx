@@ -80,12 +80,12 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     return <div className="settings-field" key={key}>
       <label htmlFor={id}>{label}</label>
       <div className="settings-control">
-        {field.options || field.kind === 'boolean' ? <select {...props}>
+        {field.options || field.type === 'boolean' ? <select {...props}>
           {!raw && <option value="">Harness default / unset</option>}
           {field.options && raw && !field.options.includes(raw) && <option value={raw}>{raw} (current)</option>}
           {(field.options ?? ['true', 'false']).map((option) => <option key={option} value={option}>{option}</option>)}
-        </select> : field.kind === 'list' ? <textarea {...props} rows={3} /> : <input {...props} type={field.kind === 'number' ? 'number' : 'text'} step="any" />}
-        <button className="btn" type="button" disabled={busy} onClick={() => edit(key, explicit ? null : inputValue(fallback?.value ?? (field.kind === 'boolean' ? false : ''), field))}>{explicit ? 'Reset to inherit' : 'Set here'}</button>
+        </select> : field.type === 'lines' ? <textarea {...props} rows={3} /> : <input {...props} type={field.type === 'number' ? 'number' : 'text'} min={field.min} step={field.integer ? 1 : 'any'} />}
+        <button className="btn" type="button" disabled={busy} onClick={() => edit(key, explicit ? null : inputValue(fallback?.value ?? (field.type === 'boolean' ? false : ''), field))}>{explicit ? 'Reset to inherit' : 'Set here'}</button>
       </div>
       <div className="settings-detail" id={`${id}-help`}>
         {field.help && <div>{field.help}</div>}
