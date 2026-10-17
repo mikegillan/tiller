@@ -68,6 +68,8 @@ For notification levels, `sound` is a banner with a sound and `silent` sends not
 }
 ```
 
+<a id="opt-in-codex-task-defaults"></a>
+
 ## Task defaults on installation
 
 Fresh installations immediately use Tiller’s built-in task defaults. Upgrading
