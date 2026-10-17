@@ -18,8 +18,8 @@ The layer column says where a key may be set: "project, home" means either file,
 
 | Key | Type | Default | Layer | Meaning |
 |---|---|---|---|---|
-| `profiles.<harness>.<profile>.model` | string | harness default, or legacy Claude role | project, home | Model for the selected harness and task profile. Harness: `claude`, `codex`, `pi`; profile: `orchestrator`, `implementation`, `explorer`, `mechanical`, `reviewer`. |
-| `profiles.<harness>.<profile>.effort` | `low`, `medium`, `high`, `xhigh`, `max` | harness default, or legacy Claude role | project, home | Effort for that harness/profile. Codex supports through `xhigh`; `max` is rejected as an invalid config leaf. Unsupported resolved Codex effort is rejected before node or worktree allocation, including queued spawns. |
+| `profiles.<harness>.<profile>.model` | string | See [task defaults](#task-defaults-on-installation) | project, home | Model for the selected harness and task profile. Harness: `claude`, `codex`, `pi`; profile: `orchestrator`, `implementation`, `explorer`, `mechanical`, `reviewer`. |
+| `profiles.<harness>.<profile>.effort` | `low`, `medium`, `high`, `xhigh`, `max` | See [task defaults](#task-defaults-on-installation) | project, home | Effort for that harness/profile. Codex supports through `xhigh`; `max` is rejected as an invalid config leaf. Unsupported resolved Codex effort is rejected before node or worktree allocation, including queued spawns. |
 | `roles.orchestrator.model` | string | Claude's default | project, home | Model for an orchestrator spawned without one. |
 | `roles.orchestrator.effort` | `low`, `medium`, `high`, `xhigh`, `max` | Claude's default | project, home | Effort (passed to claude as `--effort`) for an orchestrator spawned without one. |
 | `roles.worker.model` | string | Claude's default | project, home | Model for a worker, or a node with role `none`, spawned without one. |
