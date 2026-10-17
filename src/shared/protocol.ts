@@ -72,6 +72,16 @@ export interface NodeStatus {
 export const ROLES = ['orchestrator', 'worker', 'none'] as const;
 export type Role = (typeof ROLES)[number];
 
+/** Task behavior, independent of the coordination role and selected harness. */
+export const PROFILES = ['orchestrator', 'implementation', 'explorer', 'mechanical', 'reviewer'] as const;
+export type Profile = (typeof PROFILES)[number];
+export const PROFILE_LABELS: Record<Profile, string> = {
+  orchestrator: 'Orchestrator', implementation: 'Implementation', explorer: 'Explorer', mechanical: 'Mechanical worker', reviewer: 'Reviewer',
+};
+/** Explicit profile wins; otherwise the effective coordination role selects its coherent task default. */
+export const profileFor = (profile: Profile | undefined, parentId: string | null, role?: Role): Profile =>
+  profile ?? ((role ?? (parentId ? 'worker' : 'orchestrator')) === 'orchestrator' ? 'orchestrator' : 'implementation');
+
 /** Values for claude's `--effort`. */
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORTS)[number];
@@ -156,6 +166,8 @@ export interface NodeRecord {
   permissionMode?: string;
   /** Explicit role override; absent means derive from parentId at each launch. */
   role?: Role;
+  /** Resolved task profile at spawn; absent on legacy records, derived from parentId. */
+  profile?: Profile;
   /** The spawn preset (.tiller/agents/<name>.md); its body and tool lists are re-read at each launch. */
   preset?: string;
   /** Set on a node that owns a git worktree (spawned with isolation "worktree"); its cwd is the worktree path. */
@@ -234,6 +246,7 @@ export interface ArchivedNode {
   model?: string;
   effort?: Effort;
   role?: Role;
+  profile?: Profile;
   /** The first prompt the node was spawned with. */
   prompt?: string;
   sessionId?: string;
@@ -293,7 +306,7 @@ export type ClientMessage =
   | { t: 'input'; id: string; data: string }
   | { t: 'resize'; id: string; cols: number; rows: number }
   | { t: 'select'; id: string }                // clears unread
-  | { t: 'spawn'; kind: NodeKind; harness?: Harness; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; base?: string; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); the node must run the claude harness
+  | { t: 'spawn'; kind: NodeKind; harness?: Harness; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; profile?: Profile; parentId?: string | null; isolation?: Isolation; base?: string; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); the node must run the claude harness
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
   | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.mergeStyle style
   | { t: 'restart'; id: string; prompt?: string } // relaunch with a fresh session: clears context, keeps the node and its children; prompt is its first prompt

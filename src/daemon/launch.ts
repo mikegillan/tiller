@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildChildEnv } from './pty.js';
-import type { Role, Worktree } from '../shared/protocol.js';
+import { profileFor, type Harness, type Profile, type Role, type Worktree } from '../shared/protocol.js';
 import type { Preset } from './presets.js';
 
 const HOOK_SCRIPT = fileURLToPath(new URL('./hook.sh', import.meta.url));
@@ -43,6 +43,15 @@ You are a worker spawned by your parent node. Do exactly the task in your brief.
 `,
 } as const;
 
+/** Portable task guidance; restrictions in explicit presets remain enforced by the harness. */
+export const PROFILE_PROMPTS: Record<Profile, string> = {
+  orchestrator: 'Coordinate the task, delegate independent work with clear briefs, and verify results before integration. Use the restricted reviewer preset for Claude reviews; for Codex or Pi reviews use the portable reviewer profile.',
+  implementation: 'Implement the assigned change end to end. Read the surrounding code, preserve existing work, keep edits scoped, and run the relevant checks. Report changes, verification and remaining limitations.',
+  explorer: 'Explore the codebase and available reference material to answer the brief. Work read-only: do not edit files or run commands that change state. Cite concrete files, lines and sources, distinguish findings from assumptions, and report what remains uncertain.',
+  mechanical: 'Perform the narrowly specified mechanical task. Follow existing patterns, keep changes minimal, and verify the result. Ask your parent before expanding the scope or making a design decision the brief does not resolve.',
+  reviewer: 'Review the supplied change against its brief with fresh context. Work read-only: do not fix or edit files. Inspect the diff and relevant code, run appropriate checks where possible, and report concrete findings by severity with file and line references, plus verification and limitations.',
+};
+
 /** A root node orchestrates; a node with a parent works. An explicit role wins. */
 export const roleFor = (role: Role | undefined, parentId: string | null): Role => role ?? (parentId ? 'worker' : 'orchestrator');
 
@@ -53,11 +62,12 @@ export function promptPath(home: string, cwd: string, role: 'orchestrator' | 'wo
 }
 
 /** Read fresh on every launch, so an edited override applies to the next node. */
-function rolePrompt(home: string, cwd: string, role: Role): string | undefined {
+function rolePrompt(home: string, cwd: string, role: Role, harness: Harness = 'claude'): string | undefined {
   if (role === 'none') return undefined;
   const { path } = promptPath(home, cwd, role);
   try { if (path) return readFileSync(path, 'utf8').trim(); } catch { /* unreadable: use the default */ }
-  return DEFAULT_PROMPTS[role].trim();
+  const builtin = DEFAULT_PROMPTS[role].trim();
+  return harness === 'claude' ? builtin : builtin.replace('preset "reviewer"', 'profile "reviewer"');
 }
 
 function worktreeText(o: { worktree?: Worktree; sharesWorktreeOf?: string }): string {
@@ -68,7 +78,7 @@ function worktreeText(o: { worktree?: Worktree; sharesWorktreeOf?: string }): st
   return o.sharesWorktreeOf ? `\n\nYou share the worktree of node ${o.sharesWorktreeOf}; coordinate before editing files it is editing.` : '';
 }
 
-export function systemPrompt(o: { nodeId: string; title: string; parentId: string | null; home: string; cwd: string; role?: Role; worktree?: Worktree; sharesWorktreeOf?: string; sessionDir?: string; preset?: Preset }): string {
+export function systemPrompt(o: { nodeId: string; title: string; parentId: string | null; home: string; cwd: string; harness?: Harness; role?: Role; profile?: Profile; worktree?: Worktree; sharesWorktreeOf?: string; sessionDir?: string; preset?: Preset }): string {
   const preamble = `You are tiller node ${o.nodeId}, titled "${o.title}". Your parent node is ${o.parentId ?? 'none'}.
 
 The tiller MCP tools spawn and control other nodes. Spawning never moves the user's view.
@@ -86,8 +96,9 @@ Never run anything that changes infrastructure or any system outside this machin
 When your task ends, call report_outcome with "succeeded" or "failed" and fill summary, changedFiles, verified (what you ran and its result) and openQuestions. That is your report: your parent is told when it is recorded, so do not also send a summary message. If a completion gate fails, fix what it reports and call report_outcome again.` : ''}${o.sessionDir ? `
 
 Notes that must outlive your context go in $TL_SESSION_DIR (${o.sessionDir}); keep handoff.md there as the current state of the work.` : ''}${worktreeText(o)}`;
-  const role = o.preset?.body || rolePrompt(o.home, o.cwd, roleFor(o.role, o.parentId)); // a preset's body replaces the role text
-  return role ? `${preamble}\n\n# Role\n${role}` : preamble;
+  const role = o.preset?.body || rolePrompt(o.home, o.cwd, roleFor(o.role, o.parentId), o.harness); // a preset's body replaces the role text
+  const profile = roleFor(o.role, o.parentId) === 'none' ? undefined : PROFILE_PROMPTS[profileFor(o.profile, o.parentId, o.role)];
+  return `${preamble}${role ? `\n\n# Role\n${role}` : ''}${profile && !o.preset?.body ? `\n\n# Task profile\n${profile}` : ''}`;
 }
 
 const TERMINAL_BUNDLES: Record<string, string> = {
@@ -109,6 +120,8 @@ export interface LaunchInput {
   home: string;
   cwd: string;
   role?: Role;
+  profile?: Profile;
+  harness?: Harness;
   sessionId: string;
   /** A harness's persisted conversation path, including archived follow-ups. */
   transcriptPath?: string;

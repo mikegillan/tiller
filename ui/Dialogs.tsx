@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { isAgentKind, type ClientMessage, type Harness, type NodeKind, type Role } from '../src/shared/protocol';
+import { PROFILES, PROFILE_LABELS, profileFor, EFFORTS, type Profile, type Effort, isAgentKind, type ClientMessage, type Harness, type NodeKind, type Role } from '../src/shared/protocol';
 import { send } from './conn';
 import type { TauriWindow } from './hooks';
 import { Modal } from './Modal';
@@ -27,7 +27,7 @@ const choiceHarness = (choice: SpawnChoice): Harness | undefined => (choice !== 
 /** What the spawn dialog sends: kind/harness from the choice, with the agent fields only for agent nodes. */
 export function spawnMsg(
   d: { parentId: string | null },
-  form: { choice: SpawnChoice; title: string; cwd: string; prompt: string; model: string; role: Role; defaultRole: Role; isolate: boolean },
+  form: { choice: SpawnChoice; title: string; cwd: string; prompt: string; model: string; role: Role; defaultRole: Role; profile?: Profile; effort?: Effort; isolate: boolean },
 ): ClientMessage {
   const kind = choiceKind(form.choice);
   const agent = isAgentKind(kind);
@@ -36,6 +36,8 @@ export function spawnMsg(
     t: 'spawn', kind, ...(harness ? { harness } : {}),
     title: form.title.trim() || form.choice, cwd: form.cwd.trim(), parentId: d.parentId,
     ...(agent && form.prompt.trim() ? { prompt: form.prompt } : {}),
+    ...(agent && form.profile ? { profile: form.profile } : {}),
+    ...(agent && form.effort ? { effort: form.effort } : {}),
     ...(agent && form.role !== form.defaultRole ? { role: form.role } : {}),
     ...(agent && form.isolate ? { isolation: 'worktree' as const } : {}),
     ...(form.model.trim() ? { model: form.model.trim() } : {}),
@@ -49,14 +51,17 @@ function SpawnDialog({ d }: { d: Spawn }) {
   const [cwd, setCwd] = useState(d.cwd);
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState('');
+  const [chosenProfile, setProfile] = useState<Profile>();
+  const [effort, setEffort] = useState<Effort | ''>('');
   const byPosition: Role = d.parentId ? 'worker' : 'orchestrator';
   const [role, setRole] = useState<Role>(byPosition);
+  const profile = profileFor(chosenProfile, d.parentId, role);
   const [isolate, setIsolate] = useState(false);
   const kind = choiceKind(choice);
   const agent = isAgentKind(kind);
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    send(spawnMsg(d, { choice, title, cwd, prompt, model, role, defaultRole: byPosition, isolate }));
+    send(spawnMsg(d, { choice, title, cwd, prompt, model, role, profile, effort: effort || undefined, defaultRole: byPosition, isolate }));
     expectSpawn();
     close();
   };
@@ -65,7 +70,7 @@ function SpawnDialog({ d }: { d: Spawn }) {
       <form className="form" onSubmit={submit}>
         <div className="seg" role="radiogroup" aria-label="Kind">
           {(['claude', 'pi', 'codex', 'terminal'] as const).map((k) => (
-            <button type="button" key={k} role="radio" aria-checked={choice === k} className={choice === k ? 'on' : ''} onClick={() => setChoice(k)}>{k}</button>
+            <button type="button" key={k} role="radio" aria-checked={choice === k} className={choice === k ? 'on' : ''} onClick={() => { setChoice(k); if (k === 'codex' && effort === 'max') setEffort(''); }}>{k}</button>
           ))}
         </div>
         <label>Title<input placeholder={choice} value={title} onChange={(e) => setTitle(e.target.value)} autoFocus /></label>
@@ -74,8 +79,10 @@ function SpawnDialog({ d }: { d: Spawn }) {
           {IN_APP && <button type="button" className="btn" onClick={() => void pickFolder(cwd).then((p) => p && setCwd(p)).catch(() => {})}>Choose…</button>}
         </div></label>
         {agent && <label>Initial prompt<textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional" /></label>}
+        {agent && <label>Task profile<select value={profile} onChange={(e) => setProfile(e.target.value as Profile)}>{PROFILES.map((p) => <option key={p} value={p}>{PROFILE_LABELS[p]}</option>)}</select></label>}
         <label>Model<input className="mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="Default" /></label>
-        {agent && <label>Role<select value={role} onChange={(e) => setRole(e.target.value as Role)}>{(['orchestrator', 'worker', 'none'] as const).map((r) => <option key={r}>{r}</option>)}</select></label>}
+        {agent && <label>Effort<select value={effort} onChange={(e) => setEffort(e.target.value as Effort | '')}><option value="">Default</option>{EFFORTS.filter((e) => choice !== 'codex' || e !== 'max').map((e) => <option key={e}>{e}</option>)}</select></label>}
+        {agent && <label>Coordination role<select value={role} onChange={(e) => setRole(e.target.value as Role)}>{(['orchestrator', 'worker', 'none'] as const).map((r) => <option key={r}>{r}</option>)}</select></label>}
         {agent && (
           <label className="check"><input type="checkbox" checked={isolate} onChange={(e) => setIsolate(e.target.checked)} />Isolate in a git worktree
             <small>Its branch is created from the current checkout's HEAD.</small></label>

@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { EFFORTS, ISOLATIONS } from '../shared/protocol.js';
+import { EFFORTS, ISOLATIONS, type Harness, type Profile, type Role } from '../shared/protocol.js';
 import { homeDir } from './home.js';
 
 export const MERGE_STYLES = ['merge', 'squash', 'ff-only'] as const;
@@ -16,8 +16,16 @@ export type NotifyLevel = (typeof NOTIFY_LEVELS)[number];
 const QUIET_HOURS = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
 
 const RoleDefaults = z.object({ model: z.string().min(1).optional(), effort: z.enum(EFFORTS).optional() }).strict();
+const ProfileDefaults = z.object({ orchestrator: RoleDefaults.optional(), implementation: RoleDefaults.optional(), explorer: RoleDefaults.optional(), mechanical: RoleDefaults.optional(), reviewer: RoleDefaults.optional() }).strict();
+const CodexProfileDefaults = ProfileDefaults.superRefine((profiles, ctx) => {
+  for (const [profile, defaults] of Object.entries(profiles)) {
+    if (defaults?.effort === 'max') ctx.addIssue({ code: 'custom', path: [profile, 'effort'], message: 'unsupported Codex effort: max (use low, medium, high or xhigh)' });
+  }
+});
 const Level = z.enum(NOTIFY_LEVELS).optional();
 const ConfigFile = z.object({
+  /** Per-harness task profile defaults; unset preserves the harness's own defaults. */
+  profiles: z.object({ claude: ProfileDefaults.optional(), codex: CodexProfileDefaults.optional(), pi: ProfileDefaults.optional() }).strict().optional(),
   /** model and effort for a claude node spawned without them, by role (none counts as worker). */
   roles: z.object({ orchestrator: RoleDefaults.optional(), worker: RoleDefaults.optional() }).strict().optional(),
   /**
@@ -99,6 +107,21 @@ export type Key = keyof Flat;
 
 /** Every key of the schema with its built-in default; undefined means none. Adding a key is a schema line and a line here. */
 const DEFAULTS = {
+  'profiles.claude.orchestrator.model': undefined, 'profiles.claude.orchestrator.effort': undefined,
+  'profiles.claude.implementation.model': undefined, 'profiles.claude.implementation.effort': undefined,
+  'profiles.claude.explorer.model': undefined, 'profiles.claude.explorer.effort': undefined,
+  'profiles.claude.mechanical.model': undefined, 'profiles.claude.mechanical.effort': undefined,
+  'profiles.claude.reviewer.model': undefined, 'profiles.claude.reviewer.effort': undefined,
+  'profiles.codex.orchestrator.model': undefined, 'profiles.codex.orchestrator.effort': undefined,
+  'profiles.codex.implementation.model': undefined, 'profiles.codex.implementation.effort': undefined,
+  'profiles.codex.explorer.model': undefined, 'profiles.codex.explorer.effort': undefined,
+  'profiles.codex.mechanical.model': undefined, 'profiles.codex.mechanical.effort': undefined,
+  'profiles.codex.reviewer.model': undefined, 'profiles.codex.reviewer.effort': undefined,
+  'profiles.pi.orchestrator.model': undefined, 'profiles.pi.orchestrator.effort': undefined,
+  'profiles.pi.implementation.model': undefined, 'profiles.pi.implementation.effort': undefined,
+  'profiles.pi.explorer.model': undefined, 'profiles.pi.explorer.effort': undefined,
+  'profiles.pi.mechanical.model': undefined, 'profiles.pi.mechanical.effort': undefined,
+  'profiles.pi.reviewer.model': undefined, 'profiles.pi.reviewer.effort': undefined,
   'roles.orchestrator.model': undefined, 'roles.orchestrator.effort': undefined, 'roles.worker.model': undefined, 'roles.worker.effort': undefined,
   'approvals.close': 'never', 'approvals.merge': false,
   'worktrees.isolation': 'none', 'worktrees.branchPrefix': 'tl/', 'worktrees.include': undefined, 'worktrees.mergeStyle': 'merge', 'worktrees.setup': [], 'worktrees.teardown': [],
@@ -172,4 +195,11 @@ export function loadConfig(cwd: string | null, home = homeDir()): Config {
   }
   const { gate, ...rest } = config as Resolved;
   return gate.command ? { ...rest, gate: gate as Config['gate'] } : rest;
+}
+
+/** Profile settings win per field over legacy role settings, which apply to Claude only. */
+export function profileDefaults(config: Config, harness: Harness, profile: Profile, role: Role) {
+  const selected = config.profiles[harness][profile];
+  const legacy = harness === 'claude' ? config.roles[role === 'orchestrator' ? 'orchestrator' : 'worker'] : {};
+  return { model: selected.model ?? legacy.model, effort: selected.effort ?? legacy.effort };
 }

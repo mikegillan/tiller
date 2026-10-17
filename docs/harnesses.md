@@ -18,7 +18,7 @@ The spawn dialog and MCP `spawn` tool also support Codex (`kind: "agent", harnes
 The bridge uses Codex app-server with Codex's own sandbox and approval settings. It provides
 streamed terminal output, inbox delivery and steering, lifecycle/context reporting, readable
 transcripts, resume, restart and follow-up. Follow-up forks the native Codex thread. Claude's
-role model defaults are not applied, and Claude-specific permission modes and restricted presets
+role model defaults are not applied; `profiles.codex.<profile>` supplies optional model/effort defaults, and Claude-specific permission modes and restricted presets
 are rejected. Codex's native history must remain available for resume/follow-up.
 
 The terminal pane runs the real Codex CLI connected to the bridge's app-server, with native
@@ -58,7 +58,7 @@ select the harness explicitly. Legacy `kind: "claude"` remains Claude Code; term
 not take a harness.
 
 Tiller's `roles.*.model` and `roles.*.effort` defaults apply only to Claude Code. A Pi node uses
-the model from the spawn (or its preset), or else Pi's own default from
+the model from the spawn, then its preset, then `profiles.pi.<profile>.model`, or else Pi's own default from
 `~/.pi/agent/settings.json`. Use model names the selected CLI accepts; `pi --list-models` lists
 Pi's. An explicit `effort` becomes Pi's `--thinking`.
 
@@ -145,3 +145,9 @@ unsupported capabilities, and reject unsupported restrictions in the adapter's `
 or implement arbitrary executable configuration as a shortcut.
 
 See [the Pi adapter](../adapters/pi/README.md) for protocol mapping, compatibility and tests.
+
+## Task profiles across harnesses
+
+`profile` is independent of both `harness` and the coordination `role`. The effective coordination role selects the default profile: `orchestrator` maps to `orchestrator`, `worker`/`none` to `implementation` (normally root and child respectively). The spawn UI offers all five profiles, including **Mechanical worker** (`mechanical`). `tl new --harness codex --profile implementation` and MCP `spawn` with `profile: "reviewer"` use the same resolution. Model and effort defaults are configured separately per harness and profile in `profiles.<harness>.<profile>`; explicit spawn fields win over presets, which win over config. See [config.md](config.md) for precedence and recommended opt-in Codex defaults. Legacy `roles` defaults remain Claude-only.
+
+`reviewer` and `explorer` profiles provide read-only instructions supported by all harnesses. They do not translate or remove Claude tool restrictions: explicit restricted presets (including the named `reviewer` and `researcher`) are still rejected by Codex/Pi, and the existing cross-harness delegation guard remains in force. Use the portable profile when instruction-level read-only work is sufficient; use the restricted preset on Claude when its enforced tool policy is required.

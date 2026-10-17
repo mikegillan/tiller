@@ -1,4 +1,4 @@
-import { finished, type GitState, type NodeView, type Outcome } from '../src/shared/protocol';
+import { PROFILE_LABELS, profileFor, isAgentKind, finished, type GitState, type NodeView, type Outcome } from '../src/shared/protocol';
 import { ctxLevel, fmtTokens, shortEffort, shortModel } from '../src/shared/format';
 import { fmtUsd } from '../src/shared/spend';
 import { KIND_LABEL, type StatusKind } from './tree';
@@ -38,7 +38,7 @@ export const DiffCounts = ({ git: g }: { git: GitState }) =>
 /** `⎇ tl/n-3f2a · +42 −18 · ↑2 · ●1 · opus 5.5 · high · [bar] 42% · $0.42 · Σ$3.10`; null when the node reports none of it. `subtree`: spend with descendants. */
 export function NodeMeta({ node, detail, subtree }: { node: NodeView; detail?: boolean; subtree?: number }) {
   const s = node.status, wt = node.worktree, g = s.git;
-  const model = shortModel(s.model ?? node.model);
+  const model = shortModel(s.model ?? node.model), effort = s.effort ?? node.effort;
   const parts = [
     wt && <span className="branch" title={`branch ${wt.branch} from ${wt.base}`}>⎇ {wt.branch}</span>,
     g && g.additions + g.deletions > 0 && <DiffCounts git={g} />,
@@ -46,8 +46,9 @@ export function NodeMeta({ node, detail, subtree }: { node: NodeView; detail?: b
     g && g.dirty > 0 && <span title={`${g.dirty} uncommitted file(s) in the worktree`}>●{g.dirty}</span>,
     g?.mergedAt && <span title={`merged into ${g.base}`}>merged</span>,
     wt?.missing && <span className="warn" title="the worktree directory is gone; resume is refused">missing</span>,
+    isAgentKind(node.kind) && <span title="task profile">{PROFILE_LABELS[profileFor(node.profile, node.parentId, node.role)]}</span>,
     model && <span>{model}</span>,
-    s.effort && <span>{shortEffort(s.effort)}</span>,
+    effort && <span>{shortEffort(effort)}</span>,
     s.contextPct !== undefined && <CtxBar pct={s.contextPct} />,
     detail && s.contextTokens && s.contextWindow ? <span>{fmtTokens(s.contextTokens)}/{fmtTokens(s.contextWindow)}</span> : null,
     node.spentUsd !== undefined && <span title="spent, all sessions">{fmtUsd(node.spentUsd)}</span>,

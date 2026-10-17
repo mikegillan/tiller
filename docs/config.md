@@ -4,7 +4,7 @@ Tiller reads JSON config from two files: the project file `<repo>/.tiller/config
 
 ## Resolution
 
-Each key resolves on its own, in this order: an explicit argument on the spawn (where the key has one), then the project file, then the home file, then the built-in default. The project file is the one in the node's directory; for a node in its own git worktree it is the main checkout's. Both files are read on every use, so an edit applies without restarting the daemon.
+Each config key resolves independently: project file, then home file, then built-in default. For spawn model and effort, each field resolves in this order: explicit spawn argument, preset frontmatter, `profiles.<harness>.<profile>` config, legacy `roles` config (Claude only), then the harness’s own default. A home profile setting therefore wins over a project legacy role setting; project beats home within the same config key. Profile selection resolves from the explicit spawn argument, then preset, then effective coordination role (`orchestrator` → `orchestrator`, `worker`/`none` → `implementation`). Coordination role resolves separately: explicit argument, preset, then root `orchestrator` or child `worker`. The project file is the one in the node's directory; for a node in its own git worktree it is the main checkout's. Both files are read on every use, so an edit applies without restarting the daemon.
 
 Keys in the `daemon` group are daemon-wide and come from the home file only. A `daemon` group in a project file is ignored with a warning.
 
@@ -18,6 +18,8 @@ The layer column says where a key may be set: "project, home" means either file,
 
 | Key | Type | Default | Layer | Meaning |
 |---|---|---|---|---|
+| `profiles.<harness>.<profile>.model` | string | harness default, or legacy Claude role | project, home | Model for the selected harness and task profile. Harness: `claude`, `codex`, `pi`; profile: `orchestrator`, `implementation`, `explorer`, `mechanical`, `reviewer`. |
+| `profiles.<harness>.<profile>.effort` | `low`, `medium`, `high`, `xhigh`, `max` | harness default, or legacy Claude role | project, home | Effort for that harness/profile. Codex supports through `xhigh`; `max` is rejected as an invalid config leaf. Unsupported resolved Codex effort is rejected before node or worktree allocation, including queued spawns. |
 | `roles.orchestrator.model` | string | Claude's default | project, home | Model for an orchestrator spawned without one. |
 | `roles.orchestrator.effort` | `low`, `medium`, `high`, `xhigh`, `max` | Claude's default | project, home | Effort (passed to claude as `--effort`) for an orchestrator spawned without one. |
 | `roles.worker.model` | string | Claude's default | project, home | Model for a worker, or a node with role `none`, spawned without one. |
@@ -65,3 +67,25 @@ For notification levels, `sound` is a banner with a sound and `silent` sends not
   "limits": { "stallMinutes": 10 }
 }
 ```
+
+## Opt-in Codex task defaults
+
+No profile model or effort is forced on existing users. Existing `roles` settings continue to apply only to Claude; they never supply Claude model IDs to Codex or Pi. Model IDs in explicit spawn arguments and presets are passed to the selected harness unchanged, so use a compatible preset/model. Resolved profile, model and effort are retained through resume, restart and follow-up; config edits affect new spawns. The UI metadata and `tl list` show the selected profile and available model/effort (live harness reports take precedence for display).
+
+To opt into the recommended Codex choices, add this to either config file:
+
+```json
+{
+  "profiles": {
+    "codex": {
+      "orchestrator": { "model": "gpt-6-astra", "effort": "medium" },
+      "implementation": { "model": "gpt-6.1-sol", "effort": "medium" },
+      "explorer": { "model": "gpt-6-luna", "effort": "high" },
+      "mechanical": { "model": "gpt-6-luna", "effort": "low" },
+      "reviewer": { "model": "gpt-6.1-sol", "effort": "high" }
+    }
+  }
+}
+```
+
+For example, `tl config --cwd /path/to/repo` includes `profiles.codex.reviewer.model` and the file that supplied it. A project can override just its effort while retaining the home model. A spawn’s explicit model can override its preset model while effort still comes from that preset or profile config.

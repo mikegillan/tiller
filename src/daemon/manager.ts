@@ -4,8 +4,8 @@ import { stripVTControlCharacters } from 'node:util';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { harnessFor, isAgentKind, NEEDS_YOU_STATES, type Harness, type ArchivedNode, type Diff, type DigestItem, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
-import { loadConfig, type Config, type MergeStyle } from './config.js';
+import { profileFor, type Profile, harnessFor, isAgentKind, NEEDS_YOU_STATES, type Harness, type ArchivedNode, type Diff, type DigestItem, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
+import { profileDefaults, loadConfig, type Config, type MergeStyle } from './config.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
 import { roleFor, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
@@ -65,6 +65,7 @@ export interface SpawnRequest {
   effort?: Effort;
   permissionMode?: string;
   role?: Role;
+  profile?: Profile;
   parentId?: string | null;
   isolation?: Isolation;
   /** Worktree isolation only: the branch the worktree forks from and merges into, created at the cwd's HEAD if absent. */
@@ -225,7 +226,8 @@ export class NodeManager extends EventEmitter {
     const rec = this.registry.get(id), rt = this.runtimes.get(id);
     const status = rt?.status;
     if (!rec || !rt || !status) return undefined;
-    const s = status.model || !rec.model ? status : { ...status, model: rec.model };
+    const withModel = status.model || !rec.model ? status : { ...status, model: rec.model };
+    const s = withModel.effort || !rec.effort ? withModel : { ...withModel, effort: rec.effort };
     const { git, outcome, gate } = rt;
     const shown = gate?.state === 'running' ? { ...s, activity: `gate: ${gate.command}` } : s;
     return { ...rec, status: git ? { ...shown, git } : shown, unread: !!rt.unread, ...(outcome ? { outcome } : {}), ...(gate ? { gate: gate.state } : {}) };
@@ -320,7 +322,7 @@ export class NodeManager extends EventEmitter {
 
   /**
    * Spawn a node. Each of role, model, effort, permissionMode and isolation comes from the request, else its preset,
-   * else: model and effort from the project config's defaults for its role; permissionMode from an agent parent's own
+   * else: model and effort from the harness/profile config, then legacy Claude role defaults; permissionMode from an agent parent's own
    * mode unless that is bypassPermissions; isolation from the config for a claude node whose role is worker or none.
    * Isolation "worktree" gives the node <main checkout>/.claude/worktrees/<id> on branch <prefix><id>, branched from its
    * base (see wt.pickBase: req.base, else the cwd's HEAD branch, else a new task branch); the repo must have a commit
@@ -342,8 +344,10 @@ export class NodeManager extends EventEmitter {
     if (req.preset && !adapter) throw new Error('a preset is for agent nodes only');
     const p: Partial<Preset> = req.preset ? loadPreset(req.preset, dir, this.home) : {};
     const role = req.role ?? p.role, isOrchestrator = roleFor(role, parentId) === 'orchestrator';
-    // Legacy role defaults name Claude models; other CLIs keep their own defaults unless explicitly configured by a preset/request.
-    const defaults = adapter?.id === 'claude' ? config.roles[isOrchestrator ? 'orchestrator' : 'worker'] : {};
+    const profile = adapter ? profileFor(req.profile ?? p.profile, parentId, role) : undefined;
+    const defaults: Pick<NodeRecord, 'model' | 'effort'> = adapter ? profileDefaults(config, adapter.id, profile!, roleFor(role, parentId)) : {};
+    const model = req.model ?? p.model ?? defaults.model, effort = req.effort ?? p.effort ?? defaults.effort;
+    if (adapter?.id === 'codex' && effort && !['low', 'medium', 'high', 'xhigh'].includes(effort)) throw new Error(`unsupported Codex effort: ${effort}`);
     const parent = parentId ? this.registry.get(parentId) : undefined;
     // Other harnesses cannot carry Claude restrictions. Only the human, a same-harness parent,
     // or an unrestricted Claude parent may select them. This is not a process sandbox.
@@ -381,7 +385,7 @@ export class NodeManager extends EventEmitter {
     }
     const rec = this.registry.create({ // the resolved fields, so restart keeps them
       parentId, kind: req.kind, ...(req.harness ? { harness: req.harness } : {}), title: req.title, cwd: req.cwd,
-      model: req.model ?? p.model ?? defaults.model, effort: req.effort ?? p.effort ?? defaults.effort, permissionMode, role, preset: req.preset,
+      model, effort, permissionMode, role, profile, preset: req.preset,
       sessionId: adapter ? req.followup?.sessionId ?? randomUUID() : undefined,
       ...(adapter && adapter.id !== 'claude' && req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
       ...(adapter && adapter.id !== 'claude' && req.followup?.previousSessions ? { previousSessions: req.followup.previousSessions } : {}),
@@ -442,7 +446,7 @@ export class NodeManager extends EventEmitter {
     const cwd = usableCwd(a.cwd);
     if (!cwd) throw new Error(`refused: ${a.cwd} no longer exists`);
     const parentId = a.parentId && this.registry.get(a.parentId) ? a.parentId : null;
-    return this.spawn({ kind: a.harness && a.harness !== 'claude' ? 'agent' : 'claude', ...(a.harness ? { harness: a.harness } : {}), title: title || a.title, cwd, prompt, model: a.model, effort: a.effort, role: a.role, parentId, isolation: 'none', byHuman: true, followup: a });
+    return this.spawn({ kind: a.harness && a.harness !== 'claude' ? 'agent' : 'claude', ...(a.harness ? { harness: a.harness } : {}), title: title || a.title, cwd, prompt, model: a.model, effort: a.effort, role: a.role, profile: a.profile, parentId, isolation: 'none', byHuman: true, followup: a });
   }
 
   /** A live or archived Claude node's conversation in one of its sessions (default: the current one). */
@@ -905,8 +909,8 @@ export class NodeManager extends EventEmitter {
       rec = this.registry.update(id, { transcriptPath: adapter.prepareTranscript(rec, sessionDir, resume) })!;
     }
     const input: LaunchInput = {
-      nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path,
-      title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, sessionId: rec.sessionId ?? '',
+      nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path, harness: adapter?.id,
+      title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, profile: rec.profile, sessionId: rec.sessionId ?? '',
       resume, forkSession, transcriptPath: rec.transcriptPath, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
       preset: rec.preset ? loadPreset(rec.preset, this.projectDir(rec), this.home) : undefined,
     };

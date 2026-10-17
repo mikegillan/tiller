@@ -30,7 +30,7 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
   tl reload                                           restart the daemon on the current code and resume the nodes that were live
   tl autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
   tl doctor [--no-app] [--harness claude|pi]          check what tiller needs (bin/setup --check) and print the fix for anything missing
-  tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--harness claude|pi|codex] [--worktree [--base B]]
+  tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--profile P] [--harness claude|pi|codex] [--worktree [--base B]]
                                                       start an agent node and show it in the app; --harness picks the agent CLI
   tl ps | list                                        show nodes
   tl usage                                            show account-level Claude usage (5-hour and 7-day windows) as nodes last reported it
@@ -55,7 +55,7 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
                                                       title, first prompt or last message
   tl transcript <id> [--session SID]                  a live or closed node's conversation; SID picks one of its earlier sessions
   tl followup <id> --prompt P [--title T]             continue a closed node's session as a new node that starts on P
-  tl spawn --kind claude|agent|terminal [--harness claude|pi|codex] --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--worktree [--base B]] [--preset NAME] [--request-id ID]
+  tl spawn --kind claude|agent|terminal [--harness claude|pi|codex] --title T --cwd PATH [--prompt P] [--model M] [--effort low|medium|high|xhigh|max] [--permission-mode M] [--role orchestrator|worker|none] [--profile orchestrator|implementation|explorer|mechanical|reviewer] [--worktree [--base B]] [--preset NAME] [--request-id ID]
            [--after ID,ID] [--after-success ID,ID] [--now] [--fork ID]
                                                       --harness pi|codex implies --kind agent when --kind is omitted; --after / --after-success
                                                       arm the node until those finish a turn or report
@@ -111,7 +111,7 @@ const { values: f, positionals: pos } = parseArgs({
   args: rest, allowPositionals: true,
   options: {
     kind: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' },
-    'permission-mode': { type: 'string' }, role: { type: 'string' }, harness: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
+    'permission-mode': { type: 'string' }, role: { type: 'string' }, profile: { type: 'string' }, harness: { type: 'string' }, new: { type: 'boolean' }, 'request-id': { type: 'string' }, force: { type: 'boolean' }, lines: { type: 'string' },
     worktree: { type: 'boolean' }, 'no-app': { type: 'boolean' }, since: { type: 'string' }, follow: { type: 'boolean' }, 'keep-branch': { type: 'boolean' }, discard: { type: 'boolean' }, detached: { type: 'boolean' }, close: { type: 'boolean' }, stat: { type: 'boolean' }, preset: { type: 'string' },
     after: { type: 'string', multiple: true }, 'after-success': { type: 'string', multiple: true }, now: { type: 'boolean' },
     fork: { type: 'string' }, root: { type: 'string' }, session: { type: 'string' }, base: { type: 'string' },
@@ -148,7 +148,7 @@ switch (cmd) {
   case 'new': {
     if (!pos[0]) fail(usage());
     const harness: Harness | undefined = f.harness === 'claude' ? undefined : f.harness as Harness | undefined;
-    const { data } = await call('spawn', { kind: harness ? 'agent' : 'claude', ...(harness ? { harness } : {}), title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, effort: f.effort, role: f.role, isolation: isolation(), base: f.base, preset: f.preset }, false);
+    const { data } = await call('spawn', { kind: harness ? 'agent' : 'claude', ...(harness ? { harness } : {}), title: pos.join(' '), cwd: resolve(f.cwd ?? process.cwd()), prompt: f.prompt, model: f.model, effort: f.effort, role: f.role, profile: f.profile, isolation: isolation(), base: f.base, preset: f.preset }, false);
     console.log(`started ${pos.join(' ')} (${data.nodeId})`);
     await call('select', { nodeId: data.nodeId }, false);
     if (existsSync(APP)) openApp(daemonPort(), data.nodeId);
@@ -162,7 +162,7 @@ switch (cmd) {
     break;
   case 'presets':
     for (const p of listPresets(realpathSync(resolve(f.cwd ?? process.cwd())), home)) {
-      const fields = 'error' in p ? `error: ${p.error}` : Object.entries({ model: p.model, effort: p.effort, permissionMode: p.permissionMode, isolation: p.isolation, role: p.role, tools: p.tools?.join(','), disallowedTools: p.disallowedTools?.join(','), maxTurns: p.maxTurns })
+      const fields = 'error' in p ? `error: ${p.error}` : Object.entries({ model: p.model, effort: p.effort, permissionMode: p.permissionMode, isolation: p.isolation, role: p.role, profile: p.profile, tools: p.tools?.join(','), disallowedTools: p.disallowedTools?.join(','), maxTurns: p.maxTurns })
         .flatMap(([k, v]) => (v === undefined ? [] : [`${k}=${v}`])).join(' ');
       console.log([p.name, p.source, fields].join('\t'));
     }
