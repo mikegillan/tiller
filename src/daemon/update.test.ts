@@ -169,6 +169,19 @@ describe('release checkout', () => {
     expect(readFileSync(lock, 'utf8')).toBe('interrupted');
     expect(git(work, 'rev-parse', 'HEAD')).toBe(s.sha);
   });
+  it('includes keg-only Homebrew cargo in forward and rollback app builds', async () => {
+    mkdirSync(join(seed, 'src-tauri')); commit('src-tauri/config', 'old'); commit('.gitignore', 'src-tauri/target/\n'); release('v0.1.1');
+    git(work, 'merge', '--ff-only', (await checkUpdate(work, source)).target!.sha);
+    mkdirSync(join(work, 'src-tauri/target/release/bundle/macos/Tiller.app'), { recursive: true });
+    commit('src-tauri/config', 'new'); release('v0.1.2');
+    const s = await checkUpdate(work, source), bin = join(dir, 'bin'); mkdirSync(bin);
+    const paths = join(dir, 'paths'), failed = join(dir, 'failed');
+    writeFileSync(join(bin, 'npm'), `#!/bin/sh\necho "$PATH" >> '${paths}'\nif [ ! -e '${failed}' ]; then touch '${failed}'; exit 1; fi\n`); chmodSync(join(bin, 'npm'), 0o755);
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+    await expect(applyUpdate({ repo: work, log: join(dir, 'log'), expected: s, source, env })).rejects.toThrow('npm run app:build failed');
+    expect(readFileSync(paths, 'utf8').trim().split('\n')).toEqual([`/opt/homebrew/opt/rustup/bin:${env.PATH}`, `/opt/homebrew/opt/rustup/bin:${env.PATH}`]);
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(s.sha);
+  });
   it('uses a checkout-wide lock and rejects racing applies', async () => {
     commit('two'); release('v0.1.1');
     const helpers = vi.fn((_s: import('../shared/protocol.js').UpdateStatus, _exit: (code: number | null) => void) => join(dir, 'update.log'));

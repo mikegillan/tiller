@@ -151,7 +151,11 @@ export async function applyUpdate(o: { repo: string; log: string; expected: Upda
   let restartAttempted = false;
   const run = async (cmd: string, args: string[], timeout = 60_000) => {
     say(`running ${cmd} ${args.join(' ')}`);
-    try { const r = await exec(cmd, args, { cwd: o.repo, env: o.env ?? process.env, timeout, maxBuffer: 16 * 1024 * 1024 }); say(r.stdout + r.stderr); }
+    const env = o.env ?? process.env;
+    // Homebrew rustup is keg-only; match bin/tl-app for forward and rollback app builds.
+    const runEnv = cmd === 'npm' && args[0] === 'run' && args[1] === 'app:build'
+      ? { ...env, PATH: `/opt/homebrew/opt/rustup/bin:${env.PATH ?? ''}` } : env;
+    try { const r = await exec(cmd, args, { cwd: o.repo, env: runEnv, timeout, maxBuffer: 16 * 1024 * 1024 }); say(r.stdout + r.stderr); }
     catch (e) { const err = e as Error & { stdout?: string; stderr?: string }; say((err.stdout ?? '') + (err.stderr ?? '')); throw new Error(`${cmd} ${args.join(' ')} failed: ${err.message}`); }
   };
   try {
