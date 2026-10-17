@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { configEntries } from './config.js';
+import { configEntries, loadConfig, profileDefaults } from './config.js';
 import { NodeManager } from './manager.js';
 import { startServer, type DaemonServer } from './server.js';
 import { settingsSnapshot, updateSettings } from './settings.js';
@@ -48,7 +48,7 @@ describe('settings persistence', () => {
     write({ limits: { maxDepth: -1, maxChildren: 4 }, roles: { worker: { effort: 'invalid' } }, custom: 'kept' });
     const s = snapshot();
     const runtime = configEntries(project, home), homeRuntime = configEntries(null, home);
-    for (const key of Object.keys(runtime) as (keyof typeof runtime)[]) {
+    for (const key of Object.keys(runtime).filter(key => !key.startsWith('profiles.')) as (keyof typeof runtime)[]) {
       expect(s.entries[key]).toEqual(runtime[key]);
       expect(s.inherited[key]).toEqual(homeRuntime[key]);
     }
@@ -86,6 +86,13 @@ describe('settings persistence', () => {
     }));
     write({ profiles: { claude: { implementation: { model: '', effort: 'high' } } }, roles: { worker: { model: 'project-worker' }, orchestrator: { effort: 'low' } } });
     const s = snapshot();
+    const config = loadConfig(project, home);
+    for (const harness of ['claude', 'pi', 'codex'] as const) {
+      for (const profile of ['orchestrator', 'implementation', 'explorer', 'mechanical', 'reviewer'] as const) {
+        const runtime = profileDefaults(config, harness, profile, profile === 'orchestrator' ? 'orchestrator' : 'worker');
+        for (const leaf of ['model', 'effort'] as const) expect(s.entries[`profiles.${harness}.${profile}.${leaf}`].value).toEqual(runtime[leaf]);
+      }
+    }
     expect(s.entries['profiles.claude.implementation.model']).toEqual({ value: 'home-profile', source: join(home, 'config.json') });
     expect(s.entries['profiles.claude.implementation.effort']).toEqual({ value: 'high', source: file() });
     expect(s.inherited['profiles.claude.implementation.effort']).toEqual({ value: 'medium', source: join(home, 'config.json') });

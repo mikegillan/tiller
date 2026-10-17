@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import type http from 'node:http';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import { SETTINGS_EFFORTS, SETTINGS_FIELDS, SETTINGS_PROFILES, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
+import { SETTINGS_FIELDS, SETTINGS_PROFILES, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
 import { ConfigFile, DEFAULTS, configEntries } from './config.js';
 import type { NodeManager } from './manager.js';
 import { readBody } from './util.js';
@@ -14,21 +14,11 @@ export class SettingsError extends Error {
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 const missing = (e: unknown) => (e as NodeJS.ErrnoException).code === 'ENOENT';
 const keys = SETTINGS_FIELDS.map(f => f.key);
-const get = (data: Record<string, unknown>, key: string): unknown => key.split('.').reduce<unknown>((v, k) => object(v) && Object.hasOwn(v, k) ? v[k] : undefined, data);
 function validate(key: string, value: unknown): void {
   if (!keys.includes(key)) throw new SettingsError(400, `Unknown settings field: ${key}`);
   if (value === null) return;
-  const parts = key.split('.');
-  let schema: z.ZodType = ConfigFile;
-  if (parts[0] === 'profiles') {
-    schema = parts[3] === 'model' ? z.string().min(1) : z.enum(SETTINGS_EFFORTS[parts[1] as keyof typeof SETTINGS_EFFORTS]);
-  } else {
-    for (const part of parts) {
-      while (schema instanceof z.ZodOptional) schema = schema.unwrap() as z.ZodType;
-      schema = (schema as z.ZodObject).shape[part];
-    }
-  }
-  const result = schema.safeParse(value);
+  const data = key.split('.').reduceRight<unknown>((v, part) => ({ [part]: v }), value);
+  const result = ConfigFile.safeParse(data);
   if (!result.success) throw new SettingsError(400, `${key}: ${result.error.issues.map(i => i.message).join('; ')}`);
 }
 function checkPath(path: string): void {
@@ -86,29 +76,15 @@ function target(manager: NodeManager, scope: SettingsScope, nodeId?: string) {
 export function settingsSnapshot(manager: NodeManager, scope: SettingsScope, nodeId?: string): SettingsSnapshot {
   const { path, projectPath, homePath } = target(manager, scope, nodeId);
   const layer = read(path);
-  const lower = scope === 'project' ? read(homePath).data : {};
+  if (scope === 'project') read(homePath); // Fail clearly on unreadable or malformed inherited files.
   const home = dirname(homePath);
   const effective = configEntries(scope === 'project' ? projectPath : null, home);
   const below = scope === 'project' ? configEntries(null, home) : null;
   const inherited: SettingsSnapshot['inherited'] = {}, entries: SettingsSnapshot['entries'] = {};
-  // Before the profile schema is integrated, validate just those leaves independently.
-  // Once configEntries includes them, use its results, including invalid-layer filtering.
-  const profileValue = (data: Record<string, unknown>, key: string) => {
-    const value = get(data, key);
-    if (value === undefined || value === null) return undefined;
-    try { validate(key, value); return value; } catch (e) { if (e instanceof SettingsError) return undefined; throw e; }
-  };
   for (const key of keys) {
-    const fallback = { value: (DEFAULTS as Record<string, unknown>)[key], source: 'default' };
-    if (Object.hasOwn(effective, key)) {
-      entries[key] = effective[key as keyof typeof effective];
-      inherited[key] = below ? below[key as keyof typeof below] : fallback;
-    } else {
-      const homeValue = profileValue(lower, key);
-      inherited[key] = homeValue === undefined ? fallback : { value: homeValue, source: homePath };
-      const value = profileValue(layer.data, key);
-      entries[key] = value === undefined ? inherited[key] : { value, source: path };
-    }
+    const runtimeKey = key as keyof typeof effective;
+    entries[key] = effective[runtimeKey];
+    inherited[key] = below ? below[runtimeKey] : { value: (DEFAULTS as Record<string, unknown>)[key], source: 'default' };
   }
   // Profiles resolve before legacy roles, regardless of the file supplying either field.
   // Preview the usual coordination role: orchestrator for that profile, worker for the rest.
