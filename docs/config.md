@@ -89,3 +89,77 @@ To opt into the recommended Codex choices, add this to either config file:
 ```
 
 For example, `tl config --cwd /path/to/repo` includes `profiles.codex.reviewer.model` and the file that supplied it. A project can override just its effort while retaining the home model. A spawn’s explicit model can override its preset model while effort still comes from that preset or profile config.
+
+## Settings HTTP API
+
+The human Settings editor uses `GET /api/settings?scope=home` or
+`GET /api/settings?scope=project&nodeId=<existing-node-id>`. Both require
+`Authorization: Bearer <admin-token>`; node tokens cannot read or save Settings.
+No MCP Settings tool is exposed. Home settings work without a selected node.
+Project settings use the node's project directory (the main checkout for worktree
+nodes), never a path supplied by the client. Config files and project `.tiller`
+directories that are symlinks are rejected.
+
+A snapshot contains `scope`, `path`, `projectPath`, `revision`, flattened explicit
+`values`, effective `entries`, and `inherited` entries from below the selected
+layer. Each entry has `value` (omitted if unset) and `source` (a config path or
+`default`). Home inherits built-in defaults; project inherits home and defaults.
+The `daemon` group is editable only at home scope.
+
+Save with `POST /api/settings` and a JSON body such as:
+
+```json
+{"scope":"project","nodeId":"n-example","revision":"<snapshot revision>","changes":{"limits.maxDepth":4,"gate.command":null}}
+```
+
+Only supported leaf keys may change; `null` removes that explicit override.
+Profile model and effort keys use `profiles.<harness>.<profile>.model` and
+`.effort`, for harnesses `claude`, `pi`, `codex` and profiles `orchestrator`,
+`implementation`, `explorer`, `mechanical`, `reviewer`. Codex effort accepts `low`,
+`medium`, `high`, `xhigh`; Claude and Pi additionally accept `max`. Unknown existing fields
+are preserved. Saving command strings only stores them; it does not execute them.
+Successful saves return a fresh snapshot. A stale revision returns HTTP 409;
+reload and reconcile the changes before retrying. Invalid requests return 400,
+unknown nodes 404, malformed JSON files or invalid group structures 422, and
+filesystem failures 500 with an error message. Malformed files are never replaced.
+
+Writes use an exclusive temporary file beside the config, flush it, and atomically
+rename it over the original. Failed writes remove their temporary file and leave
+the original intact. Writes in one daemon are serialized; a final content check
+also detects external edits made before rename. Portable filesystem rename has
+no cross-process compare-and-swap, so an external editor writing in the interval
+between that check and rename can still race. Avoid simultaneous external edits
+while saving through Settings.
+
+Effective Settings entries use the same invalid-leaf filtering as runtime config
+resolution; an invalid known override remains visible in raw `values` for repair
+or reset but does not supply an effective value. Profile fields resolve
+independently from project, then home, before Claude falls back to legacy roles.
+The profile preview assumes coordination role `orchestrator` for that profile
+and `worker` for implementation, explorer, mechanical and reviewer. An explicit
+coordination role at spawn can change the legacy fallback; explicit spawn options
+and preset values also take precedence over this configuration preview. Pi and
+Codex never inherit Claude legacy roles. For ordinary fields, inherited entries
+come from layers below the selected scope. A profile field’s inherited entry
+previews resetting that field only: it uses a lower-layer profile value first,
+then the effective legacy role value, including role overrides retained in the
+selected file. This applies to both project and home resets.
+
+## Native notifications
+
+The daemon applies mute, do not disturb, watched-node suppression, quiet hours,
+notification levels, throttling and tree summaries before requesting an OS
+notification. When a ready Tiller app is connected, one app client submits that
+approved notification through Tauri, using the release app's Tiller identity and
+icon. Clicking it opens the app and selects the node if it still exists. macOS
+may require you to allow notifications for Tiller; the app can request permission
+but does not grant it for you.
+
+With no ready native app, or after a definite native submission failure, the
+daemon uses its existing terminal-notifier/AppleScript fallback. A fully quit app
+is not started just to notify; fallback notifications may retain their sender's
+icon. If the app disconnects or its receipt times out after dispatch, the daemon
+logs uncertain delivery and does not resend, avoiding duplicate notifications.
+The native plugin acknowledges submission, not eventual OS display. After an
+update, rebuild and relaunch the release app and restart the updated daemon to
+use native delivery; a browser tab alone uses the fallback.

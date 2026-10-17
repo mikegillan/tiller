@@ -23,7 +23,7 @@ const CodexProfileDefaults = ProfileDefaults.superRefine((profiles, ctx) => {
   }
 });
 const Level = z.enum(NOTIFY_LEVELS).optional();
-const ConfigFile = z.object({
+export const ConfigFile = z.object({
   /** Per-harness task profile defaults; unset preserves the harness's own defaults. */
   profiles: z.object({ claude: ProfileDefaults.optional(), codex: CodexProfileDefaults.optional(), pi: ProfileDefaults.optional() }).strict().optional(),
   /** model and effort for a claude node spawned without them, by role (none counts as worker). */
@@ -106,7 +106,7 @@ type Flat = { [E in Entries<ConfigFile> as E[0]]: E[1] };
 export type Key = keyof Flat;
 
 /** Every key of the schema with its built-in default; undefined means none. Adding a key is a schema line and a line here. */
-const DEFAULTS = {
+export const DEFAULTS = {
   'profiles.claude.orchestrator.model': undefined, 'profiles.claude.orchestrator.effort': undefined,
   'profiles.claude.implementation.model': undefined, 'profiles.claude.implementation.effort': undefined,
   'profiles.claude.explorer.model': undefined, 'profiles.claude.explorer.effort': undefined,

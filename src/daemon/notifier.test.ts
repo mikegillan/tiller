@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { dndActive, type Dnd, type NodeStatus, type NodeView } from '../shared/protocol.js';
 import type { Notifications } from './config.js';
 import { NodeRegistry } from './nodes.js';
@@ -91,18 +91,49 @@ describe('dndActive', () => {
 });
 
 describe('createNotifier', () => {
-  const setup = (watchers = 0, opts: { nodes?: NodeView[]; cfg?: Partial<Notifications>; dnd?: Dnd } = {}) => {
+  const setup = (watchers = 0, opts: { nodes?: NodeView[]; cfg?: Partial<Notifications>; dnd?: Dnd; native?: NotifierDeps['notifyNative'] } = {}) => {
     const calls: string[][] = [], logs: string[] = [];
     let t = 1000, w = watchers;
     const nodes = opts.nodes ?? [node('api', { state: 'blocked', activity: 'needs approval: Bash ls' })];
     const notify = createNotifier({
       view: (id) => nodes.find((n) => n.id === id), tree: () => nodes, config: () => ({ ...DEFAULTS, ...opts.cfg }), dnd: () => opts.dnd ?? { on: false },
-      watchers: () => w, appConnected: () => false, terminalNotifier: '/bin/tn', onClick: (id) => id,
+      watchers: () => w, appConnected: () => false, notifyNative: opts.native, terminalNotifier: '/bin/tn', onClick: (id) => id,
       run: (_f, a) => calls.push(a), now: () => t, log: (l) => logs.push(l),
     } satisfies NotifierDeps);
     return { calls, logs, notify, tick: (ms: number) => { t += ms; }, watch: (n: number) => { w = n; } };
   };
   const ev = (kind: 'needsYou' | 'done' | 'errored' | 'exited', id = 'n1') => ({ id, kind, title: 'api' }) as const;
+
+  it('routes only approved content with policy-selected sound to native delivery', async () => {
+    const native = vi.fn<NonNullable<NotifierDeps['notifyNative']>>(async () => true);
+    const s = setup(0, { native });
+    s.notify(ev('needsYou'));
+    s.notify(ev('needsYou')); // spent throttle prevents another native offer
+    await vi.waitFor(() => expect(native).toHaveBeenCalledTimes(1));
+    expect(native).toHaveBeenCalledWith({ id: 'n1', title: 'api', subtitle: undefined, body: 'Needs approval: Bash ls', sound: true });
+    expect(s.calls).toEqual([]);
+    const banner = setup(0, { native, cfg: { kinds: { ...DEFAULTS.kinds, needsYou: 'banner' } } });
+    banner.notify(ev('needsYou'));
+    expect(native.mock.calls[1][0].sound).toBe(false);
+  });
+
+  it('never offers muted, watched, DND or silent notifications to native delivery', () => {
+    const native = vi.fn<NonNullable<NotifierDeps['notifyNative']>>(async () => true);
+    for (const s of [
+      setup(1, { native }), setup(0, { native, dnd: { on: true } }),
+      setup(0, { native, nodes: [node('muted', {}, { muted: true })] }),
+      setup(0, { native, cfg: { kinds: { ...DEFAULTS.kinds, needsYou: 'silent' } } }),
+    ]) { s.notify(ev('needsYou')); expect(s.calls).toEqual([]); }
+    expect(native).not.toHaveBeenCalled();
+  });
+
+  it('falls back once when native delivery is absent, unavailable or rejects', async () => {
+    for (const native of [undefined, async () => false, async () => { throw new Error('plugin unavailable'); }]) {
+      const s = setup(0, { native });
+      s.notify(ev('needsYou'));
+      await vi.waitFor(() => expect(s.calls).toHaveLength(1));
+    }
+  });
 
   it('is silent while a focused client has the node selected, and does not spend the throttle', () => {
     const s = setup(1);

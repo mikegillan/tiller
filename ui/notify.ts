@@ -1,5 +1,5 @@
 import type { ServerMessage } from '../src/shared/protocol';
-import { toast, type Tone } from './store';
+import { recordActivity, selectNode, toast, type Tone } from './store';
 import { IN_APP } from './url';
 
 type Notify = Extract<ServerMessage, { t: 'notify' }>;
@@ -39,12 +39,62 @@ function chime(m: Notify) {
 }
 
 export function handleNotify(m: Notify) {
-  toast(m.body ? `${m.title}: ${m.body}` : m.title, m.id, TONE[m.kind]);
-  // OS notifications come from the daemon. The app is silent here (terminal-notifier plays the sound); a browser tab chimes.
+  const text = m.body ? `${m.title}: ${m.body}` : m.title;
+  recordActivity(text, m.id, TONE[m.kind]);
+  if (m.kind === 'errored' || m.kind === 'needsYou') toast(text, m.id, TONE[m.kind]);
+  // Raw events are in-app feedback only; OS delivery requires a separate daemon-approved offer.
   if (!IN_APP && !throttled(m.id)) chime(m);
 }
 
 /** Browsers only allow audio to start from a user gesture. */
 export function armOnFirstClick() {
   addEventListener('click', () => { ctx ??= new AudioContext(); }, { once: true });
+}
+
+type NativeNotify = Extract<ServerMessage, { t: 'nativeNotify' }>;
+type NativeReply = Extract<import('../src/shared/protocol').ClientMessage, { t: 'nativeNotifyReady' | 'nativeNotifyResult' }>;
+let actionListener: Promise<unknown> | undefined;
+
+function nativeInvoke(command: string, args: object = {}): Promise<unknown> {
+  const tauri = (window as import('./hooks').TauriWindow).__TAURI_INTERNALS__;
+  if (!tauri) return Promise.reject(new Error('Native notification plugin unavailable. Rebuild and relaunch Tiller.'));
+  return tauri.invoke(command, args);
+}
+
+/** Advertise capability only after the official plugin can report notification clicks. */
+export async function initializeNativeNotifications(reply: (message: NativeReply) => void) {
+  if (!IN_APP) return;
+  try {
+    const plugin = await import('@tauri-apps/plugin-notification');
+    actionListener ??= plugin.onAction((event) => {
+      const id = event.notification?.extra?.nodeId;
+      if (typeof id !== 'string') return;
+      selectNode(id);
+      void nativeInvoke('plugin:window|show').then(() => nativeInvoke('plugin:window|set_focus')).catch((error) => toast(`Cannot focus notification: ${String(error)}`, id, 'bad'));
+    }).catch((error) => { actionListener = undefined; throw error; });
+    await actionListener;
+    reply({ t: 'nativeNotifyReady', ok: true });
+  } catch (error) {
+    const message = String(error);
+    toast(`Native notifications unavailable: ${message}`, undefined, 'bad');
+    reply({ t: 'nativeNotifyReady', ok: false, error: message.slice(0, 1000) });
+  }
+}
+
+/** Raw notify events never call this; this payload was approved and dispatched once by the daemon. */
+export async function handleNativeNotification(message: NativeNotify, reply: (message: NativeReply) => void) {
+  try {
+    if (!IN_APP || !actionListener) throw new Error('Native notifications are not ready.');
+    await actionListener;
+    const plugin = await import('@tauri-apps/plugin-notification');
+    if (!await plugin.isPermissionGranted() && await plugin.requestPermission() !== 'granted') throw new Error('Notifications are not allowed. Enable them in system settings.');
+    const { id, title, subtitle, body, sound } = message.notification;
+    // The official sendNotification wrapper returns void. Await its command to observe submission rejection.
+    await nativeInvoke('plugin:notification|notify', { options: { title, body: subtitle ? `${subtitle}\n${body}` : body, ...(sound ? { sound: 'NSUserNotificationDefaultSoundName' } : {}), extra: { nodeId: id } } });
+    reply({ t: 'nativeNotifyResult', requestId: message.requestId, ok: true });
+  } catch (error) {
+    const detail = String(error);
+    toast(`Native notification: ${detail}`, message.notification.id, 'bad');
+    reply({ t: 'nativeNotifyResult', requestId: message.requestId, ok: false, error: detail.slice(0, 1000) });
+  }
 }

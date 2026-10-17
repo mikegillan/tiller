@@ -1,8 +1,8 @@
-// The daemon is the only sender of OS notifications: one per node and kind, titled with the node, saying what it needs.
+// The daemon approves every OS notification: one per node and kind, titled with the node, saying what it needs.
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
-import { dndActive, finished, type Dnd, type NodeView } from '../shared/protocol.js';
+import { dndActive, finished, type Dnd, type NativeNotification, type NodeView } from '../shared/protocol.js';
 import type { Notifications, NotifyLevel } from './config.js';
 import type { NotifyEvent } from './manager.js';
 
@@ -52,6 +52,8 @@ export interface NotifierDeps {
   /** Clients looking at the node right now. */
   watchers(id: string): number;
   appConnected(): boolean;
+  /** Approved payload only; true means accepted or committed with an uncertain receipt. */
+  notifyNative?(notification: NativeNotification): Promise<boolean>;
   /** Absolute path of terminal-notifier, if installed. */
   terminalNotifier?: string;
   /** macOS bundle id of the daemon's terminal, activated on click when no app is connected. */
@@ -101,9 +103,20 @@ export function createNotifier(d: NotifierDeps): (n: NotifyEvent) => void {
     const k = `${id}:${key}`;
     if (now - (last.get(k) ?? -Infinity) < THROTTLE_MS) return say('suppressed (throttled)');
     last.set(k, now);
-    const { file, args } = notifyArgs({ ...c, sound: level === 'sound' }, id, d);
-    d.run(file, args);
-    say(`sent ${level} (${why})`);
+    const payload = { ...c, id, sound: level === 'sound' };
+    const fallback = () => {
+      const { file, args } = notifyArgs(payload, id, d);
+      d.run(file, args);
+      say(`sent ${level} (${why})`);
+    };
+    if (!d.notifyNative) return fallback();
+    void d.notifyNative(payload).then((accepted) => {
+      if (accepted) say(`dispatched ${level} via native app (${why})`);
+      else fallback();
+    }).catch((err: unknown) => {
+      say(`native delivery failed: ${String(err)}; using daemon fallback`);
+      fallback();
+    });
   };
   return (n) => {
     const node = d.view(n.id);
@@ -131,4 +144,4 @@ export function findBin(name: string, path: string): string | undefined {
   return path.split(delimiter).map((dir) => join(dir, name)).find((f) => existsSync(f));
 }
 
-export const runDetached = (file: string, args: string[]) => { execFile(file, args, () => {}).unref(); };
+export const runDetached = (file: string, args: string[]) => { execFile(file, args, (error) => { if (error) console.error(`notification fallback failed (${file}): ${error.message}`); }).unref(); };

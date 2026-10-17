@@ -1,5 +1,6 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { finished, isAgentKind } from '../src/shared/protocol';
+import { ActivityButton, ActivityDrawer } from './ActivityDrawer';
 import { Dialogs } from './Dialogs';
 import { DiffPane } from './DiffPane';
 import { ExitedCard } from './ExitedCard';
@@ -15,10 +16,12 @@ import { TranscriptPane } from './TranscriptPane';
 import { ConfirmModal, DigestCard, Toasts } from './Toasts';
 import { getState, openDialog, selectNode, useStore } from './store';
 import { IN_APP } from './url';
+import { SettingsPanel } from './SettingsPanel';
 
 if (IN_APP) document.documentElement.dataset.app = '1';
 
 export function App() {
+  const [settingsNode, setSettingsNode] = useState<{ id?: string } | null>(null);
   const rows = useRows();
   const node = useStore((s) => (s.selected ? s.nodes[s.selected] : undefined));
   const panel = useStore((s) => s.panel);
@@ -30,6 +33,7 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (settingsNode) return;
       if (!e.metaKey || e.altKey || e.shiftKey) return; // Ctrl must reach the terminal
       if (e.key === 'k') { e.preventDefault(); openDialog(getState().dialog?.kind === 'palette' ? null : { kind: 'palette' }); }
       else if (e.key === '0') { e.preventDefault(); document.querySelector<HTMLElement>('.tree')?.focus(); }
@@ -40,12 +44,12 @@ export function App() {
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
-  }, [rows]);
+  }, [rows, settingsNode]);
 
   return (
     <div className="app">
       {IN_APP && <div className="dragstrip" data-tauri-drag-region />}
-      <Sidebar />
+      <Sidebar onSettings={() => setSettingsNode({ id: node?.id })} />
       <main className="main">
         {node && !archived ? <TitleBar node={node} /> : null}
         <div className="work">
@@ -65,12 +69,14 @@ export function App() {
           {panel && <LastMessagePanel />}
         </div>
       </main>
-      <StatusBar />
+      <StatusBar><ActivityButton /></StatusBar>
+      <ActivityDrawer />
       <Toasts />
       <ConfirmModal />
       <DigestCard />
       <Dialogs />
       {palette && <Palette />}
+      {settingsNode && <SettingsPanel nodeId={settingsNode.id} onClose={() => setSettingsNode(null)} />}
     </div>
   );
 }

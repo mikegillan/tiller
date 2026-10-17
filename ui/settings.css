@@ -1,0 +1,48 @@
+.settings-dialog { width: min(880px, calc(100vw - 32px)); height: min(860px, calc(100dvh - 32px)); max-width: none; max-height: none; padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--fg); box-shadow: var(--shadow); overflow: hidden; }
+.settings-dialog[open] { display: flex; flex-direction: column; }
+.settings-dialog::backdrop { background: rgb(0 0 0 / .5); }
+.settings-header, .settings-scope, .settings-footer { display: flex; align-items: center; gap: 8px; padding: 12px 20px; flex: none; }
+.settings-header { justify-content: space-between; }
+.settings-header h2 { margin: 0; font-size: 18px; }
+.settings-scope { padding-top: 0; flex-wrap: wrap; }
+.settings-scope span, .settings-footer span { color: var(--dim); font-size: 12px; }
+.settings-path { margin: 0; padding: 0 20px 12px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.settings-content { flex: 1; min-height: 0; overflow: auto; padding: 0 20px 20px; scrollbar-color: var(--line) var(--surface); }
+.settings-section { margin-top: 24px; }
+.settings-section summary { padding: 8px 0; font-size: 15px; font-weight: 600; cursor: pointer; }
+.settings-section > p { color: var(--dim); max-width: 72ch; margin: 0 0 12px; }
+.settings-field { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 6px 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.settings-field > label { padding-top: 7px; overflow-wrap: anywhere; }
+.settings-control { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.settings-control input, .settings-control select, .settings-control textarea { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; caret-color: var(--accent); }
+.settings-control textarea { resize: vertical; font-family: var(--mono); }
+.settings-control :disabled { opacity: .65; }
+.settings-control .btn { flex: none; height: 32px; }
+.settings-detail { grid-column: 2; font-size: 12px; color: var(--dim); overflow-wrap: anywhere; }
+.settings-detail code, .settings-path code { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }
+.settings-pending { color: var(--accent); margin-top: 4px; }
+.settings-notice { padding: 12px; margin-top: 16px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; }
+.settings-notice p { margin: 0 0 8px; }
+.settings-error { color: var(--bad); }
+.settings-success { color: var(--done); }
+.settings-footer { border-top: 1px solid var(--line); flex-wrap: wrap; }
+.settings-footer span { margin-right: auto; }
+.settings-footer .btn { height: 32px; }
+.settings-dialog ::selection { background: var(--sel); color: var(--fg); }
+@media (max-width: 600px) {
+  .settings-dialog { width: calc(100vw - 16px); height: calc(100dvh - 16px); }
+  .settings-header, .settings-scope, .settings-footer { padding-left: 12px; padding-right: 12px; }
+  .settings-content { padding-left: 12px; padding-right: 12px; }
+  .settings-path { padding-left: 12px; padding-right: 12px; }
+  .settings-field { grid-template-columns: minmax(0, 1fr); }
+  .settings-detail { grid-column: 1; }
+  .settings-footer span { width: 100%; }
+}
+
+.settings-clis { margin-top: 20px; }
+.settings-clis-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.settings-clis h3 { margin: 0; font-size: 15px; }
+.settings-clis p { color: var(--dim); margin: 8px 0; }
+.settings-clis ul { list-style: none; margin: 0; padding: 0; }
+.settings-clis li { display: grid; grid-template-columns: 100px 1fr; gap: 4px 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.settings-clis li small { grid-column: 2; color: var(--dim); overflow-wrap: anywhere; }
