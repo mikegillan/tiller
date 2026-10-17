@@ -92,6 +92,29 @@ For example, `tl config --cwd /path/to/repo` includes `profiles.codex.reviewer.m
 
 ## Settings HTTP API
 
+Open **Settings** and choose **Global · all repositories** for shared defaults or
+**Repository** for the selected node’s repository. The repository name and path
+identify the target; repository overrides take precedence over global values.
+**Daemon** settings are global only. Select a category to edit task profiles,
+notifications, limits, worktrees, approvals, or legacy Claude roles. CLI discovery
+is available separately under **CLI diagnostics**.
+
+Each field shows its effective value. **Customize for this repository** or
+**Customize globally** starts an override; **Use global default** (repository) or
+**Use inherited default** (global) removes it. Claude profile resets can retain a
+legacy role fallback; expand **Value source** to see where a value comes from.
+Draft changes show an **After save** preview. Legacy role edits refresh profile
+fallback previews after saving. Model and effort inherit independently.
+
+Claude and Codex each offer **Recommended defaults** with a model/effort table.
+**Stage recommended defaults** replaces only that harness’s profile values in the
+draft. Review or cancel them before choosing **Save repository settings** or
+**Save global settings**. Claude suggestions use the supported `opus`, `sonnet`,
+and `haiku` CLI aliases; versions and availability depend on your provider
+([Claude model reference](https://code.claude.com/docs/en/model-config#model-aliases)).
+Custom model IDs remain editable. Nothing is written until Save; changing scope
+or closing with unsaved edits requires choosing whether to discard them.
+
 The human Settings editor uses `GET /api/settings?scope=home` or
 `GET /api/settings?scope=project&nodeId=<existing-node-id>`. Both require
 `Authorization: Bearer <admin-token>`; node tokens cannot read or save Settings.

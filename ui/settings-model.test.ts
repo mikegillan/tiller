@@ -19,7 +19,7 @@ describe('settings drafts', () => {
   });
   it('keeps model IDs literal and rejects blank strings without treating them as resets', () => {
     expect(buildChanges(snapshot, { 'profiles.codex.explorer.model': 'model/custom-id' }, fields)).toEqual({ 'profiles.codex.explorer.model': 'model/custom-id' });
-    expect(() => buildChanges(snapshot, { 'profiles.codex.explorer.model': '' }, fields)).toThrow('reset to inherit');
+    expect(() => buildChanges(snapshot, { 'profiles.codex.explorer.model': '' }, fields)).toThrow('use the inherited default');
   });
 });
 
