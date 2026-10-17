@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { finished, isAgentKind } from '../src/shared/protocol';
+import { ActivityButton, ActivityDrawer } from './ActivityDrawer';
 import { Dialogs } from './Dialogs';
 import { DiffPane } from './DiffPane';
 import { ExitedCard } from './ExitedCard';
@@ -68,7 +69,8 @@ export function App() {
           {panel && <LastMessagePanel />}
         </div>
       </main>
-      <StatusBar />
+      <StatusBar><ActivityButton /></StatusBar>
+      <ActivityDrawer />
       <Toasts />
       <ConfirmModal />
       <DigestCard />

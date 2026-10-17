@@ -1,10 +1,11 @@
+import type { ReactNode } from 'react';
 import { dndActive, needsYou } from '../src/shared/protocol';
 import { fmtAge, usageParts } from '../src/shared/format';
 import { fmtUsd, todaySpend } from '../src/shared/spend';
 import { toggleDnd, useNow } from './hooks';
 import { useStore } from './store';
 
-export function StatusBar() {
+export function StatusBar({ children }: { children?: ReactNode }) {
   const connected = useStore((s) => s.connected);
   const retry = useStore((s) => s.retry);
   const total = useStore((s) => Object.keys(s.nodes).length);
@@ -34,6 +35,7 @@ export function StatusBar() {
       <button className={`dnd${quiet ? ' on' : ''}`} onClick={toggleDnd} title={quiet ? 'Turn off do not disturb' : 'No OS notifications for an hour'}>
         {quiet ? `do not disturb${dnd!.until ? ` · ${Math.ceil((dnd!.until - now) / 60_000)} min left` : ''}` : 'do not disturb 1 h'}
       </button>
+      {children}
       <span className="keys"><kbd>⌘K</kbd> jump <kbd>⌘1–9</kbd> row <kbd>⌘0</kbd> sidebar</span>
     </footer>
   );

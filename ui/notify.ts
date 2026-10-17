@@ -1,5 +1,5 @@
 import type { ServerMessage } from '../src/shared/protocol';
-import { selectNode, toast, type Tone } from './store';
+import { recordActivity, selectNode, toast, type Tone } from './store';
 import { IN_APP } from './url';
 
 type Notify = Extract<ServerMessage, { t: 'notify' }>;
@@ -39,7 +39,9 @@ function chime(m: Notify) {
 }
 
 export function handleNotify(m: Notify) {
-  toast(m.body ? `${m.title}: ${m.body}` : m.title, m.id, TONE[m.kind]);
+  const text = m.body ? `${m.title}: ${m.body}` : m.title;
+  recordActivity(text, m.id, TONE[m.kind]);
+  if (m.kind === 'errored') toast(text, m.id, TONE[m.kind]);
   // Raw events are in-app feedback only; OS delivery requires a separate daemon-approved offer.
   if (!IN_APP && !throttled(m.id)) chime(m);
 }
