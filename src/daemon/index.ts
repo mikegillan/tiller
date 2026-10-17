@@ -32,6 +32,7 @@ manager.on('notify', createNotifier({
   dnd: server.dnd,
   watchers: server.watchers,
   appConnected: server.appConnected,
+  notifyNative: server.notifyNative,
   terminalNotifier: process.env.TL_TERMINAL_NOTIFIER ?? findBin('terminal-notifier', `${path}:/opt/homebrew/bin:/usr/local/bin`),
   terminalBundle: process.env.TL_TERMINAL_BUNDLE ?? terminalBundleFor(process.env.TERM_PROGRAM),
   // A click runs this under sh with a bare PATH, so hand it the daemon's home and PATH.
