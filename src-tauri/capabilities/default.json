@@ -10,7 +10,14 @@
     "core:window:allow-start-dragging",
     "core:window:allow-set-badge-count",
     "allow-set-tray",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "notification:allow-is-permission-granted",
+    "notification:allow-request-permission",
+    "notification:allow-notify",
+    "notification:allow-register-listener",
+    "notification:allow-remove-listener",
+    "core:window:allow-show",
+    "core:window:allow-set-focus"
   ],
   "remote": {
     "urls": [

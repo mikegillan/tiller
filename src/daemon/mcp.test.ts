@@ -1,7 +1,8 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -51,6 +52,28 @@ describe('mcp api', () => {
     m.shutdown();
     expect(readFileSync(join(again, 'admin-token'), 'utf8')).toBe(admin);
   });
+  it('accepts and lists resolved profiles through CLI spawn and rejects invalid MCP profiles', async () => {
+    const dependency = (await spawnT('profile dependency')).body.data.nodeId;
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ profiles: { codex: { reviewer: { model: 'configured-codex', effort: 'high' } } } }));
+    const env = { ...process.env, TL_HOME: home, TL_ENDPOINT: base, TL_NODE_ID: '', TL_TOKEN_FILE: '' };
+    const run = promisify(execFile);
+    const { stdout } = await run(join(import.meta.dirname, '../../bin/tl'), ['spawn', '--harness', 'codex', '--profile', 'reviewer', '--role', 'worker', '--title', 'CLI profile', '--cwd', home, '--after-success', dependency], { env });
+    const id = JSON.parse(stdout).nodeId;
+    expect(manager.view(id)).toMatchObject({ profile: 'reviewer', model: 'configured-codex', effort: 'high', pending: { afterSuccess: [dependency] } });
+    const listed = (await api('list_nodes', {})).body;
+    expect(listed.data.find((n: { id: string }) => n.id === id)).toMatchObject({ profile: 'reviewer', model: 'configured-codex', effort: 'high' });
+    expect(listed.text).toContain('profile reviewer');
+    const bad = await api('spawn', { kind: 'agent', harness: 'codex', title: 'bad', cwd: home, profile: 'worker' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toContain('profile');
+    const config = await run(join(import.meta.dirname, '../../bin/tl'), ['config', '--cwd', home], { env });
+    expect(config.stdout).toContain('profiles.codex.reviewer.model');
+    expect(config.stdout).toContain('configured-codex');
+    rmSync(join(home, 'config.json'));
+    await manager.close(id, true);
+    await manager.close(dependency, true);
+  });
+
   it('rejects missing or wrong credentials', async () => {
     expect((await api('list_nodes', {}, 'human', 'nope')).status).toBe(401);
     expect((await api('list_nodes', {}, 'n-ghost', manager.tokenFor('n-ghost'))).status).toBe(401);

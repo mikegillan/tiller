@@ -205,6 +205,95 @@ describe('NodeManager harness delegation and lifecycle', () => {
   const pi = (parentId?: string, extra = {}) => m.spawn({ kind: 'agent', harness: 'pi', title: 'Pi', cwd: home, parentId, ...extra });
   const claude = (extra = {}) => m.spawn({ kind: 'claude', title: 'Claude', cwd: home, byHuman: true, ...extra });
 
+  it('selects profiles independently of roles and resolves each spawn field before persisting it', async () => {
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      roles: { worker: { model: 'claude-only', effort: 'max' } },
+      profiles: { codex: { implementation: { model: 'impl', effort: 'medium' }, reviewer: { model: 'review', effort: 'high' } }, pi: { implementation: { model: 'pi-model' } } },
+    }));
+    writeFileSync(join(home, 'agents', 'task.md'), '---\nprofile: reviewer\nmodel: preset-model\n---\nCustom instructions.');
+    const spawn = (extra = {}) => m.spawn({ kind: 'agent', harness: 'codex', title: 'Codex', cwd: home, byHuman: true, ...extra });
+    const root = await spawn();
+    expect(root).toMatchObject({ profile: 'orchestrator' });
+    expect(root.model).toBeUndefined(); // Claude role settings never leak into Codex
+    const child = await spawn({ parentId: root.id, role: 'none' });
+    expect(child).toMatchObject({ profile: 'implementation', role: 'none', model: 'impl', effort: 'medium', status: { model: 'impl', effort: 'medium' } });
+    expect(await spawn({ parentId: root.id, preset: 'task' })).toMatchObject({ profile: 'reviewer', model: 'preset-model', effort: 'high' });
+    expect(await spawn({ parentId: root.id, preset: 'task', profile: 'implementation', effort: 'low' })).toMatchObject({ profile: 'implementation', model: 'preset-model', effort: 'low' });
+    expect(await spawn({ parentId: root.id, preset: 'task', model: 'explicit' })).toMatchObject({ profile: 'reviewer', model: 'explicit', effort: 'high' });
+    expect(await pi(root.id, { byHuman: true })).toMatchObject({ profile: 'implementation', model: 'pi-model' });
+    writeFileSync(join(home, 'agents', 'effort.md'), '---\nprofile: reviewer\neffort: low\n---\nCustom instructions.');
+    expect(await spawn({ preset: 'effort' })).toMatchObject({ profile: 'reviewer', model: 'review', effort: 'low' });
+    expect(await spawn({ preset: 'effort', effort: 'medium' })).toMatchObject({ model: 'review', effort: 'medium' });
+  });
+
+  it('derives profile defaults from effective explicit or preset role, keeping explicit profile highest', async () => {
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ profiles: { codex: { orchestrator: { model: 'orchestrator-model' }, implementation: { model: 'implementation-model' }, reviewer: { model: 'review-model' } } } }));
+    const spawn = (extra = {}) => m.spawn({ kind: 'agent', harness: 'codex', title: 'role default', cwd: home, byHuman: true, ...extra });
+    const parent = await spawn();
+    expect(parent).toMatchObject({ profile: 'orchestrator', model: 'orchestrator-model' });
+    expect(await spawn({ parentId: parent.id })).toMatchObject({ profile: 'implementation', model: 'implementation-model' });
+    expect(await spawn({ parentId: parent.id, role: 'orchestrator' })).toMatchObject({ profile: 'orchestrator', model: 'orchestrator-model' });
+    expect(await spawn({ role: 'worker' })).toMatchObject({ profile: 'implementation', model: 'implementation-model' });
+    expect(await spawn({ role: 'none' })).toMatchObject({ profile: 'implementation', model: 'implementation-model' });
+    writeFileSync(join(home, 'agents', 'coordinator.md'), '---\nrole: orchestrator\n---\nCoordinate.');
+    expect(await spawn({ parentId: parent.id, preset: 'coordinator' })).toMatchObject({ profile: 'orchestrator', model: 'orchestrator-model' });
+    expect(await spawn({ parentId: parent.id, preset: 'coordinator', role: 'worker' })).toMatchObject({ profile: 'implementation', model: 'implementation-model' });
+    expect(await spawn({ parentId: parent.id, preset: 'coordinator', profile: 'reviewer' })).toMatchObject({ profile: 'reviewer', model: 'review-model' });
+  });
+
+  it('rejects unsupported explicit and preset Codex effort before records, dependencies or worktrees allocate', async () => {
+    writeFileSync(join(home, 'agents', 'max-effort.md'), '---\neffort: max\n---\nTask.');
+    const create = vi.spyOn(m.registry, 'create');
+    const launch = vi.mocked(PtySession.spawn);
+    for (const extra of [{ effort: 'max' as const }, { preset: 'max-effort' }]) {
+      for (const delayed of [{}, { afterSuccess: ['missing'] }, { isolation: 'worktree' as const, base: 'should-not-exist' }]) {
+        await expect(m.spawn({ kind: 'agent', harness: 'codex', title: 'invalid effort', cwd: home, byHuman: true, ...extra, ...delayed })).rejects.toThrow('unsupported Codex effort: max');
+      }
+    }
+    expect(create).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+    expect(m.registry.list()).toEqual([]);
+    expect(await m.spawn({ kind: 'agent', harness: 'codex', title: 'explicit override', cwd: home, byHuman: true, preset: 'max-effort', effort: 'high' })).toMatchObject({ effort: 'high' });
+  });
+
+  it('keeps resolved profile/model/effort through disk reload, resume, restart, archive and root followup', async () => {
+    const node = await m.spawn({ kind: 'agent', harness: 'codex', title: 'review', cwd: home, byHuman: true, profile: 'reviewer', role: 'worker', model: 'original', effort: 'high' });
+    m.registry.flush();
+    const { NodeRegistry } = await import('./nodes.js');
+    const reloaded = new NodeRegistry(join(home, 'state.json')); reloaded.load();
+    expect(reloaded.get(node.id)).toMatchObject({ profile: 'reviewer', model: 'original', effort: 'high' });
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ profiles: { codex: { reviewer: { model: 'changed', effort: 'low' } } } }));
+    writeFileSync(m.registry.get(node.id)!.transcriptPath!, JSON.stringify({ type: 'codex_session', threadId: 'fake-thread' }) + '\n');
+    exit(0);
+    expect(await m.resume(node.id)).toEqual({ ok: true });
+    expect(m.restart(node.id)).toEqual({ ok: true });
+    const lastArgs = vi.mocked(PtySession.spawn).mock.calls.at(-1)!;
+    expect(JSON.stringify(lastArgs)).toContain('Review the supplied change');
+    expect(JSON.stringify(lastArgs)).toContain('original');
+    writeFileSync(m.registry.get(node.id)!.transcriptPath!, JSON.stringify({ type: 'codex_session', threadId: 'new-fake-thread' }) + '\n');
+    await m.close(node.id, true);
+    const archived = await findArchived(home, node.id);
+    expect(archived).toMatchObject({ profile: 'reviewer', model: 'original', effort: 'high' });
+    expect(await m.followup(node.id, 'Check again')).toMatchObject({ profile: 'reviewer', model: 'original', effort: 'high', role: 'worker' });
+  });
+
+  it('retains a child default profile and explicit role none when followup becomes a root', async () => {
+    const parent = await claude();
+    const child = await m.spawn({ kind: 'agent', harness: 'codex', parentId: parent.id, title: 'child', cwd: home, byHuman: true, role: 'none' });
+    expect(child.profile).toBe('implementation');
+    writeFileSync(m.registry.get(child.id)!.transcriptPath!, JSON.stringify({ type: 'codex_session', threadId: 'fake-thread' }) + '\n');
+    await m.close(child.id, true);
+    await m.close(parent.id, true);
+    expect(await m.followup(child.id, 'Continue')).toMatchObject({ parentId: null, profile: 'implementation', role: 'none' });
+  });
+
+  it.each(['reviewer', 'explorer'] as const)('launches portable Codex %s instructions without bypassing preset restrictions', async (profile) => {
+    const n = await m.spawn({ kind: 'agent', harness: 'codex', title: profile, cwd: home, byHuman: true, profile, role: 'worker' });
+    expect(n.profile).toBe(profile);
+    expect(JSON.stringify(vi.mocked(PtySession.spawn).mock.calls.at(-1))).toContain('read-only');
+    await expect(m.spawn({ kind: 'agent', harness: 'codex', title: profile, cwd: home, byHuman: true, profile, preset: profile === 'reviewer' ? 'reviewer' : 'researcher' })).rejects.toThrow(/does not support Claude preset/);
+  });
+
   it('allows explicit human Pi selection, including beneath a restricted Claude parent', async () => {
     expect(await pi(undefined, { byHuman: true })).toMatchObject({ harness: 'pi', permissionMode: undefined });
     const parent = await claude({ permissionMode: 'plan', preset: 'reviewer' });

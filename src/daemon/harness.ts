@@ -7,6 +7,7 @@ import { claudeLaunch, nodeEnv, systemPrompt, type LaunchInput, type LaunchSpec 
 import type { Preset } from './presets.js';
 import { transcriptFor } from './transcript.js';
 import { piTranscript, preparePiTranscript } from './pi-session.js';
+import { codexTranscript, prepareCodexTranscript } from './codex-session.js';
 
 export interface HarnessOptions {
   permissionMode?: string;
@@ -67,7 +68,36 @@ export const piAdapter: HarnessAdapter = {
   transcript: (n, sessionDir) => n.transcriptPath ?? (n.sessionId ? piTranscript(sessionDir, n.id, n.sessionId) : undefined),
 };
 
-const adapters: Record<Harness, HarnessAdapter> = { claude: claudeAdapter, pi: piAdapter };
+export const codexAdapter: HarnessAdapter = {
+  id: 'codex',
+  capabilities: { fork: false, inbox: true },
+  validate({ permissionMode, preset }) {
+    if (permissionMode !== undefined) throw new Error('Codex does not support Claude permissionMode; omit it (Codex keeps its own approval and sandbox policy)');
+    if (preset?.tools !== undefined || preset?.disallowedTools !== undefined || preset?.maxTurns !== undefined) {
+      throw new Error('Codex does not support Claude preset tools, disallowedTools or maxTurns; use a prompt-only preset');
+    }
+  },
+  launch(i) {
+    this.validate(i);
+    if (i.forkSession) throw new Error('Codex session forking through spawn is not supported; use followup');
+    if (!i.sessionDir) throw new Error('Codex needs a persistent Tiller session directory');
+    if (i.effort && !['low', 'medium', 'high', 'xhigh'].includes(i.effort)) throw new Error(`unsupported Codex effort: ${i.effort}`);
+    const transcriptPath = i.transcriptPath ?? codexTranscript(i.sessionDir, i.nodeId, i.sessionId);
+    return {
+      file: process.execPath,
+      args: ['--import', import.meta.resolve('tsx'), fileURLToPath(new URL('../../adapters/codex/index.ts', import.meta.url)), JSON.stringify({
+        transcriptPath, sessionId: i.sessionId, resume: !!i.resume, instructions: systemPrompt(i),
+        prompt: i.prompt, model: i.model, effort: i.effort,
+      })],
+      env: { ...nodeEnv(i), TL_HARNESS: 'codex', TL_SESSION_ID: i.sessionId },
+    };
+  },
+  cwd: (n) => n.cwd,
+  prepareTranscript: prepareCodexTranscript,
+  transcript: (n, dir) => n.transcriptPath ?? (n.sessionId ? codexTranscript(dir, n.id, n.sessionId) : undefined),
+};
+
+const adapters: Record<Harness, HarnessAdapter> = { claude: claudeAdapter, pi: piAdapter, codex: codexAdapter };
 export function adapterFor(node: { kind: NodeRecord['kind']; harness?: Harness }): HarnessAdapter {
   const id = harnessFor(node), adapter = adapters[id];
   if (!adapter) throw new Error(`unsupported harness: ${id}`);

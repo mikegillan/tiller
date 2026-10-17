@@ -1,8 +1,31 @@
 # Agent harnesses
 
-Tiller supports **Claude Code** and **Pi** as agent nodes, alongside plain terminals. The daemon,
+Tiller supports **Claude Code**, **Pi** and **Codex** as agent nodes, alongside plain terminals. The daemon,
 UI, coordination tools, dependency queue, worktrees and outcome reporting are shared. Claude
 Code is not required to run a Pi-only tree.
+
+## Run Codex
+
+Install Codex CLI on your PATH and authenticate with `codex login`, then run:
+
+```sh
+cd /path/to/repo
+tl --harness codex
+tl new "Codex session" --harness codex --prompt "Inspect this repository"
+```
+
+The spawn dialog and MCP `spawn` tool also support Codex (`kind: "agent", harness: "codex"`).
+The bridge uses Codex app-server with Codex's own sandbox and approval settings. It provides
+streamed terminal output, inbox delivery and steering, lifecycle/context reporting, readable
+transcripts, resume, restart and follow-up. Follow-up forks the native Codex thread. Claude's
+role model defaults are not applied; `profiles.codex.<profile>` supplies optional model/effort defaults, and Claude-specific permission modes and restricted presets
+are rejected. Codex's native history must remain available for resume/follow-up.
+
+The terminal pane runs the real Codex CLI connected to the bridge's app-server, with native
+slash commands, composer and approval dialogs. Use Tiller restart/follow-up to change the managed
+conversation. Tiller workers use the MCP `spawn` tool; Codex's internal subagents do not create
+Tiller tree nodes. See the [Codex adapter README](../adapters/codex/README.md) for delivery
+guarantees, compatibility and limitations.
 
 ## Run Pi
 
@@ -35,7 +58,7 @@ select the harness explicitly. Legacy `kind: "claude"` remains Claude Code; term
 not take a harness.
 
 Tiller's `roles.*.model` and `roles.*.effort` defaults apply only to Claude Code. A Pi node uses
-the model from the spawn (or its preset), or else Pi's own default from
+the model from the spawn, then its preset, then `profiles.pi.<profile>.model`, or else Pi's own default from
 `~/.pi/agent/settings.json`. Use model names the selected CLI accepts; `pi --list-models` lists
 Pi's. An explicit `effort` becomes Pi's `--thinking`.
 
@@ -102,7 +125,8 @@ presets work; the restricted built-in presets (reviewer, researcher) cannot run 
 `src/daemon/harness.ts` defines `HarnessAdapter`: validation, capabilities, launch command,
 working directory, transcript location and optional pre-launch storage preparation.
 Claude's adapter wraps the existing launch logic;
-Pi's adapter loads `adapters/pi/index.ts`. No runtime Pi package is installed with Tiller.
+Pi's adapter loads `adapters/pi/index.ts`; Codex's adapter launches `adapters/codex/index.ts`,
+which hosts the installed CLI's app-server. Neither CLI is installed with Tiller.
 
 Coordination stays on the existing interfaces:
 
@@ -115,9 +139,15 @@ Coordination stays on the existing interfaces:
   leaves messages unclaimed and withdrawable; a steer aborts the turn and is claimed once idle.
   A fire-and-forget CLI API return is not delivery proof.
 
-To add Codex/OpenCode/another CLI: add its harness identifier and adapter, provide an equivalent
+To add OpenCode/another CLI: add its harness identifier and adapter, provide an equivalent
 lifecycle/inbox bridge using that CLI's native API, and supply a transcript decoder. Declare
 unsupported capabilities, and reject unsupported restrictions in the adapter's `validate`. Do not duplicate the MCP tools
 or implement arbitrary executable configuration as a shortcut.
 
 See [the Pi adapter](../adapters/pi/README.md) for protocol mapping, compatibility and tests.
+
+## Task profiles across harnesses
+
+`profile` is independent of both `harness` and the coordination `role`. The effective coordination role selects the default profile: `orchestrator` maps to `orchestrator`, `worker`/`none` to `implementation` (normally root and child respectively). The spawn UI offers all five profiles, including **Mechanical worker** (`mechanical`). `tl new --harness codex --profile implementation` and MCP `spawn` with `profile: "reviewer"` use the same resolution. Model and effort defaults are configured separately per harness and profile in `profiles.<harness>.<profile>`; explicit spawn fields win over presets, which win over config. See [config.md](config.md) for precedence and recommended opt-in Codex defaults. Legacy `roles` defaults remain Claude-only.
+
+`reviewer` and `explorer` profiles provide read-only instructions supported by all harnesses. They do not translate or remove Claude tool restrictions: explicit restricted presets (including the named `reviewer` and `researcher`) are still rejected by Codex/Pi, and the existing cross-harness delegation guard remains in force. Use the portable profile when instruction-level read-only work is sufficient; use the restricted preset on Claude when its enforced tool policy is required.

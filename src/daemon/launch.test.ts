@@ -78,3 +78,35 @@ describe('role prompts', () => {
     expect(sp.split(/\s+/).length).toBeLessThan(600);
   });
 });
+
+describe('task profile prompts', () => {
+  const base = { nodeId: 'n', title: 't', parentId: 'p', home: '/nonexistent', cwd: '/nonexistent' };
+  it('adds portable task guidance independently of coordination role and honors none', () => {
+    expect(systemPrompt(base)).toContain('Implement the assigned change');
+    expect(systemPrompt({ ...base, parentId: null })).toContain('Coordinate the task');
+    expect(systemPrompt({ ...base, role: 'orchestrator' })).toContain('Coordinate the task');
+    expect(systemPrompt({ ...base, parentId: null, role: 'worker' })).toContain('Implement the assigned change');
+    expect(systemPrompt({ ...base, profile: 'mechanical' })).toContain('narrowly specified mechanical task');
+    for (const profile of ['reviewer', 'explorer'] as const) {
+      const prompt = systemPrompt({ ...base, profile });
+      expect(prompt).toContain('read-only');
+      expect(prompt).toContain('You are a worker');
+      expect(prompt).not.toContain('disallowedTools');
+      expect(systemPrompt({ ...base, role: 'none', profile })).not.toContain('# Task profile');
+    }
+  });
+  it('preserves a preset body replacing default task and role guidance', () => {
+    const p = systemPrompt({ ...base, profile: 'reviewer', preset: { name: 'custom', body: 'Custom behavior', source: 'x' } });
+    expect(p).toContain('Custom behavior');
+    expect(p).not.toContain('Review the supplied change');
+  });
+});
+
+it('retains enforced reviewer preset guidance for Claude and uses portable review profiles for Codex/Pi', () => {
+  const base = { nodeId: 'n', title: 't', parentId: null, home: '/nonexistent', cwd: '/nonexistent' };
+  for (const harness of ['claude', 'codex', 'pi'] as const) {
+    const prompt = systemPrompt({ ...base, harness });
+    expect(prompt).toContain(harness === 'claude' ? 'spawn a node with preset "reviewer"' : 'spawn a node with profile "reviewer"');
+    expect(prompt).not.toContain(harness === 'claude' ? 'spawn a node with profile "reviewer"' : 'spawn a node with preset "reviewer"');
+  }
+});

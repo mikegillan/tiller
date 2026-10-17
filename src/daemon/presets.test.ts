@@ -52,18 +52,23 @@ describe('presets', () => {
     ensurePresets(home);
     expect(readFileSync(join(home, 'agents', 'reviewer.md'), 'utf8')).toBe(DEFAULT_PRESETS.reviewer);
     expect(JSON.parse(readFileSync(join(home, 'agents', '.builtin.json'), 'utf8'))).toEqual({ reviewer: sha256(DEFAULT_PRESETS.reviewer), researcher: sha256(DEFAULT_PRESETS.researcher) });
-    expect(loadPreset('reviewer', home, home)).toMatchObject({ disallowedTools: ['Edit', 'Write', 'NotebookEdit'], isolation: 'none', effort: 'medium' });
+    expect(loadPreset('reviewer', home, home)).toMatchObject({ disallowedTools: ['Edit', 'Write', 'NotebookEdit'], isolation: 'none', effort: 'medium', profile: 'reviewer' });
     expect(loadPreset('reviewer', home, home)!.permissionMode).toBeUndefined();
+    expect(loadPreset('researcher', home, home).profile).toBe('explorer');
     expect(loadPreset('researcher', home, home).tools).toEqual(['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch']);
   });
 
   it('refreshes an unedited built-in file, and keeps an edited file or one with no record', () => {
     const home = tmp(), reviewer = join(home, 'agents', 'reviewer.md'), record = join(home, 'agents', '.builtin.json');
-    const old = '---\npermissionMode: default\n---\nold reviewer';
+    const old = DEFAULT_PRESETS.reviewer.replace('profile: reviewer\n', '');
+    const oldResearcher = DEFAULT_PRESETS.researcher.replace('profile: explorer\n', '');
+    put(join(home, 'agents'), 'researcher', oldResearcher);
     put(join(home, 'agents'), 'reviewer', old);
-    writeFileSync(record, JSON.stringify({ reviewer: sha256(old) }));
+    writeFileSync(record, JSON.stringify({ reviewer: sha256(old), researcher: sha256(oldResearcher) }));
     ensurePresets(home);
     expect(readFileSync(reviewer, 'utf8')).toBe(DEFAULT_PRESETS.reviewer);
+    expect(loadPreset('reviewer', home, home).profile).toBe('reviewer');
+    expect(loadPreset('researcher', home, home).profile).toBe('explorer');
     expect(JSON.parse(readFileSync(record, 'utf8')).reviewer).toBe(sha256(DEFAULT_PRESETS.reviewer));
 
     writeFileSync(reviewer, 'mine');
@@ -109,6 +114,20 @@ describe('presets', () => {
 describe('spawn with a preset', () => {
   let m: NodeManager | undefined;
   afterEach(async () => { await m?.shutdown(); m = undefined; });
+
+  it('selects reviewer and explorer model defaults for built-in presets while retaining preset restrictions and effort', async () => {
+    const home = tmp();
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ profiles: { claude: { implementation: { model: 'implementation' }, reviewer: { model: 'review-model', effort: 'high' }, explorer: { model: 'explore-model', effort: 'high' } } } }));
+    m = new NodeManager({ home, shell: '/bin/sh', path: '/nonexistent' });
+    // Armed spawns resolve and persist fields without starting a real CLI.
+    const dependency = m.registry.create({ parentId: null, kind: 'terminal', title: 'dependency', cwd: home });
+    const reviewer = await m.spawn({ kind: 'claude', title: 'review', cwd: home, parentId: dependency.id, preset: 'reviewer', afterSuccess: [dependency.id], byHuman: true });
+    const explorer = await m.spawn({ kind: 'claude', title: 'explore', cwd: home, parentId: dependency.id, preset: 'researcher', afterSuccess: [dependency.id], byHuman: true });
+    expect(reviewer).toMatchObject({ profile: 'reviewer', model: 'review-model', effort: 'medium' }); // preset effort still wins
+    expect(explorer).toMatchObject({ profile: 'explorer', model: 'explore-model', effort: 'high' });
+    expect(loadPreset('reviewer', home, home).disallowedTools).toEqual(['Edit', 'Write', 'NotebookEdit']);
+    expect(loadPreset('researcher', home, home).tools).toEqual(['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch']);
+  });
 
   it('records the preset fields and passes them to claude; explicit arguments win over the preset, which wins over config roles', async () => {
     const home = tmp(), proj = tmp(), bin = join(home, 'bin');

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { configEntries, loadConfig } from './config.js';
+import { profileDefaults, configEntries, loadConfig } from './config.js';
 
 describe('loadConfig', () => {
   let dir = '';
@@ -24,6 +24,11 @@ describe('loadConfig', () => {
     );
     const proj = join(cwd, '.tiller', 'config.json'), home = join(homeDir, 'config.json');
     expect(loadConfig(cwd, homeDir)).toEqual({
+      profiles: {
+        claude: { orchestrator: {}, implementation: {}, explorer: {}, mechanical: {}, reviewer: {} },
+        codex: { orchestrator: {}, implementation: {}, explorer: {}, mechanical: {}, reviewer: {} },
+        pi: { orchestrator: {}, implementation: {}, explorer: {}, mechanical: {}, reviewer: {} },
+      },
       roles: { orchestrator: { model: 'opus' }, worker: { model: 'haiku', effort: 'high' } }, approvals: { close: 'done', merge: false },
       worktrees: { isolation: 'worktree', branchPrefix: 'tl/', include: ['.env'], mergeStyle: 'squash', setup: ['npm ci'], teardown: [], protected: ['main', 'master'], taskBranch: 'feat/{slug}' }, // include replaces the home list whole
       gate: { command: 'npm test', retries: 5, timeoutMinutes: 10 }, // each gate key resolves on its own
@@ -33,6 +38,7 @@ describe('loadConfig', () => {
     });
     const sources = Object.fromEntries(Object.entries(configEntries(cwd, homeDir)).map(([k, e]) => [k, e.source]));
     expect(sources).toEqual({
+      ...Object.fromEntries(Object.keys(sources).filter((k) => k.startsWith('profiles.')).map((k) => [k, 'default'])),
       'roles.orchestrator.model': home, 'roles.orchestrator.effort': 'default', 'roles.worker.model': proj, 'roles.worker.effort': home,
       'approvals.close': home, 'approvals.merge': 'default',
       'worktrees.isolation': home, 'worktrees.branchPrefix': 'default', 'worktrees.include': proj, 'worktrees.mergeStyle': proj, 'worktrees.setup': home, 'worktrees.teardown': 'default', 'worktrees.protected': 'default', 'worktrees.taskBranch': proj,
@@ -43,6 +49,34 @@ describe('loadConfig', () => {
       'limits.maxDepth': 'default', 'limits.maxChildren': proj, 'limits.stallMinutes': home, 'limits.maxMessagesPer10Min': 'default',
     });
     expect(configEntries(cwd, homeDir)['gate.timeoutMinutes']).toEqual({ value: 10, source: 'default' });
+  });
+
+  it('resolves profile model and effort independently and separates harnesses from legacy roles', () => {
+    const { cwd, homeDir } = setup(
+      JSON.stringify({ profiles: { codex: { implementation: { model: 'project-codex' } }, claude: { implementation: { effort: 'low' } } }, roles: { worker: { model: 'project-claude', effort: 'max' } } }),
+      JSON.stringify({ profiles: { codex: { implementation: { model: 'home-codex', effort: 'high' }, explorer: { model: 'home-explorer' } }, claude: { implementation: { model: 'home-profile' } } } }),
+    );
+    const c = loadConfig(cwd, homeDir);
+    expect(profileDefaults(c, 'codex', 'implementation', 'worker')).toEqual({ model: 'project-codex', effort: 'high' });
+    expect(profileDefaults(c, 'codex', 'explorer', 'none')).toEqual({ model: 'home-explorer', effort: undefined });
+    expect(profileDefaults(c, 'pi', 'implementation', 'worker')).toEqual({ model: undefined, effort: undefined });
+    expect(profileDefaults(c, 'claude', 'implementation', 'worker')).toEqual({ model: 'home-profile', effort: 'low' });
+    expect(profileDefaults(c, 'claude', 'reviewer', 'none')).toEqual({ model: 'project-claude', effort: 'max' });
+    expect(configEntries(cwd, homeDir)['profiles.codex.implementation.effort'].source).toBe(join(homeDir, 'config.json'));
+  });
+
+  it('drops unsupported Codex profile effort per field and falls back before a spawn can queue it', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { cwd, homeDir } = setup(
+      JSON.stringify({ profiles: { codex: { reviewer: { model: 'keep-model', effort: 'max' } } } }),
+      JSON.stringify({ profiles: { codex: { reviewer: { effort: 'high' } }, claude: { reviewer: { effort: 'max' } } } }),
+    );
+    const config = loadConfig(cwd, homeDir);
+    expect(config.profiles.codex.reviewer).toEqual({ model: 'keep-model', effort: 'high' });
+    expect(config.profiles.claude.reviewer.effort).toBe('max');
+    expect(err.mock.calls[0]?.[0]).toContain('profiles.codex.reviewer.effort: unsupported Codex effort: max');
+    expect(configEntries(cwd, homeDir)['profiles.codex.reviewer.effort'].source).toBe(join(homeDir, 'config.json'));
+    err.mockRestore();
   });
 
   it('defaults to no model, never and no gate when there are no files', () => {
@@ -59,6 +93,8 @@ describe('loadConfig', () => {
       [JSON.stringify({ closeWithoutConfirm: 'done', limits: { maxChildren: 2 } }), 'closeWithoutConfirm: unknown key'], // an old name
       [JSON.stringify({ approvals: { close: 'sometimes' }, limits: { maxChildren: 2 } }), 'approvals.close'],
       [JSON.stringify({ roles: { worker: { effort: 'extreme' } }, limits: { maxChildren: 2 } }), 'roles.worker.effort'],
+      [JSON.stringify({ profiles: { codex: { explorer: { effort: 'extreme' } } }, limits: { maxChildren: 2 } }), 'profiles.codex.explorer.effort'],
+      [JSON.stringify({ profiles: { codex: { worker: { model: 'bad-profile' } } }, limits: { maxChildren: 2 } }), 'profiles.codex.worker: unknown key'],
       [JSON.stringify({ worktrees: { isolaton: 'worktree' }, limits: { maxChildren: 2 } }), 'worktrees.isolaton: unknown key'],
       [JSON.stringify({ worktrees: { taskBranch: 'tl/task' }, limits: { maxChildren: 2 } }), 'worktrees.taskBranch: must contain {slug}'],
       [JSON.stringify({ notifications: { quietHours: '22-7' }, limits: { maxChildren: 2 } }), 'notifications.quietHours'],

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import { NodeManager } from './manager.js';
@@ -22,6 +22,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   ws?.terminate();
   await manager.shutdown();
   await server.close();
@@ -47,6 +48,14 @@ async function until<T>(find: () => T | undefined, ms = 5000): Promise<T> {
 }
 
 describe('websocket', () => {
+  it('discovers all supported tools in the initial snapshot with no live nodes', async () => {
+    await connect();
+    const snapshot = await until(() => seen.find((m) => m.t === 'snapshot'));
+    expect(snapshot?.t === 'snapshot' && snapshot.nodes).toEqual([]);
+    expect(snapshot?.t === 'snapshot' && snapshot.usageSources?.map((s) => s.tool)).toEqual(['claude', 'codex', 'pi']);
+    expect(snapshot?.t === 'snapshot' && snapshot.usageSources?.every((s) => s.authenticated === null && s.rateLimits.length === 0)).toBe(true);
+  });
+
   it('rejects a bad token', async () => {
     await connect('wrong');
     const code = await new Promise((ok) => ws!.once('close', ok));
@@ -185,17 +194,23 @@ describe('POST /hook', () => {
   it('mod-event rateLimits: keeps the newest report from any node, broadcasts it, drops a malformed one', async () => {
     const a = (await manager.spawn({ kind: 'terminal', title: 'a', cwd: tmpdir() }));
     const b = (await manager.spawn({ kind: 'terminal', title: 'b', cwd: tmpdir() }));
+    // Real shell processes keep this test inference-free; mark their reporting harness explicitly.
+    manager.registry.update(a.id, { kind: 'claude' });
+    manager.registry.update(b.id, { kind: 'claude' });
     const post = (id: string, payload: unknown) => fetch(`http://127.0.0.1:${server.port}/mod-event`, {
       method: 'POST', body: JSON.stringify({ event: 'session.measure', payload }),
       headers: { Authorization: `Bearer ${manager.tokenFor(id)}`, 'X-TL-Node': id, 'Content-Type': 'application/json' },
     });
     await connect();
     await until(() => seen.find((m) => m.t === 'snapshot'));
+    let sourceChanges = 0; manager.on('usageSources', () => sourceChanges++);
     const first = [{ kind: 'five_hour', percentUsed: 10, resetsAt: '2026-10-13T14:30:00Z' }];
     const newer = [{ kind: 'five_hour', percentUsed: 12 }, { kind: 'seven_day', percentUsed: 3 }];
     expect((await post(a.id, { rateLimits: first })).status).toBe(204);
     expect((await post(b.id, { rateLimits: newer })).status).toBe(204);
     expect((await post(a.id, { rateLimits: [] })).status).toBe(204); // no reading: keeps b's
+    await post(a.id, { context: { tokens: 5, window: 10, percent: 50 } });
+    expect(sourceChanges).toBe(2); // context-only and empty measures do not broadcast quota snapshots
     expect(manager.usage).toMatchObject({ rateLimits: newer, nodeId: b.id });
     const sent = await until(() => { const u = seen.filter((m) => m.t === 'usage'); return u.length === 2 ? u : undefined; });
     expect(sent.map((m) => m.t === 'usage' && m.usage.nodeId)).toEqual([a.id, b.id]);
@@ -205,12 +220,21 @@ describe('POST /hook', () => {
     expect((await post(a.id, { rateLimits: 'nope' })).status).toBe(204);
     expect(manager.usage).toMatchObject({ rateLimits: newer, nodeId: b.id });
     expect(manager.view(a.id)?.status).toMatchObject({ contextPct: 50, costUsd: 1 });
+    expect((await post(a.id, { usageUnavailable: true })).status).toBe(204);
+    expect(manager.usageRegistry.sources.find((s) => s.nodeIds.includes(a.id) && s.rateLimits.length > 0)).toMatchObject({ availability: 'unavailable', rateLimits: first });
+    expect(manager.usage).toMatchObject({ rateLimits: newer, nodeId: b.id });
 
     ws!.terminate();
     seen = [];
     await connect();
     const snap = await until(() => seen.find((m) => m.t === 'snapshot'));
     expect(snap).toMatchObject({ usage: { rateLimits: newer, nodeId: b.id } });
+    expect(snap?.t === 'snapshot' && snap.usageSources?.filter((s) => s.at).map((s) => [s.nodeIds, s.rateLimits])).toEqual([[[a.id], first], [[b.id], newer]]);
+    send({ t: 'usageRefresh' });
+    const refreshed = await until(() => seen.find((m) => m.t === 'usageSources'));
+    expect(refreshed?.t === 'usageSources' && refreshed.sources.filter((s) => s.id.startsWith('discovery:'))).toHaveLength(3);
+    expect((await post(a.id, { usageReports: [{ scope: 'model', rateLimits: first }] })).status).toBe(204);
+    expect(manager.usageRegistry.sources.filter((s) => s.rateLimits.length)).toHaveLength(2);
   });
 
   it('GET /tree: the whole tree from the root, the caller marked self', async () => {
@@ -291,5 +315,82 @@ describe('client tracking', () => {
     await watching(0);
     ws!.terminate();
     await until(() => (server.appConnected() ? undefined : true));
+  });
+});
+
+
+describe('approved native notification delivery', () => {
+  const notification = { id: 'n-approved', title: 'Build', body: 'Finished', sound: false };
+  const offer = () => until(() => seen.find((m) => m.t === 'nativeNotify')) as Promise<Extract<ServerMessage, { t: 'nativeNotify' }>>;
+  const ready = async () => {
+    await connect(adminToken(), 'app');
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    await new Promise<void>((ok) => {
+      ws!.once('pong', () => ok());
+      send({ t: 'nativeNotifyReady', ok: true });
+      ws!.ping();
+    });
+  };
+
+  it('uses fallback when no ready native app is connected', async () => {
+    expect(await server.notifyNative(notification)).toBe(false);
+    await connect(adminToken(), 'app');
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    expect(await server.notifyNative(notification)).toBe(false);
+    send({ t: 'nativeNotifyReady', ok: false, error: 'plugin unavailable' });
+  });
+
+  it('dispatches to exactly one ready app and ignores receipts from another client', async () => {
+    await ready();
+    const other = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const otherSeen: ServerMessage[] = [];
+    other.on('message', (raw) => otherSeen.push(JSON.parse(raw.toString())));
+    await new Promise((ok) => other.once('open', ok));
+    other.send(JSON.stringify({ t: 'auth', token: adminToken(), client: 'app' }));
+    await until(() => otherSeen.find((m) => m.t === 'snapshot'));
+    await new Promise<void>((ok) => {
+      other.once('pong', () => ok());
+      other.send(JSON.stringify({ t: 'nativeNotifyReady', ok: true }));
+      other.ping();
+    });
+    const delivered = server.notifyNative(notification);
+    const request = await offer();
+    expect(request.notification).toEqual(notification);
+    other.send(JSON.stringify({ t: 'nativeNotifyResult', requestId: request.requestId, ok: false }));
+    send({ t: 'nativeNotifyResult', requestId: request.requestId, ok: true });
+    expect(await delivered).toBe(true);
+    expect(otherSeen.filter((m) => m.t === 'nativeNotify')).toEqual([]);
+    other.terminate();
+  });
+
+  it('falls back on definitive plugin failure and surfaces the error', async () => {
+    await ready();
+    const delivered = server.notifyNative(notification);
+    const request = await offer();
+    send({ t: 'nativeNotifyResult', requestId: request.requestId, ok: false, error: 'permission denied' });
+    expect(await delivered).toBe(false);
+    expect(await until(() => seen.find((m) => m.t === 'error'))).toMatchObject({ message: 'Native notification: permission denied' });
+  });
+
+  it('does not retry or use fallback when a dispatched notification has no receipt', async () => {
+    await ready();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const received = new Promise<Extract<ServerMessage, { t: 'nativeNotify' }>>((ok) => ws!.once('message', (raw) => ok(JSON.parse(raw.toString()))));
+    const delivered = server.notifyNative(notification);
+    const request = await received;
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect(await delivered).toBe(true); // fallback could duplicate the OS notification
+    vi.useRealTimers();
+    send({ t: 'nativeNotifyResult', requestId: request.requestId, ok: false, error: 'late failure' });
+    await new Promise((ok) => setTimeout(ok, 25));
+    expect(seen.filter((m) => m.t === 'nativeNotify')).toHaveLength(1);
+  });
+
+  it('does not retry after the nominated app disconnects following dispatch', async () => {
+    await ready();
+    const delivered = server.notifyNative(notification);
+    await offer();
+    ws!.terminate();
+    expect(await delivered).toBe(true);
   });
 });

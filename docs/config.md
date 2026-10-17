@@ -4,7 +4,7 @@ Tiller reads JSON config from two files: the project file `<repo>/.tiller/config
 
 ## Resolution
 
-Each key resolves on its own, in this order: an explicit argument on the spawn (where the key has one), then the project file, then the home file, then the built-in default. The project file is the one in the node's directory; for a node in its own git worktree it is the main checkout's. Both files are read on every use, so an edit applies without restarting the daemon.
+Each config key resolves independently: project file, then home file, then built-in default. For spawn model and effort, each field resolves in this order: explicit spawn argument, preset frontmatter, `profiles.<harness>.<profile>` config, legacy `roles` config (Claude only), then the harness’s own default. A home profile setting therefore wins over a project legacy role setting; project beats home within the same config key. Profile selection resolves from the explicit spawn argument, then preset, then effective coordination role (`orchestrator` → `orchestrator`, `worker`/`none` → `implementation`). Coordination role resolves separately: explicit argument, preset, then root `orchestrator` or child `worker`. The project file is the one in the node's directory; for a node in its own git worktree it is the main checkout's. Both files are read on every use, so an edit applies without restarting the daemon.
 
 Keys in the `daemon` group are daemon-wide and come from the home file only. A `daemon` group in a project file is ignored with a warning.
 
@@ -18,6 +18,8 @@ The layer column says where a key may be set: "project, home" means either file,
 
 | Key | Type | Default | Layer | Meaning |
 |---|---|---|---|---|
+| `profiles.<harness>.<profile>.model` | string | harness default, or legacy Claude role | project, home | Model for the selected harness and task profile. Harness: `claude`, `codex`, `pi`; profile: `orchestrator`, `implementation`, `explorer`, `mechanical`, `reviewer`. |
+| `profiles.<harness>.<profile>.effort` | `low`, `medium`, `high`, `xhigh`, `max` | harness default, or legacy Claude role | project, home | Effort for that harness/profile. Codex supports through `xhigh`; `max` is rejected as an invalid config leaf. Unsupported resolved Codex effort is rejected before node or worktree allocation, including queued spawns. |
 | `roles.orchestrator.model` | string | Claude's default | project, home | Model for an orchestrator spawned without one. |
 | `roles.orchestrator.effort` | `low`, `medium`, `high`, `xhigh`, `max` | Claude's default | project, home | Effort (passed to claude as `--effort`) for an orchestrator spawned without one. |
 | `roles.worker.model` | string | Claude's default | project, home | Model for a worker, or a node with role `none`, spawned without one. |
@@ -65,3 +67,99 @@ For notification levels, `sound` is a banner with a sound and `silent` sends not
   "limits": { "stallMinutes": 10 }
 }
 ```
+
+## Opt-in Codex task defaults
+
+No profile model or effort is forced on existing users. Existing `roles` settings continue to apply only to Claude; they never supply Claude model IDs to Codex or Pi. Model IDs in explicit spawn arguments and presets are passed to the selected harness unchanged, so use a compatible preset/model. Resolved profile, model and effort are retained through resume, restart and follow-up; config edits affect new spawns. The UI metadata and `tl list` show the selected profile and available model/effort (live harness reports take precedence for display).
+
+To opt into the recommended Codex choices, add this to either config file:
+
+```json
+{
+  "profiles": {
+    "codex": {
+      "orchestrator": { "model": "gpt-6-astra", "effort": "medium" },
+      "implementation": { "model": "gpt-6.1-sol", "effort": "medium" },
+      "explorer": { "model": "gpt-6-luna", "effort": "high" },
+      "mechanical": { "model": "gpt-6-luna", "effort": "low" },
+      "reviewer": { "model": "gpt-6.1-sol", "effort": "high" }
+    }
+  }
+}
+```
+
+For example, `tl config --cwd /path/to/repo` includes `profiles.codex.reviewer.model` and the file that supplied it. A project can override just its effort while retaining the home model. A spawn’s explicit model can override its preset model while effort still comes from that preset or profile config.
+
+## Settings HTTP API
+
+The human Settings editor uses `GET /api/settings?scope=home` or
+`GET /api/settings?scope=project&nodeId=<existing-node-id>`. Both require
+`Authorization: Bearer <admin-token>`; node tokens cannot read or save Settings.
+No MCP Settings tool is exposed. Home settings work without a selected node.
+Project settings use the node's project directory (the main checkout for worktree
+nodes), never a path supplied by the client. Config files and project `.tiller`
+directories that are symlinks are rejected.
+
+A snapshot contains `scope`, `path`, `projectPath`, `revision`, flattened explicit
+`values`, effective `entries`, and `inherited` entries from below the selected
+layer. Each entry has `value` (omitted if unset) and `source` (a config path or
+`default`). Home inherits built-in defaults; project inherits home and defaults.
+The `daemon` group is editable only at home scope.
+
+Save with `POST /api/settings` and a JSON body such as:
+
+```json
+{"scope":"project","nodeId":"n-example","revision":"<snapshot revision>","changes":{"limits.maxDepth":4,"gate.command":null}}
+```
+
+Only supported leaf keys may change; `null` removes that explicit override.
+Profile model and effort keys use `profiles.<harness>.<profile>.model` and
+`.effort`, for harnesses `claude`, `pi`, `codex` and profiles `orchestrator`,
+`implementation`, `explorer`, `mechanical`, `reviewer`. Codex effort accepts `low`,
+`medium`, `high`, `xhigh`; Claude and Pi additionally accept `max`. Unknown existing fields
+are preserved. Saving command strings only stores them; it does not execute them.
+Successful saves return a fresh snapshot. A stale revision returns HTTP 409;
+reload and reconcile the changes before retrying. Invalid requests return 400,
+unknown nodes 404, malformed JSON files or invalid group structures 422, and
+filesystem failures 500 with an error message. Malformed files are never replaced.
+
+Writes use an exclusive temporary file beside the config, flush it, and atomically
+rename it over the original. Failed writes remove their temporary file and leave
+the original intact. Writes in one daemon are serialized; a final content check
+also detects external edits made before rename. Portable filesystem rename has
+no cross-process compare-and-swap, so an external editor writing in the interval
+between that check and rename can still race. Avoid simultaneous external edits
+while saving through Settings.
+
+Effective Settings entries use the same invalid-leaf filtering as runtime config
+resolution; an invalid known override remains visible in raw `values` for repair
+or reset but does not supply an effective value. Profile fields resolve
+independently from project, then home, before Claude falls back to legacy roles.
+The profile preview assumes coordination role `orchestrator` for that profile
+and `worker` for implementation, explorer, mechanical and reviewer. An explicit
+coordination role at spawn can change the legacy fallback; explicit spawn options
+and preset values also take precedence over this configuration preview. Pi and
+Codex never inherit Claude legacy roles. For ordinary fields, inherited entries
+come from layers below the selected scope. A profile field’s inherited entry
+previews resetting that field only: it uses a lower-layer profile value first,
+then the effective legacy role value, including role overrides retained in the
+selected file. This applies to both project and home resets.
+
+## Native notifications
+
+The daemon applies mute, do not disturb, watched-node suppression, quiet hours,
+notification levels, throttling and tree summaries before requesting an OS
+notification. When a ready Tiller app is connected, one app client submits that
+approved notification through Tauri, using the release app's Tiller identity and
+icon. Clicking it opens the app and selects the node if it still exists. macOS
+may require you to allow notifications for Tiller; the app can request permission
+but does not grant it for you.
+
+With no ready native app, or after a definite native submission failure, the
+daemon uses its existing terminal-notifier/AppleScript fallback. A fully quit app
+is not started just to notify; fallback notifications may retain their sender's
+icon. If the app disconnects or its receipt times out after dispatch, the daemon
+logs uncertain delivery and does not resend, avoiding duplicate notifications.
+The native plugin acknowledges submission, not eventual OS display. After an
+update, rebuild and relaunch the release app and restart the updated daemon to
+use native delivery; a browser tab alone uses the fallback.

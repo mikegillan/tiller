@@ -20,8 +20,8 @@ describe('worktree', () => {
     const git = { branch: wt.branch, base: 'main', ahead: 2, behind: 0, dirty: 1, additions: 0, deletions: 0 };
     const node = (status: object) => ({ ...mk('a', null, 0, { state: 'done', git, ...status }), worktree: wt });
     const text = (n: ReturnType<typeof node>) => renderToStaticMarkup(<NodeMeta node={n} />).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    expect(text(node({}))).toBe('⎇ tl/n-3f2a9c1d ↑2 ●1');
-    expect(text(node({ git: { ...git, ahead: 0, dirty: 0, mergedAt: 1 } }))).toBe('⎇ tl/n-3f2a9c1d merged');
+    expect(text(node({}))).toBe('⎇ tl/n-3f2a9c1d ↑2 ●1 Orchestrator');
+    expect(text(node({ git: { ...git, ahead: 0, dirty: 0, mergedAt: 1 } }))).toBe('⎇ tl/n-3f2a9c1d merged Orchestrator');
     expect([node({}), node({ state: 'working' }), node({ state: 'working', exited: true }), node({ git: { ...git, mergedAt: 1 } })].map(hasChanges)).toEqual([true, false, true, false]);
     const clean = { ...git, dirty: 0 };
     expect([node({ git: clean }), node({}), node({ git: clean, state: 'working' }), node({ git: { ...clean, ahead: 0 } }), node({ git: { ...clean, mergedAt: 1 } })].map(canMerge)).toEqual([true, false, false, false, false]);
@@ -34,4 +34,11 @@ describe('worktree', () => {
       ['Discard', { t: 'close', id: 'n1', worktree: 'discard' }],
     ]);
   });
+});
+
+it('shows resolved profile, model and effort before status hooks arrive', () => {
+  const html = renderToStaticMarkup(<NodeMeta node={{ ...mk('a', 'p', 0), profile: 'mechanical', model: 'gpt-test', effort: 'high' }} />);
+  expect(html).toContain('Mechanical worker');
+  expect(html).toContain('gpt-test');
+  expect(html).toContain('high');
 });

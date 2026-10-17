@@ -4,6 +4,7 @@ import { HistoryPanel } from './History';
 import { Icon } from './icons';
 import { NodeRow } from './NodeRow';
 import { SessionSwitcher } from './SessionSwitcher';
+import { SidebarResize } from './SidebarResize';
 import { flattenSession, type Row } from './tree';
 import { openDialog, selectNode, toggleCollapsed, toggleHistory, useStore } from './store';
 
@@ -27,13 +28,14 @@ function onKey(e: React.KeyboardEvent, rows: Row[], selected: string | null) {
   else if (row && (e.key === 'l' || e.key === 'ArrowRight') && row.collapsed) toggleCollapsed(row.node.id);
 }
 
-export function Sidebar() {
+export function Sidebar({ onSettings }: { onSettings: () => void }) {
   const rows = useRows();
   const selected = useStore((s) => s.selected);
   const exited = useStore((s) => Object.values(s.nodes).filter((n) => n.status.exited).length);
   const tree = useRef<HTMLDivElement>(null);
   const cur = useStore((s) => (s.selected ? s.nodes[s.selected] : undefined));
   const history = useStore((s) => s.historyOpen);
+  const panelOpen = useStore((s) => s.panel);
 
   // Keep the selected row in view when selection moves (keyboard, palette, focus message).
   useEffect(() => { tree.current?.querySelector('.row.sel')?.scrollIntoView({ block: 'nearest' }); }, [selected]);
@@ -41,6 +43,7 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <SessionSwitcher />
+      <button className="btn" style={{ margin: '8px' }} onClick={onSettings}>Settings</button>
       {history ? <HistoryPanel /> : (
         <div className="tree" role="tree" tabIndex={0} ref={tree} onKeyDown={(e) => onKey(e, rows, selected)}>
           {rows.map((r) => <NodeRow key={r.node.id} row={r} />)}
@@ -58,6 +61,7 @@ export function Sidebar() {
           <Icon name="history" size={14} />
         </button>
       </footer>
+      <SidebarResize panelOpen={panelOpen} />
     </aside>
   );
 }

@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { z } from 'zod';
-import { EFFORTS, ISOLATIONS, ROLES } from '../shared/protocol.js';
+import { EFFORTS, ISOLATIONS, PROFILES, ROLES } from '../shared/protocol.js';
 
 export const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'] as const;
 
@@ -21,6 +21,7 @@ const Frontmatter = z.object({
   effort: z.enum(EFFORTS).optional(),
   isolation: z.enum(ISOLATIONS).optional(),
   role: z.enum(ROLES).optional(),
+  profile: z.enum(PROFILES).optional(),
 });
 
 export type Preset = Omit<z.infer<typeof Frontmatter>, 'name'> & { name: string; body: string; source: string };
@@ -89,6 +90,7 @@ disallowedTools: Edit, Write, NotebookEdit
 isolation: none
 effort: medium
 role: worker
+profile: reviewer
 ---
 # Reviewer
 
@@ -102,6 +104,7 @@ description: Read-only research in the codebase and on the web; changes nothing.
 tools: Read, Grep, Glob, WebSearch, WebFetch
 isolation: none
 role: worker
+profile: explorer
 ---
 # Researcher
 

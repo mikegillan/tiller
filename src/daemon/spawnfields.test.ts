@@ -29,3 +29,12 @@ describe('spawnKind', () => {
     expect(spawnKind(undefined, 'claude')).toBeUndefined();
   });
 });
+
+describe('profile validation shared by CLI, MCP and WebSocket', () => {
+  it('accepts exactly the five task profiles and leaves coordination roles separate', () => {
+    for (const profile of ['orchestrator', 'implementation', 'explorer', 'mechanical', 'reviewer']) expect(SPAWN_FIELDS.profile.parse(profile)).toBe(profile);
+    expect(SPAWN_FIELDS.profile.parse(undefined)).toBeUndefined();
+    for (const profile of ['worker', 'none', 'researcher', 'bogus']) expect(SPAWN_FIELDS.profile.safeParse(profile).success).toBe(false);
+    expect(SPAWN_FIELDS.role.safeParse('implementation').success).toBe(false);
+  });
+});

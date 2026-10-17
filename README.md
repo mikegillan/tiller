@@ -7,7 +7,7 @@
 
 # tiller
 
-Tiller is a local daemon that runs several agent CLI sessions (Claude Code or Pi) as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser. A Claude Code mod or Pi extension loaded into each agent node delivers messages and reports lifecycle events.
+Tiller is a local daemon that runs several agent CLI sessions (Claude Code, Pi or Codex) as child processes, called nodes, and lets one of them, the orchestrator, spawn, message and watch the others. A root node (one with no parent) is an orchestrator; a node it spawns is a worker. The main front end is a native macOS app built with Tauri; the same UI runs in a browser. A Claude Code mod, Pi extension or Codex app-server bridge delivers messages and reports lifecycle events.
 
 ## Install
 
@@ -16,6 +16,8 @@ On a Mac, clone the repo and run:
     bin/setup
 
 It checks everything tiller needs, lists what is missing with the exact command for each, asks once, installs those pieces, then runs `npm install`, `npm link` and `npm run app:build`. It never uses `sudo` and does not edit your shell profile. `bin/setup --no-app` skips Rust and the app build; `bin/setup --harness pi` installs Pi instead of Claude Code when neither is present. Run `tl doctor` (or `bin/setup --check`) later to rerun the checks without changing anything; it prints the fix for anything broken.
+
+For Codex nodes, have `codex` on your PATH and authenticate with `codex login`; see the [Codex adapter](adapters/codex/README.md). The setup installer currently offers Claude Code or Pi.
 
 What it checks, for reference:
 
@@ -31,6 +33,7 @@ What it checks, for reference:
 
 - `tl` starts the daemon if it is not running and opens the app on the existing sessions (or the browser UI when the app is not built), like `code`. `tl .` or `tl ~/some/repo` (like `code .`) also finds, resumes or creates the orchestrator for that directory and opens the app on it. Without `up` or `app` in front, the path must start with `.`, `/` or `~`. `tl --new` always starts a fresh orchestrator, for the current directory unless a path is given.
 - `cd ~/some/repo && tl --harness pi` uses Pi instead of Claude Code; the spawn dialog also offers Pi. Claude Code is not needed for a Pi-only tree.
+- `cd ~/some/repo && tl --harness codex` runs Codex; the spawn dialog also offers Codex. See the [Codex adapter](adapters/codex/README.md) for terminal controls and approval handling.
 - `tl stop` shuts the daemon down and closes every node; the nodes are not resumed on the next start.
 - `tl reload` restarts the daemon on the current code and resumes the nodes that were live. Run it after pulling or editing daemon code.
 - `tl autostart on|off|status` manages a launchd agent that starts the daemon at login and again after a crash.
@@ -47,7 +50,9 @@ Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the nod
 
 Tiller reads two JSON files, both optional: a per-repo file at `<repo>/.tiller/config.json`, which you commit so everyone who runs tiller in that repo gets the same behaviour, and a global file at `~/.tiller/config.json` for your own defaults across repos. Each key resolves on its own: the repo file wins over the global file, which wins over the built-in default. Keys in the `daemon` group (resume, retention, node caps) are daemon-wide and are read from the global file only. Both files are re-read on every use, so an edit applies without restarting the daemon. `tl config` prints the effective value of every key for the current directory and which file it came from.
 
-A typical repo file sets the models for each role, gives workers their own worktrees with task branches named in the repo's convention, defines the check that must pass before a worker may report success, and lets the orchestrator close finished workers without asking:
+Task profiles (`orchestrator`, `implementation`, `explorer`, `mechanical`, `reviewer`) select portable task guidance independently of coordination roles (`orchestrator`, `worker`, `none`). Default profiles follow the effective role: orchestrator maps to orchestrator, worker/none to implementation (normally root and child respectively). Use `--profile` with `tl new` / `tl spawn`, or the spawn dialog. Optional model/effort defaults live under `profiles.<harness>.<profile>`; [configuration](docs/config.md#opt-in-codex-task-defaults) includes recommended Codex choices. Existing Claude `roles` settings remain compatible.
+
+A typical legacy Claude repo file sets the models for each role, gives workers their own worktrees with task branches named in the repo's convention, defines the check that must pass before a worker may report success, and lets the orchestrator close finished workers without asking:
 
 ```json
 {

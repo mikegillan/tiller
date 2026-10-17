@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { ArchivedNode, Diff, DigestItem, Dnd, ServerMessage, Transcript, Usage } from '../src/shared/protocol';
+import type { ArchivedNode, Diff, DigestItem, Dnd, ServerMessage, Transcript, Usage, UsageSource } from '../src/shared/protocol';
 import type { ReviewComment } from './diff';
 import { pickInitial, rootOf } from './sessions';
 import { insertSorted, type Nodes } from './tree';
@@ -7,6 +7,11 @@ import { wantedNode } from './url';
 
 export type Tone = 'info' | 'ok' | 'warn' | 'bad';
 export interface Toast { id: number; text: string; nodeId?: string; tone: Tone }
+export interface Activity { id: number; nodeId?: string; nodeName: string; at: number; text: string; tone: Tone; read: boolean }
+export const ACTIVITY_LIMIT = 200;
+/** Newest first; the oldest events expire, including their unread state. */
+export const appendActivity = (items: Activity[], item: Activity): Activity[] => [item, ...items].slice(0, ACTIVITY_LIMIT);
+export const activityUnread = (items: Activity[]) => items.filter((item) => !item.read).length;
 export interface Confirm { confirmId: string; text: string }
 export type Dialog =
   | { kind: 'spawn'; parentId: string | null; cwd: string }
@@ -28,6 +33,8 @@ export interface State {
   collapsed: string[];
   toasts: Toast[];
   confirms: Confirm[];
+  activity: Activity[];
+  activityOpen: boolean;
   connected: boolean;
   /** Reconnect attempts since the last successful connection. */
   retry: number;
@@ -41,6 +48,8 @@ export interface State {
   dnd?: Dnd;
   /** Account-level rate limits, as the newest node report gave them. */
   usage?: Usage;
+  usageSources?: UsageSource[];
+  usageScanning?: boolean;
   /** What happened while no client was focused, until dismissed. */
   digest?: { since: number; items: DigestItem[] };
   /** The Diff tab is showing instead of the terminal (for worktree nodes). */
@@ -66,12 +75,13 @@ export interface State {
 const stored = (() => { try { return localStorage.getItem('tl.panel') === '1'; } catch { return false; } })();
 
 let state: State = {
-  nodes: {}, order: [], selected: null, session: null, opened: [], collapsed: [], toasts: [], confirms: [],
+  nodes: {}, order: [], selected: null, session: null, opened: [], collapsed: [], toasts: [], confirms: [], activity: [], activityOpen: false,
   connected: false, retry: 0, panel: stored, dialog: null, renaming: null, awaitSpawn: false, diffOpen: false, diff: null, comments: [],
   transcriptOpen: false, transcript: null, historyOpen: false, history: [], archived: null, removals: 0,
 };
 const subs = new Set<() => void>();
 let toastSeq = 0;
+let activitySeq = 0;
 
 export const getState = () => state;
 export function update(fn: (s: State) => Partial<State>) {
@@ -87,9 +97,19 @@ const without = <T,>(xs: T[], x: T) => xs.filter((y) => y !== x);
 
 export const toast = (text: string, nodeId?: string, tone: Tone = 'info') =>
   update((s) => ({ toasts: [...s.toasts, { id: ++toastSeq, text, nodeId, tone }] }));
+export const recordActivity = (text: string, nodeId?: string, tone: Tone = 'info', at = Date.now()) =>
+  update((s) => ({ activity: appendActivity(s.activity, {
+    id: ++activitySeq, nodeId, nodeName: (nodeId && s.nodes[nodeId]?.title) || nodeId || 'Tiller', at, text, tone, read: false,
+  }) }));
+export const markActivityRead = () => update((s) => ({ activity: s.activity.map((item) => item.read ? item : { ...item, read: true }) }));
+export const clearActivity = () => update(() => ({ activity: [] }));
+export const setActivityOpen = (activityOpen: boolean) => update((s) => ({
+  activityOpen,
+  ...(activityOpen ? { activity: s.activity.map((item) => item.read ? item : { ...item, read: true }) } : {}),
+}));
 export const dismissToast = (id: number) => update((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
 export const dropConfirm = (confirmId: string) => update((s) => ({ confirms: s.confirms.filter((c) => c.confirmId !== confirmId) }));
-export const setConnected = (connected: boolean, retry = 0) => update(() => ({ connected, retry }));
+export const setConnected = (connected: boolean, retry = 0) => update(() => ({ connected, retry, ...(!connected ? { usageScanning: false } : {}) }));
 export const openDialog = (dialog: Dialog | null) => update(() => ({ dialog }));
 export const dismissDigest = () => update(() => ({ digest: undefined }));
 export const setRenaming = (renaming: string | null) => update(() => ({ renaming }));
@@ -142,10 +162,12 @@ export function applyServer(m: ServerMessage) {
         for (const n of fresh) order = insertSorted(order, nodes, n);
         const base = { ...s, order, opened: s.opened.filter((id) => nodes[id]) };
         const sel = s.selected && nodes[s.selected] ? s.selected : pickInitial(nodes, order, s.selected ? undefined : wantedNode);
-        return { order, opened: base.opened, usage: m.usage ?? s.usage, dnd: m.dnd, ...choose(base, nodes, sel) };
+        return { order, opened: base.opened, usage: m.usage ?? s.usage, usageSources: m.usageSources ?? s.usageSources, dnd: m.dnd, ...choose(base, nodes, sel) };
       });
     case 'dnd':
       return update(() => ({ dnd: { on: m.on, until: m.until } }));
+    case 'usageSources':
+      return update(() => ({ usageSources: m.sources, usageScanning: false }));
     case 'usage':
       return update(() => ({ usage: m.usage }));
     case 'node':
@@ -196,8 +218,10 @@ export function applyServer(m: ServerMessage) {
       return toast(outcome === 'queued' ? `Queued for ${title}; it arrives when the node is idle` : `Sent to ${title}`, m.id, 'ok');
     }
     case 'error':
+      if (state.usageScanning) update(() => ({ usageScanning: false }));
       // A spawn or follow-up that failed answers only with an error: stop waiting, or the next node anyone spawns gets selected.
       if (state.awaitSpawn) update(() => ({ awaitSpawn: false }));
+      recordActivity(m.message, m.id, 'bad');
       return toast(m.message, m.id, 'bad');
     case 'digest':
       return update(() => ({ digest: { since: m.since, items: m.items } }));

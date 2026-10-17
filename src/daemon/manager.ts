@@ -4,8 +4,9 @@ import { stripVTControlCharacters } from 'node:util';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { harnessFor, isAgentKind, NEEDS_YOU_STATES, type Harness, type ArchivedNode, type Diff, type DigestItem, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
-import { loadConfig, type Config, type MergeStyle } from './config.js';
+import { profileFor, type Profile, harnessFor, isAgentKind, NEEDS_YOU_STATES, type Harness, type ArchivedNode, type Diff, type DigestItem, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
+import { profileDefaults, loadConfig, type Config, type MergeStyle } from './config.js';
+import { UsageRegistry } from './usage.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
 import { roleFor, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
@@ -65,6 +66,7 @@ export interface SpawnRequest {
   effort?: Effort;
   permissionMode?: string;
   role?: Role;
+  profile?: Profile;
   parentId?: string | null;
   isolation?: Isolation;
   /** Worktree isolation only: the branch the worktree forks from and merges into, created at the cwd's HEAD if absent. */
@@ -148,6 +150,7 @@ export class NodeManager extends EventEmitter {
   readonly registry: NodeRegistry;
   /** Newest account-level rate limits from any node. Not persisted: the next measure after a restart refills it. */
   usage?: Usage;
+  readonly usageRegistry: UsageRegistry;
   /** Base URL of the daemon, set by the server once it knows its port. */
   endpoint = '';
   /** Whether any connected UI client has node `id` selected; set by the server. A selected node never turns unread. */
@@ -171,6 +174,7 @@ export class NodeManager extends EventEmitter {
     this.home = opts.home ?? homeDir();
     this.shell = opts.shell ?? process.env.SHELL ?? '/bin/sh';
     this.path = opts.path ?? process.env.PATH ?? '';
+    this.usageRegistry = new UsageRegistry(this.path);
     mkdirSync(join(this.home, 'nodes'), { recursive: true, mode: 0o700 });
     chmodSync(this.home, 0o700); // mkdir's mode does not apply to a directory that already existed
     ensurePresets(this.home);
@@ -225,7 +229,8 @@ export class NodeManager extends EventEmitter {
     const rec = this.registry.get(id), rt = this.runtimes.get(id);
     const status = rt?.status;
     if (!rec || !rt || !status) return undefined;
-    const s = status.model || !rec.model ? status : { ...status, model: rec.model };
+    const withModel = status.model || !rec.model ? status : { ...status, model: rec.model };
+    const s = withModel.effort || !rec.effort ? withModel : { ...withModel, effort: rec.effort };
     const { git, outcome, gate } = rt;
     const shown = gate?.state === 'running' ? { ...s, activity: `gate: ${gate.command}` } : s;
     return { ...rec, status: git ? { ...shown, git } : shown, unread: !!rt.unread, ...(outcome ? { outcome } : {}), ...(gate ? { gate: gate.state } : {}) };
@@ -320,7 +325,7 @@ export class NodeManager extends EventEmitter {
 
   /**
    * Spawn a node. Each of role, model, effort, permissionMode and isolation comes from the request, else its preset,
-   * else: model and effort from the project config's defaults for its role; permissionMode from an agent parent's own
+   * else: model and effort from the harness/profile config, then legacy Claude role defaults; permissionMode from an agent parent's own
    * mode unless that is bypassPermissions; isolation from the config for a claude node whose role is worker or none.
    * Isolation "worktree" gives the node <main checkout>/.claude/worktrees/<id> on branch <prefix><id>, branched from its
    * base (see wt.pickBase: req.base, else the cwd's HEAD branch, else a new task branch); the repo must have a commit
@@ -342,26 +347,28 @@ export class NodeManager extends EventEmitter {
     if (req.preset && !adapter) throw new Error('a preset is for agent nodes only');
     const p: Partial<Preset> = req.preset ? loadPreset(req.preset, dir, this.home) : {};
     const role = req.role ?? p.role, isOrchestrator = roleFor(role, parentId) === 'orchestrator';
-    // Legacy role defaults name Claude models; other CLIs keep their own defaults unless explicitly configured by a preset/request.
-    const defaults = adapter?.id === 'claude' ? config.roles[isOrchestrator ? 'orchestrator' : 'worker'] : {};
+    const profile = adapter ? profileFor(req.profile ?? p.profile, parentId, role) : undefined;
+    const defaults: Pick<NodeRecord, 'model' | 'effort'> = adapter ? profileDefaults(config, adapter.id, profile!, roleFor(role, parentId)) : {};
+    const model = req.model ?? p.model ?? defaults.model, effort = req.effort ?? p.effort ?? defaults.effort;
+    if (adapter?.id === 'codex' && effort && !['low', 'medium', 'high', 'xhigh'].includes(effort)) throw new Error(`unsupported Codex effort: ${effort}`);
     const parent = parentId ? this.registry.get(parentId) : undefined;
-    // Pi cannot carry Claude's restrictions. Selecting it is unrestricted delegation, not a permission override
-    // or a process sandbox: only the human, a Pi parent, or an already unrestricted Claude parent may do so.
-    if (adapter?.id === 'pi' && !req.byHuman && !(parent && isAgentKind(parent.kind) && harnessFor(parent) === 'pi')) {
+    // Other harnesses cannot carry Claude restrictions. Only the human, a same-harness parent,
+    // or an unrestricted Claude parent may select them. This is not a process sandbox.
+    if (adapter && adapter.id !== 'claude' && !req.byHuman && !(parent && isAgentKind(parent.kind) && harnessFor(parent) === adapter.id)) {
       const rt = parent ? this.runtimes.get(parent.id) : undefined;
       const mode = rt?.status?.permissionMode ?? parent?.permissionMode;
       // A restored/armed node has no launch snapshot. Its preset file may have changed since the old process;
       // do not infer that process's restrictions from today's file. A successful launch establishes the snapshot.
       if (parent?.preset && !rt?.launchedPreset) {
-        throw new Error('refused: Claude preset restrictions are unknown until the parent launches; only the human may spawn Pi');
+        throw new Error(`refused: Claude preset restrictions are unknown until the parent launches; only the human may spawn ${adapter.id === 'pi' ? 'Pi' : 'Codex'}`);
       }
       const preset = rt?.launchedPreset ?? {};
       const restricted = preset.tools !== undefined || preset.disallowedTools !== undefined || preset.maxTurns !== undefined;
       if (!parent || !isAgentKind(parent.kind) || mode !== 'bypassPermissions' || restricted) {
-        throw new Error('refused: only the human or an unrestricted agent parent may spawn Pi; Claude requires effective permissionMode bypassPermissions and no preset tools, disallowedTools or maxTurns restrictions');
+        throw new Error(`refused: only the human or an unrestricted agent parent may spawn ${adapter.id === 'pi' ? 'Pi' : 'Codex'}; Claude requires effective permissionMode bypassPermissions and no preset tools, disallowedTools or maxTurns restrictions`);
       }
     }
-    const inherited = req.byHuman || !parent || adapter?.id === 'pi' || (adapter && harnessFor(parent) !== adapter.id)
+    const inherited = req.byHuman || !parent || (adapter && adapter.id !== 'claude') || (adapter && harnessFor(parent) !== adapter.id)
       ? undefined : this.runtimes.get(parentId!)?.status?.permissionMode ?? parent.permissionMode;
     const permissionMode = req.permissionMode ?? p.permissionMode ?? (inherited === 'bypassPermissions' ? undefined : inherited);
     if (permissionMode === 'bypassPermissions' && !req.byHuman) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
@@ -381,10 +388,10 @@ export class NodeManager extends EventEmitter {
     }
     const rec = this.registry.create({ // the resolved fields, so restart keeps them
       parentId, kind: req.kind, ...(req.harness ? { harness: req.harness } : {}), title: req.title, cwd: req.cwd,
-      model: req.model ?? p.model ?? defaults.model, effort: req.effort ?? p.effort ?? defaults.effort, permissionMode, role, preset: req.preset,
+      model, effort, permissionMode, role, profile, preset: req.preset,
       sessionId: adapter ? req.followup?.sessionId ?? randomUUID() : undefined,
-      ...(adapter?.id === 'pi' && req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
-      ...(adapter?.id === 'pi' && req.followup?.previousSessions ? { previousSessions: req.followup.previousSessions } : {}),
+      ...(adapter && adapter.id !== 'claude' && req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
+      ...(adapter && adapter.id !== 'claude' && req.followup?.previousSessions ? { previousSessions: req.followup.previousSessions } : {}),
       rootId: parentId ? this.rootIdOf(parentId) : undefined,
       prompt: req.prompt, forkOf: req.fork, forkSession: from?.sessionId, followupOf: req.followup?.id,
       // A follow-up's resumed session keeps counting its cost from where the archived node's last measure left it.
@@ -442,7 +449,7 @@ export class NodeManager extends EventEmitter {
     const cwd = usableCwd(a.cwd);
     if (!cwd) throw new Error(`refused: ${a.cwd} no longer exists`);
     const parentId = a.parentId && this.registry.get(a.parentId) ? a.parentId : null;
-    return this.spawn({ kind: a.harness === 'pi' ? 'agent' : 'claude', ...(a.harness ? { harness: a.harness } : {}), title: title || a.title, cwd, prompt, model: a.model, effort: a.effort, role: a.role, parentId, isolation: 'none', byHuman: true, followup: a });
+    return this.spawn({ kind: a.harness && a.harness !== 'claude' ? 'agent' : 'claude', ...(a.harness ? { harness: a.harness } : {}), title: title || a.title, cwd, prompt, model: a.model, effort: a.effort, role: a.role, profile: a.profile, parentId, isolation: 'none', byHuman: true, followup: a });
   }
 
   /** A live or archived Claude node's conversation in one of its sessions (default: the current one). */
@@ -541,7 +548,7 @@ export class NodeManager extends EventEmitter {
     this.kill(id);
     rt.lastHookAt = undefined;
     const sessionId = isAgentKind(rec.kind) ? randomUUID() : undefined;
-    const transcriptPath = isAgentKind(rec.kind) && adapterFor(rec).id === 'pi' && rec.transcriptPath && sessionId
+    const transcriptPath = isAgentKind(rec.kind) && adapterFor(rec).id !== 'claude' && rec.transcriptPath && sessionId
       ? join(dirname(rec.transcriptPath), `${sessionId}.jsonl`) : undefined;
     this.registry.update(id, { sessionId, transcriptPath, previousSessions: [...(rec.previousSessions ?? []), ...(old ? [old] : [])].slice(-MAX_PREVIOUS_SESSIONS) });
     rt.status = { state: initialState(rec.kind), activity: 'restarting', changedAt: Date.now() };
@@ -721,7 +728,7 @@ export class NodeManager extends EventEmitter {
     if (ev.event === 'turn.start') {
       // Claude's UserPromptSubmit hook owns its turn boundary; a late/duplicate mod start must not clear state.
       const rec = this.registry.get(nodeId);
-      if (!rec || !isAgentKind(rec.kind) || harnessFor(rec) !== 'pi') return;
+      if (!rec || !isAgentKind(rec.kind) || harnessFor(rec) === 'claude') return;
       rt.lastHookAt = now;
       rt.turnStart = now;
       rt.starting = false;
@@ -729,9 +736,9 @@ export class NodeManager extends EventEmitter {
     } else if (ev.event === 'turn.complete') {
       const model = ev.payload.usage?.model;
       let base = typeof model === 'string' && model !== prev.model ? { ...prev, model } : prev;
-      // Claude's Stop hook owns its final message; only Pi reports it here.
+      // Claude's Stop hook owns its final message; other harnesses report it here.
       const rec = this.registry.get(nodeId);
-      if (rec && isAgentKind(rec.kind) && harnessFor(rec) === 'pi') {
+      if (rec && isAgentKind(rec.kind) && harnessFor(rec) !== 'claude') {
         rt.lastHookAt = now;
         rt.starting = false;
         if (typeof ev.payload.answer === 'string') base = { ...base, lastAssistantMessage: ev.payload.answer };
@@ -740,7 +747,14 @@ export class NodeManager extends EventEmitter {
       refreshGit(this, nodeId).catch(logError);
     } else if (ev.event === 'session.measure') {
       const { context, cost, rateLimits } = ev.payload;
-      if (rateLimits?.length) { // empty off a subscription or before the first reading: keep the last report
+      const rec = this.registry.get(nodeId);
+      const tool = rec && isAgentKind(rec.kind) ? harnessFor(rec) : undefined;
+      if (tool) {
+        const unavailable = ev.payload.usageUnavailable ? this.usageRegistry.unavailable(tool, nodeId, now) : false;
+        const changed = this.usageRegistry.record(tool, nodeId, ev.payload.usageReports ?? (rateLimits?.length ? [{ scope: 'account', rateLimits }] : []), now);
+        if (changed || unavailable) this.emit('usageSources', this.usageRegistry.sources);
+      }
+      if (rateLimits?.length && (!tool || tool === 'claude')) { // empty off a subscription or before the first reading: keep the last report
         this.usage = { rateLimits, nodeId, at: now };
         this.emit('usage', this.usage);
       }
@@ -888,6 +902,7 @@ export class NodeManager extends EventEmitter {
     clearTimeout(rt?.interruptTimer);
     this.runtimes.delete(id);
     this.registry.remove(id);
+    if (this.usageRegistry.remove(id)) this.emit('usageSources', this.usageRegistry.sources);
     rmSync(this.nodeDir(id), { recursive: true, force: true });
   }
 
@@ -905,8 +920,8 @@ export class NodeManager extends EventEmitter {
       rec = this.registry.update(id, { transcriptPath: adapter.prepareTranscript(rec, sessionDir, resume) })!;
     }
     const input: LaunchInput = {
-      nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path,
-      title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, sessionId: rec.sessionId ?? '',
+      nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path, harness: adapter?.id,
+      title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, profile: rec.profile, sessionId: rec.sessionId ?? '',
       resume, forkSession, transcriptPath: rec.transcriptPath, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
       preset: rec.preset ? loadPreset(rec.preset, this.projectDir(rec), this.home) : undefined,
     };
@@ -919,10 +934,10 @@ export class NodeManager extends EventEmitter {
     if (adapter && prompt) rt.starting = true;
     this.registry.update(id, { lastActiveAt: Date.now(), forkSession: undefined });
     this.liveChanged();
-    const pi = adapter?.id === 'pi';
-    let outputTail = ''; // only Pi's exit handler reads it
+    const native = adapter !== undefined && adapter.id !== 'claude';
+    let outputTail = ''; // native bridge failures are printed in the terminal
     s.onData((d) => {
-      if (pi) outputTail = (outputTail + d).slice(-8192);
+      if (native) outputTail = (outputTail + d).slice(-8192);
       this.emit('data', id, d);
     });
     s.onExit((code) => {
@@ -932,7 +947,7 @@ export class NodeManager extends EventEmitter {
       this.liveChanged();
       this.markUnread(id);
       let status = ptyExited(rt.status!, Date.now());
-      if (pi) {
+      if (native) {
         const lines = stripVTControlCharacters(outputTail).split(/[\r\n]+/).map((line) => line.trim());
         // The adapter's refusals (an incompatible Pi build, a bad launch environment) shut Pi down cleanly, often with code 0.
         const refusal = lines.findLast((line) => line.includes(PI_REFUSAL));

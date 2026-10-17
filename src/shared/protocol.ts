@@ -5,7 +5,7 @@ export const NODE_KINDS = ['claude', 'agent', 'terminal'] as const;
 export type NodeKind = (typeof NODE_KINDS)[number];
 
 /** The agent CLIs a node can run. A node with an agent kind defaults to claude when it names none (legacy records). */
-export const HARNESSES = ['claude', 'pi'] as const;
+export const HARNESSES = ['claude', 'pi', 'codex'] as const;
 export type Harness = (typeof HARNESSES)[number];
 
 /** An agent node runs an agent harness; a terminal node is a shell with no agent behind it. */
@@ -71,6 +71,16 @@ export interface NodeStatus {
 /** Which role prompt an agent node gets; 'none' means no role section. Default: root = orchestrator, child = worker. */
 export const ROLES = ['orchestrator', 'worker', 'none'] as const;
 export type Role = (typeof ROLES)[number];
+
+/** Task behavior, independent of the coordination role and selected harness. */
+export const PROFILES = ['orchestrator', 'implementation', 'explorer', 'mechanical', 'reviewer'] as const;
+export type Profile = (typeof PROFILES)[number];
+export const PROFILE_LABELS: Record<Profile, string> = {
+  orchestrator: 'Orchestrator', implementation: 'Implementation', explorer: 'Explorer', mechanical: 'Mechanical worker', reviewer: 'Reviewer',
+};
+/** Explicit profile wins; otherwise the effective coordination role selects its coherent task default. */
+export const profileFor = (profile: Profile | undefined, parentId: string | null, role?: Role): Profile =>
+  profile ?? ((role ?? (parentId ? 'worker' : 'orchestrator')) === 'orchestrator' ? 'orchestrator' : 'implementation');
 
 /** Values for claude's `--effort`. */
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -156,6 +166,8 @@ export interface NodeRecord {
   permissionMode?: string;
   /** Explicit role override; absent means derive from parentId at each launch. */
   role?: Role;
+  /** Resolved task profile at spawn; absent on legacy records, derived from parentId. */
+  profile?: Profile;
   /** The spawn preset (.tiller/agents/<name>.md); its body and tool lists are re-read at each launch. */
   preset?: string;
   /** Set on a node that owns a git worktree (spawned with isolation "worktree"); its cwd is the worktree path. */
@@ -234,6 +246,7 @@ export interface ArchivedNode {
   model?: string;
   effort?: Effort;
   role?: Role;
+  profile?: Profile;
   /** The first prompt the node was spawned with. */
   prompt?: string;
   sessionId?: string;
@@ -257,18 +270,54 @@ export interface ArchivedNode {
 }
 
 /** One rate-limit window as Claude Code's `session.measure` reports it; `kind` is five_hour, seven_day or a gateway's spend_limit. */
-export interface RateLimit { kind: string; percentUsed: number; resetsAt?: string }
-/** Account-level Claude usage: the newest non-empty rateLimits any node's mod reported. Limits are per account, so there is one. */
+export interface RateLimit { kind: string; percentUsed: number; resetsAt?: string; windowId?: string; observedAt?: number }
+/** Legacy latest Claude account report, retained for CLI consumers. */
 export interface Usage { rateLimits: RateLimit[]; nodeId: string; at: number }
+
+/** Prepared by the daemon only after notification suppression, grouping and sound policy. */
+export interface NativeNotification { id: string; title: string; subtitle?: string; body: string; sound: boolean }
+/** Usage discovery is independent of live nodes. null means not verified, not absent. */
+export type UsageTool = 'claude' | 'codex' | 'pi';
+export interface UsageSource {
+  id: string;
+  tool: UsageTool;
+  provider?: string;
+  accountId?: string;
+  pool?: string;
+  poolId?: string;
+  model?: string;
+  scope: 'account' | 'model';
+  nodeIds: string[];
+  installed: boolean | null;
+  version?: string;
+  executableStatus?: 'ready' | 'broken' | 'unknown';
+  configured: boolean | null;
+  authenticated: boolean | null;
+  availability: 'available' | 'unavailable' | 'unknown';
+  detail?: string;
+  rateLimits: RateLimit[];
+  /** Last quota report; discovery alone never makes a retained report fresh. */
+  at?: number;
+  checkedAt: number;
+}
+/** A quota report from an adapter; tool identity comes from the authenticated node. */
+export interface UsageReport {
+  provider?: string; accountId?: string; pool?: string; poolId?: string; model?: string;
+  scope: 'account' | 'model'; rateLimits: RateLimit[];
+  /** Explicit full-read removals, ordered against window observations. Omission is a sparse update. */
+  removedWindows?: { windowId: string; observedAt: number }[];
+}
 
 // Daemon -> UI (WebSocket, JSON). One message per line.
 export type ServerMessage =
-  | { t: 'snapshot'; nodes: NodeView[]; usage?: Usage; dnd?: Dnd }
+  | { t: 'snapshot'; nodes: NodeView[]; usage?: Usage; usageSources?: UsageSource[]; dnd?: Dnd }
   | ({ t: 'dnd' } & Dnd)                     // do not disturb changed
+  | { t: 'usageSources'; sources: UsageSource[] }
   | { t: 'usage'; usage: Usage }             // a node reported new account-level rate limits
   | { t: 'node'; node: NodeView }            // created or updated (full record)
   | { t: 'removed'; id: string }
   | { t: 'data'; id: string; data: string }  // raw PTY output
+  | { t: 'nativeNotify'; requestId: string; notification: NativeNotification }
   | { t: 'notify'; id: string; kind: 'done' | 'needsYou' | 'errored' | 'exited'; title: string; body?: string }
   | { t: 'confirm'; confirmId: string; text: string } // ask the human to approve an agent action
   | { t: 'confirmDone'; confirmId: string }  // that confirm was answered or timed out; close the modal
@@ -287,13 +336,16 @@ export interface DigestItem { id: string; title: string; kind: 'needsYou' | 'err
 // UI -> Daemon.
 export type ClientMessage =
   | { t: 'auth'; token: string; client?: 'app' | 'browser' } // must be the first message; token comes from the ?k= query param of the served UI URL
+  | { t: 'nativeNotifyReady'; ok: boolean; error?: string }
+  | { t: 'nativeNotifyResult'; requestId: string; ok: boolean; error?: string }
+  | { t: 'usageRefresh' }                    // bounded local CLI discovery; never starts inference
   | { t: 'visibility'; focused: boolean }       // whether this client's window is in front; the daemon skips OS notifications for a node a focused client has selected
   | { t: 'attach'; id: string; cols: number; rows: number } // start receiving data; replies with a data message holding the serialized screen
   | { t: 'detach'; id: string }
   | { t: 'input'; id: string; data: string }
   | { t: 'resize'; id: string; cols: number; rows: number }
   | { t: 'select'; id: string }                // clears unread
-  | { t: 'spawn'; kind: NodeKind; harness?: Harness; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; parentId?: string | null; isolation?: Isolation; base?: string; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); the node must run the claude harness
+  | { t: 'spawn'; kind: NodeKind; harness?: Harness; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; profile?: Profile; parentId?: string | null; isolation?: Isolation; base?: string; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); the node must run the claude harness
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
   | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.mergeStyle style
   | { t: 'restart'; id: string; prompt?: string } // relaunch with a fresh session: clears context, keeps the node and its children; prompt is its first prompt
@@ -331,7 +383,7 @@ export interface InboxMessage { id: string; from: string; text: string; enqueued
 export type ModEvent =
   | { event: 'turn.start'; payload: { text: string; turnId: string } }
   | { event: 'turn.complete'; payload: { answer?: string; durationMs: number; isAborted: boolean; turnId: string; reason: 'answer' | 'aborted' | 'refusal' | 'error'; usage?: Record<string, unknown> } }
-  | { event: 'session.measure'; payload: { model?: string; context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: RateLimit[] } };
+  | { event: 'session.measure'; payload: { model?: string; context?: { tokens: number; window: number; percent: number }; cost?: { usd: number }; rateLimits?: RateLimit[]; usageReports?: UsageReport[]; usageUnavailable?: boolean } };
 /** POST /focus { id } → 204; the daemon broadcasts `focus` to ws clients (PLAN §14). */
 /** GET /tree → ChildView[]: the calling node's whole tree from its root, depth-first. */
 export interface ChildView {

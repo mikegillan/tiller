@@ -7,13 +7,14 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
-import type { ClientMessage, Dnd, ServerMessage, Usage } from '../shared/protocol.js';
+import type { ClientMessage, Dnd, NativeNotification, ServerMessage, Usage } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
 import { DEFAULT_PORT } from './home.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
 import { history } from './archive.js';
 import { mountMcp } from './mcp.js';
 import { modApi } from './modapi.js';
+import { settingsApi } from './settings.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
 import type { HookEvent } from './status.js';
 import { deliver, HUMAN } from './messaging.js';
@@ -33,6 +34,9 @@ const id = z.string().min(1);
 const size = z.number().int().min(1).max(1000);
 const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('auth'), token: z.string(), client: z.enum(['app', 'browser']).optional() }),
+  z.object({ t: z.literal('nativeNotifyReady'), ok: z.boolean(), error: z.string().max(1000).optional() }),
+  z.object({ t: z.literal('nativeNotifyResult'), requestId: id, ok: z.boolean(), error: z.string().max(1000).optional() }),
+  z.object({ t: z.literal('usageRefresh') }),
   z.object({ t: z.literal('visibility'), focused: z.boolean() }),
   z.object({ t: z.literal('attach'), id, cols: size, rows: size }),
   z.object({ t: z.literal('detach'), id }),
@@ -64,18 +68,22 @@ export interface DaemonServer {
   watchers(id: string): number;
   /** Whether the native app is connected. */
   appConnected(): boolean;
+  /** Delivers an approved notification to one native app; false means safe to use daemon fallback. */
+  notifyNative(notification: NativeNotification): Promise<boolean>;
   /** Do not disturb, as the human last set it; check dndActive for whether it has expired. */
   dnd(): Dnd;
   close(): Promise<void>;
 }
 
-interface Client { ws: WebSocket; authed: boolean; attached: Set<string>; kind?: 'app' | 'browser'; focused: boolean; selected?: string }
+interface Client { ws: WebSocket; authed: boolean; attached: Set<string>; kind?: 'app' | 'browser'; focused: boolean; selected?: string; nativeReady?: boolean }
 
 export async function startServer(manager: NodeManager, opts: { port?: number } = {}): Promise<DaemonServer> {
   const clients = new Set<Client>();
+  const pendingNotifications = new Map<string, { client: Client; finish(ok: boolean, error?: string): void }>();
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
   const focus = (from: string, id: string) => broadcast({ t: 'focus', from, id });
   const { handler: mcp, publishAdminToken, authenticate, isAdmin } = mountMcp(manager, (text) => daemon.confirm(text), focus, (on, minutes) => setDnd(on, minutes));
+  const settings = settingsApi(manager, isAdmin);
   const mod = modApi(manager, authenticate, focus, () => [...new Set([...clients].filter((c) => c.authed && c.kind).map((c) => c.kind!))]);
 
   const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
@@ -105,11 +113,27 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     for (const c of clients) if (c.authed && c.attached.has(rid)) sendTo(c, { t: 'data', id: rid, data });
   });
   manager.on('notify', (n: NotifyEvent) => broadcast({ t: 'notify', ...n }));
+  manager.on('usageSources', (sources) => broadcast({ t: 'usageSources', sources }));
   manager.on('usage', (usage: Usage) => broadcast({ t: 'usage', usage }));
 
   async function handle(c: Client, m: ClientMessage): Promise<void> {
     switch (m.t) {
       case 'auth': return;
+      case 'nativeNotifyReady': {
+        if (c.kind !== 'app') return;
+        c.nativeReady = m.ok;
+        if (m.error) console.error(`native notifications unavailable: ${m.error}`);
+        return;
+      }
+      case 'nativeNotifyResult': {
+        const pending = pendingNotifications.get(m.requestId);
+        if (pending?.client === c) pending.finish(m.ok, m.error);
+        return;
+      }
+      case 'usageRefresh':
+        await manager.usageRegistry.refresh();
+        sendTo(c, { t: 'usageSources', sources: manager.usageRegistry.sources });
+        return;
       case 'attach': {
         // Snapshot first, then subscribe, so live output is not also part of the snapshot. attach() resolves
         // and we add the client in the same tick, so no chunk can fall between the two.
@@ -180,6 +204,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     ws.on('close', () => {
       clearTimeout(authTimer);
       clients.delete(c);
+      for (const pending of pendingNotifications.values()) if (pending.client === c) pending.finish(true, 'app disconnected after dispatch; delivery uncertain, not resent');
       if (c.focused) noteAway();
     });
     ws.on('message', (raw) => {
@@ -196,7 +221,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
           c.authed = true;
           c.kind = msg.client;
           clearTimeout(authTimer);
-          sendTo(c, { t: 'snapshot', nodes: manager.list(), usage: manager.usage, dnd });
+          sendTo(c, { t: 'snapshot', nodes: manager.list(), usage: manager.usage, usageSources: manager.usageRegistry.sources, dnd });
         } else {
           ws.close(4401, 'auth required');
         }
@@ -220,6 +245,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       return void res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, pid: process.pid, home: manager.home, version: VERSION }));
     }
     if (req.method === 'POST' && url.pathname === '/hook') return hook(req, res);
+    if (url.pathname === '/api/settings') return settings(req, res, url);
     if (await mod(req, res, url.pathname)) return;
     if (url.pathname === '/mcp' || url.pathname.startsWith('/api/')) return mcp(req, res);
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/assets/'))) {
@@ -281,6 +307,26 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     },
     watchers: (id) => [...clients].filter((c) => c.authed && c.focused && c.selected === id).length,
     appConnected,
+    notifyNative(notification) {
+      const client = [...clients].find((c) => c.authed && c.kind === 'app' && c.nativeReady && c.ws.readyState === WebSocket.OPEN);
+      if (!client) return Promise.resolve(false);
+      const requestId = randomUUID();
+      return new Promise<boolean>((resolveNotification) => {
+        const timer = setTimeout(() => finish(true, 'delivery receipt timed out; delivery uncertain, not resent'), 10_000);
+        const finish = (ok: boolean, error?: string) => {
+          clearTimeout(timer);
+          pendingNotifications.delete(requestId);
+          if (error) {
+            console.error(`native notification ${notification.id}: ${error}`);
+            sendTo(client, { t: 'error', id: notification.id, message: `Native notification: ${error}` });
+          }
+          resolveNotification(ok);
+        };
+        // A lost receipt after dispatch is ambiguous: falling back could duplicate an OS notification.
+        pendingNotifications.set(requestId, { client, finish });
+        sendTo(client, { t: 'nativeNotify', requestId, notification });
+      });
+    },
     dnd: () => dnd,
     async close() {
       for (const c of clients) c.ws.terminate();
