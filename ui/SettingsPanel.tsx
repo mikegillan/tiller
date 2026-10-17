@@ -47,8 +47,14 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   const fields = sections.flatMap((group) => group.fields);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
+    const scrollRoots = [document.documentElement, document.body].filter(Boolean);
+    const overflow = scrollRoots.map((root) => root.style.overflow);
+    scrollRoots.forEach((root) => { root.style.overflow = 'hidden'; });
     dialog.current?.showModal();
-    return () => { if (previous?.isConnected) previous.focus(); };
+    return () => {
+      scrollRoots.forEach((root, index) => { root.style.overflow = overflow[index]; });
+      if (previous?.isConnected) previous.focus();
+    };
   }, []);
   useEffect(() => {
     const controller = new AbortController();
@@ -86,7 +92,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     const needsCommand = (key === 'gate.retries' || key === 'gate.timeoutMinutes') && !(typeof gateCommand === 'string' && gateCommand.trim());
     const value = !explicit && !drafted && !previewUnavailable ? inputValue(entry?.value, field) : raw;
     const props = { id, disabled: busy || needsCommand, value, placeholder: previewUnavailable ? 'Preview available after save' : key === 'gate.command' ? 'No completion check configured' : undefined, 'aria-describedby': `${id}-help`, onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => edit(key, e.target.value) };
-    return <div className="settings-field" key={key}>
+    return <div className={`settings-field${key === 'gate.command' ? ' settings-command-field' : ''}`} key={key}>
       <div className="settings-label"><label id={`${id}-label`} htmlFor={id}>{key.startsWith('profiles.') ? key.endsWith('.model') ? 'Model' : 'Effort' : label}</label>
         <p id={`${id}-help`}>{needsCommand ? 'Configure a check command to enable this setting.' : field.help ?? field.description}</p>
       </div>
@@ -109,7 +115,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     const section = sections.find((section) => section.title === title);
     if (search.trim() && title !== 'CLI diagnostics' && !section?.fields.some((field) => matches(field, title))) return null;
     if (search.trim() && title === 'CLI diagnostics' && !'cli diagnostics supported tools'.includes(search.toLowerCase())) return null;
-    return <button key={title} className="settings-nav-item" aria-pressed={category === title} onClick={() => setCategory(title)}><SettingsIcon name={title} /><span>{title}</span></button>;
+    return <button key={title} className="settings-nav-item" aria-pressed={category === 'CLI diagnostics' ? title === category : active.title === title} onClick={() => setCategory(title)}><SettingsIcon name={title} /><span>{title}</span></button>;
   }
 
   return <dialog className="settings-dialog" ref={dialog} aria-labelledby="settings-title" onCancel={(event) => { event.preventDefault(); leave('close'); }} onKeyDown={(event) => event.stopPropagation()}>
