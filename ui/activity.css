@@ -1,6 +1,3 @@
-.activity-toggle { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 0; padding: 0 4px; background: none; color: var(--fg); white-space: nowrap; }
-.activity-toggle:hover, .activity-toggle[aria-expanded='true'] { color: var(--accent); }
-.activity-count { padding: 0 5px; border-radius: 4px; background: var(--accent); color: var(--accent-fg); font-size: 11px; font-variant-numeric: tabular-nums; }
 .activity-drawer { position: fixed; right: 0; top: 0; bottom: 24px; z-index: 15; width: min(420px, 100%); display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); animation: activity-enter 160ms ease-out; }
 .activity-modal { margin: 0 0 0 auto; padding: 0; height: calc(100% - 24px); max-height: none; max-width: none; border: 0; color: var(--fg); }
 .activity-modal::backdrop { background: var(--bg); }
@@ -32,11 +29,10 @@
 @keyframes activity-enter { from { transform: translateX(24px); } to { transform: translateX(0); } }
 @media (prefers-reduced-motion: reduce) { .activity-drawer { animation: none; } }
 @media (max-width: 800px) {
-  .statusbar .keys { display: none; }
   .statusbar .conn { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .statusbar { gap: 8px; padding: 0 8px; }
 }
 @media (max-width: 480px) {
-  .statusbar .conn, .statusbar > span:not(.spacer), .statusbar .dnd { display: none; }
+  .statusbar .conn, .statusbar > span:not(.spacer) { display: none; }
   .activity-tools { padding: 8px 12px; gap: 6px; }
 }

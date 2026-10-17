@@ -124,14 +124,6 @@
 .selected-usage { display: flex; align-items: center; gap: 8px; min-width: 80px; overflow-x: auto; white-space: nowrap; scrollbar-width: thin; scrollbar-color: var(--dim) var(--surface); }
 .usage-bar-report { display: inline-flex; align-items: center; gap: 8px; }
 .modal.usage-panel { width: min(620px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow-y: auto; box-sizing: border-box; }
-.usage-tool { padding: 16px 0; border-top: 1px solid var(--line); }
-.usage-tool h3 { margin: 0 0 8px; font-size: 14px; }
-.usage-tool p { margin: 4px 0 8px; font-size: 12px; }
-.usage-report + .usage-report { margin-top: 16px; }
-.usage-scope { overflow-wrap: anywhere; }
-.usage-windows { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; font-variant-numeric: tabular-nums; }
-
-.usage-scan { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; color: var(--dim); font-size: 12px; }
 
 .release-notes { max-height: 40vh; overflow: auto; }
 .release-notes h3 { margin: 1.5em 0 .5em; }
