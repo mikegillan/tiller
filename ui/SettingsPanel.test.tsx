@@ -1,11 +1,12 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { ReactElement, ReactNode } from 'react';
+import { refreshUsage } from './conn';
 import { SettingsPanel } from './SettingsPanel';
 import { claudeRecommendations, type SettingsSnapshot } from './settings-model';
 
 // Exercise the component's real handlers and asynchronous requests without a DOM dependency.
 // Effects are flushed after each render; DOM focus/dialog behavior is verified in the browser.
-const hooks = vi.hoisted(() => ({ slots: [] as unknown[], cursor: 0, deps: [] as unknown[][], effects: [] as (() => unknown)[] }));
+const hooks = vi.hoisted(() => ({ store: { connected: false, usageSources: undefined as unknown, usageScanning: false }, slots: [] as unknown[], cursor: 0, deps: [] as unknown[][], effects: [] as (() => unknown)[] }));
 vi.mock('react', async (original) => ({
   ...await original<typeof import('react')>(),
   useState: (initial: unknown) => {
@@ -19,7 +20,7 @@ vi.mock('react', async (original) => ({
     if (!hooks.deps[i] || deps.some((value, j) => value !== hooks.deps[i][j])) { hooks.deps[i] = deps; hooks.effects.push(effect); }
   },
 }));
-vi.mock('./store', () => ({ useStore: (select: (s: unknown) => unknown) => select({ connected: false }) }));
+vi.mock('./store', () => ({ useStore: (select: (s: unknown) => unknown) => select(hooks.store) }));
 vi.mock('./conn', () => ({ refreshUsage: vi.fn() }));
 vi.mock('./url', () => ({ token: () => 'test' }));
 const snapshot: SettingsSnapshot = { scope: 'project', path: '/repo/.tiller/config.json', projectPath: '/repo', revision: 'r1', values: { 'profiles.claude.implementation.model': 'custom' }, entries: { 'profiles.claude.implementation.model': { value: 'custom', source: '/repo/.tiller/config.json' } }, inherited: { 'profiles.claude.implementation.model': { value: 'legacy-worker', source: '/home/config.json' } } };
@@ -43,7 +44,7 @@ function button(label: string) { const match = elements(tree).find((e) => e.type
 function click(label: string) { button(label).props.onClick(); render(); }
 function input(id: string) { return elements(tree).find((e) => e.props.id === `setting-${id}`)!; }
 async function submit() { await elements(tree).find((e) => e.type === 'form')!.props.onSubmit({ preventDefault() {} }); await settle(); }
-beforeEach(async () => { hooks.slots = []; hooks.deps = []; hooks.effects = []; close.mockClear(); fetchMock.mockClear(); vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('document', { activeElement: null }); render(); await settle(); });
+beforeEach(async () => { hooks.store = { connected: false, usageSources: undefined, usageScanning: false }; vi.mocked(refreshUsage).mockClear(); hooks.slots = []; hooks.deps = []; hooks.effects = []; close.mockClear(); fetchMock.mockClear(); vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('document', { activeElement: null }); render(); await settle(); });
 
 it('guards scope changes and closing, keeps edits on request, and discards only with explicit action', async () => {
   input('profiles.claude.implementation.model').props.onChange({ target: { value: 'edited' } }); render();
@@ -129,4 +130,97 @@ it('stages Claude models while retaining a separately configured effort draft', 
   await submit();
   const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
   expect(body.changes).toEqual({ ...claudeRecommendations, 'profiles.claude.implementation.effort': 'max' });
+});
+
+
+it('keeps a draft across category navigation and confirms Escape before closing', () => {
+  input('profiles.claude.implementation.model').props.onChange({ target: { value: 'edited' } }); render();
+  click('Limits'); click('Claude');
+  expect(input('profiles.claude.implementation.model').props.value).toBe('edited');
+  const preventDefault = vi.fn();
+  elements(tree).find((e) => e.type === 'dialog')!.props.onCancel({ preventDefault }); render();
+  expect(preventDefault).toHaveBeenCalledOnce();
+  expect(close).not.toHaveBeenCalled();
+  click('Keep editing');
+  expect(input('profiles.claude.implementation.model').props.value).toBe('edited');
+  click('Close'); click('Discard changes');
+  expect(close).toHaveBeenCalledOnce();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it('rejects blank model drafts locally and allows correction without losing other edits', async () => {
+  click('Stage recommended Claude defaults');
+  input('profiles.claude.implementation.model').props.onChange({ target: { value: '   ' } }); render();
+  await submit();
+  expect(text(tree)).toContain('enter a value or use the inherited default');
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(input('profiles.claude.implementation.model').props.value).toBe('   ');
+  input('profiles.claude.implementation.model').props.onChange({ target: { value: 'model/custom-id' } }); render();
+  await submit();
+  const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
+  expect(JSON.parse(String(saved[1]?.body)).changes).toEqual({ ...claudeRecommendations, 'profiles.claude.implementation.model': 'model/custom-id' });
+});
+
+it('retains drafts after server validation errors and retries the same revision', async () => {
+  click('Stage recommended Claude defaults');
+  fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 400, json: async () => ({ error: 'Model unavailable for this provider' }) } as any));
+  await submit();
+  expect(text(tree)).toContain('Model unavailable for this provider');
+  expect(input('profiles.claude.implementation.model').props.value).toBe('sonnet');
+  expect(button('Save repository settings').props.disabled).toBe(false);
+  await submit();
+  const bodies = fetchMock.mock.calls.filter((call) => call[1]?.method === 'POST').map((call) => JSON.parse(String(call[1]?.body)));
+  expect(bodies).toHaveLength(2);
+  expect(bodies[1]).toEqual(bodies[0]);
+  expect(button('Save repository settings').props.disabled).toBe(true);
+});
+
+it('disables scope, close, fields and save while a save request is pending', async () => {
+  click('Stage recommended Claude defaults');
+  let resolve!: (response: any) => void;
+  fetchMock.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+  elements(tree).find((e) => e.type === 'form')!.props.onSubmit({ preventDefault() {} }); render();
+  expect(button('Please wait…').props.disabled).toBe(true);
+  expect(button('Close').props.disabled).toBe(true);
+  expect(button('Repository').props.disabled).toBe(true);
+  expect(button('Global · all repositories').props.disabled).toBe(true);
+  expect(button('Cancel changes').props.disabled).toBe(true);
+  expect(input('profiles.claude.implementation.model').props.disabled).toBe(true);
+  resolve({ ok: true, json: async () => ({ ...snapshot, revision: 'r2' }) });
+  await settle();
+  expect(button('Save repository settings').props.disabled).toBe(true);
+  expect(text(tree)).toContain('Settings saved.');
+});
+
+it('retries a failed scope load and disables retry while the replacement request is pending', async () => {
+  fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 503, json: async () => ({ error: 'Settings temporarily unavailable' }) } as any));
+  click('Global · all repositories');
+  await vi.waitFor(() => { render(); expect(text(tree)).toContain('Settings temporarily unavailable'); });
+  expect(button('Save global settings').props.disabled).toBe(true);
+  let resolve!: (response: any) => void;
+  fetchMock.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+  click('Retry'); render();
+  expect(button('Close').props.disabled).toBe(true);
+  expect(button('Global · all repositories').props.disabled).toBe(true);
+  const retry = elements(tree).find((e) => e.type === 'button' && text(e.props.children) === 'Retry');
+  expect(!retry || retry.props.disabled).toBe(true);
+  resolve({ ok: true, json: async () => ({ ...snapshot, scope: 'home' }) });
+  await settle();
+  expect(text(tree)).not.toContain('Settings temporarily unavailable');
+  expect(fetchMock.mock.calls.slice(1).map((call) => call[0])).toEqual(['/api/settings?scope=home', '/api/settings?scope=home']);
+});
+
+it('allows CLI rescans only when discovery is available, connected, and idle', () => {
+  click('CLI diagnostics');
+  expect(button('Rescan').props.disabled).toBe(true);
+  hooks.store.connected = true; render();
+  expect(button('Rescan').props.disabled).toBe(true);
+  hooks.store.usageSources = []; render();
+  expect(button('Rescan').props.disabled).toBe(false);
+  click('Rescan');
+  expect(refreshUsage).toHaveBeenCalledOnce();
+  hooks.store.usageScanning = true; render();
+  expect(button('Scanning tools…').props.disabled).toBe(true);
+  hooks.store.usageScanning = false; hooks.store.connected = false; render();
+  expect(button('Rescan').props.disabled).toBe(true);
 });

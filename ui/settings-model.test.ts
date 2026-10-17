@@ -55,3 +55,62 @@ describe('Claude previews with pending legacy role edits', () => {
     expect(fieldPreview(state, { [implementationModel.key]: null, 'roles.worker.effort': 'low' }, implementationModel)).toMatchObject({ previewUnavailable: false, entry: { value: 'opus' } });
   });
 });
+
+describe('scope inheritance and reset previews', () => {
+  const depth = fields.find((field) => field.key === 'limits.maxDepth')!;
+  const include = fields.find((field) => field.key === 'worktrees.include')!;
+  const merge = fields.find((field) => field.key === 'approvals.merge')!;
+  const state: SettingsSnapshot = {
+    ...snapshot,
+    values: { 'limits.maxDepth': 0, 'worktrees.include': [], 'approvals.merge': false },
+    entries: {
+      'limits.maxDepth': { value: 0, source: snapshot.path },
+      'worktrees.include': { value: [], source: snapshot.path },
+      'approvals.merge': { value: false, source: snapshot.path },
+    },
+    inherited: {
+      'limits.maxDepth': { value: 5, source: '/home/config.json' },
+      'worktrees.include': { value: ['.env', 'local/*'], source: '/home/config.json' },
+      'approvals.merge': { value: true, source: 'default' },
+    },
+  };
+  it('treats zero, false and empty arrays as explicit values with their own source', () => {
+    for (const [field, raw] of [[depth, '0'], [include, ''], [merge, 'false']] as const) {
+      expect(fieldPreview(state, {}, field)).toMatchObject({
+        drafted: false, explicit: true, raw,
+        entry: { value: state.values[field.key], source: state.path },
+      });
+    }
+  });
+  it('previews reset from the lower scope while leaving the saved snapshot intact', () => {
+    const drafts = { [depth.key]: null, [include.key]: null, [merge.key]: null };
+    for (const [field, raw] of [[depth, '5'], [include, '.env\nlocal/*'], [merge, 'true']] as const) {
+      expect(fieldPreview(state, drafts, field)).toMatchObject({
+        drafted: true, explicit: false, raw, entry: state.inherited[field.key],
+      });
+    }
+    expect(buildChanges(state, drafts, fields)).toEqual(drafts);
+    expect(state.values).toEqual({ 'limits.maxDepth': 0, 'worktrees.include': [], 'approvals.merge': false });
+  });
+  it('keeps an explicit override even when it matches the inherited value', () => {
+    const inherited: SettingsSnapshot = { ...state, values: {}, entries: state.inherited };
+    expect(fieldPreview(inherited, {}, depth)).toMatchObject({ explicit: false, raw: '5', entry: state.inherited[depth.key] });
+    expect(buildChanges(inherited, { [depth.key]: '5' }, fields)).toEqual({ [depth.key]: 5 });
+    expect(fieldPreview(inherited, { [depth.key]: '5' }, depth)).toMatchObject({
+      explicit: true, drafted: true, raw: '5', entry: { value: '5', source: 'Unsaved change' },
+    });
+  });
+  it('resets a global override to its built-in source', () => {
+    const global: SettingsSnapshot = { ...state, scope: 'home', projectPath: null, path: '/home/config.json', inherited: { [depth.key]: { value: 3, source: 'default' } } };
+    expect(fieldPreview(global, { [depth.key]: null }, depth)).toMatchObject({
+      explicit: false, raw: '3', entry: { value: 3, source: 'default' },
+    });
+    expect(buildChanges(global, { [depth.key]: null }, fields)).toEqual({ [depth.key]: null });
+  });
+  it('represents absent harness defaults as unset rather than a literal value', () => {
+    const effort = profileFields('pi').find((field) => field.key === 'profiles.pi.implementation.effort')!;
+    const unset: SettingsSnapshot = { ...state, values: {}, entries: { [effort.key]: { value: undefined, source: 'default' } }, inherited: { [effort.key]: { value: undefined, source: 'default' } } };
+    expect(fieldPreview(unset, {}, effort)).toMatchObject({ explicit: false, raw: '', entry: { value: undefined, source: 'default' } });
+    expect(buildChanges(unset, { [effort.key]: null }, [effort])).toEqual({});
+  });
+});
