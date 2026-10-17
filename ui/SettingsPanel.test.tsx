@@ -285,3 +285,17 @@ it('keeps completion retries disabled until a command is configured and preserve
   const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
   expect(JSON.parse(String(saved[1]?.body)).changes).toEqual({ 'gate.command': 'npm run check', 'gate.retries': 3 });
 });
+
+it('stages boolean switches as explicit overrides and preserves false in the save payload', async () => {
+  click('Approvals & checks');
+  expect(input('approvals.merge').props.role).toBe('switch');
+  expect(input('approvals.merge').props['aria-checked']).toBe(false);
+  input('approvals.merge').props.onClick(); render();
+  expect(input('approvals.merge').props['aria-checked']).toBe(true);
+  input('approvals.merge').props.onClick(); render();
+  expect(input('approvals.merge').props['aria-checked']).toBe(false);
+  expect(elements(tree).some((e) => e.props['aria-label'] === 'Remove repository override: Merge without approval')).toBe(true);
+  await submit();
+  const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
+  expect(JSON.parse(String(saved[1]?.body)).changes).toEqual({ 'approvals.merge': false });
+});
