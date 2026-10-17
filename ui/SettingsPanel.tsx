@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { token } from './url';
 import { refreshUsage } from './conn';
 import { useStore } from './store';
-import { buildChanges, cliStatus, efforts, fieldPreview, formatValue, groups, inputValue, optionLabel, profileFields, profiles, type Field, type Scope, type SettingsSnapshot } from './settings-model';
+import { buildChanges, cliStatus, efforts, fieldPreview, groups, inputValue, optionLabel, profileFields, profiles, type Field, type Scope, type SettingsSnapshot } from './settings-model';
 import './settings.css';
 
 async function request(scope: Scope, nodeId: string | undefined, body?: unknown, signal?: AbortSignal): Promise<SettingsSnapshot> {
@@ -164,7 +164,6 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
             {visibleFields.some((field) => field.key.startsWith('gate.')) && <section className="settings-subsection"><h2>Completion checks</h2><p>Require a command to pass before a worker reports success.</p>{visibleFields.filter((field) => field.key.startsWith('gate.')).map(renderField)}</section>}
           </> : visibleFields.map(renderField)}
           {search.trim() && !visibleFields.length && <p role="status">No matching settings. Try another search.</p>}
-          <details className="settings-configuration"><summary>Configuration details</summary><p>Saving writes to <code>{snapshot.path}</code>.</p><p>{scope === 'project' ? snapshot.projectPath : 'Daemon settings apply globally. Repository overrides take precedence over shared defaults.'}</p>{visibleFields.map((field) => { const preview = fieldPreview(snapshot, drafts, field); return <div key={field.key}><strong>{field.label}</strong><p>{preview.drafted ? 'After save: ' : 'Effective: '}<code>{formatValue(preview.entry?.value)}</code></p><p>Value source: <code>{preview.entry?.source ?? 'Harness default / unset'}</code></p></div>; })}</details>
         </section>}
       </form>}
     </div>

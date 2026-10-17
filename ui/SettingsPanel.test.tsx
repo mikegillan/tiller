@@ -118,14 +118,14 @@ it('keeps unset harness defaults and unavailable previews distinct without creat
   expect(text(tree)).toContain('Preview unavailable until legacy role changes are saved.');
 });
 
-it('removes harness informational disclosures while keeping editable profile groups and configuration details', () => {
+it('removes informational disclosures while keeping editable profile groups', () => {
   for (const harness of ['Claude', 'Codex', 'Pi']) {
     click(harness);
     expect(elements(tree).filter((e) => e.type === 'fieldset')).toHaveLength(5);
     expect(elements(tree).filter((e) => e.type === 'summary').map(text)).not.toContain(`Recommended ${harness} defaults`);
     expect(text(tree)).not.toContain('How Claude inherits defaults');
     expect(text(tree)).not.toContain('Stage recommended');
-    expect(text(tree)).toContain('Configuration details');
+    expect(text(tree)).not.toContain('Configuration details');
     expect(input(`profiles.${harness.toLowerCase()}.implementation.model`).props.disabled).toBe(false);
   }
 });
@@ -148,7 +148,7 @@ it('previews a reset using the server fallback and sends only the removed reposi
   const reset = elements(tree).find((e) => e.type === 'button' && e.props['aria-label'] === 'Remove repository override: Implementation model')!;
   reset.props.onClick(); render();
   expect(input('profiles.claude.implementation.model').props.value).toBe('legacy-worker');
-  expect(text(tree)).toContain('After save: legacy-worker');
+  expect(text(tree)).not.toContain('Configuration details');
   await submit();
   const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
   expect(body).toEqual({ scope: 'project', nodeId: 'n1', revision: 'r1', changes: { 'profiles.claude.implementation.model': null } });
