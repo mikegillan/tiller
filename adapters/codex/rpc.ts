@@ -13,14 +13,14 @@ export class CodexRpc {
   private pending = new Map<number, { resolve: (result: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private closed = false;
   private readonly drained: Promise<void>;
-  private readonly exited: Promise<void>;
+  private readonly processClosed: Promise<void>;
   private shutdownTask?: Promise<void>;
   onPacket: (packet: Packet) => void = () => {};
   onClose: (error: Error) => void = () => {};
 
   constructor(env: NodeJS.ProcessEnv, stderr: (text: string) => void) {
     this.child = spawn('codex', ['app-server', '--listen', 'stdio://'], { env, stdio: 'pipe' });
-    this.exited = new Promise<void>((resolve) => { this.child.once('exit', () => resolve()); });
+    this.processClosed = new Promise<void>((resolve) => { this.child.once('close', () => resolve()); });
     const lines = createInterface({ input: this.child.stdout });
     this.drained = new Promise<void>((resolve) => { lines.once('close', resolve); });
     lines.on('line', (line) => {
@@ -42,7 +42,10 @@ export class CodexRpc {
     this.child.stdin.on('error', (error) => this.fail(error));
     this.child.on('error', (error) => this.fail(error));
     this.child.on('exit', (code) => {
-      if (!this.closed) void this.shutdown().then(() => this.onClose(new Error(`Codex app-server exited (${code})`)));
+      if (!this.closed) {
+        const error = new Error(`Codex app-server exited (${code})`);
+        void this.shutdown(error).then(() => this.onClose(error));
+      }
     });
   }
 
@@ -74,15 +77,15 @@ export class CodexRpc {
   }
 
   /** Let the stdout reader consume final buffered notifications, with a hard cutoff. */
-  shutdown(): Promise<void> {
-    return this.shutdownTask ??= this.drain();
+  shutdown(error?: Error): Promise<void> {
+    return this.shutdownTask ??= this.drain(error);
   }
 
-  private async drain(): Promise<void> {
-    this.close();
+  private async drain(error?: Error): Promise<void> {
+    this.close(error);
     let timer: NodeJS.Timeout | undefined;
     try {
-      await Promise.race([Promise.all([this.drained, this.exited]), new Promise<void>((resolve) => {
+      await Promise.race([Promise.all([this.drained, this.processClosed]), new Promise<void>((resolve) => {
         timer = setTimeout(resolve, 250);
       })]);
     } finally {

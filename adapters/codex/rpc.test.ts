@@ -25,8 +25,24 @@ describe('Codex RPC shutdown', () => {
     child.emit('exit', 0);
     child.stdout.write(JSON.stringify(finalPacket) + '\n');
     child.stdout.end();
+    child.stderr.end();
+    child.emit('close', 0);
     await expect.poll(() => seen).toEqual(['answer', 'closed']);
     expect(seen).toEqual(['answer', 'closed']);
+  });
+
+  it('rejects a pending request with the actual exit error while draining its final packet', async () => {
+    const seen: string[] = [];
+    rpc.onPacket = () => { seen.push('answer'); };
+    rpc.onClose = (error) => { seen.push(error.message); };
+    const pending = rpc.request('thread/start', {}).catch((error) => error.message);
+    child.emit('exit', 23);
+    child.stdout.write(JSON.stringify(finalPacket) + '\n');
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', 23);
+    expect(await pending).toBe('Codex app-server exited (23)');
+    await expect.poll(() => seen).toEqual(['answer', 'Codex app-server exited (23)']);
   });
 
   it('waits for stdout EOF and native exit on deliberate shutdown and rejects pending requests', async () => {
@@ -37,6 +53,8 @@ describe('Codex RPC shutdown', () => {
     child.stdout.write(JSON.stringify(finalPacket) + '\n');
     child.stdout.end();
     child.emit('exit', 0);
+    child.stderr.end();
+    child.emit('close', 0);
     await stopped;
     expect(packets).toEqual([finalPacket]);
     expect(await pending).toBe('Codex connection closed');

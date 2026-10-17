@@ -11,6 +11,8 @@ let bridge: CodexBridge | undefined;
 let terminal: CodexTerminal | undefined;
 let tui: ChildProcess | undefined;
 let closing = false;
+let diagnostics = '';
+let backendError: Error | undefined;
 async function close(error?: Error): Promise<void> {
   if (closing) return;
   closing = true;
@@ -20,7 +22,7 @@ async function close(error?: Error): Promise<void> {
   await rpc?.shutdown();
   try { await bridge?.stop(); } catch { /* Daemon shutdown can close HTTP first. */ }
   client?.dispose();
-  if (error) console.error(`Error: ${error.message}`);
+  if (error) console.error(`Error: ${backendError ? diagnostics.trim() || backendError.message : error.message}`);
   process.exit(error ? 1 : 0);
 }
 
@@ -32,9 +34,8 @@ try {
   client = new TillerClient({ endpoint, nodeId, token });
   const fatal = (error: Error) => { void close(error); };
   // Keep backend diagnostics off the TUI's screen unless startup fails.
-  let diagnostics = '';
   rpc = new CodexRpc({ ...process.env, TL_CODEX_AUTHORIZATION: `Bearer ${token}` }, (text) => { diagnostics = (diagnostics + text).slice(-8192); });
-  rpc.onClose = (error) => fatal(new Error(diagnostics.trim() || error.message));
+  rpc.onClose = (error) => { backendError = error; fatal(error); };
   bridge = new CodexBridge(options, rpc, client, (text) => process.stderr.write(text), fatal);
   rpc.onPacket = (packet) => { bridge!.handle(packet); if (!closing) terminal?.forward(packet); };
   process.on('SIGTERM', () => { void close(); });

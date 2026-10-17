@@ -66,6 +66,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (p.method === 'initialize') return reply(p, {});
   if (p.method === 'initialized') return;
   if (['thread/start', 'thread/resume', 'thread/fork'].includes(p.method)) {
+    if (v.model === 'crash-start') return process.stderr.write('KNOWN CODEX STARTUP DIAGNOSTIC\\n', () => process.exit(23));
     if (p.method === 'thread/start') threadId = 'native-' + process.pid;
     else threadId = p.method === 'thread/fork' ? 'fork-' + process.pid : v.threadId;
     const mcp = v.config ? Object.values(v.config)[0] : undefined;
@@ -78,6 +79,10 @@ createInterface({ input: process.stdin }).on('line', line => {
     turn = { id: 't-' + ++seq, text };
     event('turn/started', { turn: { id: turn.id } });
     event('item/completed', { item: { type: 'userMessage', id: 'user', content: v.input } });
+    if (text.includes('crash-turn')) {
+      complete();
+      return process.stderr.write('KNOWN CODEX TURN DIAGNOSTIC\\n', () => process.exit(24));
+    }
     reply(p, { turn: { id: turn.id } });
     if (text.includes('approve-me')) return send({ id: 'approval', method: 'item/commandExecution/requestApproval', params: { threadId, turnId: turn.id, command: 'echo hello', reason: 'test approval' } });
     if (text.includes('hold-me')) return;
@@ -102,6 +107,22 @@ describe('Codex harness', () => {
     expect(() => codexAdapter.validate({ permissionMode: 'plan' })).toThrow(/permissionMode/);
     for (const preset of [{ tools: [] }, { disallowedTools: [] }, { maxTurns: 1 }]) {
       expect(() => codexAdapter.validate({ preset })).toThrow(/preset tools/);
+    }
+  });
+
+  it.each(['startup', 'turn'] as const)('shows native stderr after a crash during pending %s', async (phase) => {
+    await setup();
+    const n = await manager!.spawn({ kind: 'agent', harness: 'codex', title: 'Crash diagnostics', cwd: home,
+      ...(phase === 'startup' ? { model: 'crash-start' } : {}), byHuman: true });
+    if (phase === 'turn') {
+      await ready(n.id);
+      await deliver(manager!, HUMAN, n.id, 'crash-turn');
+    }
+    await expect.poll(() => manager!.view(n.id)?.status.activity)
+      .toContain(phase === 'startup' ? 'KNOWN CODEX STARTUP DIAGNOSTIC' : 'KNOWN CODEX TURN DIAGNOSTIC');
+    expect(manager!.view(n.id)?.status.activity).not.toContain('Codex connection closed');
+    if (phase === 'turn') {
+      expect((await manager!.transcript(n.id)).entries.some((entry) => entry.role === 'assistant' && entry.text.includes('crash-turn'))).toBe(true);
     }
   });
 
