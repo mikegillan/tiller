@@ -1,32 +1,11 @@
 # Codex account quota integration
 
-The branch has been rebased onto reviewed Codex/profile baseline `012b2fc`.
-The parent owns the bridge hookup; integrate this focused diff in
-`adapters/codex/bridge.ts` after landing the usage API. These exact hook additions
-were typechecked in a temporary copy of that bridge (then removed):
-
-```diff
- import { RpcError, type Packet } from './rpc.js';
-+import { CodexUsage, readCodexUsage } from './usage.js';
-
- export class CodexBridge {
-+  private readonly accountUsage = new CodexUsage();
-
-     this.rpc.send({ method: 'initialized' });
-+    void readCodexUsage(this.accountUsage, () => this.rpc.request('account/rateLimits/read', {}))
-+      .then((measure) => this.client.modEvent('session.measure', measure))
-+      .catch(() => {}); // telemetry transport failure must not stop the agent
-
-   private async event(p: Packet): Promise<void> {
-     if (this.stopped) return;
-     const v = p.params ?? {};
-+    // Account notifications are not thread-scoped; handle them BEFORE filtering threadId.
-+    if (p.method === 'account/rateLimits/updated' && p.id === undefined) {
-+      await this.client.modEvent('session.measure', this.accountUsage.measure(v)).catch(() => {});
-+      return;
-+    }
-     if (v.threadId && v.threadId !== this.threadId) return;
-```
+`adapters/codex/bridge.ts` reads account quotas once when the native UI attaches
+and starts inbox polling. The read runs without blocking startup. Account quota
+notifications are handled before thread filtering because they are account-scoped.
+Both paths publish through the bridge's shutdown-deadline wrapper; usage transport
+failures never stop the agent. A completed background read is not published after
+shutdown begins.
 
 `readCodexUsage` issues exactly one read on the existing RPC connection, with a
 2-second deadline. Invoke it without `await` so it never blocks startup. It never
@@ -43,8 +22,7 @@ sparse updates preserve unrelated pools and account identity; a reported account
 switch clears prior-account pool state. Neither method fabricates model-specific
 quotas or converts token counts, credits or dollar balances into quota use.
 
-The manager derives tool identity from the authenticated node. It accepts `codex`
-when the integration branch adds it to `Harness`, with no other registry edits.
+The manager derives tool identity from the authenticated node, including Codex.
 The native generated protocol was inspected locally with:
 
 ```sh

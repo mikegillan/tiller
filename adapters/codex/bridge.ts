@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { codexHeader } from '../../src/daemon/codex-session.js';
 import { TillerClient, type InboxMessage } from '../pi/client.js';
 import { RpcError, type Packet } from './rpc.js';
+import { CodexUsage, readCodexUsage } from './usage.js';
 
 export interface BridgeOptions {
   transcriptPath: string;
@@ -22,6 +23,7 @@ export interface Rpc {
 
 /** App-server notifications own turn boundaries; turn/start's response proves prompt acceptance. */
 export class CodexBridge {
+  private readonly accountUsage = new CodexUsage();
   private threadId = '';
   initialization: unknown;
   startResult: unknown;
@@ -102,6 +104,9 @@ When the user asks for workers or subagents in this Tiller session, use the ${na
   startPolling(): void {
     if (this.timer || this.stopped) return;
     this.timer = setInterval(() => { void this.poll().catch((e) => this.print(`Tiller inbox: ${e.message}\n`)); }, 1000);
+    void readCodexUsage(this.accountUsage, () => this.rpc.request('account/rateLimits/read', {}))
+      .then((measure) => this.stopped ? undefined : this.untilDeadline(() => this.client.modEvent('session.measure', measure)))
+      .catch(() => {}); // Optional usage telemetry must never stop the agent.
   }
 
   handle(packet: Packet): void {
@@ -126,6 +131,11 @@ When the user asks for workers or subagents in this Tiller session, use the ${na
 
   private async event(p: Packet): Promise<void> {
     const v = p.params ?? {};
+    // Account quota updates apply independently of the managed thread.
+    if (p.method === 'account/rateLimits/updated' && p.id === undefined) {
+      await this.untilDeadline(() => this.client.modEvent('session.measure', this.accountUsage.measure(v))).catch(() => {});
+      return;
+    }
     if (v.threadId && v.threadId !== this.threadId) return;
     if (p.id !== undefined && p.method) {
       // The real Codex TUI handles every approval/input request. Only mirror its waiting state.

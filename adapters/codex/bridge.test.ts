@@ -31,6 +31,37 @@ async function setup(messages: InboxMessage[], resumeHistory?: string, effort?: 
 }
 
 describe('Codex delivery failures', () => {
+  it('reads account quotas once on attachment without starting a turn', async () => {
+    const { client, rpc } = await setup([]);
+    rpc.request.mockResolvedValueOnce({ accountId: 'account', rateLimits: { limitId: 'codex', primary: { usedPercent: 25, windowDurationMins: 300 } } } as any);
+    bridge.startPolling();
+    bridge.startPolling();
+    await expect.poll(() => vi.mocked(client.modEvent).mock.calls).toContainEqual(['session.measure', {
+      usageReports: [expect.objectContaining({ accountId: 'account', rateLimits: [expect.objectContaining({ percentUsed: 25, kind: '5h' })] })],
+    }]);
+    expect(rpc.request.mock.calls.filter(([method]) => method === 'account/rateLimits/read')).toHaveLength(1);
+    expect(rpc.request.mock.calls.some(([method]) => method === 'turn/start')).toBe(false);
+  });
+
+  it('handles account updates before thread filtering and tolerates telemetry transport failures', async () => {
+    const { client, fatal } = await setup([]);
+    vi.mocked(client.modEvent).mockRejectedValueOnce(new Error('usage transport unavailable'));
+    const update = { method: 'account/rateLimits/updated', params: { threadId: 'another-thread', rateLimits: { primary: { usedPercent: 30 } } } };
+    bridge.handle(update);
+    bridge.handle(update);
+    await expect.poll(() => vi.mocked(client.modEvent).mock.calls.length).toBe(2);
+    expect(client.modEvent).toHaveBeenLastCalledWith('session.measure', { usageReports: [expect.objectContaining({ rateLimits: [expect.objectContaining({ percentUsed: 30 })] })] });
+    expect(fatal).not.toHaveBeenCalled();
+  });
+
+  it('reports unsupported account reads as unavailable without failing startup', async () => {
+    const { client, rpc, fatal } = await setup([]);
+    rpc.request.mockRejectedValueOnce(new RpcError('unsupported'));
+    bridge.startPolling();
+    await expect.poll(() => vi.mocked(client.modEvent).mock.calls).toContainEqual(['session.measure', { usageUnavailable: true }]);
+    expect(fatal).not.toHaveBeenCalled();
+  });
+
   it('reports native model picker changes to Tiller', async () => {
     const { client } = await setup([]);
     bridge.handle({ method: 'thread/settings/updated', params: { threadId: 'native', threadSettings: { model: 'selected-model' } } });
