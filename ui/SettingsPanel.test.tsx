@@ -83,6 +83,29 @@ it('previews a saved dropdown reset as inherited and saves only its removal', as
   expect(JSON.parse(String(saved[1]?.body))).toEqual({ scope: 'home', revision: 'r1', changes: { [key]: null } });
 });
 
+it('preserves an unlisted scoped default when customizing and resetting dropdowns', async () => {
+  const key = 'profiles.claude.implementation.effort';
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', values: {}, entries: { [key]: { value: 'provider-custom', source: '/shared/config.json' } }, inherited: { [key]: { value: 'provider-custom', source: '/shared/config.json' } } }) }));
+  changeScope('home'); await settle();
+  const selected = () => elements(input(key)).find((e) => e.type === 'option' && e.props.value === input(key).props.value)!;
+  expect(input(key).props.value).toBe('provider-custom');
+  expect(text(selected())).toBe('provider-custom (default)');
+  input(key).props.onChange({ target: { value: 'high' } }); render();
+  expect(text(selected())).toBe('High');
+  expect(text(tree)).toContain('Custom setting');
+  elements(tree).find((e) => e.props['aria-label'] === 'Use inherited default: Implementation effort')!.props.onClick(); render();
+  expect(input(key).props.value).toBe('provider-custom');
+  expect(text(selected())).toBe('provider-custom (default)');
+  await submit();
+  expect(fetchMock.mock.calls.some((call) => call[1]?.method === 'POST')).toBe(false);
+  expect(button('Save changes').props.disabled).toBe(true);
+  input(key).props.onChange({ target: { value: 'medium' } }); render();
+  expect(text(selected())).toBe('Medium');
+  await submit();
+  const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
+  expect(JSON.parse(String(saved[1]?.body))).toEqual({ scope: 'home', revision: 'r1', changes: { [key]: 'medium' } });
+});
+
 it('keeps unset harness defaults and unavailable previews distinct without creating drafts', () => {
   const key = 'profiles.claude.implementation.effort';
   expect(input(key).props.value).toBe('');
