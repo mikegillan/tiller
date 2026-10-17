@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isPermissionGranted, onAction, requestPermission } from '@tauri-apps/plugin-notification';
-import { selectNode, toast } from './store';
+import { recordActivity, selectNode, toast } from './store';
 import type { ClientMessage, ServerMessage } from '../src/shared/protocol';
 vi.mock('./url', () => ({ IN_APP: true }));
-vi.mock('./store', () => ({ toast: vi.fn(), selectNode: vi.fn() }));
+vi.mock('./store', () => ({ recordActivity: vi.fn(), toast: vi.fn(), selectNode: vi.fn() }));
 vi.mock('@tauri-apps/plugin-notification', () => ({ isPermissionGranted: vi.fn(), requestPermission: vi.fn(), onAction: vi.fn() }));
 const invoke = vi.fn();
 const replies: ClientMessage[] = [];
@@ -19,10 +19,17 @@ beforeEach(() => {
 });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe('approved native notification UI', () => {
-  it('never submits an OS notification from a raw notify event', async () => {
+  it.each([
+    { kind: 'done', tone: 'ok', immediate: false },
+    { kind: 'exited', tone: 'info', immediate: false },
+    { kind: 'needsYou', tone: 'warn', immediate: true },
+    { kind: 'errored', tone: 'bad', immediate: true },
+  ] as const)('routes raw $kind to activity without submitting an OS notification', async ({ kind, tone, immediate }) => {
     const { handleNotify } = await import('./notify');
-    handleNotify({ t: 'notify', id: 'n1', kind: 'done', title: 'Task' });
-    expect(toast).toHaveBeenCalled();
+    handleNotify({ t: 'notify', id: 'n1', kind, title: 'Task' });
+    expect(recordActivity).toHaveBeenCalledWith('Task', 'n1', tone);
+    if (immediate) expect(toast).toHaveBeenCalledWith('Task', 'n1', tone);
+    else expect(toast).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalled();
     expect(onAction).not.toHaveBeenCalled();
   });
