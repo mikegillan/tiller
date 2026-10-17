@@ -40,6 +40,7 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('nativeNotifyResult'), requestId: id, ok: z.boolean(), error: z.string().max(1000).optional() }),
   z.object({ t: z.literal('usageRefresh') }),
   z.object({ t: z.literal('updateCheck') }),
+  z.object({ t: z.literal('updateNotesRead'), identity: z.string().min(1).max(128) }),
   z.object({ t: z.literal('update'), tag: z.string(), sha: z.string() }),
   z.object({ t: z.literal('visibility'), focused: z.boolean() }),
   z.object({ t: z.literal('attach'), id, cols: size, rows: size }),
@@ -137,6 +138,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
         return;
       }
       case 'updateCheck': await updates.check(); return;
+      case 'updateNotesRead': updates.acknowledgeNotes(m.identity); return;
       case 'update': await updates.apply(m); return;
       case 'usageRefresh':
         await manager.usageRegistry.refresh();

@@ -209,3 +209,128 @@ describe('release checkout', () => {
     expect(helpers.mock.calls[0][0]).toMatchObject({ target: { tag: expected.tag, sha: expected.sha } });
   });
 });
+
+describe('installed unread release notes', () => {
+  const updater = (onChange = vi.fn()) => createUpdater({ repo: work, home: dir, source, onChange, spawnHelper: vi.fn(() => { throw new Error('must not apply'); }) });
+  const install = async (tag: string) => {
+    commit(`file-${tag}`); release(tag);
+    const s = await checkUpdate(work, source);
+    git(work, 'merge', '--ff-only', s.target!.sha);
+  };
+
+  it('baselines first observation, distinguishes future releases, and rolls up actually installed releases', async () => {
+    const first = updater();
+    expect((await first.check()).installedNotes).toBeUndefined();
+    commit('two'); release('v0.1.1'); commit('three'); release('v0.1.2');
+    const available = await first.check();
+    expect(available.releases.map((r) => r.tag)).toEqual(['v0.1.2', 'v0.1.1']);
+    expect(available.installedNotes).toBeUndefined();
+    git(work, 'merge', '--ff-only', available.target!.sha);
+    // An old running daemon never claims the newly moved checkout is installed.
+    expect((await first.check()).installedNotes).toBeUndefined();
+    const current = updater();
+    const notes = (await current.check()).installedNotes!;
+    expect(notes.releases.map((r) => [r.tag, r.body])).toEqual([
+      ['v0.1.2', 'Notes for v0.1.2'], ['v0.1.1', 'Notes for v0.1.1'],
+    ]);
+    expect(notes.identity).toMatch(/^[a-f0-9]{64}$/);
+    expect(current.status().releases).toEqual([]);
+  });
+
+  it('keeps future release notes out of installed unread notes', async () => {
+    await updater().check(); await install('v0.1.1');
+    commit('future'); release('v0.1.2');
+    const status = await updater().check();
+    expect(status.target?.tag).toBe('v0.1.2');
+    expect(status.releases.map((r) => r.tag)).toEqual(['v0.1.2']);
+    expect(status.installedNotes?.releases.map((r) => r.tag)).toEqual(['v0.1.1']);
+  });
+
+  it('persists a shared acknowledgment across reconnects, restarts, checks and offline starts', async () => {
+    await updater().check(); await install('v0.1.1');
+    const changed = vi.fn(), current = updater(changed);
+    const notes = (await current.check()).installedNotes!;
+    expect(updater().status().installedNotes).toEqual(notes);
+    current.acknowledgeNotes('stale');
+    expect(current.status().installedNotes).toEqual(notes);
+    current.acknowledgeNotes(notes.identity);
+    expect(changed.mock.lastCall![0].installedNotes).toBeUndefined();
+    expect((await current.check()).installedNotes).toBeUndefined();
+    source.list = async () => { throw new Error('offline'); };
+    const restarted = updater();
+    expect(restarted.status().installedNotes).toBeUndefined();
+    expect(await restarted.check()).toMatchObject({ eligible: false, fetchError: 'offline' });
+    expect(restarted.status().installedNotes).toBeUndefined();
+  });
+
+  it('does not let an older client acknowledgment dismiss a newer unseen installed release', async () => {
+    await updater().check(); await install('v0.1.1');
+    const old = (await updater().check()).installedNotes!;
+    await install('v0.1.2');
+    const current = updater(), notes = (await current.check()).installedNotes!;
+    expect(notes.identity).not.toBe(old.identity);
+    expect(notes.releases.map((r) => r.tag)).toEqual(['v0.1.2', 'v0.1.1']);
+    current.acknowledgeNotes(old.identity);
+    expect(current.status().installedNotes).toEqual(notes);
+    current.acknowledgeNotes(notes.identity);
+    expect(updater().status().installedNotes).toBeUndefined();
+  });
+
+  it('keeps proven cached notes offline or with no published releases without allowing apply', async () => {
+    await updater().check(); await install('v0.1.1');
+    const notes = (await updater().check()).installedNotes!;
+    source.list = async () => { throw new Error('offline'); };
+    const current = updater();
+    expect(current.status().installedNotes).toEqual(notes);
+    expect(await current.check()).toMatchObject({ installedNotes: notes, eligible: false, fetchError: 'offline' });
+    await expect(current.apply({ tag: 'v0.1.1', sha: notes.releases[0].sha })).rejects.toThrow('release changed');
+    source.list = async () => [];
+    expect(await current.check()).toMatchObject({ installedNotes: notes, eligible: false, reason: 'no published stable releases' });
+  });
+
+  it('does not fabricate a partial rollup or disable future updates when older installed history is missing', async () => {
+    await updater().check(); await install('v0.1.1'); await install('v0.1.2');
+    commit('future'); release('v0.1.3');
+    git(seed, 'push', '-q', 'origin', ':refs/tags/v0.1.1');
+    const status = await updater().check();
+    expect(status).toMatchObject({ eligible: true, target: { tag: 'v0.1.3' } });
+    expect(status.installedNotes).toBeUndefined();
+  });
+
+  it('baselines offline first starts and waits for published metadata after a later install', async () => {
+    const list = source.list;
+    source.list = async () => { throw new Error('offline'); };
+    expect((await updater().check()).installedNotes).toBeUndefined();
+    source.list = list;
+    expect((await updater().check()).installedNotes).toBeUndefined();
+    await install('v0.1.1');
+    source.list = async () => [];
+    expect((await updater().check()).installedNotes).toBeUndefined();
+    source.list = list;
+    expect((await updater().check()).installedNotes?.releases.map((r) => r.tag)).toEqual(['v0.1.1']);
+  });
+
+  it('does not call development commits an installed release or infer notices from corrupt cache', async () => {
+    await updater().check(); await install('v0.1.1');
+    git(work, 'commit', '--allow-empty', '-qm', 'development');
+    expect((await updater().check()).installedNotes).toBeUndefined();
+    writeFileSync(join(dir, 'update-notes.json'), '{broken');
+    const current = updater();
+    expect((await current.check()).installedNotes).toBeUndefined();
+    expect(JSON.parse(readFileSync(join(dir, 'update-notes.json'), 'utf8')).baselineSha).toBe(git(work, 'rev-parse', 'HEAD'));
+  });
+
+  it('does not resurrect acknowledged notes when an in-flight check finishes', async () => {
+    await updater().check(); await install('v0.1.1');
+    const current = updater(), notes = (await current.check()).installedNotes!;
+    const list = source.list;
+    let finish!: () => void;
+    source.list = async (repo) => { await new Promise<void>((r) => { finish = r; }); return list(repo); };
+    const checking = current.check();
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    current.acknowledgeNotes(notes.identity);
+    finish();
+    expect((await checking).installedNotes).toBeUndefined();
+    expect(updater().status().installedNotes).toBeUndefined();
+  });
+});

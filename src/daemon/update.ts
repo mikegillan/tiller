@@ -1,11 +1,11 @@
 // Source-checkout updater. Release discovery never follows main or changes remote configuration.
 import { execFile, execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { randomUUID } from 'node:crypto';
-import type { ReleaseUpdate, UpdateStatus } from '../shared/protocol.js';
+import { createHash, randomUUID } from 'node:crypto';
+import type { InstalledReleaseNotes, ReleaseUpdate, UpdateStatus } from '../shared/protocol.js';
 
 export const REPO = fileURLToPath(new URL('../..', import.meta.url));
 export const UPDATE_LOG = 'update.log';
@@ -105,7 +105,7 @@ async function releaseTransport(repo: string, origin: string, repository: string
   // Feed Git the original URL so it applies exactly the one rewrite validated above.
   return origin;
 }
-export async function checkUpdate(repo: string, source: ReleaseSource = githubReleases()): Promise<UpdateStatus> {
+export async function checkUpdate(repo: string, source: ReleaseSource = githubReleases(), notesSince?: string): Promise<UpdateStatus> {
   const sha = await tryGit(repo, 'rev-parse', 'HEAD') ?? '';
   const base: UpdateStatus = { sha, checkedAt: Date.now(), eligible: false, releases: [] };
   try {
@@ -119,16 +119,35 @@ export async function checkUpdate(repo: string, source: ReleaseSource = githubRe
     const target = await resolveRelease(repo, transport, rows[0]);
     const releases: ReleaseUpdate[] = [];
     let currentVersion: string | undefined;
+    let currentRelease: ReleaseUpdate | undefined;
     for (const row of rows) {
       const r = row.id === target.id ? target : await resolveRelease(repo, transport, row);
-      if (await ancestor(repo, r.sha, sha)) { currentVersion = r.tag; break; }
+      if (await ancestor(repo, r.sha, sha)) { currentVersion = r.tag; currentRelease = r; break; }
       if (!(await ancestor(repo, r.sha, target.sha))) throw new Error(`${r.tag} is not in the latest release history`);
       releases.push(r);
     }
+    // An ancestor tag describes development ancestry, not an installed release.
+    // Only an exact runtime checkout can produce post-install notes.
+    let installedNotes: InstalledReleaseNotes | undefined;
+    try {
+      if (notesSince && notesSince !== sha && await ancestor(repo, notesSince, sha)) {
+        const pinned = currentRelease;
+        if (pinned?.sha === sha) {
+          const missed: ReleaseUpdate[] = [];
+          for (const row of rows.filter((r) => compareVersions(r.tag, pinned.tag) <= 0)) {
+            const r = row.id === pinned.id ? pinned : await resolveRelease(repo, transport, row);
+            if (await ancestor(repo, r.sha, notesSince)) break;
+            if (!(await ancestor(repo, r.sha, sha))) throw new Error(`${r.tag} is not in the installed release history`);
+            missed.push(r);
+          }
+          installedNotes = { identity: createHash('sha256').update(JSON.stringify([repository, missed])).digest('hex'), releases: missed };
+        }
+      }
+    } catch { /* Incomplete installed history waits for a later check; future update validation is independent. */ }
     const reason = await safeCheckout(repo)
       ?? (!(await ancestor(repo, sha, target.sha)) ? 'local or unreleased commits; latest release cannot fast-forward this checkout' : undefined)
       ?? (currentVersion && compareVersions(target.tag, currentVersion) < 0 ? 'latest release would downgrade this checkout' : undefined);
-    return { ...base, repository, origin, target, currentVersion, releases, eligible: !reason, reason };
+    return { ...base, repository, origin, target, currentVersion, releases, installedNotes, eligible: !reason, reason };
   } catch (e) { return { ...base, reason: 'release check unavailable; try again later', fetchError: (e as Error).message }; }
 }
 export function updateLine(s: UpdateStatus): string {
@@ -201,16 +220,64 @@ export function updateLocked(repo: string): boolean {
   return existsSync(resolve(repo, common, UPDATE_LOCK));
 }
 
+export const UPDATE_NOTES = 'update-notes.json';
+interface NotesState { repository: string; baselineSha: string; unread?: InstalledReleaseNotes }
+const commitSha = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{40,64}$/.test(v);
+function readNotes(path: string, repository: string, runtimeSha: string): NotesState {
+  try {
+    const s = JSON.parse(readFileSync(path, 'utf8')) as NotesState;
+    const n = s.unread;
+    if (s.repository !== repository || !commitSha(s.baselineSha)) throw new Error('invalid notes baseline');
+    if (n && (typeof n.identity !== 'string' || !/^[a-f0-9]{64}$/.test(n.identity) || !Array.isArray(n.releases) || !n.releases.length
+      || n.releases.some((r) => !r || !Number.isSafeInteger(r.id) || r.id <= 0 || typeof r.tag !== 'string' || !version(r.tag)
+        || !commitSha(r.sha) || !commitSha(r.tagObject) || typeof r.name !== 'string' || typeof r.body !== 'string'
+        || typeof r.publishedAt !== 'string' || !Number.isFinite(Date.parse(r.publishedAt)))
+      || n.identity !== createHash('sha256').update(JSON.stringify([repository, n.releases])).digest('hex'))) throw new Error('invalid cached notes');
+    return s;
+  } catch { return { repository, baselineSha: runtimeSha }; }
+}
+function writeNotes(path: string, state: NotesState) {
+  const temp = `${path}.${randomUUID()}.tmp`;
+  try { writeFileSync(temp, JSON.stringify(state), { mode: 0o600 }); renameSync(temp, path); }
+  finally { rmSync(temp, { force: true }); }
+}
+
 export function createUpdater(o: { repo: string; home: string; onChange(s: UpdateStatus): void; spawnHelper: (expected: UpdateStatus, onExit: (code: number | null) => void) => string; source?: ReleaseSource }) {
   const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: o.repo, encoding: 'utf8' }).trim();
-  let status: UpdateStatus = { runtimeSha, sha: runtimeSha, checkedAt: 0, eligible: false, releases: [], reason: 'not checked yet' };
+  let repository = '';
+  try { repository = githubRepo(execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: o.repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) ?? ''; } catch { /* No origin: release discovery remains unavailable. */ }
+  const notesPath = join(o.home, UPDATE_NOTES);
+  let notes = readNotes(notesPath, repository, runtimeSha);
+  // Establish the first-observation baseline before any network request, including offline starts.
+  writeNotes(notesPath, notes);
+  const unread = () => notes.unread?.releases[0]?.sha === runtimeSha ? notes.unread : undefined;
+  let status: UpdateStatus = { installedNotes: unread(), runtimeSha, sha: runtimeSha, checkedAt: 0, eligible: false, releases: [], reason: 'not checked yet' };
   let checking: Promise<UpdateStatus> | undefined;
   let applying = false;
   let timer: ReturnType<typeof setInterval> | undefined;
-  const set = (s: UpdateStatus) => { status = { ...s, runtimeSha, applying }; o.onChange(status); return status; };
-  const check = () => checking ??= checkUpdate(o.repo, o.source).then(set).finally(() => { checking = undefined; });
+  const set = (s: UpdateStatus) => { status = { ...s, installedNotes: unread(), runtimeSha, applying }; o.onChange(status); return status; };
+  const check = () => {
+    if (checking) return checking;
+    const baseline = notes.baselineSha;
+    return checking = checkUpdate(o.repo, o.source, baseline).then((s) => {
+      // A running old daemon must never announce the checkout another process just moved.
+      if (notes.baselineSha === baseline && s.repository === repository && s.sha === runtimeSha && s.installedNotes) {
+        const next = { ...notes, unread: s.installedNotes };
+        writeNotes(notesPath, next);
+        notes = next;
+      }
+      return set(s);
+    }).finally(() => { checking = undefined; });
+  };
   return {
     status: () => status, check,
+    acknowledgeNotes(identity: string) {
+      if (identity !== unread()?.identity) return;
+      const next: NotesState = { repository, baselineSha: runtimeSha };
+      writeNotes(notesPath, next);
+      notes = next;
+      set(status);
+    },
     start() { void check(); timer = setInterval(() => { if (!applying) void check(); }, 6 * 3600_000); timer.unref(); },
     stop() { if (timer) clearInterval(timer); },
     async apply(expected: { tag: string; sha: string }) {

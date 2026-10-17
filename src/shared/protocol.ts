@@ -312,9 +312,12 @@ export interface UsageReport {
 export interface ReleaseUpdate {
   id: number; tag: string; name: string; body: string; publishedAt: string; sha: string; tagObject: string;
 }
+/** Notes for a proven installed release; identity must be echoed when read. */
+export interface InstalledReleaseNotes { identity: string; releases: ReleaseUpdate[] }
 export interface UpdateStatus {
   runtimeSha?: string; sha: string; checkedAt: number; eligible: boolean; reason?: string; fetchError?: string;
   repository?: string; origin?: string; currentVersion?: string; target?: ReleaseUpdate; releases: ReleaseUpdate[];
+  installedNotes?: InstalledReleaseNotes;
   applying?: boolean; failed?: string;
 }
 
@@ -348,6 +351,7 @@ export interface DigestItem { id: string; title: string; kind: 'needsYou' | 'err
 export type ClientMessage =
   | { t: 'update'; tag: string; sha: string }
   | { t: 'updateCheck' }
+  | { t: 'updateNotesRead'; identity: string }
   | { t: 'auth'; token: string; client?: 'app' | 'browser' } // must be the first message; token comes from the ?k= query param of the served UI URL
   | { t: 'nativeNotifyReady'; ok: boolean; error?: string }
   | { t: 'nativeNotifyResult'; requestId: string; ok: boolean; error?: string }
