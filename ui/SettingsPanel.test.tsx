@@ -42,22 +42,24 @@ function elements(node: ReactNode): Element[] {
 function text(node: ReactNode): string { return Array.isArray(node) ? node.map(text).join('') : node && typeof node === 'object' && 'props' in node ? text((node as Element).props.children) : typeof node === 'string' ? node : ''; }
 function button(label: string) { const match = elements(tree).find((e) => e.type === 'button' && text(e.props.children) === label); if (!match) throw Error(`Missing button ${label}`); return match; }
 function click(label: string) { button(label).props.onClick(); render(); }
+function changeScope(scope: 'home' | 'project') { elements(tree).find((e) => e.props['aria-label'] === 'Settings scope')!.props.onChange({ target: { value: scope } }); render(); }
+function search(value: string) { elements(tree).find((e) => e.props['aria-label'] === 'Search settings')!.props.onChange({ target: { value } }); render(); }
 function input(id: string) { return elements(tree).find((e) => e.props.id === `setting-${id}`)!; }
 async function submit() { await elements(tree).find((e) => e.type === 'form')!.props.onSubmit({ preventDefault() {} }); await settle(); }
 beforeEach(async () => { hooks.store = { connected: false, usageSources: undefined, usageScanning: false }; vi.mocked(refreshUsage).mockClear(); hooks.slots = []; hooks.deps = []; hooks.effects = []; close.mockClear(); fetchMock.mockClear(); vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('document', { activeElement: null }); render(); await settle(); });
 
 it('guards scope changes and closing, keeps edits on request, and discards only with explicit action', async () => {
   input('profiles.claude.implementation.model').props.onChange({ target: { value: 'edited' } }); render();
-  click('Global · all repositories');
+  changeScope('home');
   expect(text(tree)).toContain('Discard unsaved changes?');
   expect(fetchMock).toHaveBeenCalledTimes(1);
   click('Keep editing');
   expect(input('profiles.claude.implementation.model').props.value).toBe('edited');
   click('Close'); expect(close).not.toHaveBeenCalled();
-  click('Keep editing'); click('Global · all repositories'); click('Discard changes'); await settle();
+  click('Keep editing'); changeScope('home'); click('Discard changes'); await settle();
   expect(fetchMock.mock.calls.at(-1)?.[0]).toBe('/api/settings?scope=home');
-  expect(button('Save global settings').props.disabled).toBe(true);
-  expect(text(tree)).toContain('Daemon (global only)');
+  expect(button('Save changes').props.disabled).toBe(true);
+  expect(button('Daemon')).toBeDefined();
 });
 
 it('previews a reset using the server fallback and sends only the removed repository override', async () => {
@@ -71,9 +73,8 @@ it('previews a reset using the server fallback and sends only the removed reposi
 });
 
 it('stages Claude recommendations without saving, retains other category drafts, and saves all edited fields', async () => {
-  click('Limits'); // Inherited fields require customization first.
-  const customize = elements(tree).find((e) => e.type === 'button' && e.props['aria-label'] === 'Customize for this repository: Max Depth')!;
-  customize.props.onClick(); render(); input('limits.maxDepth').props.onChange({ target: { value: '4' } }); render();
+  click('Limits');
+  input('limits.maxDepth').props.onChange({ target: { value: '4' } }); render();
   click('Claude'); click('Stage recommended Claude defaults');
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(input('profiles.claude.implementation.model').props.value).toBe('sonnet');
@@ -81,13 +82,13 @@ it('stages Claude recommendations without saving, retains other category drafts,
   await submit();
   const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
   expect(body.changes).toEqual({ ...claudeRecommendations, 'limits.maxDepth': 4 });
-  expect(button('Save repository settings').props.disabled).toBe(true);
+  expect(button('Save changes').props.disabled).toBe(true);
 });
 
 it('can cancel staged defaults, and global saves omit the repository node', async () => {
-  click('Stage recommended Claude defaults'); click('Cancel changes');
+  click('Stage recommended Claude defaults'); click('Discard changes');
   expect(input('profiles.claude.implementation.model').props.value).toBe('custom');
-  click('Global · all repositories'); await settle(); click('Stage recommended Claude defaults'); await submit();
+  changeScope('home'); await settle(); click('Stage recommended Claude defaults'); await submit();
   const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
   expect(body).toEqual({ scope: 'home', revision: 'r1', changes: claudeRecommendations });
 });
@@ -98,7 +99,7 @@ it('retains drafts and disables saving on a revision conflict until reload', asy
   await submit();
   expect(text(tree)).toContain('File changed on disk');
   expect(input('profiles.claude.implementation.model').props.value).toBe('sonnet');
-  expect(button('Save repository settings').props.disabled).toBe(true);
+  expect(button('Save changes').props.disabled).toBe(true);
   click('Reload latest settings'); await settle();
   expect(input('profiles.claude.implementation.model').props.value).toBe('custom');
 });
@@ -106,7 +107,6 @@ it('retains drafts and disables saving on a revision conflict until reload', asy
 
 it('withholds stale profile reset and inherited previews while a legacy model draft is pending', async () => {
   click('Legacy Claude roles');
-  elements(tree).find((e) => e.type === 'button' && e.props['aria-label'] === 'Customize for this repository: Worker model')!.props.onClick(); render();
   input('roles.worker.model').props.onChange({ target: { value: 'haiku' } }); render();
   click('Claude');
   // The still-explicit profile remains accurate despite role edits.
@@ -121,7 +121,6 @@ it('withholds stale profile reset and inherited previews while a legacy model dr
 });
 
 it('stages Claude models while retaining a separately configured effort draft', async () => {
-  elements(tree).find((e) => e.type === 'button' && e.props['aria-label'] === 'Customize for this repository: Implementation effort')!.props.onClick(); render();
   input('profiles.claude.implementation.effort').props.onChange({ target: { value: 'max' } }); render();
   click('Stage recommended Claude defaults');
   expect(input('profiles.claude.implementation.effort').props.value).toBe('max');
@@ -167,12 +166,12 @@ it('retains drafts after server validation errors and retries the same revision'
   await submit();
   expect(text(tree)).toContain('Model unavailable for this provider');
   expect(input('profiles.claude.implementation.model').props.value).toBe('sonnet');
-  expect(button('Save repository settings').props.disabled).toBe(false);
+  expect(button('Save changes').props.disabled).toBe(false);
   await submit();
   const bodies = fetchMock.mock.calls.filter((call) => call[1]?.method === 'POST').map((call) => JSON.parse(String(call[1]?.body)));
   expect(bodies).toHaveLength(2);
   expect(bodies[1]).toEqual(bodies[0]);
-  expect(button('Save repository settings').props.disabled).toBe(true);
+  expect(button('Save changes').props.disabled).toBe(true);
 });
 
 it('disables scope, close, fields and save while a save request is pending', async () => {
@@ -182,26 +181,25 @@ it('disables scope, close, fields and save while a save request is pending', asy
   elements(tree).find((e) => e.type === 'form')!.props.onSubmit({ preventDefault() {} }); render();
   expect(button('Please wait…').props.disabled).toBe(true);
   expect(button('Close').props.disabled).toBe(true);
-  expect(button('Repository').props.disabled).toBe(true);
-  expect(button('Global · all repositories').props.disabled).toBe(true);
-  expect(button('Cancel changes').props.disabled).toBe(true);
+  expect(elements(tree).find((e) => e.props['aria-label'] === 'Settings scope')!.props.disabled).toBe(true);
+  expect(button('Discard changes').props.disabled).toBe(true);
   expect(input('profiles.claude.implementation.model').props.disabled).toBe(true);
   resolve({ ok: true, json: async () => ({ ...snapshot, revision: 'r2' }) });
   await settle();
-  expect(button('Save repository settings').props.disabled).toBe(true);
+  expect(button('Save changes').props.disabled).toBe(true);
   expect(text(tree)).toContain('Settings saved.');
 });
 
 it('retries a failed scope load and disables retry while the replacement request is pending', async () => {
   fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 503, json: async () => ({ error: 'Settings temporarily unavailable' }) } as any));
-  click('Global · all repositories');
+  changeScope('home');
   await vi.waitFor(() => { render(); expect(text(tree)).toContain('Settings temporarily unavailable'); });
-  expect(button('Save global settings').props.disabled).toBe(true);
+  expect(button('Save changes').props.disabled).toBe(true);
   let resolve!: (response: any) => void;
   fetchMock.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
   click('Retry'); render();
   expect(button('Close').props.disabled).toBe(true);
-  expect(button('Global · all repositories').props.disabled).toBe(true);
+  expect(elements(tree).find((e) => e.props['aria-label'] === 'Settings scope')!.props.disabled).toBe(true);
   const retry = elements(tree).find((e) => e.type === 'button' && text(e.props.children) === 'Retry');
   expect(!retry || retry.props.disabled).toBe(true);
   resolve({ ok: true, json: async () => ({ ...snapshot, scope: 'home' }) });
@@ -223,4 +221,67 @@ it('allows CLI rescans only when discovery is available, connected, and idle', (
   expect(button('Scanning tools…').props.disabled).toBe(true);
   hooks.store.usageScanning = false; hooks.store.connected = false; render();
   expect(button('Rescan').props.disabled).toBe(true);
+});
+
+
+it('searches keys and help across categories without losing drafts when cleared or saved', async () => {
+  input('profiles.claude.implementation.model').props.onChange({ target: { value: 'custom/draft' } }); render();
+  search('  LIMITS.MAXDEPTH  ');
+  expect(input('limits.maxDepth')).toBeDefined();
+  expect(input('limits.maxChildren')).toBeUndefined();
+  expect(button('Limits').props['aria-pressed']).toBe(true);
+  search('cross midnight');
+  expect(input('notifications.quietHours')).toBeDefined();
+  expect(button('Notifications').props['aria-pressed']).toBe(true);
+  search('no-such-setting-xyz');
+  expect(text(tree)).toContain('No matching settings');
+  expect(input('notifications.quietHours')).toBeUndefined();
+  search(''); click('Claude');
+  expect(input('profiles.claude.implementation.model').props.value).toBe('custom/draft');
+  expect(button('Save changes').props.disabled).toBe(false);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  search('limits.maxDepth');
+  await submit();
+  const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
+  expect(JSON.parse(String(saved[1]?.body)).changes).toEqual({ 'profiles.claude.implementation.model': 'custom/draft' });
+});
+
+it('limits daemon search results to the global scope', async () => {
+  search('daemon.maxWorking');
+  expect(input('daemon.maxWorking')).toBeUndefined();
+  expect(elements(tree).some((e) => e.type === 'button' && text(e.props.children) === 'Daemon')).toBe(false);
+  expect(text(tree)).toContain('No matching settings');
+  changeScope('home'); await settle();
+  search('daemon.maxWorking');
+  expect(button('Daemon').props['aria-pressed']).toBe(true);
+  expect(input('daemon.maxWorking')).toBeDefined();
+  changeScope('project'); await settle();
+  expect(input('daemon.maxWorking')).toBeUndefined();
+  expect(elements(tree).some((e) => e.type === 'button' && text(e.props.children) === 'Daemon')).toBe(false);
+});
+
+it('edits inherited controls directly and saves only the explicit customization', async () => {
+  click('Limits');
+  expect(input('limits.maxDepth').props.disabled).toBe(false);
+  input('limits.maxDepth').props.onChange({ target: { value: '4' } }); render();
+  await submit();
+  const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
+  expect(JSON.parse(String(saved[1]?.body)).changes).toEqual({ 'limits.maxDepth': 4 });
+});
+
+it('keeps completion retries disabled until a command is configured and preserves drafts when disabled again', async () => {
+  click('Approvals & checks');
+  expect(input('gate.retries').props.disabled).toBe(true);
+  expect(input('gate.timeoutMinutes').props.disabled).toBe(true);
+  input('gate.command').props.onChange({ target: { value: 'npm test' } }); render();
+  expect(input('gate.retries').props.disabled).toBe(false);
+  expect(input('gate.timeoutMinutes').props.disabled).toBe(false);
+  input('gate.retries').props.onChange({ target: { value: '3' } }); render();
+  elements(tree).find((e) => e.props['aria-label'] === 'Remove repository override: Check command')!.props.onClick(); render();
+  expect(input('gate.retries').props.disabled).toBe(true);
+  expect(input('gate.retries').props.value).toBe('3');
+  input('gate.command').props.onChange({ target: { value: 'npm run check' } }); render();
+  await submit();
+  const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
+  expect(JSON.parse(String(saved[1]?.body)).changes).toEqual({ 'gate.command': 'npm run check', 'gate.retries': 3 });
 });
