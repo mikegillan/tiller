@@ -41,7 +41,7 @@ function chime(m: Notify) {
 export function handleNotify(m: Notify) {
   const text = m.body ? `${m.title}: ${m.body}` : m.title;
   recordActivity(text, m.id, TONE[m.kind]);
-  if (m.kind === 'errored') toast(text, m.id, TONE[m.kind]);
+  if (m.kind === 'errored' || m.kind === 'needsYou') toast(text, m.id, TONE[m.kind]);
   // Raw events are in-app feedback only; OS delivery requires a separate daemon-approved offer.
   if (!IN_APP && !throttled(m.id)) chime(m);
 }

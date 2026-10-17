@@ -41,7 +41,7 @@ it('retention does not mutate its input or count expired unread entries', () => 
   expect(activityUnread(next)).toBe(0);
 });
 
-it('keeps error feedback, manual action toasts and approval queue semantics', () => {
+it('keeps needs-you and error feedback, manual action toasts and approval queue semantics', () => {
   handleNotify({ t: 'notify', id: 'a', kind: 'errored', title: 'Failed', body: 'Build failed' });
   handleNotify({ t: 'notify', id: 'b', kind: 'needsYou', title: 'Needs input' });
   applyServer({ t: 'confirm', confirmId: 'approval', text: 'Allow command?' });
@@ -49,7 +49,7 @@ it('keeps error feedback, manual action toasts and approval queue semantics', ()
   toast('Manual action completed', 'a', 'ok');
   expect(getState().activity.map((item) => item.text)).toEqual(['Action failed', 'Needs input', 'Failed: Build failed']);
   clearActivity();
-  expect(getState().toasts.map((t) => t.text)).toEqual(['Failed: Build failed', 'Action failed', 'Manual action completed']);
+  expect(getState().toasts.map((t) => t.text)).toEqual(['Failed: Build failed', 'Needs input', 'Action failed', 'Manual action completed']);
   expect(getState().confirms).toEqual([{ confirmId: 'approval', text: 'Allow command?' }]);
   expect(getState().activityOpen).toBe(false);
   applyServer({ t: 'confirmDone', confirmId: 'approval' });
