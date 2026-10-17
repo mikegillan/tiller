@@ -40,8 +40,9 @@ function elements(node: ReactNode): Element[] {
   return [element, ...elements(element.props.children)];
 }
 function text(node: ReactNode): string { return Array.isArray(node) ? node.map(text).join('') : node && typeof node === 'object' && 'props' in node ? text((node as Element).props.children) : typeof node === 'string' ? node : ''; }
-function button(label: string) { const match = elements(tree).find((e) => e.type === 'button' && text(e.props.children) === label); if (!match) throw Error(`Missing button ${label}`); return match; }
-function click(label: string) { button(label).props.onClick(); render(); }
+function button(label: string, root: ReactNode = tree) { const match = elements(root).find((e) => e.type === 'button' && text(e.props.children) === label); if (!match) throw Error(`Missing button ${label}`); return match; }
+function click(label: string, root: ReactNode = tree) { button(label, root).props.onClick(); render(); }
+function confirmDiscard() { const notice = elements(tree).find((e) => e.props.role === 'alert' && text(e).includes('Discard unsaved changes?')); expect(notice).toBeDefined(); click('Discard changes', notice); }
 function changeScope(scope: 'home' | 'project') { elements(tree).find((e) => e.props['aria-label'] === 'Settings scope')!.props.onChange({ target: { value: scope } }); render(); }
 function search(value: string) { elements(tree).find((e) => e.props['aria-label'] === 'Search settings')!.props.onChange({ target: { value } }); render(); }
 function input(id: string) { return elements(tree).find((e) => e.props.id === `setting-${id}`)!; }
@@ -56,7 +57,7 @@ it('guards scope changes and closing, keeps edits on request, and discards only 
   click('Keep editing');
   expect(input('profiles.claude.implementation.model').props.value).toBe('edited');
   click('Close'); expect(close).not.toHaveBeenCalled();
-  click('Keep editing'); changeScope('home'); click('Discard changes'); await settle();
+  click('Keep editing'); changeScope('home'); confirmDiscard(); await settle();
   expect(fetchMock.mock.calls.at(-1)?.[0]).toBe('/api/settings?scope=home');
   expect(button('Save changes').props.disabled).toBe(true);
   expect(button('Daemon')).toBeDefined();
@@ -142,7 +143,7 @@ it('keeps a draft across category navigation and confirms Escape before closing'
   expect(close).not.toHaveBeenCalled();
   click('Keep editing');
   expect(input('profiles.claude.implementation.model').props.value).toBe('edited');
-  click('Close'); click('Discard changes');
+  click('Close'); confirmDiscard();
   expect(close).toHaveBeenCalledOnce();
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
