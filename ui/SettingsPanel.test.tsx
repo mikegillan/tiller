@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type { ReactElement, ReactNode } from 'react';
 import { refreshUsage } from './conn';
 import { SettingsPanel } from './SettingsPanel';
-import { claudeRecommendations, type SettingsSnapshot } from './settings-model';
+import type { SettingsSnapshot } from './settings-model';
 
 // Exercise the component's real handlers and asynchronous requests without a DOM dependency.
 // Effects are flushed after each render; DOM focus/dialog behavior is verified in the browser.
@@ -49,6 +49,87 @@ function input(id: string) { return elements(tree).find((e) => e.props.id === `s
 async function submit() { await elements(tree).find((e) => e.type === 'form')!.props.onSubmit({ preventDefault() {} }); await settle(); }
 beforeEach(async () => { hooks.store = { connected: false, usageSources: undefined, usageScanning: false }; vi.mocked(refreshUsage).mockClear(); hooks.slots = []; hooks.deps = []; hooks.effects = []; close.mockClear(); fetchMock.mockClear(); vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('document', { activeElement: null }); render(); await settle(); });
 
+it('marks only inherited selected dropdown values as defaults and preserves same-value customizations', async () => {
+  const key = 'approvals.close';
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', values: {}, entries: { [key]: { value: 'never', source: 'default' } }, inherited: { [key]: { value: 'never', source: 'default' } } }) }));
+  changeScope('home'); await settle(); click('Approvals & checks');
+  const selected = () => elements(input(key)).find((e) => e.type === 'option' && e.props.value === input(key).props.value)!;
+  const row = () => elements(tree).find((e) => e.props.className === 'settings-field' && elements(e).includes(input(key)))!;
+  expect(text(selected())).toBe('Always ask for approval (default)');
+  expect(text(row())).not.toContain('Using default');
+  expect(elements(row()).some((e) => e.props.className === 'settings-detail')).toBe(false);
+  expect(button('Save changes').props.disabled).toBe(true);
+  expect(elements(input(key)).filter((e) => e.type === 'option' && text(e).includes('(default)'))).toHaveLength(1);
+  input(key).props.onChange({ target: { value: 'never' } }); render();
+  expect(text(selected())).toBe('Always ask for approval');
+  expect(text(row())).toContain('Custom setting');
+  expect(button('Save changes').props.disabled).toBe(false);
+  await submit();
+  const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
+  expect(JSON.parse(String(saved[1]?.body))).toEqual({ scope: 'home', revision: 'r1', changes: { [key]: 'never' } });
+});
+
+it('previews a saved dropdown reset as inherited and saves only its removal', async () => {
+  const key = 'approvals.close';
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', values: { [key]: 'always' }, entries: { [key]: { value: 'always', source: '/home/config.json' } }, inherited: { [key]: { value: 'never', source: 'default' } } }) }));
+  changeScope('home'); await settle(); click('Approvals & checks');
+  expect(text(elements(input(key)).find((e) => e.type === 'option' && e.props.value === 'always'))).toBe('Always allow');
+  elements(tree).find((e) => e.props['aria-label'] === 'Use inherited default: Close nodes without approval')!.props.onClick(); render();
+  expect(input(key).props.value).toBe('never');
+  expect(text(elements(input(key)).find((e) => e.type === 'option' && e.props.value === 'never'))).toBe('Always ask for approval (default)');
+  expect(text(tree)).toContain('Unsaved');
+  await submit();
+  const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
+  expect(JSON.parse(String(saved[1]?.body))).toEqual({ scope: 'home', revision: 'r1', changes: { [key]: null } });
+});
+
+it('preserves an unlisted scoped default when customizing and resetting dropdowns', async () => {
+  const key = 'profiles.claude.implementation.effort';
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', values: {}, entries: { [key]: { value: 'provider-custom', source: '/shared/config.json' } }, inherited: { [key]: { value: 'provider-custom', source: '/shared/config.json' } } }) }));
+  changeScope('home'); await settle();
+  const selected = () => elements(input(key)).find((e) => e.type === 'option' && e.props.value === input(key).props.value)!;
+  expect(input(key).props.value).toBe('provider-custom');
+  expect(text(selected())).toBe('provider-custom (default)');
+  input(key).props.onChange({ target: { value: 'high' } }); render();
+  expect(text(selected())).toBe('High');
+  expect(text(tree)).toContain('Custom setting');
+  elements(tree).find((e) => e.props['aria-label'] === 'Use inherited default: Implementation effort')!.props.onClick(); render();
+  expect(input(key).props.value).toBe('provider-custom');
+  expect(text(selected())).toBe('provider-custom (default)');
+  await submit();
+  expect(fetchMock.mock.calls.some((call) => call[1]?.method === 'POST')).toBe(false);
+  expect(button('Save changes').props.disabled).toBe(true);
+  input(key).props.onChange({ target: { value: 'medium' } }); render();
+  expect(text(selected())).toBe('Medium');
+  await submit();
+  const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
+  expect(JSON.parse(String(saved[1]?.body))).toEqual({ scope: 'home', revision: 'r1', changes: { [key]: 'medium' } });
+});
+
+it('keeps unset harness defaults and unavailable previews distinct without creating drafts', () => {
+  const key = 'profiles.claude.implementation.effort';
+  expect(input(key).props.value).toBe('');
+  expect(text(elements(input(key)).find((e) => e.type === 'option' && e.props.value === ''))).toBe('Harness default / unset (default)');
+  expect(button('Save changes').props.disabled).toBe(true);
+  click('Legacy Claude roles');
+  input('roles.worker.effort').props.onChange({ target: { value: 'high' } }); render(); click('Claude');
+  expect(text(elements(input(key)).find((e) => e.type === 'option' && e.props.value === ''))).toBe('Preview available after save');
+  expect(text(input(key))).not.toContain('(default)');
+  expect(text(tree)).toContain('Preview unavailable until legacy role changes are saved.');
+});
+
+it('removes harness informational disclosures while keeping editable profile groups and configuration details', () => {
+  for (const harness of ['Claude', 'Codex', 'Pi']) {
+    click(harness);
+    expect(elements(tree).filter((e) => e.type === 'fieldset')).toHaveLength(5);
+    expect(elements(tree).filter((e) => e.type === 'summary').map(text)).not.toContain(`Recommended ${harness} defaults`);
+    expect(text(tree)).not.toContain('How Claude inherits defaults');
+    expect(text(tree)).not.toContain('Stage recommended');
+    expect(text(tree)).toContain('Configuration details');
+    expect(input(`profiles.${harness.toLowerCase()}.implementation.model`).props.disabled).toBe(false);
+  }
+});
+
 it('guards scope changes and closing, keeps edits on request, and discards only with explicit action', async () => {
   input('profiles.claude.implementation.model').props.onChange({ target: { value: 'edited' } }); render();
   changeScope('home');
@@ -73,29 +154,31 @@ it('previews a reset using the server fallback and sends only the removed reposi
   expect(body).toEqual({ scope: 'project', nodeId: 'n1', revision: 'r1', changes: { 'profiles.claude.implementation.model': null } });
 });
 
-it('stages Claude recommendations without saving, retains other category drafts, and saves all edited fields', async () => {
+it('retains edits across categories and saves all edited fields', async () => {
   click('Limits');
   input('limits.maxDepth').props.onChange({ target: { value: '4' } }); render();
-  click('Claude'); click('Stage recommended Claude defaults');
+  click('Claude');
+  input('profiles.claude.implementation.model').props.onChange({ target: { value: 'sonnet' } }); render();
   expect(fetchMock).toHaveBeenCalledTimes(1);
-  expect(input('profiles.claude.implementation.model').props.value).toBe('sonnet');
-  expect(text(tree)).toContain('After save: opus');
   await submit();
   const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
-  expect(body.changes).toEqual({ ...claudeRecommendations, 'limits.maxDepth': 4 });
+  expect(body.changes).toEqual({ 'profiles.claude.implementation.model': 'sonnet', 'limits.maxDepth': 4 });
   expect(button('Save changes').props.disabled).toBe(true);
 });
 
-it('can cancel staged defaults, and global saves omit the repository node', async () => {
-  click('Stage recommended Claude defaults'); click('Discard changes');
+it('discards custom edits, and global saves omit the repository node', async () => {
+  input('profiles.claude.implementation.model').props.onChange({ target: { value: 'sonnet' } }); render();
+  click('Discard changes');
   expect(input('profiles.claude.implementation.model').props.value).toBe('custom');
-  changeScope('home'); await settle(); click('Stage recommended Claude defaults'); await submit();
+  changeScope('home'); await settle();
+  input('profiles.claude.implementation.model').props.onChange({ target: { value: 'sonnet' } }); render();
+  await submit();
   const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
-  expect(body).toEqual({ scope: 'home', revision: 'r1', changes: claudeRecommendations });
+  expect(body).toEqual({ scope: 'home', revision: 'r1', changes: { 'profiles.claude.implementation.model': 'sonnet' } });
 });
 
 it('retains drafts and disables saving on a revision conflict until reload', async () => {
-  click('Stage recommended Claude defaults');
+  input('profiles.claude.implementation.model').props.onChange({ target: { value: 'sonnet' } }); render();
   fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 409, json: async () => ({ error: 'File changed on disk' }) } as any));
   await submit();
   expect(text(tree)).toContain('File changed on disk');
@@ -121,18 +204,6 @@ it('withholds stale profile reset and inherited previews while a legacy model dr
   expect(body.changes).toEqual({ 'roles.worker.model': 'haiku', 'profiles.claude.implementation.model': null });
 });
 
-it('stages Claude models while retaining a separately configured effort draft', async () => {
-  input('profiles.claude.implementation.effort').props.onChange({ target: { value: 'max' } }); render();
-  click('Stage recommended Claude defaults');
-  expect(input('profiles.claude.implementation.effort').props.value).toBe('max');
-  expect(text(tree)).toContain('CLI default when unset');
-  expect(text(tree)).toContain('Staging changes models only and retains every configured effort.');
-  await submit();
-  const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
-  expect(body.changes).toEqual({ ...claudeRecommendations, 'profiles.claude.implementation.effort': 'max' });
-});
-
-
 it('keeps a draft across category navigation and confirms Escape before closing', () => {
   input('profiles.claude.implementation.model').props.onChange({ target: { value: 'edited' } }); render();
   click('Limits'); click('Claude');
@@ -149,7 +220,7 @@ it('keeps a draft across category navigation and confirms Escape before closing'
 });
 
 it('rejects blank model drafts locally and allows correction without losing other edits', async () => {
-  click('Stage recommended Claude defaults');
+  input('profiles.claude.implementation.effort').props.onChange({ target: { value: 'high' } }); render();
   input('profiles.claude.implementation.model').props.onChange({ target: { value: '   ' } }); render();
   await submit();
   expect(text(tree)).toContain('enter a value or use the inherited default');
@@ -158,11 +229,11 @@ it('rejects blank model drafts locally and allows correction without losing othe
   input('profiles.claude.implementation.model').props.onChange({ target: { value: 'model/custom-id' } }); render();
   await submit();
   const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
-  expect(JSON.parse(String(saved[1]?.body)).changes).toEqual({ ...claudeRecommendations, 'profiles.claude.implementation.model': 'model/custom-id' });
+  expect(JSON.parse(String(saved[1]?.body)).changes).toEqual({ 'profiles.claude.implementation.model': 'model/custom-id', 'profiles.claude.implementation.effort': 'high' });
 });
 
 it('retains drafts after server validation errors and retries the same revision', async () => {
-  click('Stage recommended Claude defaults');
+  input('profiles.claude.implementation.model').props.onChange({ target: { value: 'sonnet' } }); render();
   fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 400, json: async () => ({ error: 'Model unavailable for this provider' }) } as any));
   await submit();
   expect(text(tree)).toContain('Model unavailable for this provider');
@@ -176,7 +247,7 @@ it('retains drafts after server validation errors and retries the same revision'
 });
 
 it('disables scope, close, fields and save while a save request is pending', async () => {
-  click('Stage recommended Claude defaults');
+  input('profiles.claude.implementation.model').props.onChange({ target: { value: 'sonnet' } }); render();
   let resolve!: (response: any) => void;
   fetchMock.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
   elements(tree).find((e) => e.type === 'form')!.props.onSubmit({ preventDefault() {} }); render();
