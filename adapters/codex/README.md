@@ -10,12 +10,16 @@ tl new "Codex worker" --harness codex --prompt "Inspect the tests"
 Codex also appears in the spawn dialog and accepts `harness: "codex"` with `kind: "agent"`
 on the existing spawn MCP tool. Generic agent children inherit their parent's harness.
 Tiller does not install Codex or handle login; run `codex login` yourself first.
+`tl doctor --harness codex` checks the executable and advertised `--remote` / app-server
+`--listen stdio://` capabilities without starting a server or accessing your account.
 
 The daemon launches `codex app-server --listen stdio://` and the real Codex TUI. A private
 Unix-socket WebSocket bridge connects `codex --remote` to that same app-server.
 It uses Codex's own models, authentication, instructions, sandbox, and approval settings.
 Tiller's role prompt is supplied as `developerInstructions`. Explicit model and effort overrides
 are supported (`low`, `medium`, `high`, `xhigh`); omitted values keep Codex's defaults.
+The initial effort seeds the native thread default; later inbox turns inherit native settings,
+including changes made with the model picker.
 Claude role model defaults are not applied. Claude `permissionMode`, preset `tools`,
 `disallowedTools`, `maxTurns`, and spawn `fork` are rejected.
 
@@ -52,6 +56,9 @@ prompt. An explicit native rejection releases the claim; an ambiguous transport 
 the host and leaves the claim to retire as unconfirmed. Inherited claims are retired without
 replaying them. The daemon bounds unresolved claims at 60 seconds. Do not automatically resend
 an unconfirmed message: it may already have run.
+
+On shutdown, the bridge stops accepting events and inbox work, drains accepted transcript and
+lifecycle events, and settles in-flight submission receipts before ending the session.
 
 The bridge writes readable normalized JSONL transcripts under
 `sessions/<rootId>/agents/<nodeId>/<Tiller-sessionId>.jsonl`. The header stores Codex's separate

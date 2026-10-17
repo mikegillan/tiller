@@ -1,6 +1,6 @@
 #!/bin/bash
 # Check and install what tiller needs on macOS. `bin/setup --check` (or `tl doctor`) only reports.
-# Usage: bin/setup [--check] [--no-app] [--harness claude|pi]
+# Usage: bin/setup [--check] [--no-app] [--harness claude|pi|codex]
 # Runs on the stock macOS bash 3.2 and needs no Node.
 
 # Follow symlinks to the real file, then resolve its directory physically.
@@ -16,7 +16,7 @@ root=$(dirname "$(dirname "$(resolve "$0")")")
 app="$root/src-tauri/target/release/bundle/macos/Tiller.app"
 
 check=0; no_app=0; harness=
-bad_harness() { echo "bin/setup: --harness takes claude or pi" >&2; exit 2; }
+bad_harness() { echo "bin/setup: --harness takes claude, pi or codex" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
     --check) check=1 ;;
@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-case $harness in ''|claude|pi) ;; *) bad_harness ;; esac
+case $harness in ''|claude|pi|codex) ;; *) bad_harness ;; esac
 
 BREW_INSTALL='/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 CLAUDE_INSTALL='curl -fsSL https://claude.ai/install.sh | bash'
@@ -73,7 +73,7 @@ check_node() {
 check_node_quiet() { local f=$failed c=$check r; failed=0; check=1; check_node; r=$failed; failed=$f; check=$c; return $r; }
 
 check_harness() {
-  local c=missing p=missing pv=
+  local c=missing p=missing x=missing pv= xv= remote= server=
   if command -v claude >/dev/null && claude --version >/dev/null 2>&1; then c=ok; fi
   if command -v pi >/dev/null; then
     pv=$(pi --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
@@ -87,17 +87,31 @@ check_harness() {
     missing) line missing "Pi 1.2.x (pi), optional with Claude Code" "$PI_INSTALL" ;;
     *) line "wrong version" "Pi ${pv:-unknown}, the adapter needs 1.2.x" "$PI_INSTALL" ;;
   esac
-  # Which harness must work: the one asked for, else either; if neither, install Claude Code
+  # Probe advertised transport capabilities without starting a server or accessing an account.
+  if command -v codex >/dev/null; then
+    x=incompatible
+    if xv=$(codex --version 2>/dev/null) && remote=$(codex --help 2>/dev/null) && server=$(codex app-server --help 2>/dev/null); then
+      if echo "$remote" | grep -q -- '--remote' && echo "$server" | grep -q -- '--listen' && echo "$server" | grep -q 'stdio://'; then x=ok; fi
+    fi
+  fi
+  case $x in
+    ok) line ok "Codex CLI $xv" ;;
+    missing) line missing "Codex CLI (codex), optional with Claude Code or Pi" "install Codex CLI and put codex on PATH" ;;
+    *) line incompatible "Codex CLI ${xv:-unknown}; the adapter needs codex --remote and app-server --listen stdio://" "update Codex CLI" ;;
+  esac
+  # Which harness must work: the one asked for, else any; if none work, install Claude Code
   # (or upgrade a Pi that is present but the wrong version).
   local want=$harness
   if [ -z "$want" ]; then
-    [ "$c" = ok ] || [ "$p" = ok ] && return
+    [ "$c" = ok ] || [ "$p" = ok ] || [ "$x" = ok ] && return
     want=claude; [ "$p" = "wrong version" ] && want=pi
   fi
   if [ $want = claude ] && [ "$c" != ok ]; then
     failed=1; [ "$c" = missing ] && step "$CLAUDE_INSTALL"
   elif [ $want = pi ] && [ "$p" != ok ]; then
     failed=1; step "$PI_INSTALL"
+  elif [ $want = codex ] && [ "$x" != ok ]; then
+    failed=1
   fi
 }
 

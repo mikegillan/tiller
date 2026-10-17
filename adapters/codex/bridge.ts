@@ -28,7 +28,7 @@ export class CodexBridge {
   get nativeThreadId(): string { return this.threadId; }
   private turnId?: string;
   private busy = false;
-  private polling = false;
+  private pollTask?: Promise<void>;
   private submitting = false;
   private interrupted?: string;
   private answer = '';
@@ -38,6 +38,7 @@ export class CodexBridge {
   private ambiguous = new Set<string>();
   private timer?: NodeJS.Timeout;
   private stopped = false;
+  private stopTask?: Promise<void>;
 
   constructor(private o: BridgeOptions, private rpc: Rpc, private client: TillerClient,
     private print: (text: string) => void, private fatal: (error: Error) => void) {}
@@ -55,7 +56,7 @@ When the user asks for workers or subagents in this Tiller session, use the ${na
       config: { [`mcp_servers.${name}`]: {
         url: `${endpoint.replace(/\/+$/, '')}/mcp`, required: true,
         http_headers: { 'X-TL-Node': nodeId }, env_http_headers: { Authorization: 'TL_CODEX_AUTHORIZATION' },
-      } },
+      }, ...(this.o.effort ? { model_reasoning_effort: this.o.effort } : {}) },
     };
     let history = '', method = 'thread/start';
     if (this.o.resume) {
@@ -94,6 +95,7 @@ When the user asks for workers or subagents in this Tiller session, use the ${na
   }
 
   handle(packet: Packet): void {
+    if (this.stopped) return;
     this.queue = this.queue.then(() => this.event(packet)).catch((error) => this.fatal(error));
   }
 
@@ -102,7 +104,6 @@ When the user asks for workers or subagents in this Tiller session, use the ${na
   }
 
   private async event(p: Packet): Promise<void> {
-    if (this.stopped) return;
     const v = p.params ?? {};
     if (v.threadId && v.threadId !== this.threadId) return;
     if (p.id !== undefined && p.method) {
@@ -161,7 +162,7 @@ When the user asks for workers or subagents in this Tiller session, use the ${na
     this.submitting = true;
     try {
       const result = await this.rpc.request('turn/start', { threadId: this.threadId,
-        input: [{ type: 'text', text, text_elements: [] }], ...(this.o.effort ? { effort: this.o.effort } : {}) });
+        input: [{ type: 'text', text, text_elements: [] }] });
       if (typeof result?.turn?.id !== 'string') throw new Error('Codex turn acceptance is unknown');
       if (this.busy) this.turnId = result.turn.id;
       if (message) this.receipts.add(message.id);
@@ -185,29 +186,47 @@ When the user asks for workers or subagents in this Tiller session, use the ${na
     this.interrupted = id;
   }
 
-  async poll(): Promise<void> {
-    if (this.polling || this.stopped) return;
-    this.polling = true;
-    try {
-      for (const id of this.receipts) { await this.client.ack(id); this.receipts.delete(id); }
-      for (const id of this.ambiguous) { await this.client.unconfirmed(id); this.ambiguous.delete(id); }
-      const inbox = await this.client.inbox();
-      // Claims inherited from a crashed adapter have an unknown outcome; never submit them again.
-      for (const msg of inbox.filter((m) => m.claimed)) await this.client.unconfirmed(msg.id);
-      const next = inbox.find((m) => !m.claimed && m.steer) ?? inbox.find((m) => !m.claimed);
-      if (!next) return;
-      if (this.busy || this.submitting) { if (next.steer) await this.interrupt(); return; }
-      if (!await this.client.claim(next.id)) return;
-      if (this.busy || this.submitting) { await this.client.release(next.id); return; }
-      await this.submit(next.text, next);
-      if (this.receipts.has(next.id)) { await this.client.ack(next.id); this.receipts.delete(next.id); }
-    } finally { this.polling = false; }
+  private async settleReceipts(): Promise<void> {
+    for (const id of this.receipts) { await this.client.ack(id); this.receipts.delete(id); }
+    for (const id of this.ambiguous) { await this.client.unconfirmed(id); this.ambiguous.delete(id); }
   }
 
-  async stop(): Promise<void> {
+  poll(): Promise<void> {
+    if (this.pollTask || this.stopped) return Promise.resolve();
+    this.pollTask = this.pollInbox().finally(() => { this.pollTask = undefined; });
+    return this.pollTask;
+  }
+
+  private async pollInbox(): Promise<void> {
+    await this.settleReceipts();
+    if (this.stopped) return;
+    const inbox = await this.client.inbox();
+    if (this.stopped) return;
+    // Claims inherited from a crashed adapter have an unknown outcome; never submit them again.
+    for (const msg of inbox.filter((m) => m.claimed)) await this.client.unconfirmed(msg.id);
+    const next = inbox.find((m) => !m.claimed && m.steer) ?? inbox.find((m) => !m.claimed);
+    if (!next || this.stopped) return;
+    if (this.busy || this.submitting) { if (next.steer) await this.interrupt(); return; }
+    if (!await this.client.claim(next.id)) return;
+    if (this.stopped || this.busy || this.submitting) { await this.client.release(next.id); return; }
+    await this.submit(next.text, next);
+    if (this.receipts.has(next.id)) { await this.client.ack(next.id); this.receipts.delete(next.id); }
+  }
+
+  stop(): Promise<void> {
+    if (this.stopTask) return this.stopTask;
     this.stopped = true;
     clearInterval(this.timer);
+    this.stopTask = this.drain();
+    return this.stopTask;
+  }
+
+  private async drain(): Promise<void> {
+    // The launcher closes RPC first, settling pending native requests. HTTP stays alive
+    // through this drain; its per-request timeout bounds failed daemon calls.
+    await this.pollTask?.catch(() => {});
     await this.queue;
-    await this.client.hook({ hook_event_name: 'SessionEnd' });
+    try { await this.settleReceipts(); }
+    finally { await this.client.hook({ hook_event_name: 'SessionEnd' }); }
   }
 }

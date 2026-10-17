@@ -76,3 +76,69 @@ describe('bin/setup install', () => {
     expect(r.stdout).toContain('Checking again:');
   });
 });
+
+describe('Codex setup checks', () => {
+  function codex(remote = true, listen = true) {
+    stubs({ node: 'v24.1.0' });
+    writeFileSync(join(dir, 'codex'), `#!/bin/sh
+ echo "codex $*" >> ${dir}/log
+ case "$*" in
+   --version) echo 'codex-cli test' ;;
+   --help) echo '${remote ? '--remote <ADDR>' : 'old CLI'}' ;;
+   'app-server --help') echo '${listen ? '--listen <URL> stdio://' : 'old app-server'}' ;;
+   *) exit 1 ;;
+ esac
+`);
+    chmodSync(join(dir, 'codex'), 0o755);
+  }
+
+  it.each([{ args: [] }, { args: ['--harness', 'codex'] }, { args: ['--harness=codex'] }])('accepts Codex-only PATH with %j', ({ args }) => {
+    codex();
+    const result = run(['--check', '--no-app', ...args]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/ok\s+Codex CLI codex-cli test/);
+    expect(readFileSync(join(dir, 'log'), 'utf8').trim().split('\n')).toEqual([
+      'codex --version', 'codex --help', 'codex app-server --help',
+    ]);
+  });
+
+  it('passes Codex through tl doctor to the read-only setup checks', () => {
+    codex();
+    const result = spawnSync(process.execPath, ['--import', 'tsx', join(ROOT, 'src/daemon/cli.ts'),
+      'doctor', '--no-app', '--harness', 'codex'], {
+      encoding: 'utf8', env: { PATH: `${dir}:/usr/bin:/bin`, HOME: dir },
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Everything required is in place.');
+    expect(readFileSync(join(dir, 'log'), 'utf8')).toContain('codex app-server --help');
+  });
+
+  it('rejects failing help probes even when their output advertises the flags', () => {
+    codex();
+    writeFileSync(join(dir, 'codex'), '#!/bin/sh\necho "--remote --listen stdio://"\n[ "$1" = --version ]\n');
+    expect(run(['--check', '--no-app', '--harness', 'codex']).status).toBe(1);
+  });
+
+  it.each([[false, true], [true, false]])('reports incompatible capabilities (remote=%s, listen=%s)', (remote, listen) => {
+    codex(remote, listen);
+    const result = run(['--check', '--no-app', '--harness', 'codex']);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toMatch(/incompatible\s+Codex CLI/);
+    expect(result.stdout).toContain('--remote');
+    expect(result.stdout).toContain('--listen');
+  });
+
+  it('reports missing Codex without executing installation or auth commands', () => {
+    stubs({ node: 'v24.1.0', claude: '2.1.0 (Claude Code)' });
+    const result = run(['--check', '--no-app', '--harness', 'codex']);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toMatch(/missing\s+Codex CLI/);
+    expect(result.stderr).not.toContain('--harness takes');
+  });
+
+  it('lists all supported harnesses in setup and doctor help', () => {
+    stubs({});
+    expect(run(['--help']).stdout).toContain('--harness claude|pi|codex');
+    expect(readFileSync(join(ROOT, 'src/daemon/cli.ts'), 'utf8')).toContain('tl doctor [--no-app] [--harness claude|pi|codex]');
+  });
+});
