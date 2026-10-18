@@ -37,8 +37,8 @@ export function ActionButtons({ node, labels }: { node: NodeView; labels?: boole
   const menuId = useId();
   const focusLast = useRef(false);
   const actions = actionsFor(node);
-  const primary = actions.filter((a) => a.key === 'child' || a.key === 'merge');
-  const secondary = actions.filter((a) => a.key !== 'child' && a.key !== 'merge');
+  const primary = actions.filter((a) => a.key === 'merge' || (labels && a.key === 'child'));
+  const secondary = actions.filter((a) => !primary.includes(a));
 
   const close = (restoreFocus = false) => {
     setOpen(false);

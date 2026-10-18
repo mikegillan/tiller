@@ -55,10 +55,10 @@ describe('node action operations', () => {
     run(node, 'merge'); expect(send).toHaveBeenLastCalledWith({ t: 'merge', id: 'child' });
   });
 
-  it('keeps only New child and eligible Merge outside overflow in labelled and compact modes', () => {
+  it('keeps header New child and eligible Merge prominent, with compact New child in overflow', () => {
     for (const labels of [true, false]) {
       const html = renderToStaticMarkup(<ActionButtons node={child()} labels={labels} />);
-      expect(html).toContain('aria-label="New child"');
+      expect(html.includes('aria-label="New child"')).toBe(labels);
       expect(html).toContain('aria-label="Merge into main"');
       expect(html).toContain('aria-haspopup="menu"');
       expect(html).not.toContain('aria-label="Kill"');
