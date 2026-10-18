@@ -11,7 +11,7 @@ import type { InstalledReleaseNotes, ReleaseUpdate, UpdateStatus } from '../shar
 export const REPO = fileURLToPath(new URL('../..', import.meta.url));
 export const UPDATE_LOG = 'update.log';
 export const UPDATE_LOCK = 'update.lock';
-export const UPDATE_CHECK_INTERVAL = 10 * 60_000;
+export const UPDATE_CHECK_INTERVAL = 2 * 60_000;
 const exec = promisify(execFile);
 const git = async (repo: string, ...args: string[]) => (await exec('git', args, {
   cwd: repo, timeout: 60_000, maxBuffer: 8 * 1024 * 1024,
@@ -340,7 +340,7 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
     };
     checking = perform().catch((e: unknown) => set({ ...status, checkedAt: Date.now(), eligible: false, reason: 'release check unavailable; try again later', fetchError: e instanceof Error ? e.message : String(e) })).then((s) => {
       failures = s.fetchError ? failures + 1 : 0;
-      nextCheckAt = Date.now() + Math.min(6 * 3600_000, UPDATE_CHECK_INTERVAL * 2 ** Math.min(failures, 6));
+      nextCheckAt = Date.now() + (failures ? Math.min(6 * 3600_000, 10 * 60_000 * 2 ** Math.min(failures, 6)) : UPDATE_CHECK_INTERVAL);
       return s;
     }).finally(() => { checking = undefined; schedule(); });
     return checking;
