@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { isValidElement, type ReactElement, type ReactNode } from 'react';
-import { actionsFor, ActionButtons } from './ActionButtons';
+import { actionsFor, ActionButtons, actionMenuPosition } from './ActionButtons';
 import { TitleBar } from './TitleBar';
 import { mk } from './fixtures';
 import { getState, openDialog, showPane, togglePanel, update } from './store';
@@ -97,5 +97,32 @@ describe('header views', () => {
     expect(html(child())).toContain('aria-pressed="true">Diff');
     expect(html({ ...child(), kind: 'terminal' })).not.toContain('>Transcript<');
     expect(html({ ...mk('shell', null, 0), kind: 'terminal' })).not.toContain('aria-label="Pane"');
+  });
+});
+
+
+describe('action menu viewport bounds', () => {
+  it('keeps the reported left-edge sidebar menu visible when the page has a scrollbar', () => {
+    // 900px window, 15px scrollbar, trigger right=202; the old 224px menu began at -37.
+    const position = actionMenuPosition({ top: 200, bottom: 224, right: 202 }, 885, 760, 224);
+    expect(position.left).toBe(8);
+    expect(Number(position.left) + 224).toBeLessThanOrEqual(885 - 8);
+  });
+
+  it('aligns to the visible right edge and preserves above placement and vertical clearance', () => {
+    const position = actionMenuPosition({ top: 700, bottom: 724, right: 885 }, 885, 760, 224);
+    expect(position.left).toBe(653);
+    expect(Number(position.left) + 224).toBe(877);
+    expect(position.bottom).toBe(66);
+    expect(position.maxHeight).toBe(686);
+  });
+
+  it('fits menus narrower than their usual width and limits short viewport height', () => {
+    const position = actionMenuPosition({ top: 40, bottom: 64, right: 90 }, 180, 180, 224);
+    expect(position.left).toBe(8);
+    expect(position.maxWidth).toBe(164);
+    expect(position.top).toBe(70);
+    expect(position.maxHeight).toBe(102);
+    expect(Number(position.top) + Number(position.maxHeight)).toBe(172);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { harnessFor, isAgentKind, type NodeView } from '../src/shared/protocol';
 import { canMerge } from './Bits';
@@ -28,6 +28,18 @@ export function actionsFor(node: NodeView): Act[] {
   ];
 }
 
+/** Fixed portal coordinates use the visible viewport, which excludes scrollbars. */
+export function actionMenuPosition(rect: Pick<DOMRect, 'top' | 'bottom' | 'right'>, width: number, height: number, menuWidth: number): CSSProperties {
+  const fittedWidth = Math.min(menuWidth, Math.max(0, width - 16));
+  const above = height - rect.bottom < 260 && rect.top > height / 2;
+  return {
+    left: Math.max(8, Math.min(rect.right - fittedWidth, width - fittedWidth - 8)),
+    maxWidth: Math.max(0, width - 16),
+    ...(above ? { bottom: height - rect.top + 6 } : { top: rect.bottom + 6 }),
+    maxHeight: Math.max(0, (above ? rect.top : height - rect.bottom) - 14),
+  };
+}
+
 /** Header actions with labels; compact row actions without them. */
 export function ActionButtons({ node, labels }: { node: NodeView; labels?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -45,19 +57,18 @@ export function ActionButtons({ node, labels }: { node: NodeView; labels?: boole
     if (restoreFocus) trigger.current?.focus();
   };
   const reveal = (last = false) => {
-    const rect = trigger.current!.getBoundingClientRect();
-    const above = window.innerHeight - rect.bottom < 260 && rect.top > window.innerHeight / 2;
-    setPosition({
-      right: Math.max(8, window.innerWidth - rect.right),
-      ...(above ? { bottom: window.innerHeight - rect.top + 6 } : { top: rect.bottom + 6 }),
-      maxHeight: Math.max(100, (above ? rect.top : window.innerHeight - rect.bottom) - 14),
-    });
+    if (!open) setPosition({});
     setOpen(true);
     // Focus after React has mounted the menu, for pointer and keyboard users alike.
     focusLast.current = last;
   };
 
   useEffect(() => { setOpen(false); }, [node.id]);
+  useLayoutEffect(() => {
+    if (!open) return;
+    setPosition(actionMenuPosition(trigger.current!.getBoundingClientRect(), document.documentElement.clientWidth,
+      document.documentElement.clientHeight, menu.current!.getBoundingClientRect().width));
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const items = menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
