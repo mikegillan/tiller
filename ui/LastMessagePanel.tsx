@@ -1,5 +1,5 @@
 import { fmtAge } from '../src/shared/format';
-import { OutcomeDetails } from './Bits';
+import { OutcomeDetails } from './controls/Bits';
 import { useNow } from './hooks';
 import { useStore } from './store';
 

@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { fmtAge } from '../src/shared/format';
-import type { ArchivedNode, Outcome } from '../src/shared/protocol';
-import { fmtUsd } from '../src/shared/spend';
-import { OutcomeDetails } from './Bits';
-import { send } from './conn';
-import { useNow } from './hooks';
-import { Icon } from './icons';
-import { getState, openDialog, useStore, viewArchived } from './store';
+import { fmtAge } from '../../src/shared/format';
+import type { ArchivedNode, Outcome } from '../../src/shared/protocol';
+import { fmtUsd } from '../../src/shared/spend';
+import { OutcomeDetails } from '../controls/Bits';
+import { send } from '../conn';
+import { useNow } from '../hooks';
+import { Icon } from '../controls/icons';
+import { getState, openDialog, useStore, viewArchived } from '../store';
 import { TranscriptPane } from './TranscriptPane';
 
 const GLYPH = { succeeded: '✓', failed: '✗' } as const; // slop-ok: outcome marks, not emoji

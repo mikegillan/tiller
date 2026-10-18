@@ -1,4 +1,4 @@
-import type { TauriWindow } from './hooks';
+import type { TauriWindow } from '../hooks';
 
 /** The native boundary also validates this; callers cannot open files or custom protocols. */
 export async function openExternalUrl(url: string): Promise<void> {

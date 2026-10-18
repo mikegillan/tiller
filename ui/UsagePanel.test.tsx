@@ -8,7 +8,7 @@ const fixture = vi.hoisted(() => ({ now: Date.parse('2026-10-17T12:00:00Z'), sta
 vi.mock('./store', () => ({ useStore: (select: (state: typeof fixture.state) => unknown) => select(fixture.state) }));
 vi.mock('./hooks', () => ({ useNow: () => fixture.now }));
 vi.mock('./conn', () => ({ refreshUsage: vi.fn() }));
-vi.mock('./Modal', () => ({ Modal: ({ title, children }: { title: string; children: ReactNode }) => <div aria-label={title}>{children}</div> }));
+vi.mock('./controls/Modal', () => ({ Modal: ({ title, children }: { title: string; children: ReactNode }) => <div aria-label={title}>{children}</div> }));
 const source = (overrides: Partial<UsageSource> = {}): UsageSource => ({ id: 'discovery:codex', tool: 'codex', scope: 'account', nodeIds: [], installed: true, configured: true, authenticated: null, availability: 'unknown', rateLimits: [], checkedAt: fixture.now, ...overrides });
 const report = (overrides: Partial<UsageSource> = {}) => source({ id: 'private-source-id', accountId: 'private-account', pool: 'private-pool', provider: 'private-provider', nodeIds: ['private-node'], at: fixture.now, availability: 'available', rateLimits: [{ kind: 'five_hour', percentUsed: 42, resetsAt: '2026-10-17T14:00:00Z' }, { kind: 'seven_day', percentUsed: 16, resetsAt: '2026-10-20T12:00:00Z' }], ...overrides });
 const render = () => renderToStaticMarkup(<UsagePanel onClose={() => {}} />);

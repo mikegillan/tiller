@@ -1,9 +1,9 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { ReactElement, ReactNode } from 'react';
-import { refreshUsage } from './conn';
+import { refreshUsage } from '../conn';
 import { SettingsPanel } from './SettingsPanel';
-import { Modal } from './Modal';
-import { Select } from './Select';
+import { Modal } from '../controls/Modal';
+import { Select } from '../controls/Select';
 import type { SettingsSnapshot } from './settings-model';
 
 // Exercise the component's real handlers and asynchronous requests without a DOM dependency.
@@ -22,9 +22,9 @@ vi.mock('react', async (original) => ({
     if (!hooks.deps[i] || deps.some((value, j) => value !== hooks.deps[i][j])) { hooks.deps[i] = deps; hooks.effects.push(effect); }
   },
 }));
-vi.mock('./store', () => ({ useStore: (select: (s: unknown) => unknown) => select(hooks.store) }));
-vi.mock('./conn', () => ({ refreshUsage: vi.fn() }));
-vi.mock('./url', () => ({ token: () => 'test' }));
+vi.mock('../store', () => ({ useStore: (select: (s: unknown) => unknown) => select(hooks.store) }));
+vi.mock('../conn', () => ({ refreshUsage: vi.fn() }));
+vi.mock('../url', () => ({ token: () => 'test' }));
 const snapshot: SettingsSnapshot = { scope: 'project', path: '/repo/.tiller/config.json', projectPath: '/repo', revision: 'r1', values: { 'profiles.claude.implementation.model': 'custom' }, entries: { 'profiles.claude.implementation.model': { value: 'custom', source: '/repo/.tiller/config.json' } }, inherited: { 'profiles.claude.implementation.model': { value: 'legacy-worker', source: '/home/config.json' } } };
 let tree: ReactElement<Record<string, any>>;
 const close = vi.fn();

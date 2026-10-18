@@ -6,8 +6,8 @@ React + xterm.js front-end for the tiller daemon. It speaks the WebSocket protoc
 
 - `npm run ui:build` writes the static UI to `ui/dist`; the daemon serves it at `/?k=<token>`.
 - `npm run ui:dev` starts Vite with hot reload and proxies `/ws` to the daemon at 127.0.0.1:7788 (override with `TL_WS`).
-- `npx vitest run ui` runs the unit tests (tree building, session selection, context thresholds, age formatting).
-- `npx tsc --noEmit -p ui/tsconfig.json` type-checks.
+- `npm test -- ui` runs the UI suite, including tests nested in feature folders. `npx --no-install vitest list ui --filesOnly` lists discovered test files.
+- `npx --no-install tsc --noEmit -p ui/tsconfig.json` type-checks the UI recursively and its shared imports.
 
 ## Developing without the daemon
 
@@ -24,6 +24,31 @@ After `npm run ui:build` the mock also serves the built UI: open `http://127.0.0
 - Cmd+K jump to any node, Cmd+1..9 select the Nth row of the current session, Cmd+0 focus the sidebar tree.
 - With the tree focused: j/k or arrows move, h/l collapse and expand.
 
-## Layout
+## Module map
 
-Styles are four plain files (`theme.css` holds the variables and the light theme for `prefers-color-scheme`). `store.ts` holds all state; `tree.ts` and `sessions.ts` are the pure logic the tests cover. Icons are inline SVG in `icons.tsx`.
+```text
+ui/
+  App.tsx, main.tsx              shell composition and startup
+  sidebar/                      tree, node rows, session switcher, inspector and resize
+    tree.ts, sessions.ts        pure tree and session selection helpers
+  settings/                     settings panel and edit model
+  dialogs/                      application spawn, lifecycle and update dialogs
+  release-notes/                release rendering, parser and historical fixtures
+  transcript/                   live conversations and archived node history
+  controls/                     shared actions, metadata, rename, modal, select,
+                                Markdown, external links and inline SVG icons
+  store.ts, conn.ts             shared client state and daemon connection
+  hooks.ts, notify.ts, tray.ts   document/native integration and notifications
+  terminals.ts, TerminalPane.tsx terminal instances and their mounted surface
+  worktree.ts                   hasChanges/canMerge predicates
+  DiffPane.tsx, diff.ts          diff display and review comments
+  theme.css, layout.css         theme variables and shared shell/pane styles
+```
+
+Other shell surfaces (title/status bars, palette, activity, usage, toasts and last-message panel) remain at the top level. Tests, feature styles and private helpers live beside their owners; `fixtures.ts` supplies shared test nodes.
+
+`store.ts` owns state shared across surfaces, including daemon snapshots, selection and open panes. Components keep local form, focus, resize and transient interaction state. Pure helpers and component tests cover both state transitions and rendered behavior.
+
+Styles are plain CSS. `theme.css` defines variables and the light theme for `prefers-color-scheme`; `layout.css` retains shared pane rules, including transcript/archive styles. Feature and control styles live in their folders. Component stylesheet imports and the explicit global sequence in `main.tsx` preserve cascade order: theme, layout, sidebar, controls, activity.
+
+See the [documentation map](../docs/README.md) for behavior references and [AGENTS.md](../AGENTS.md#verification) for the complete automated checks. The scripts in [spike/](../spike/README.md) are manual live-session experiments, not UI tests.

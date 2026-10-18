@@ -1,11 +1,11 @@
 import { isAgentKind, type NodeView } from '../src/shared/protocol';
-import { ActionButtons } from './ActionButtons';
-import { NodeMeta, StateDot } from './Bits';
-import { Icon } from './icons';
-import { RenameInput } from './RenameInput';
-import { ancestry } from './sessions';
+import { ActionButtons } from './controls/ActionButtons';
+import { NodeMeta, StateDot } from './controls/Bits';
+import { Icon } from './controls/icons';
+import { RenameInput } from './controls/RenameInput';
+import { ancestry } from './sidebar/sessions';
 import { selectNode, showPane, togglePanel, useStore } from './store';
-import { KIND_LABEL, kindTag, statusKind } from './tree';
+import { KIND_LABEL, kindTag, statusKind } from './sidebar/tree';
 
 function Breadcrumb({ node }: { node: NodeView }) {
   const nodes = useStore((s) => s.nodes);

@@ -1,12 +1,13 @@
-import { Select } from './Select';
+import { Select } from '../controls/Select';
 import { useEffect, useRef, useState } from 'react';
-import { PROFILES, PROFILE_LABELS, profileFor, EFFORTS, type InstalledReleaseNotes, type Profile, type Effort, isAgentKind, type ClientMessage, type Harness, type NodeKind, type Role } from '../src/shared/protocol';
-import { send } from './conn';
-import type { TauriWindow } from './hooks';
-import { Modal } from './Modal';
-import { ReleaseNotes } from './ReleaseNotes';
-import { expectSpawn, openDialog, useStore, type Dialog } from './store';
-import { IN_APP } from './url';
+import { PROFILES, PROFILE_LABELS, profileFor, type InstalledReleaseNotes, type Profile, type Effort, isAgentKind, type ClientMessage, type Harness, type NodeKind, type Role } from '../../src/shared/protocol';
+import { SETTINGS_HARNESSES, SETTINGS_EFFORTS } from '../../src/shared/settings';
+import { send } from '../conn';
+import type { TauriWindow } from '../hooks';
+import { Modal } from '../controls/Modal';
+import { ReleaseNotes } from '../release-notes/ReleaseNotes';
+import { expectSpawn, openDialog, useStore, type Dialog } from '../store';
+import { IN_APP } from '../url';
 
 type Spawn = Extract<Dialog, { kind: 'spawn' }>;
 const close = () => openDialog(null);
@@ -71,7 +72,7 @@ function SpawnDialog({ d }: { d: Spawn }) {
     <Modal title={parent ? `New child of ${parent.title}` : 'New session'} onClose={close}>
       <form className="form" onSubmit={submit}>
         <div className="seg" role="radiogroup" aria-label="Kind">
-          {(['claude', 'pi', 'codex', 'terminal'] as const).map((k) => (
+          {([...SETTINGS_HARNESSES, 'terminal'] as const).map((k) => (
             <button type="button" key={k} role="radio" aria-checked={choice === k} className={choice === k ? 'on' : ''} onClick={() => { setChoice(k); if (k === 'codex' && effort === 'max') setEffort(''); }}>{k}</button>
           ))}
         </div>
@@ -83,7 +84,7 @@ function SpawnDialog({ d }: { d: Spawn }) {
         {agent && <label>Initial prompt<textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional" /></label>}
         {agent && <label>Task profile<Select value={profile} onChange={(e) => setProfile(e.target.value as Profile)}>{PROFILES.map((p) => <option key={p} value={p}>{PROFILE_LABELS[p]}</option>)}</Select></label>}
         <label>Model<input className="mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="Default" /></label>
-        {agent && <label>Effort<Select value={effort} onChange={(e) => setEffort(e.target.value as Effort | '')}><option value="">Default</option>{EFFORTS.filter((e) => choice !== 'codex' || e !== 'max').map((e) => <option key={e}>{e}</option>)}</Select></label>}
+        {agent && <label>Effort<Select value={effort} onChange={(e) => setEffort(e.target.value as Effort | '')}><option value="">Default</option>{SETTINGS_EFFORTS[choice === 'terminal' ? 'claude' : choice].map((e) => <option key={e}>{e}</option>)}</Select></label>}
         {agent && <label>Coordination role<Select value={role} onChange={(e) => setRole(e.target.value as Role)}>{(['orchestrator', 'worker', 'none'] as const).map((r) => <option key={r}>{r}</option>)}</Select></label>}
         {agent && (
           <label className="check"><input type="checkbox" checked={isolate} onChange={(e) => setIsolate(e.target.checked)} />Isolate in a git worktree

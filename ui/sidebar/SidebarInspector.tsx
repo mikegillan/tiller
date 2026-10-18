@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import { isAgentKind, PROFILE_LABELS, profileFor, type NodeView } from '../src/shared/protocol';
-import { fmtTokens, shortModel } from '../src/shared/format';
-import { CtxBar, DiffCounts, StateDot } from './Bits';
-import { Icon } from './icons';
+import { isAgentKind, PROFILE_LABELS, profileFor, type NodeView } from '../../src/shared/protocol';
+import { fmtTokens, shortModel } from '../../src/shared/format';
+import { CtxBar, DiffCounts, StateDot } from '../controls/Bits';
+import { Icon } from '../controls/icons';
 import { KIND_LABEL, kindTag, statusKind } from './tree';
 import './sidebar-inspector.css';
 

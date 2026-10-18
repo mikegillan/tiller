@@ -1,5 +1,5 @@
-import { send } from './conn';
-import { setRenaming } from './store';
+import { send } from '../conn';
+import { setRenaming } from '../store';
 
 export function RenameInput({ id, title }: { id: string; title: string }) {
   const commit = (v: string) => {

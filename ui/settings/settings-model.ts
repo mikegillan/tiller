@@ -1,8 +1,8 @@
-import type { UsageSource } from '../src/shared/protocol';
-import { SETTINGS_FIELDS, SETTINGS_EFFORTS, SETTINGS_PROFILES, type SettingsField } from '../src/shared/settings';
-export type { SettingsSnapshot } from '../src/shared/settings';
-import type { SettingsSnapshot } from '../src/shared/settings';
-export type { SettingsScope as Scope } from '../src/shared/settings';
+import type { UsageSource } from '../../src/shared/protocol';
+import { SETTINGS_FIELDS, SETTINGS_EFFORTS, SETTINGS_PROFILES, type SettingsField } from '../../src/shared/settings';
+export type { SettingsSnapshot } from '../../src/shared/settings';
+import type { SettingsSnapshot } from '../../src/shared/settings';
+export type { SettingsScope as Scope } from '../../src/shared/settings';
 export type Field = SettingsField & { help?: string };
 export const profiles = SETTINGS_PROFILES;
 export const efforts = SETTINGS_EFFORTS;

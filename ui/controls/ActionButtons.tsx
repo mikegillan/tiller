@@ -1,10 +1,10 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { harnessFor, isAgentKind, type NodeView } from '../src/shared/protocol';
-import { canMerge } from './Bits';
-import { send } from './conn';
+import { harnessFor, isAgentKind, type NodeView } from '../../src/shared/protocol';
+import { canMerge } from '../worktree';
+import { send } from '../conn';
 import { Icon, type IconName } from './icons';
-import { openDialog, setRenaming } from './store';
+import { openDialog, setRenaming } from '../store';
 
 interface Act { key: string; label: string; icon: IconName; run: () => void; danger?: boolean }
 

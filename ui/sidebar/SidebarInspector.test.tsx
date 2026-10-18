@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ReactElement } from 'react';
-import { mk } from './fixtures';
+import { mk } from '../fixtures';
 import { inspectorBounds, inspectorHeight, readInspectorHeight, SidebarInspector } from './SidebarInspector';
 
 const hooks = vi.hoisted(() => ({ updates: [] as unknown[], effects: [] as (() => (() => void) | undefined)[] }));

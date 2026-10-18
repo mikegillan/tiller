@@ -1,4 +1,4 @@
-import { harnessFor, isAgentKind, NEEDS_YOU_STATES, type NodeView } from '../src/shared/protocol';
+import { harnessFor, isAgentKind, NEEDS_YOU_STATES, type NodeView } from '../../src/shared/protocol';
 
 /** armed: waiting on spawn dependencies; queued: waiting on limits.maxWorking. Neither has a process yet. */
 export type StatusKind = 'working' | 'needs' | 'done' | 'errored' | 'exited' | 'unknown' | 'armed' | 'queued';

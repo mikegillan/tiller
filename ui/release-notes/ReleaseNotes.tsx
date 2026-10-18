@@ -1,4 +1,4 @@
-import { Markdown } from './Markdown';
+import { Markdown } from '../controls/Markdown';
 import { releaseNotes } from './parseReleaseNotes';
 import './releaseNotes.css';
 

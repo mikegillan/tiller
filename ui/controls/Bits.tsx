@@ -1,7 +1,7 @@
-import { PROFILE_LABELS, profileFor, isAgentKind, finished, type GitState, type NodeView, type Outcome } from '../src/shared/protocol';
-import { ctxLevel, fmtTokens, shortEffort, shortModel } from '../src/shared/format';
-import { fmtUsd } from '../src/shared/spend';
-import { KIND_LABEL, type StatusKind } from './tree';
+import { PROFILE_LABELS, profileFor, isAgentKind, type GitState, type NodeView, type Outcome } from '../../src/shared/protocol';
+import { ctxLevel, fmtTokens, shortEffort, shortModel } from '../../src/shared/format';
+import { fmtUsd } from '../../src/shared/spend';
+import { KIND_LABEL, type StatusKind } from '../sidebar/tree';
 
 export const StateDot = ({ kind }: { kind: StatusKind }) => <span className={`dot ${kind}`} title={KIND_LABEL[kind]} />;
 
@@ -13,18 +13,6 @@ export function CtxBar({ pct }: { pct: number }) {
     </span>
   );
 }
-
-/** A worktree node with commits or files its base does not have yet, once its work has stopped: someone should merge or close it. */
-export const hasChanges = (node: NodeView): boolean => {
-  const g = node.status.git;
-  return !!g && !g.mergedAt && g.ahead + g.dirty > 0 && finished(node.status);
-};
-
-/** A worktree node whose branch has commits for its base, with no uncommitted files and no turn running: what the daemon's merge accepts. */
-export const canMerge = (node: NodeView): boolean => {
-  const g = node.status.git;
-  return !!g && !g.mergedAt && g.ahead > 0 && g.dirty === 0 && (!!node.status.exited || node.status.state !== 'working');
-};
 
 /** `+42 −18`: lines added and removed. */
 export const Counts = ({ of: x, title }: { of: { additions: number; deletions: number }; title?: string }) => (

@@ -2,14 +2,14 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { StatusBar } from './StatusBar';
-import { Dialogs } from './Dialogs';
+import { Dialogs } from './dialogs/Dialogs';
 import { Palette } from './Palette';
 import { getState, update } from './store';
 import { send } from './conn';
 import { toggleDnd } from './hooks';
 
 const effects = vi.hoisted(() => [] as (() => unknown)[]);
-vi.mock('./Modal', () => ({ Modal: ({ children, footer }: { children: ReactNode; footer?: ReactNode }) => <>{children}{footer}</> }));
+vi.mock('./controls/Modal', () => ({ Modal: ({ children, footer }: { children: ReactNode; footer?: ReactNode }) => <>{children}{footer}</> }));
 vi.mock('./store', async (original) => {
   const store = await original<typeof import('./store')>();
   return { ...store, useStore: (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()) };
