@@ -45,8 +45,9 @@ but Tiller workers must use the Tiller tools to appear in the tree.
 
 ## Coordination and persistence
 
-A uniquely named required HTTP MCP server points to Tiller's `/mcp`. It authenticates using
-the node's token, read from `TL_TOKEN_FILE`, through an environment header; the token is never
+A uniquely named required HTTP MCP server (`tiller_<48-bit random suffix>`) points to Tiller's `/mcp`.
+The recognizable prefix appears in Codex's MCP tool identity while the random suffix prevents collisions.
+It authenticates using the node's token, read from `TL_TOKEN_FILE`, through an environment header; the token is never
 placed on the command line. Tiller's existing tools and lineage restrictions are reused.
 
 The bridge serializes lifecycle reports from `turn/started`, `turn/completed`, item events,
