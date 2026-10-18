@@ -2,20 +2,12 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { NodeRecord } from '../shared/protocol.js';
-
-export interface CodexHeader { type: 'codex_session'; threadId: string; fork?: boolean }
+import { codexHeader } from '../shared/codex-transcript.js';
+export { codexHeader, type CodexHeader } from '../shared/codex-transcript.js';
 
 export function codexTranscript(sessionDir: string, nodeId: string, sessionId: string): string {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(sessionId)) throw new Error('invalid Codex session id');
   return join(sessionDir, 'agents', nodeId, `${sessionId}.jsonl`);
-}
-
-export function codexHeader(raw: string): CodexHeader {
-  const header = JSON.parse(raw.split('\n', 1)[0]);
-  if (header?.type !== 'codex_session' || typeof header.threadId !== 'string' || !header.threadId) {
-    throw new Error('invalid Codex session header');
-  }
-  return header;
 }
 
 export function prepareCodexTranscript(n: NodeRecord, sessionDir: string, resume: boolean): string {

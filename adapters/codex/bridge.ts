@@ -1,8 +1,8 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { codexHeader } from '../../src/daemon/codex-session.js';
-import { TillerClient, type InboxMessage } from '../pi/client.js';
+import { codexHeader, type CodexHeader } from '../../src/shared/codex-transcript.js';
+import { TillerClient, type InboxMessage } from '../shared/client.js';
 import { RpcError, type Packet } from './rpc.js';
 import { CodexUsage, readCodexUsage } from './usage.js';
 
@@ -94,7 +94,7 @@ When the user asks for workers or subagents in this Tiller session, use the ${na
     mkdirSync(dirname(this.o.transcriptPath), { recursive: true, mode: 0o700 });
     // Persist native identity before accepting any prompt. Never touch the source archive.
     const tmp = `${this.o.transcriptPath}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ type: 'codex_session', threadId: this.threadId }) + '\n' +
+    writeFileSync(tmp, JSON.stringify({ type: 'codex_session', threadId: this.threadId } satisfies CodexHeader) + '\n' +
       (history ? history.slice(history.indexOf('\n') + 1) : ''), { mode: 0o600 });
     renameSync(tmp, this.o.transcriptPath);
     await this.client.hook({ hook_event_name: 'SessionStart', session_id: this.o.sessionId,
