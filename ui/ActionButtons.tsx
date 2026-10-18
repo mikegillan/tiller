@@ -91,6 +91,8 @@ export function ActionButtons({ node, labels }: { node: NodeView; labels?: boole
       <button ref={trigger} className="btn icon node-action-more" title="More actions" aria-label={`More actions for ${node.title}`} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
         onClick={() => open ? close() : reveal()}
         onKeyDown={(e) => {
+          if (e.metaKey || e.ctrlKey || e.altKey) return;
+          if (['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'j', 'k', 'h', 'l', 'Enter', ' '].includes(e.key)) e.stopPropagation();
           if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); reveal(e.key === 'ArrowUp'); }
         }}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
@@ -99,6 +101,8 @@ export function ActionButtons({ node, labels }: { node: NodeView; labels?: boole
         <div ref={menu} id={menuId} className="node-action-menu" role="menu" aria-label={`Actions for ${node.title}`} style={position}
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
+            if (e.metaKey || e.ctrlKey) { close(); return; }
+            if (e.altKey) return;
             e.stopPropagation();
             const items = Array.from(menu.current!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
             const index = items.indexOf(document.activeElement as HTMLButtonElement);
