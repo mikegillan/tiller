@@ -1,0 +1,17 @@
+.select {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg);
+  font: 16px var(--ui);
+  cursor: pointer;
+}
+.select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.select:disabled { opacity: .5; cursor: not-allowed; }
+.select option { background: var(--surface); color: var(--fg); }
