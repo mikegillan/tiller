@@ -61,7 +61,7 @@ export function UpdateDialog() {
       <UpdateIcon name="warning" />
       <div><h3>{upd?.blocker === 'dirty' ? 'Save your changes to continue' : 'Update blocked'}</h3>
         <p>{upd?.reason || 'Check again to find out why this update is unavailable.'}</p>
-        {upd?.blocker === 'dirty' && <ol><li>Commit or stash your changes, including untracked files.</li><li>Check again to enable the update.</li></ol>}
+        {upd?.blocker === 'dirty' && <ol><li>Move changes to a task worktree, or stash them, including untracked files.</li><li>Check again to enable the update.</li></ol>}
       </div>
     </section>}
     {upd?.reason && !blocked && <p>{upd.reason}</p>}

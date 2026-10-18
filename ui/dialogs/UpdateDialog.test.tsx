@@ -36,7 +36,7 @@ it('shows release hierarchy, accurate checkout metadata, installation disclosure
 it('only gives dirty-specific remediation for an explicit blocker, including older-daemon fallback', () => {
   const dirty = render({ eligible: false, reason: 'The main checkout has uncommitted files.', blocker: 'dirty' });
   expect(dirty).toContain('Save your changes to continue');
-  expect(dirty).toContain('including untracked files');
+  expect(dirty).toContain('Move changes to a task worktree, or stash them, including untracked files.');
   expect(dirty).not.toContain('ready to install');
   expect(dirty.indexOf('update-blocked-reason')).toBeLessThan(dirty.indexOf('What’s new'));
   const generic = render({ eligible: false, reason: 'Cannot fast-forward to the release.' });
