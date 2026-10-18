@@ -181,6 +181,9 @@ describe('archive, history, follow-up and fork', () => {
     const t = (await m.spawn({ kind: 'terminal', title: 'term', cwd: home, parentId: root })).id;
     m.setOutcome(a, { outcome: 'succeeded', summary: 'Parser done. Tests pass.', at: 1 });
     m.registry.update(a, { worktree: { repo: home, path: join(home, 'wt'), branch: `tl/${a}`, base: 'main', baseSha: 'x' }, spentUsd: 0.5 });
+    // Match closeWorktreeNode: wait for the processes to stop before discarding their files.
+    const closing = [a, b, c].map((id) => m.kill(id)!);
+    await expect.poll(() => closing.every((session) => session.exited)).toBe(true);
     m.closed(a, undefined, { branchFate: 'merged', base: 'main' }); // what closeWorktreeNode passes for a merged branch
     m.closed(b, 'kept branch tl/b', { branchFate: 'kept' });
     m.closed(c, undefined, { branchFate: 'discarded' });
