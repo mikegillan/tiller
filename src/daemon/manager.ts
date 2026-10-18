@@ -1,7 +1,7 @@
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { stripVTControlCharacters } from 'node:util';
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { profileFor, type Profile, harnessFor, isAgentKind, NEEDS_YOU_STATES, type Harness, type ArchivedNode, type Diff, type DigestItem, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
@@ -11,21 +11,26 @@ import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
 import { roleFor, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
 import { adapterFor } from './harness.js';
-import { tillerTrusts } from './trust.js';
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
-import { arm, scheduleSoon, type Watch } from './deps.js';
+import { arm, scheduleSoon } from './scheduling.js';
+import { CompletionGate, gateFor } from './completion-gate.js';
+import type { CompletionWatches } from './completion-watches.js';
+import { NodeTokens } from './node-tokens.js';
+
 import { flushInbox, HUMAN, inScope } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
 import { buildChildEnv, PtySession } from './pty.js';
-import { count, inside, logError, safeEqual } from './util.js';
+import { count, inside, logError } from './util.js';
 import * as wt from './worktree.js';
 import { addWorktree, closeWorktreeNode, mergeWorktree, readClaudeJson, refreshGit, refreshGitSoon, setMissing, setupThenLaunch, trustedForWorktree, trustPolicy, worktreeCheck, worktreeCommands, worktreeEnv, worktrees, type WorktreeCheck, type WorktreeReport } from './worktree-lifecycle.js';
 import { appendEvent, buildDigest, ensureSession, flushEvents, handoffPrompt, listSessions, markClosed, readEvents, sessionDir, sweepSessions } from './sessions.js';
 import { archivedOf, archiveNode, findArchived, type BranchFate } from './archive.js';
 import { nodeTranscript } from './transcript.js';
 import { initialState, interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
+
+export { gateFor } from './completion-gate.js';
 
 const MAX_PREVIOUS_SESSIONS = 10;
 const INTERRUPT_MS = 1500;
@@ -40,20 +45,12 @@ const DEFAULT_SIZE = { cols: 120, rows: 40 };
 const GIT_EDIT_TOOLS = ['Edit', 'Write', 'Bash'];
 /** At most one cost event per node in this long. */
 const COST_EVENT_MS = 60_000;
-/** Lines of gate output that go back to the worker. */
-const GATE_TAIL_LINES = 60;
 
 /** `cwd`, or the main checkout when it was a worktree since removed; undefined when neither exists. */
 function usableCwd(cwd: string): string | undefined {
   if (existsSync(cwd)) return cwd;
   const at = cwd.indexOf(`${sep}${wt.WORKTREES_DIR}${sep}`), repo = at >= 0 ? cwd.slice(0, at) : undefined;
   return repo && existsSync(repo) ? repo : undefined;
-}
-
-/** The completion gate configured for `dir`, when Claude trusts that directory, as for worktree setup. `tl gate` uses it too. */
-export function gateFor(dir: string, home: string): Config['gate'] {
-  const gate = loadConfig(dir, home).gate;
-  return gate && (tillerTrusts(home, dir) || trustPolicy(dir, readClaudeJson()) === 'auto') ? gate : undefined;
 }
 
 export interface SpawnRequest {
@@ -123,7 +120,7 @@ export interface NodeRuntime {
   /** What the node reported through report_outcome. */
   outcome?: Outcome;
   /** The completion gate's last run, with the failed runs since the node's last outcome. */
-  gate?: { state: NonNullable<NodeView['gate']>; command: string; failures: number };
+  gate?: CompletionGate;
   lastCostEvent?: number;
   /** When the latest turn began (UserPromptSubmit), for after dependencies and notify_when. */
   turnStart?: number;
@@ -131,8 +128,8 @@ export interface NodeRuntime {
   starting?: boolean;
   /** Armed from the record at start; it waits for resumeLive, which runs once the daemon has its endpoint. */
   restored?: boolean;
-  /** The notify_when registrations this node made, by id set (deps.ts). */
-  watches?: Map<string, Watch>;
+  /** The notify_when registrations this node made; discarded with its runtime. */
+  watches?: CompletionWatches;
 }
 
 /**
@@ -155,14 +152,14 @@ export class NodeManager extends EventEmitter {
   endpoint = '';
   /** Whether any connected UI client has node `id` selected; set by the server. A selected node never turns unread. */
   isSelected: (id: string) => boolean = () => false;
-  /** Each node's runtime state; see NodeRuntime. worktree-lifecycle.ts and deps.ts use it too. */
+  /** Each node's runtime state; see NodeRuntime. worktree-lifecycle.ts and scheduling.ts use it too. */
   readonly runtimes = new Map<string, NodeRuntime>();
   /** PATH handed to children. */
   readonly path: string;
   /** Set by shutdown: the live set is then frozen, so the PTYs' exits do not empty it. */
   private shutDown = false;
   private shell: string;
-  private secret: Buffer;
+  private readonly tokens: NodeTokens;
   private sweepTimer: NodeJS.Timeout;
   /** Ids that were live when the daemon last went away, until resumeLive has dealt with them. */
   private pendingResume: Set<string>;
@@ -178,7 +175,7 @@ export class NodeManager extends EventEmitter {
     mkdirSync(join(this.home, 'nodes'), { recursive: true, mode: 0o700 });
     chmodSync(this.home, 0o700); // mkdir's mode does not apply to a directory that already existed
     ensurePresets(this.home);
-    this.secret = this.loadSecret();
+    this.tokens = new NodeTokens(this.home);
     this.registry = new NodeRegistry(join(this.home, 'state.json'));
     this.registry.load();
     this.pendingResume = new Set(this.registry.live);
@@ -198,29 +195,14 @@ export class NodeManager extends EventEmitter {
     this.on('removed', () => scheduleSoon(this));
   }
 
-  private loadSecret(): Buffer {
-    const file = join(this.home, 'secret');
-    try {
-      return readFileSync(file);
-    } catch {
-      const fresh = randomBytes(32);
-      try {
-        writeFileSync(file, fresh, { mode: 0o600, flag: 'wx' });
-        return fresh;
-      } catch {
-        return readFileSync(file); // another process created it first
-      }
-    }
-  }
-
   // ---- tokens ----
 
   tokenFor(nodeId: string): string {
-    return createHmac('sha256', this.secret).update(nodeId).digest('hex');
+    return this.tokens.tokenFor(nodeId);
   }
 
   verifyToken(nodeId: string, token: string): boolean {
-    return safeEqual(token, this.tokenFor(nodeId));
+    return this.tokens.verify(nodeId, token);
   }
 
   // ---- queries ----
@@ -819,7 +801,7 @@ export class NodeManager extends EventEmitter {
     return flushEvents();
   }
 
-  // ---- internals; worktree-lifecycle.ts and deps.ts call the ones not marked private ----
+  // ---- internals; worktree-lifecycle.ts and scheduling.ts call the ones not marked private ----
 
   /** Whether shutdown has run. */
   get stopped(): boolean { return this.shutDown; }
@@ -839,10 +821,8 @@ export class NodeManager extends EventEmitter {
   /** Token, hook-headers, settings.json and mcp.json for a node; mcp.json embeds the current endpoint. */
   writeFiles(id: string): void {
     const dir = this.nodeDir(id);
-    const token = this.tokenFor(id);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    writeFileSync(join(dir, 'token'), token, { mode: 0o600 });
-    writeFileSync(join(dir, 'hook-headers'), `Authorization: Bearer ${token}\nX-TL-Node: ${id}\n`, { mode: 0o600 }); // read by hook.sh via curl -H @file
+    const token = this.tokens.writeFiles(dir, id);
     writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token, worktree: !!this.registry.get(id)?.worktree, sessionDir: this.sessionDirOf(id) });
   }
 
@@ -850,7 +830,7 @@ export class NodeManager extends EventEmitter {
     const rt = this.runtimes.get(id);
     if (!rt) return;
     rt.outcome = o;
-    if (rt.gate) rt.gate.failures = 0;
+    rt.gate?.resetFailures();
     this.emit('outcome', id);
     this.emitNode(id);
     const { at: _at, ...data } = o;
@@ -876,23 +856,13 @@ export class NodeManager extends EventEmitter {
   async runGate(id: string, gate: NonNullable<Config['gate']>): Promise<{ ok: boolean; tail: string; failures: number }> {
     const rec = this.registry.get(id), rt = this.runtimes.get(id);
     if (!rec || !rt) return { ok: false, tail: 'node is gone', failures: 0 };
-    const failures = rt.gate?.failures ?? 0;
-    const log = join(this.nodeDir(id), 'gate.log');
-    const start = existsSync(log) ? statSync(log).size : 0;
+    const completion = rt.gate ?? new CompletionGate();
     const env = rec.worktree ? worktreeEnv(this, id, rec.worktree) : buildChildEnv({ PATH: this.path, TL_NODE_ID: id });
-    rt.gate = { state: 'running', command: gate.command, failures };
-    this.emitNode(id);
-    // prune: a node closed mid-gate leaves the command running until it ends or times out; add an abort if gates get long.
-    const err = await wt.runCommands([gate.command], { cwd: rec.cwd, env, log, timeout: gate.timeoutMinutes * 60_000 }).then(() => undefined, (e: Error) => e);
-    let out = '';
-    try { out = readFileSync(log).subarray(start).toString(); } catch { /* node closed meanwhile */ }
-    const lines = [...out.trimEnd().split('\n'), ...(err ? [err.message] : [])];
-    const after = err ? failures + 1 : failures;
-    if (this.registry.get(id)) {
-      rt.gate = { state: err ? 'failed' : 'passed', command: gate.command, failures: after };
-      this.emitNode(id);
-    }
-    return { ok: !err, tail: lines.slice(-GATE_TAIL_LINES).join('\n'), failures: after };
+    return completion.run(gate, {
+      cwd: rec.cwd, env, log: join(this.nodeDir(id), 'gate.log'),
+      present: () => !!this.registry.get(id),
+      changed: () => { rt.gate = completion; this.emitNode(id); },
+    });
   }
 
   /** Forget the node: its record, its runtime state and its files. The caller has killed its process. */

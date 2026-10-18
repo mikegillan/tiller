@@ -5,7 +5,7 @@ import { fmtAge, outcomeLine } from '../shared/format.js';
 import type { InboxMessage, NodeView, SendMode, SendResult } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
 import { adapterFor } from './harness.js';
-import { watching } from './deps.js';
+import { CompletionWatches, type NotifyWhen } from './completion-watches.js';
 import type { NodeManager } from './manager.js';
 import { logError } from './util.js';
 
@@ -565,4 +565,34 @@ export function startNotices(m: Mgr): () => void {
   m.on('node', onNode);
   m.on('outcome', onOutcome);
   return () => { m.off('node', onNode); m.off('outcome', onOutcome); for (const t of timers.values()) clearTimeout(t); };
+}
+
+// ---- notify_when ----
+
+/** Managers whose node events already re-check their callers' watches. */
+const listening = new WeakSet<NodeManager>();
+
+/** Whether `caller` has a pending notify_when that covers `id`. */
+export function watching(m: Partial<Pick<NodeManager, 'runtimes'>>, caller: string, id: string): boolean {
+  return m.runtimes?.get(caller)?.watches?.covers(id) ?? false;
+}
+
+/**
+ * Register a one-shot notice when all or any of the nodes finish. A caller's runtime owns its watches; messaging
+ * wires node/removal events and daemon delivery. Replaces the watch for the same id set; delivery may be immediate.
+ */
+export function notifyWhen(m: NodeManager, caller: string, req: NotifyWhen): { replaced: boolean } {
+  if (!listening.has(m)) {
+    listening.add(m);
+    const sweep = () => {
+      const now = Date.now();
+      for (const rt of m.runtimes.values()) rt.watches?.sweep(now);
+    };
+    m.on('node', sweep);
+    m.on('removed', sweep);
+  }
+  const rt = m.runtimes.get(caller)!;
+  rt.watches ??= new CompletionWatches({ view: (id) => m.view(id), turnStartedAt: (id) => m.turnStartedAt(id) },
+    (text, fromLabel) => { deliver(m, DAEMON, caller, text, { fromLabel, replyTo: null }).catch(logError); });
+  return rt.watches.register(req);
 }

@@ -48,8 +48,12 @@ When a child's outcome is recorded through `report_outcome`, its parent gets a m
 
 `notify_when(ids, when, of)` lets an agent wait for several nodes with one message instead of polling. It returns at once; later the caller receives a single message, "N of M finished:", with one line per node giving its outcome or its state. `when: "all"` waits for every node and `"any"` for the first. `of: "turn"` counts a node once it finishes the turn now in progress (or, for an idle node, its next turn), or exits or is closed; `of: "success"` counts a node once it calls `report_outcome` with either verdict. Calling it again with the same ids replaces the pending one, and it expires after 12 hours. The human has no inbox, so it is for agents only.
 
+Each caller's runtime owns its registrations through `completion-watches.ts`, so closing the caller drops them. `messaging.ts` wires event checks and delivery, including suppression of individual outcome notices while a watch covers the child. Outcome events precede node events: suppression sees the pending watch before the node event completes it.
+
 ## Dependency launches and the spawn queue
 
 A spawn can wait for other nodes: `tl spawn --after n-a,n-b --after-success n-c`, or `after` and `afterSuccess` on the MCP `spawn` tool. The node is created armed, with no process yet, and its row says what it waits on. It launches exactly as the spawn would have (worktree included) once each `after` node has finished a turn that began after the spawn, or has exited, and each `afterSuccess` node has reported succeeded, after its completion gate when one is configured. A failed report blocks it: the row says "blocked by n-c: <note>" and its parent gets a message. Dependencies must exist and be in the caller's scope. Closing an armed node discards it, and a restarted daemon re-arms armed nodes from `state.json`.
 
 When `daemon.maxWorking` is set and that many Claude nodes are working, a new spawn is queued instead, shown as "queued" with the reason, and launched in creation order as nodes stop working; the status bar shows how many are queued. Only the human can skip the queue, with `tl spawn --now`. Arming, release, queueing and launch are written to the tree's event log.
+
+`scheduling.ts` owns dependency evaluation, arming and queue release. It uses the same turn-completion predicate as completion watches; messaging does not import scheduling.

@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { notifyWhen, watching } from './deps.js';
+import { notifyWhen, watching } from './messaging.js';
 import { NodeManager } from './manager.js';
 import { inbox } from './messaging.js';
 
@@ -17,7 +17,7 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
   });
 
   async function setup(config?: object) {
-    home = mkdtempSync(join(tmpdir(), 'tl-deps-'));
+    home = mkdtempSync(join(tmpdir(), 'tl-scheduling-'));
     const bin = join(home, 'bin'), proj = join(home, 'proj');
     mkdirSync(bin);
     mkdirSync(proj);

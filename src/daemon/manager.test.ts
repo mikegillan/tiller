@@ -6,7 +6,8 @@ import { launchArgs } from './launch.js';
 import { findArchived } from './archive.js';
 import { NodeManager } from './manager.js';
 import { PtySession } from './pty.js';
-import type { NodeStatus } from '../shared/protocol.js';
+import type { NodeStatus, NodeView } from '../shared/protocol.js';
+import { setProjectTrust } from './trust.js';
 import { trustPolicy } from './worktree-lifecycle.js';
 
 describe('trustPolicy', () => {
@@ -79,6 +80,19 @@ describe('NodeManager tokens and files', () => {
     m2.shutdown();
   });
 
+  it('keeps tokens from an existing secret compatible with their credential files', () => {
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
+    writeFileSync(join(home, 'secret'), 'known existing daemon secret', { mode: 0o600 });
+    m = new NodeManager({ home });
+    const token = '84c7a1be405d0246d0f1652aefaffbab60bec06868ff2051fdbf683c09e47e64';
+    expect(m.tokenFor('n-1')).toBe(token);
+    expect(m.verifyToken('n-1', token)).toBe(true);
+    expect(m.verifyToken('n-1', token.toUpperCase())).toBe(false);
+    m.writeFiles('n-1');
+    expect(readFileSync(join(home, 'nodes/n-1/token'), 'utf8')).toBe(token);
+    expect(readFileSync(join(home, 'nodes/n-1/hook-headers'), 'utf8')).toBe(`Authorization: Bearer ${token}\nX-TL-Node: n-1\n`);
+  });
+
   it('writes node files with restrictive modes and removes them on close', async () => {
     home = mkdtempSync(join(tmpdir(), 'tl-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
@@ -99,6 +113,68 @@ describe('NodeManager tokens and files', () => {
     m = new NodeManager({ home, shell: '/bin/sh' });
     await expect(m.spawn({ kind: 'terminal', title: 't', cwd: '/no/such/dir' })).rejects.toThrow(/working directory/);
     expect(m.list()).toEqual([]);
+  });
+});
+
+describe('NodeManager completion gates', () => {
+  let home: string;
+  let m: NodeManager;
+  let id: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'tl-gate-'));
+    m = new NodeManager({ home, path: '/usr/bin:/bin' });
+    id = m.registry.create({ kind: 'claude', parentId: null, title: 'gate', cwd: home }).id;
+    m.runtimes.set(id, { status: { state: 'done', changedAt: Date.now() } });
+    m.writeFiles(id);
+  });
+  afterEach(async () => {
+    await m.shutdown();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('keeps gate results before outcome/node/log events, scopes output to the attempt and resets failures on an outcome', async () => {
+    const events: string[] = [];
+    m.on('node', (v: NodeView) => events.push(`node:${v.gate}:${v.outcome?.outcome ?? '-'}`));
+    m.on('outcome', () => events.push('outcome'));
+    vi.spyOn(m, 'logEvent').mockImplementation((_id, type) => { events.push(`log:${type}`); });
+    const gate = { command: 'echo previous; exit 3', retries: 2, timeoutMinutes: 1 };
+    const first = await m.runGate(id, gate);
+    expect(first).toMatchObject({ ok: false, failures: 1 });
+    expect(first.tail).toContain('previous');
+    expect(first.tail).toContain('exited with 3');
+    const passed = await m.runGate(id, { ...gate, command: 'echo current' });
+    expect(passed).toEqual({ ok: true, tail: '$ echo current\ncurrent', failures: 1 });
+    m.setOutcome(id, { outcome: 'succeeded', gate: 'passed', at: Date.now() });
+    expect(events).toEqual(['node:running:-', 'node:failed:-', 'node:running:-', 'node:passed:-', 'outcome', 'node:passed:succeeded', 'log:outcome']);
+    expect(await m.runGate(id, gate)).toMatchObject({ ok: false, failures: 1 });
+    expect(readFileSync(join(m.nodeDir(id), 'gate.log'), 'utf8')).toContain('previous');
+  });
+
+  it('reads worktree gate configuration from its trusted main checkout', () => {
+    vi.stubEnv('HOME', home);
+    const repo = join(home, 'repo'), cwd = join(home, 'worker');
+    for (const dir of [repo, cwd]) mkdirSync(join(dir, '.tiller'), { recursive: true });
+    writeFileSync(join(repo, '.tiller/config.json'), JSON.stringify({ gate: { command: 'echo main' } }));
+    writeFileSync(join(cwd, '.tiller/config.json'), JSON.stringify({ gate: { command: 'echo worker' } }));
+    m.registry.update(id, { cwd, worktree: { repo, path: cwd, branch: 'tl/worker', base: 'main', baseSha: 'abc' } });
+    expect(m.gateConfig(id)).toBeUndefined();
+    setProjectTrust(home, repo, true);
+    expect(m.gateConfig(id)?.command).toBe('echo main');
+  });
+
+  it('does not publish a finished gate or restore runtime state after its node is closed', async () => {
+    const changed: string[] = [];
+    m.on('node', (v: NodeView) => changed.push(v.gate!));
+    const run = m.runGate(id, { command: 'sleep 0.05; echo finished', retries: 0, timeoutMinutes: 1 });
+    expect(changed).toEqual(['running']);
+    await m.close(id, true);
+    expect(await run).toMatchObject({ ok: true });
+    expect(changed).toEqual(['running']);
+    expect(m.view(id)).toBeUndefined();
+    expect(m.runtimes.has(id)).toBe(false);
+    expect(await m.runGate(id, { command: 'exit 0', retries: 0, timeoutMinutes: 1 })).toEqual({ ok: false, tail: 'node is gone', failures: 0 });
   });
 });
 
