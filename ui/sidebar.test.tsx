@@ -293,7 +293,18 @@ it('keeps reported outcomes distinct from process state and gate, and surfaces h
   update(() => ({ nodes: { a: node, child: hidden }, order: ['a', 'child'], collapsed: ['a'] }));
   const row = flattenSession(getState().nodes, getState().order, 'a', ['a'])[0];
   const html = renderToStaticMarkup(<NodeRow row={row} />);
-  for (const text of ['outcome failed', 'gate running', 'working', 'worktree missing', 'unread', 'stalled below']) expect(html).toContain(text);
+  for (const text of ['>Needs changes<', 'aria-label="Reported task outcome: Needs changes"', 'title="Reported task outcome: Needs changes · Needs another attempt"', 'gate running', 'working', 'worktree missing', 'unread', 'stalled below']) expect(html).toContain(text);
+  expect(html).not.toContain('outcome failed');
+  expect(html).not.toContain('errored');
+});
+
+it.each(['errored', 'exited'] as const)('keeps a successful report independent from %s runtime state and a failed gate', (state) => {
+  const node = { ...a, status: { ...a.status, state: 'done' as const, errored: state === 'errored', exited: state === 'exited' },
+    gate: 'failed' as const, outcome: { outcome: 'succeeded' as const, at: 0 } };
+  const row = flattenSession({ a: node }, ['a'], 'a', [])[0];
+  const html = renderToStaticMarkup(<NodeRow row={row} />);
+  for (const text of ['>outcome succeeded<', 'aria-label="Reported task outcome: succeeded"', 'gate failed', `>${state}<`]) expect(html).toContain(text);
+  expect(html).not.toContain('Needs changes');
 });
 
 it('keeps Cmd+0 as the tree entry point without selecting or opening node actions', () => {

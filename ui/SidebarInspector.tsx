@@ -159,7 +159,7 @@ export function SidebarInspector({ node, onClose }: { node: NodeView | null; onC
         </p></>}
         <h3>Completion</h3>
         <dl className="inspector-facts">
-          {row('Reported outcome', node.outcome ? node.outcome.outcome : 'Not reported')}
+          {row('Reported outcome', node.outcome ? <span title="Reported task outcome">{node.outcome.outcome === 'failed' ? 'Needs changes' : 'succeeded'}</span> : 'Not reported')}
           {row('Completion gate', node.gate ?? node.outcome?.gate ?? 'Not reported')}
         </dl>
         {node.outcome?.summary && <p className="inspector-text">{node.outcome.summary}</p>}
