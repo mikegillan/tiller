@@ -13,6 +13,7 @@ vi.mock('../store', async (original) => {
   return { ...store, useStore: (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()) };
 });
 const release = { id: 1, tag: 'v0.1.13', name: 'v0.1.13', sha: 'new', tagObject: 'tag', publishedAt: '', body: '## Improvements\n\n- Clearer updates.' };
+const dirtyReason = 'The main checkout is not clean: it contains uncommitted or untracked files. Move or stash those changes (including untracked files), then check releases again.';
 const base: UpdateStatus = { sha: 'old', runtimeSha: 'old', currentVersion: 'v0.1.12', checkedAt: 1, eligible: true, target: release, releases: [release] };
 function render(patch: Partial<UpdateStatus> = {}) {
   update(() => ({ update: { ...base, ...patch } }));
@@ -34,10 +35,10 @@ it('shows release hierarchy, accurate checkout metadata, installation disclosure
 });
 
 it('only gives dirty-specific remediation for an explicit blocker, including older-daemon fallback', () => {
-  const dirty = render({ eligible: false, reason: 'The main checkout is not clean. Move or stash changes, then check releases again.', blocker: 'dirty' });
+  const dirty = render({ eligible: false, reason: dirtyReason, blocker: 'dirty' });
   expect(dirty).toContain('Save your changes to continue');
   expect(dirty).toContain('Move changes to a task worktree, or stash them, including untracked files.');
-  expect(dirty).not.toContain('Move or stash changes');
+  expect(dirty).not.toContain(dirtyReason);
   expect(dirty).toContain('The main checkout has uncommitted or untracked files.');
   expect(dirty.match(/stash/g)).toHaveLength(1);
   expect(dirty).not.toContain('ready to install');
@@ -57,12 +58,13 @@ it.each(['checking', 'applying'] as const)('announces %s with indeterminate SVGs
   expect(html).not.toContain('%');
 });
 
-it('treats daemon refresh ineligibility as checking, hiding stale reasons and blockers until completion', () => {
-  const reason = 'The main checkout is not clean. Move or stash changes, then check releases again.';
+it.each([false, true])('hides stale reasons and blockers during daemon refresh (previously dirty: %s)', (dirty) => {
+  const reason = dirty ? dirtyReason : undefined;
+  render({ eligible: !dirty, reason, blocker: dirty ? 'dirty' : undefined });
   const checking = render({ checking: true, eligible: false, reason, blocker: undefined });
   expect(checking).toContain('Checking for updates…');
   expect(checking.match(/disabled=""/g)).toHaveLength(2);
-  expect(checking).not.toContain(reason);
+  if (reason) expect(checking).not.toContain(reason);
   expect(checking).not.toContain('update-blocked-reason');
   expect(checking).not.toContain('Update blocked');
   expect(checking).not.toContain('Save your changes');
