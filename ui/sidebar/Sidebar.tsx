@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { send } from './conn';
-import { HistoryPanel } from './History';
-import { Icon } from './icons';
+import { send } from '../conn';
+import { HistoryPanel } from '../transcript/History';
+import { Icon } from '../controls/icons';
 import { NodeRow } from './NodeRow';
 import { SessionSwitcher } from './SessionSwitcher';
 import { SidebarInspector } from './SidebarInspector';
 import { SidebarResize } from './SidebarResize';
 import { flattenSession, type Row } from './tree';
-import { selectNode, toggleCollapsed, toggleHistory, useStore } from './store';
+import { selectNode, toggleCollapsed, toggleHistory, useStore } from '../store';
 
 const DETAILS_KEY = 'tl.sidebarDetails';
 export function readSidebarDetails(): boolean {

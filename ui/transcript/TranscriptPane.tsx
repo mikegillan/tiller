@@ -1,8 +1,8 @@
-import { Select } from './Select';
+import { Select } from '../controls/Select';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import type { Harness, Transcript, TranscriptEntry } from '../src/shared/protocol';
-import { send } from './conn';
-import { transcriptRequested, useStore } from './store';
+import type { Harness, Transcript, TranscriptEntry } from '../../src/shared/protocol';
+import { send } from '../conn';
+import { transcriptRequested, useStore } from '../store';
 
 /** Text past this many characters or lines is clamped until expanded. */
 const LONG_CHARS = 600, LONG_LINES = 10;

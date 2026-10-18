@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { profileFor } from '../src/shared/protocol';
+import { profileFor } from '../../src/shared/protocol';
 import { restartMsg, spawnMsg } from './Dialogs';
 
-vi.mock('./conn', () => ({ send: vi.fn() }));
-vi.mock('./hooks', () => ({ useNow: () => 0 })); // hooks.ts reaches for window on import
+vi.mock('../conn', () => ({ send: vi.fn() }));
+vi.mock('../hooks', () => ({ useNow: () => 0 })); // hooks.ts reaches for window on import
 
 type Choice = 'claude' | 'pi' | 'codex' | 'terminal';
 const form = (choice: Choice, extra: Partial<Parameters<typeof spawnMsg>[1]> = {}): Parameters<typeof spawnMsg>[1] =>

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { token } from './url';
-import { refreshUsage } from './conn';
-import { useStore } from './store';
+import { token } from '../url';
+import { refreshUsage } from '../conn';
+import { useStore } from '../store';
 import { buildChanges, cliStatus, efforts, fieldPreview, groups, inputValue, optionLabel, profileFields, profiles, type Field, type Scope, type SettingsSnapshot } from './settings-model';
-import { Modal } from './Modal';
-import { Select } from './Select';
+import { Modal } from '../controls/Modal';
+import { Select } from '../controls/Select';
 import './settings.css';
 
 async function request(scope: Scope, nodeId: string | undefined, body?: unknown, signal?: AbortSignal): Promise<SettingsSnapshot> {

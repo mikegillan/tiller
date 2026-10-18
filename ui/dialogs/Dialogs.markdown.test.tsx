@@ -2,12 +2,13 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Dialogs } from './Dialogs';
-import { getState, update } from './store';
+import { mk } from '../fixtures';
+import { getState, update } from '../store';
 
-vi.mock('./Modal', () => ({ Modal: ({ children, footer }: { children: ReactNode; footer?: ReactNode }) => <>{children}{footer}</> }));
-vi.mock('./conn', () => ({ send: vi.fn() }));
-vi.mock('./store', async (original) => {
-  const store = await original<typeof import('./store')>();
+vi.mock('../controls/Modal', () => ({ Modal: ({ children, footer }: { children: ReactNode; footer?: ReactNode }) => <>{children}{footer}</> }));
+vi.mock('../conn', () => ({ send: vi.fn() }));
+vi.mock('../store', async (original) => {
+  const store = await original<typeof import('../store')>();
   return { ...store, useStore: (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()) };
 });
 const release = { id: 1, tag: 'v1.2.3', name: 'v1.2.3', sha: 'new', tagObject: 'tag', publishedAt: '', body: '## Improvements\n\n- **Readable** notes\n\nhttps://github.com/example/tiller' };
@@ -49,4 +50,14 @@ it.each(['update', 'whatsNew'] as const)('keeps full original technical notes co
   expect(technical).toContain('Merge branch');
   expect(technical).toContain('Validated source:');
   expect(getState().update?.releases[0].body).toBe(body);
+});
+
+it.each(['claude', 'pi', 'codex'] as const)('preserves spawn harness order and %s effort choices', (harness) => {
+  update(() => ({ nodes: { parent: { ...mk('parent', null, 0), harness } }, dialog: { kind: 'spawn', parentId: 'parent', cwd: '/repo' } }));
+  const html = renderToStaticMarkup(<Dialogs />);
+  expect([...html.matchAll(/role="radio"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1])).toEqual(['claude', 'pi', 'codex', 'terminal']);
+  const effort = html.match(/<label>Effort<select[^>]*>(.*?)<\/select>/)?.[1];
+  expect(effort).toBeDefined();
+  const labels = [...effort!.matchAll(/<option[^>]*>([^<]+)<\/option>/g)].map((match) => match[1]);
+  expect(labels).toEqual(harness === 'codex' ? ['Default', 'low', 'medium', 'high', 'xhigh'] : ['Default', 'low', 'medium', 'high', 'xhigh', 'max']);
 });

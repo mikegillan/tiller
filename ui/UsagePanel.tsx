@@ -3,7 +3,7 @@ import type { RateLimit, UsageSource } from '../src/shared/protocol';
 import { usageStale, usageToolName } from '../src/shared/usage';
 import { useNow } from './hooks';
 import { refreshUsage } from './conn';
-import { Modal } from './Modal';
+import { Modal } from './controls/Modal';
 import { useStore } from './store';
 import openaiLogo from './assets/usage/openai.svg';
 import claudeLogo from './assets/usage/claude.png';
