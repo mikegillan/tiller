@@ -42,6 +42,7 @@ export class PtySession {
   private term: InstanceType<typeof Terminal>;
   private ser = new SerializeAddon();
   private lock: Promise<void> = Promise.resolve();
+  private mouseEncoding: 1006 | 1016 | undefined;
   private dataCbs: Array<(d: string) => void> = [];
   private exitCbs: Array<(code: number) => void> = [];
   exited = false;
@@ -51,6 +52,21 @@ export class PtySession {
     this.pty = pty;
     this.term = new Terminal({ cols, rows, scrollback: 5000, allowProposedApi: true });
     this.term.loadAddon(this.ser);
+    // SerializeAddon preserves mouse tracking but omits SGR/SGR-pixel encoding.
+    // Observe the supported modes without consuming them or bypassing xterm's parser.
+    for (const final of ['h', 'l']) {
+      this.term.parser.registerCsiHandler({ prefix: '?', final }, (params) => {
+        for (const param of params) {
+          const mode = Array.isArray(param) ? param[0] : param;
+          if (mode === 1006 || mode === 1016) this.mouseEncoding = final === 'h' ? mode : undefined;
+        }
+        return false;
+      });
+    }
+    this.term.parser.registerEscHandler({ final: 'c' }, () => {
+      this.mouseEncoding = undefined;
+      return false;
+    });
     pty.onData((d) => {
       this.term.write(d);
       for (const cb of this.dataCbs) cb(d);
@@ -120,7 +136,7 @@ export class PtySession {
     return run;
   }
 
-  write(data: string): Promise<void> {
+  write(data: string | Buffer): Promise<void> {
     return this.locked(async () => { if (!this.exited) this.pty.write(data); });
   }
 
@@ -136,7 +152,8 @@ export class PtySession {
 
   /** The visible screen as escape sequences with attributes, for a client to repaint from. */
   snapshot(): string {
-    return this.ser.serialize({ scrollback: 0 });
+    const encoding = this.mouseEncoding ? `\x1b[?${this.mouseEncoding}h` : '';
+    return this.ser.serialize({ scrollback: 0 }) + encoding;
   }
 
   /** Last n rows of the viewport (not rows up to the cursor), right-trimmed. */
