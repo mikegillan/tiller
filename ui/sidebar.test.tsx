@@ -13,8 +13,8 @@ import { mk } from './fixtures';
 import type { NodeView } from '../src/shared/protocol';
 import { flattenSession } from './tree';
 
-const hooks = vi.hoisted(() => ({ open: false, setOpen: vi.fn(), effects: [] as (() => unknown)[] }));
-vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useState: () => [hooks.open, hooks.setOpen], useRef: () => ({ current: null }), useMemo: (fn: () => unknown) => fn(), useEffect: (fn: () => unknown) => hooks.effects.push(fn) }));
+const hooks = vi.hoisted(() => ({ open: false, setOpen: vi.fn(), effects: [] as (() => unknown)[], refs: [] as { current: unknown }[] }));
+vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useState: () => [hooks.open, hooks.setOpen], useRef: () => hooks.refs.shift() ?? ({ current: null }), useMemo: (fn: () => unknown) => fn(), useEffect: (fn: () => unknown) => hooks.effects.push(fn) }));
 vi.mock('./store', async (original) => {
   const store = await original<typeof import('./store')>();
   return { ...store, useStore: (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()) };
@@ -39,7 +39,7 @@ const a = { ...mk('a', null, 1), cwd: '/current/root' };
 const b = { ...mk('b', null, 2), cwd: '/other/root' };
 const child = { ...mk('child', 'a', 3), cwd: '/child/worktree' };
 beforeEach(() => {
-  vi.clearAllMocks(); hooks.open = false; hooks.effects.length = 0;
+  vi.clearAllMocks(); hooks.open = false; hooks.effects.length = 0; hooks.refs.length = 0;
   update(() => ({ nodes: { a, b, child }, order: ['a', 'child', 'b'], selected: 'child', session: 'a', collapsed: [], opened: [], historyOpen: false, renaming: null, dialog: null }));
 });
 
@@ -235,6 +235,30 @@ it('follows selection while open, persists closing across selection and reload, 
   expect(elements(Sidebar({ onSettings: () => {} })).some((el) => el.type === SidebarInspector || el.props.role === 'tree')).toBe(false);
   expect(readSidebarDetails()).toBe(true);
   vi.unstubAllGlobals();
+});
+
+it('focuses the mounted drawer only after an explicit reopen and restores the mounted strip on close', () => {
+  const strip = { focus: vi.fn() }, separator = { focus: vi.fn() };
+  const buttonRef = { current: strip }, requested = { current: false };
+  const treeRef = { current: { parentElement: { querySelector: vi.fn(() => separator) } } };
+  const render = (open: boolean) => {
+    hooks.open = open;
+    hooks.refs.push(buttonRef, requested, treeRef);
+    const sidebar = Sidebar({ onSettings: () => {} });
+    return { sidebar, focusEffect: hooks.effects.at(-2)! };
+  };
+  const initial = render(true);
+  initial.focusEffect();
+  expect(separator.focus).not.toHaveBeenCalled();
+  find(initial.sidebar, (el) => el.type === SidebarInspector).props.onClose();
+  const closed = render(false);
+  closed.focusEffect();
+  expect(strip.focus).toHaveBeenCalledOnce();
+  find(closed.sidebar, (el) => el.props.className === 'details-reopen').props.onClick();
+  const reopened = render(true);
+  reopened.focusEffect();
+  expect(separator.focus).toHaveBeenCalledOnce();
+  expect(requested.current).toBe(false);
 });
 
 it('defaults open when storage is unavailable and tolerates saving', () => {
