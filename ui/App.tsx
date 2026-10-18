@@ -57,7 +57,7 @@ export function App() {
             <TerminalPane />
             {archived ? <ArchivePane a={archived} />
               // Refreshed whenever a turn ends.
-              : transcript ? <TranscriptPane key={node!.id} id={node!.id} refresh={finished(node!.status) ? node!.status.changedAt : 'running'} harness={node!.harness} />
+              : transcript ? <TranscriptPane key={node!.id} id={node!.id} currentSessionId={node!.sessionId} refresh={finished(node!.status) ? node!.status.changedAt : 'running'} harness={node!.harness} />
               : diff ? <DiffPane node={node!} /> : node?.status.exited && <ExitedCard node={node} />}
             {!node && !archived && (
               <div className="empty">
