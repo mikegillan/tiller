@@ -235,7 +235,7 @@ const tools = {
     }),
 
   notify_when: tool(
-    'Wait for workers',
+    'Watch node completion',
     'Get one message when a set of nodes finishes, instead of polling list_nodes or having each worker report separately. Returns at once; later you receive a single framed message "N of M finished:" with one line per node giving its outcome (or its state). when "all" waits for every node, "any" for the first. of "turn" counts a node once it finishes the turn in progress now, or for an idle node its next turn (exiting or closing counts too); of "success" counts a node once it calls report_outcome (either verdict) from now on, or within the turn in progress now. Ids must be in your scope. One pending notify_when per id set: calling again with the same ids replaces it. It expires after 12 hours.',
     { ids: z.array(z.string().min(1)).min(1), when: z.enum(['all', 'any']), of: z.enum(['turn', 'success']) },
     async (c, a) => {
@@ -245,7 +245,7 @@ const tools = {
     }),
 
   read: tool(
-    'Read worker output',
+    'Read node output',
     'Read another node (yourself, your ancestors, siblings or descendants). what "summary" returns the last `lines` (default 30) user and assistant messages of an agent node\'s conversation, with tool calls reduced to a "[tool: name]" marker; "transcript" returns the whole conversation (capped at the most recent 200 KB); "terminal" returns the last `lines` (default 60) rows of the node\'s screen and works for terminal nodes too. Summary and transcript also take a closed node of your tree (see history).',
     { nodeId: z.string().min(1), what: z.enum(['summary', 'transcript', 'terminal']), lines: z.number().int().min(1).max(5000).optional() },
     async (c, a) => {
@@ -264,7 +264,7 @@ const tools = {
     }),
 
   history: tool(
-    'List past workers',
+    'List past agents',
     `List the closed agent nodes of your tree, newest first, one line each: id, title, when it closed, a one-line brief of what it did and how it ended (with its branch's fate), branch and spend. \`query\` keeps those whose title, first prompt or last message contains it. Read one with read, continue its work by spawning with fork. At most ${HISTORY_LINES} lines. \`rootId\` picks a tree for the human only.`,
     { query: z.string().optional(), rootId: z.string().min(1).optional() },
     async (c, a) => {
@@ -284,7 +284,7 @@ const tools = {
     }, true),
 
   followup: tool(
-    'Continue past worker',
+    'Continue past agent',
     'Continue a closed agent node\'s session as a new live node using its harness that starts on `prompt`, with its title (unless `title`), model, effort, role and profile, under its parent when that is still live. Only the human may call this.',
     { nodeId: z.string().min(1), prompt: z.string().min(1), title: z.string().min(1).optional() },
     async (c, a) => ({ data: { nodeId: (await c.manager.followup(a.nodeId, a.prompt, a.title)).id } }), true),
@@ -339,7 +339,7 @@ const tools = {
     }),
 
   merge: tool(
-    'Merge worker changes',
+    'Merge node changes',
     'Merge the git branch of one of your descendants that has its own worktree into the branch it was created from (its base), in the project\'s merge style (worktrees.mergeStyle in .tiller/config.json: "merge", the default, makes a merge commit; "squash" makes one commit; "ff-only" only fast-forwards). Refused, with nothing changed, when the base is a protected branch (worktrees.protected, default main and master, plus origin\'s default branch: spawn with a `base` branch instead and have the human open a pull request from it), while the node is working, when its worktree has uncommitted files, when the base is checked out somewhere with uncommitted changes, A conflict with the base is checked first without touching any file: the reply is then {ok:false, conflicts:[paths]}; send the worker a rebase instruction rather than resolving it yourself, then merge again. The merge or squash commit is signed when the repo\'s git config sets commit.gpgsign, and a signing failure refuses the merge with git\'s error. The human approves each merge in the UI unless the project config sets approvals.merge; if they decline you get {ok:false, reason:"denied"}. Close the node afterwards to remove its worktree and branch.',
     { nodeId: z.string().min(1) },
     async (c, a) => {
