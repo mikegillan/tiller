@@ -3,6 +3,7 @@ import { PROFILES, PROFILE_LABELS, profileFor, EFFORTS, type InstalledReleaseNot
 import { send } from './conn';
 import type { TauriWindow } from './hooks';
 import { Modal } from './Modal';
+import { Markdown } from './Markdown';
 import { expectSpawn, openDialog, useStore, type Dialog } from './store';
 import { IN_APP } from './url';
 
@@ -204,7 +205,7 @@ function ForkDialog({ d }: { d: Fork }) {
 }
 
 /** Mounted by Modal only after the native dialog is open and its notes are visible. */
-function InstalledNotes({ notes, onClose }: { notes: InstalledReleaseNotes; onClose: () => void }) {
+function InstalledNotes({ notes }: { notes: InstalledReleaseNotes }) {
   const connected = useStore((s) => s.connected);
   useEffect(() => {
     if (connected && notes.releases.length) send({ t: 'updateNotesRead', identity: notes.identity });
@@ -213,10 +214,9 @@ function InstalledNotes({ notes, onClose }: { notes: InstalledReleaseNotes; onCl
     <div className="release-notes" tabIndex={0} aria-label="Installed release notes">
       {notes.releases.map((release) => <section key={release.id}>
         <h3>{release.tag}{release.name !== release.tag && ` · ${release.name}`}</h3>
-        <p className="release-body">{release.body || 'No release notes provided.'}</p>
+        <Markdown>{release.body || 'No release notes provided.'}</Markdown>
       </section>)}
     </div>
-    <div className="btns"><button className="btn" autoFocus onClick={onClose}>Close</button></div>
   </>;
 }
 
@@ -230,26 +230,14 @@ function WhatsNewDialog({ notes }: { notes: InstalledReleaseNotes }) {
       else document.querySelector<HTMLElement>('.tree')?.focus();
     });
   };
-  return <Modal title="What’s new" onClose={onClose}><InstalledNotes notes={notes} onClose={onClose} /></Modal>;
+  return <Modal title="What’s new" className="modal release-notes-dialog" resizable onClose={onClose} footer={<div className="btns"><button className="btn" autoFocus onClick={onClose}>Close</button></div>}><InstalledNotes notes={notes} /></Modal>;
 }
 
 function UpdateDialog() {
   const upd = useStore((s) => s.update);
   const available = upd?.target && upd.sha !== upd.target.sha;
   return (
-    <Modal title="Tiller releases" onClose={close}>
-      <p>{upd?.currentVersion ? `Checkout: ${upd.currentVersion}` : 'Source checkout'}{upd?.sha && ` · ${upd.sha.slice(0, 7)}`}</p>
-      {upd?.target && <p>Latest stable release: <b>{upd.target.tag}</b></p>}
-      {upd?.reason && <p>{upd.reason}</p>}
-      {upd?.fetchError && <p role="alert">{upd.fetchError}</p>}
-      {upd?.failed && <p role="alert">{upd.failed}</p>}
-      <div className="release-notes">
-        {(upd?.releases.length ? upd.releases : upd?.target ? [upd.target] : []).map((r) => <section key={r.id}>
-          <h3>{r.tag} · {r.name === r.tag ? 'Release notes' : r.name}</h3>
-          <p className="release-body">{r.body || 'No release notes provided.'}</p>
-        </section>)}
-      </div>
-      {available && <p>Install this release in the clean main checkout, rebuild changed packages, UI and app, then restart the daemon. Working agents will be interrupted and resumed. If the app is rebuilt, quit and reopen Tiller.</p>}
+    <Modal title="Tiller releases" className="modal release-notes-dialog" resizable onClose={close} footer={
       <div className="btns">
         <button className="btn" autoFocus onClick={close}>Close</button>
         <button className="btn" disabled={upd?.applying} onClick={() => send({ t: 'updateCheck' })}>Check releases</button>
@@ -257,6 +245,19 @@ function UpdateDialog() {
           {upd?.applying ? 'Updating…' : `Update ${upd?.target?.tag}`}
         </button>}
       </div>
+    }>
+      <p>{upd?.currentVersion ? `Checkout: ${upd.currentVersion}` : 'Source checkout'}{upd?.sha && ` · ${upd.sha.slice(0, 7)}`}</p>
+      {upd?.target && <p>Latest stable release: <b>{upd.target.tag}</b></p>}
+      {upd?.reason && <p>{upd.reason}</p>}
+      {upd?.fetchError && <p role="alert">{upd.fetchError}</p>}
+      {upd?.failed && <p role="alert">{upd.failed}</p>}
+      <div className="release-notes" tabIndex={0} aria-label="Available release notes">
+        {(upd?.releases.length ? upd.releases : upd?.target ? [upd.target] : []).map((r) => <section key={r.id}>
+          <h3>{r.tag} · {r.name === r.tag ? 'Release notes' : r.name}</h3>
+          <Markdown>{r.body || 'No release notes provided.'}</Markdown>
+        </section>)}
+      </div>
+      {available && <p>Install this release in the clean main checkout, rebuild changed packages, UI and app, then restart the daemon. Working agents will be interrupted and resumed. If the app is rebuilt, quit and reopen Tiller.</p>}
     </Modal>
   );
 }
