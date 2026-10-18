@@ -67,7 +67,10 @@ test('first release is stable v0.1.0 at exact validated SHA, includes PR and all
   assert.equal(release.draft, false);
   assert.equal(release.prerelease, false);
   assert.equal(release.make_latest, 'true');
-  assert.match(release.body, /Useful change by @example in #7/);
+  const primary = release.body.split('<details>')[0];
+  assert.match(primary, /Useful change by @example in #7/);
+  assert(!primary.includes(f.first));
+  assert(!primary.includes('Initial implementation'));
   for (const sha of [f.first, f.second, f.third]) assert(release.body.includes(sha));
   assert.equal(f.calls.find(c => c.path === '/releases/generate-notes').body.previous_tag_name, undefined);
 });
@@ -223,4 +226,37 @@ test('API authenticates, bounds requests, treats only GET 404 as absent and reje
   response = { status: 404, ok: false };
   await assert.rejects(api('POST', '/releases', {}), /HTTP 404/);
   assert.throws(() => githubApi({ repository: '../elsewhere', token: 'token' }), /required/);
+});
+
+test('direct-commit releases show actual non-merge subjects with full evidence collapsed', async t => {
+  const f = fixture(t);
+  const generated = '**Full Changelog**: https://github.com/example/tiller/compare/v0.1.0...v0.1.1';
+  const api = (method, path, body) => path === '/releases/generate-notes' ? { body: generated } : f.api(method, path, body);
+  await publishRelease({ sha: f.third, api, git: f.git });
+  const [primary, details] = f.releases[0].body.split('<details>');
+  assert.match(primary, /- Initial implementation\n- Fix direct commit/);
+  assert(primary.includes(generated));
+  assert(!primary.includes(f.first));
+  // The fixture's merge-looking subject is a direct commit, so --no-merges
+  // correctly keeps it. A real merge is checked separately below.
+  assert(details.includes('<!-- tiller-release-evidence:v1 -->'));
+  for (const sha of [f.first, f.second, f.third]) assert(details.includes(sha));
+  assert(details.includes(`Validated source: ${f.third}`));
+});
+
+test('empty GitHub summary falls back to subjects, excluding actual merge commits only from the primary view', async t => {
+  const f = fixture(t);
+  f.git(['checkout', '-b', 'feature', f.first]);
+  f.git(['commit', '--allow-empty', '-qm', 'Fix [links] and *emphasis*']);
+  const feature = f.git(['rev-parse', 'HEAD']);
+  f.git(['checkout', '--detach', f.third]);
+  f.git(['merge', '--no-ff', '-m', 'Merge branch feature', feature]);
+  const sha = f.git(['rev-parse', 'HEAD']);
+  const api = (method, path, body) => path === '/releases/generate-notes' ? { body: '' } : f.api(method, path, body);
+  await publishRelease({ sha, api, git: f.git });
+  const [primary, details] = f.releases[0].body.split('<details>');
+  assert(primary.includes('- Fix \\[links\\] and \\*emphasis\\*'));
+  assert(!primary.includes('Merge branch feature'));
+  assert(details.includes(`- ${sha} Merge branch feature`));
+  assert(details.includes(feature));
 });

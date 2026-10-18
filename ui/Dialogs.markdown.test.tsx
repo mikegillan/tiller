@@ -33,3 +33,20 @@ it.each(['update', 'whatsNew'] as const)('keeps the empty-note fallback in %s', 
   update(() => ({ update: { sha: 'old', checkedAt: 1, eligible: false, releases: [], target: empty }, dialog: kind === 'update' ? { kind } : { kind, notes: { identity: 'empty', releases: [empty] } } }));
   expect(renderToStaticMarkup(<Dialogs />)).toContain('<p>No release notes provided.</p>');
 });
+
+it.each(['update', 'whatsNew'] as const)('keeps full original technical notes collapsed in %s', (kind) => {
+  const sha = 'a'.repeat(40);
+  const body = `## Commits\n\n- ${sha} Improve release notes\n- ${'b'.repeat(40)} Merge branch 'main'\n\nValidated source: ${sha}\n`;
+  const legacy = { ...release, body };
+  update(() => ({ update: { sha: 'old', checkedAt: 1, eligible: false, releases: [legacy], target: legacy }, dialog: kind === 'update' ? { kind } : { kind, notes: { identity: 'legacy', releases: [legacy] } } }));
+  const html = renderToStaticMarkup(<Dialogs />);
+  const [primary, technical] = html.split('<details class="release-technical">');
+  expect(primary).toContain('<li>Improve release notes</li>');
+  expect(primary).not.toContain(sha);
+  expect(primary).not.toContain('Merge branch');
+  expect(technical).toContain('<summary>Technical details</summary>');
+  expect(technical).toContain(sha);
+  expect(technical).toContain('Merge branch');
+  expect(technical).toContain('Validated source:');
+  expect(getState().update?.releases[0].body).toBe(body);
+});
