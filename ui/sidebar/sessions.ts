@@ -1,4 +1,4 @@
-import type { NodeView } from '../src/shared/protocol';
+import type { NodeView } from '../../src/shared/protocol';
 import { statusKind, type Nodes, type StatusKind } from './tree';
 
 /** Ancestors from the session root down to `id`, inclusive. Tolerates missing parents; parentId is fixed at spawn, so there are no cycles. */

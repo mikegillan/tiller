@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { StateDot } from './Bits';
-import { cwdBase } from './format';
-import { Icon } from './icons';
-import { openDialog, selectSession, useStore } from './store';
+import { StateDot } from '../controls/Bits';
+import { cwdBase } from '../format';
+import { Icon } from '../controls/icons';
+import { openDialog, selectSession, useStore } from '../store';
 import { sessions } from './sessions';
 
 export function SessionSwitcher() {

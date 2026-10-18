@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ancestry, pickInitial, rootOf, sessions } from './sessions';
-import { mk } from './fixtures';
+import { mk } from '../fixtures';
 
 const nodes = Object.fromEntries([
   mk('r1', null, 100), mk('c', 'r1', 500, { state: 'blocked' }), mk('g', 'c', 50),

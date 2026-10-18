@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { IN_APP } from './url';
+import { IN_APP } from '../url';
 import { openExternalUrl } from './externalLink';
 import './markdown.css';
 

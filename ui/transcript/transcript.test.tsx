@@ -1,12 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import type { Transcript } from '../src/shared/protocol';
-import { followupMsg, forkMsg } from './Dialogs';
+import type { Transcript } from '../../src/shared/protocol';
+import { followupMsg, forkMsg } from '../dialogs/Dialogs';
 import { branchLine } from './History';
 import { TranscriptView } from './TranscriptPane';
 
-vi.mock('./conn', () => ({ send: vi.fn() }));
-vi.mock('./hooks', () => ({ useNow: () => 0 })); // hooks.ts reaches for window on import
+vi.mock('../conn', () => ({ send: vi.fn() }));
+vi.mock('../hooks', () => ({ useNow: () => 0 })); // hooks.ts reaches for window on import
 
 const data: Transcript = {
   entries: [

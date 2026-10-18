@@ -1,7 +1,7 @@
 import type { NodeView } from '../src/shared/protocol';
-import { actionsFor } from './ActionButtons';
-import { DiffCounts, OutcomeDetails } from './Bits';
-import { Icon } from './icons';
+import { actionsFor } from './controls/ActionButtons';
+import { DiffCounts, OutcomeDetails } from './controls/Bits';
+import { Icon } from './controls/icons';
 
 const CARD = ['resume', 'merge', 'restart', 'remove'];
 

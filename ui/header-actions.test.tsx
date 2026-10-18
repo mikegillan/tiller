@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { isValidElement, type ReactElement, type ReactNode } from 'react';
-import { actionsFor, ActionButtons, actionMenuPosition } from './ActionButtons';
+import { actionsFor, ActionButtons, actionMenuPosition } from './controls/ActionButtons';
 import { TitleBar } from './TitleBar';
 import { mk } from './fixtures';
 import { getState, openDialog, showPane, togglePanel, update } from './store';

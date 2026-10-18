@@ -3,7 +3,7 @@ import { Markdown } from './Markdown';
 import { openExternalUrl } from './externalLink';
 
 const state = vi.hoisted(() => ({ native: true, failed: false, setError: vi.fn() }));
-vi.mock('./url', () => ({ get IN_APP() { return state.native; } }));
+vi.mock('../url', () => ({ get IN_APP() { return state.native; } }));
 vi.mock('./externalLink', () => ({ openExternalUrl: vi.fn() }));
 vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useId: () => 'native-test', useState: () => [state.failed, state.setError] }));
 afterEach(() => { vi.clearAllMocks(); state.native = true; state.failed = false; });

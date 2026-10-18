@@ -3,26 +3,26 @@ import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Sidebar, readSidebarDetails, saveSidebarDetails } from './Sidebar';
 import { SidebarInspector } from './SidebarInspector';
-import { App } from './App';
+import { App } from '../App';
 import { NodeRow } from './NodeRow';
 import { SessionSwitcher } from './SessionSwitcher';
-import { RenameInput } from './RenameInput';
-import { getState, setRenaming, update } from './store';
-import { send } from './conn';
-import { mk } from './fixtures';
-import type { NodeView } from '../src/shared/protocol';
+import { RenameInput } from '../controls/RenameInput';
+import { getState, setRenaming, update } from '../store';
+import { send } from '../conn';
+import { mk } from '../fixtures';
+import type { NodeView } from '../../src/shared/protocol';
 import { flattenSession } from './tree';
 
 const hooks = vi.hoisted(() => ({ open: false, setOpen: vi.fn(), effects: [] as (() => unknown)[], refs: [] as { current: unknown }[] }));
 vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useState: () => [hooks.open, hooks.setOpen], useRef: () => hooks.refs.shift() ?? ({ current: null }), useMemo: (fn: () => unknown) => fn(), useEffect: (fn: () => unknown) => hooks.effects.push(fn) }));
-vi.mock('./store', async (original) => {
-  const store = await original<typeof import('./store')>();
+vi.mock('../store', async (original) => {
+  const store = await original<typeof import('../store')>();
   return { ...store, useStore: (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()) };
 });
-vi.mock('./conn', () => ({ send: vi.fn() }));
+vi.mock('../conn', () => ({ send: vi.fn() }));
 vi.mock('./SidebarInspector', () => ({ SidebarInspector: () => null }));
-vi.mock('./TerminalPane', () => ({ TerminalPane: () => null }));
-vi.mock('./hooks', () => ({ useNow: () => 10_000, useDocumentSync: () => {} }));
+vi.mock('../TerminalPane', () => ({ TerminalPane: () => null }));
+vi.mock('../hooks', () => ({ useNow: () => 10_000, useDocumentSync: () => {} }));
 type Element = ReactElement<Record<string, any>>;
 function elements(node: ReactNode): Element[] {
   if (Array.isArray(node)) return node.flatMap(elements);

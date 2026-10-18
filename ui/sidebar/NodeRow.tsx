@@ -1,11 +1,12 @@
-import { ActionButtons } from './ActionButtons';
-import { CtxBar, GateMark, hasChanges, StateDot } from './Bits';
-import { fmtAge, shortEffort, shortModel } from '../src/shared/format';
-import { useNow } from './hooks';
-import { Icon } from './icons';
-import { RenameInput } from './RenameInput';
-import { selectNode, toggleCollapsed, useStore } from './store';
-import { isAgentKind, needsYou } from '../src/shared/protocol';
+import { ActionButtons } from '../controls/ActionButtons';
+import { CtxBar, GateMark, StateDot } from '../controls/Bits';
+import { hasChanges } from '../worktree';
+import { fmtAge, shortEffort, shortModel } from '../../src/shared/format';
+import { useNow } from '../hooks';
+import { Icon } from '../controls/icons';
+import { RenameInput } from '../controls/RenameInput';
+import { selectNode, toggleCollapsed, useStore } from '../store';
+import { isAgentKind, needsYou } from '../../src/shared/protocol';
 import { kindTag, KIND_LABEL, statusKind, type Row } from './tree';
 
 export function NodeRow({ row, tabStop }: { row: Row; tabStop?: boolean }) {

@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { canMerge, hasChanges, NodeMeta } from './Bits';
-import { worktreeCloses } from './Dialogs';
+import { NodeMeta } from './controls/Bits';
+import { canMerge, hasChanges } from './worktree';
+import { worktreeCloses } from './dialogs/Dialogs';
 import { mk } from './fixtures';
 
 vi.mock('./conn', () => ({ send: vi.fn() }));

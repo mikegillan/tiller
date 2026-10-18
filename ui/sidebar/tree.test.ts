@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { NodeView } from '../src/shared/protocol';
-import { mk } from './fixtures';
+import type { NodeView } from '../../src/shared/protocol';
+import { mk } from '../fixtures';
 import { flattenSession, insertSorted, kindTag, statusKind } from './tree';
 
 const byId = (ns: NodeView[]) => Object.fromEntries(ns.map((n) => [n.id, n]));
