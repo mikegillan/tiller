@@ -109,7 +109,13 @@ export async function publishRelease({ sha, api, git = args => execFileSync('git
   });
   if (typeof generated?.body !== 'string') throw new Error('GitHub did not return release notes');
   const log = git(['log', '--reverse', '--format=- %H %s', previousSha ? `${previousSha}..${sha}` : sha]);
-  const body = `${generated.body.trim()}\n\n## Commits\n\n${log}\n\nValidated source: ${sha}\n`;
+  const prefix = generated.body.trim();
+  const compareOnly = /^(?:\*\*Full Changelog\*\*: https:\/\/github\.com\/[^\s]+\/compare\/[^\s]+)?$/.test(prefix);
+  const subjects = compareOnly ? git(['log', '--reverse', '--no-merges', '--format=%s', previousSha ? `${previousSha}..${sha}` : sha]) : '';
+  const changes = subjects.split('\n').filter(Boolean)
+    .map(subject => `- ${subject.replace(/([\\`*{}_\[\]()<>#+.!|~-])/g, '\\$1')}`).join('\n');
+  const primary = compareOnly ? [changes || 'No change descriptions provided.', prefix].filter(Boolean).join('\n\n') : prefix;
+  const body = `${primary}\n\n<details>\n<summary>Technical details</summary>\n\n<!-- tiller-release-evidence:v1 -->\n\n## Commits\n\n${log}\n\nValidated source: ${sha}\n</details>\n`;
   if (Buffer.byteLength(body) > 125_000) throw new Error('Release notes too large; prepare a reviewed baseline release');
 
   if (!existing) await api('POST', '/git/refs', { ref: `refs/tags/${tag}`, sha });

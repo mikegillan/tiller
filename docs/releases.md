@@ -24,13 +24,33 @@ There is no manual-dispatch shortcut around validation.
 - Releases contain source and notes. This workflow produces no signed binaries
   or updater asset manifest and does not bump package, Cargo or app manifests.
 
-The release body contains GitHub-generated PR notes with an explicit previous
-published stable tag, followed by every commit subject and full SHA in
-`previous-release-commit..validated-push-commit`. Direct commits and multiple
-merged PRs are therefore included. The first release lists the entire history.
-Drafts, prereleases, non-semver tags and unpublished tags do not establish the
-notes baseline. The body ends with the validated source SHA. GitHub notes
-generation must succeed before any tag is created.
+The release body starts with GitHub-generated PR notes using an explicit previous
+published stable tag. When GitHub returns only a compare link or no description,
+it starts with actual non-merge commit subjects instead, without hashes. Subjects
+are escaped as Markdown text; no summary is invented.
+
+A collapsed native GitHub `<details>` block labeled **Technical details** retains
+every commit subject and full SHA in
+`previous-release-commit..validated-push-commit`, including merges, and the
+validated source SHA. Its exact structure is `<details>`,
+`<summary>Technical details</summary>`, a blank line,
+`<!-- tiller-release-evidence:v1 -->`, a blank line, the `## Commits` appendix,
+and `</details>`, each on its own line. The appendix has a blank line after its
+heading, one `- <full SHA> <subject>` line per commit, a blank line, and
+`Validated source: <full SHA>`. The body ends with a newline.
+
+Both UI release dialogs show descriptions first and keep the complete original
+body accessible as text under a collapsed **Technical details** disclosure. They
+also recognize the exact older terminal `## Commits` / `Validated source`
+appendix: PR notes take priority; compare-only notes fall back to commit subjects,
+with standard merge scaffolding omitted from the primary view. Authored Markdown,
+fenced examples and unknown formats remain untouched. This affects presentation
+only; historical GitHub releases are not rewritten.
+
+Direct commits and multiple merged PRs remain in the technical record. The first
+release includes the entire history. Drafts, prereleases, non-semver tags and
+unpublished tags do not establish the notes baseline. GitHub notes generation
+must succeed before any tag is created.
 
 ## Repository setup
 
