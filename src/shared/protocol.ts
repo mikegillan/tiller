@@ -314,6 +314,7 @@ export interface UpdateStatus {
   runtimeSha?: string; sha: string; checkedAt: number; eligible: boolean; reason?: string; fetchError?: string;
   repository?: string; origin?: string; currentVersion?: string; target?: ReleaseUpdate; releases: ReleaseUpdate[];
   installedNotes?: InstalledReleaseNotes;
+  blocker?: 'dirty';
   checking?: boolean; applying?: boolean; failed?: string;
 }
 

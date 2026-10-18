@@ -28,6 +28,8 @@ Manual and automatic discovery share one in-flight check. The daemon broadcasts
 `checking: true` with installation eligibility disabled at the start, then
 `checking: false` with the fresh result or failure. Checks requested during
 installation retain the current `applying` status without starting discovery.
+The optional `blocker: 'dirty'` identifies a proven dirty primary `main`
+checkout; other blockers and check failures retain the human-readable reason.
 Installation restarts the daemon after building, interrupting running agents;
 they can resume afterward under the existing [resume policy](sessions.md#resume-on-daemon-start).
 

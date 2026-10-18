@@ -90,14 +90,14 @@ export function githubReleases(request: typeof fetch = fetch): ReleaseSource {
   };
 }
 const ancestor = async (repo: string, a: string, b: string) => (await tryGit(repo, 'merge-base', '--is-ancestor', a, b)) !== undefined;
-async function safeCheckout(repo: string): Promise<string | undefined> {
-  if (await tryGit(repo, 'symbolic-ref', '--short', '-q', 'HEAD') !== 'main') return 'The primary checkout must be on main to update. Switch it to main, then check releases again.';
+async function safeCheckout(repo: string): Promise<{ reason: string; blocker?: UpdateStatus['blocker'] } | undefined> {
+  if (await tryGit(repo, 'symbolic-ref', '--short', '-q', 'HEAD') !== 'main') return { reason: 'The primary checkout must be on main to update. Switch it to main, then check releases again.' };
   const common = await git(repo, 'rev-parse', '--git-common-dir');
   const dir = await git(repo, 'rev-parse', '--git-dir');
-  if (resolve(repo, common) !== resolve(repo, dir)) return 'updates require the primary checkout, not a linked worktree';
+  if (resolve(repo, common) !== resolve(repo, dir)) return { reason: 'updates require the primary checkout, not a linked worktree' };
   for (const name of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'BISECT_LOG'])
-    if (existsSync(resolve(repo, await git(repo, 'rev-parse', '--git-path', name)))) return 'a git operation is in progress';
-  if (await git(repo, 'status', '--porcelain', '--untracked-files=all')) return 'The main checkout is not clean: it contains uncommitted or untracked files. Move or stash those changes (including untracked files), then check releases again.';
+    if (existsSync(resolve(repo, await git(repo, 'rev-parse', '--git-path', name)))) return { reason: 'a git operation is in progress' };
+  if (await git(repo, 'status', '--porcelain', '--untracked-files=all')) return { blocker: 'dirty', reason: 'The main checkout is not clean: it contains uncommitted or untracked files. Move or stash those changes (including untracked files), then check releases again.' };
 }
 async function remoteTag(repo: string, origin: string, tag: string): Promise<string> {
   const refs = await git(repo, 'ls-remote', '--exit-code', '--refs', origin, `refs/tags/${tag}`);
@@ -162,10 +162,11 @@ export async function checkUpdate(repo: string, source: ReleaseSource = githubRe
         }
       }
     } catch { /* Incomplete installed history waits for a later check; future update validation is independent. */ }
-    const reason = await safeCheckout(repo)
+    const checkout = await safeCheckout(repo);
+    const reason = checkout?.reason
       ?? (!(await ancestor(repo, sha, target.sha)) ? 'local or unreleased commits; latest release cannot fast-forward this checkout' : undefined)
       ?? (currentVersion && compareVersions(target.tag, currentVersion) < 0 ? 'latest release would downgrade this checkout' : undefined);
-    return { ...base, repository, origin, target, currentVersion, releases, installedNotes, eligible: !reason, reason };
+    return { ...base, repository, origin, target, currentVersion, releases, installedNotes, eligible: !reason, reason, blocker: checkout?.blocker };
   } catch (e) { return { ...base, reason: 'release check unavailable; try again later', fetchError: (e as Error).message }; }
 }
 export function updateLine(s: UpdateStatus): string {
@@ -346,14 +347,14 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
       });
       return s;
     };
-    checking = Promise.resolve().then(perform).catch((e: unknown): UpdateStatus => ({ ...status, checkedAt: Date.now(), eligible: false, reason: 'release check unavailable; try again later', fetchError: e instanceof Error ? e.message : String(e) })).then((s) => {
+    checking = Promise.resolve().then(perform).catch((e: unknown): UpdateStatus => ({ ...status, checkedAt: Date.now(), eligible: false, blocker: undefined, reason: 'release check unavailable; try again later', fetchError: e instanceof Error ? e.message : String(e) })).then((s) => {
       failures = s.fetchError ? failures + 1 : 0;
       nextCheckAt = Date.now() + (failures ? Math.min(6 * 3600_000, 10 * 60_000 * 2 ** Math.min(failures, 6)) : UPDATE_CHECK_INTERVAL);
       checking = undefined;
       return set(s);
     }).finally(schedule);
     // Assign the shared promise before broadcasting so concurrent callers join it.
-    set({ ...status, eligible: false });
+    set({ ...status, eligible: false, blocker: undefined });
     schedule();
     return checking;
   };

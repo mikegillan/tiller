@@ -190,13 +190,37 @@ describe('release checkout', () => {
   });
   it('blocks dirty, untracked, local commits, detached and linked worktrees', async () => {
     commit('two'); release('v0.1.1');
-    writeFileSync(join(work, 'local'), 'keep'); expect(await checkUpdate(work, source)).toMatchObject({ eligible: false, reason: expect.stringContaining('main checkout is not clean') }); rmSync(join(work, 'local'));
-    writeFileSync(join(work, 'README'), 'keep'); expect(await checkUpdate(work, source)).toMatchObject({ eligible: false, reason: expect.stringContaining('uncommitted or untracked files. Move or stash') }); git(work, 'checkout', '--', 'README');
+    writeFileSync(join(work, 'local'), 'keep'); expect(await checkUpdate(work, source)).toMatchObject({ eligible: false, blocker: 'dirty', reason: expect.stringContaining('main checkout is not clean') }); rmSync(join(work, 'local'));
+    writeFileSync(join(work, 'README'), 'keep'); expect(await checkUpdate(work, source)).toMatchObject({ eligible: false, blocker: 'dirty', reason: expect.stringContaining('uncommitted or untracked files. Move or stash') }); git(work, 'checkout', '--', 'README');
     git(work, 'commit', '--allow-empty', '-qm', 'local'); expect((await checkUpdate(work, source)).reason).toContain('local or unreleased');
     git(work, 'checkout', '--detach', '-q'); expect((await checkUpdate(work, source)).reason).toContain('must be on main');
     git(work, 'checkout', '-q', 'main');
     const linked = join(dir, 'linked'); git(work, 'worktree', 'add', '-q', '--detach', linked);
     expect((await checkUpdate(linked, source)).eligible).toBe(false);
+  });
+  it('reports dirty main structurally and clears the blocker on refresh, clean, non-main and failed checks', async () => {
+    const u = createUpdater({ repo: work, home: dir, source, onChange: vi.fn(), spawnHelper: vi.fn(() => 'unused') });
+    const local = join(work, 'local');
+    writeFileSync(local, 'keep');
+    expect(await u.check()).toMatchObject({ eligible: false, blocker: 'dirty' });
+    rmSync(local);
+    const clean = u.check();
+    expect(u.status().blocker).toBeUndefined();
+    expect(await clean).toMatchObject({ eligible: true, blocker: undefined });
+    writeFileSync(local, 'keep');
+    expect((await u.check()).blocker).toBe('dirty');
+    git(work, 'checkout', '-qb', 'task');
+    expect(await u.check()).toMatchObject({ eligible: false, blocker: undefined, reason: expect.stringContaining('must be on main') });
+    git(work, 'checkout', '-q', 'main');
+    expect((await u.check()).blocker).toBe('dirty');
+    vi.spyOn(source, 'list').mockRejectedValueOnce(new Error('offline'));
+    const unavailable = await u.check();
+    expect(unavailable).toMatchObject({ eligible: false, fetchError: 'offline' });
+    expect(unavailable.blocker).toBeUndefined();
+    expect((await u.check()).blocker).toBe('dirty');
+    const notesPath = join(dir, 'update-notes.json');
+    rmSync(notesPath); mkdirSync(notesPath);
+    expect(await u.check()).toMatchObject({ eligible: false, blocker: undefined, fetchError: expect.any(String) });
   });
   it('refuses a moved tag and changed release notes at apply', async () => {
     commit('two'); const r = release('v0.1.1'); const s = await checkUpdate(work, source);
