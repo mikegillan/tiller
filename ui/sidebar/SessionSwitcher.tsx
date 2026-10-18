@@ -32,7 +32,8 @@ export function SessionSwitcher() {
     <div className="switcher" ref={box} onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false); }}>
       <button className="current" ref={trigger} aria-label={`Switch session: ${cur?.root.title ?? 'No session'}`}
         aria-haspopup="menu" aria-expanded={open} aria-controls={open ? 'session-menu' : undefined}
-        onClick={() => setOpen(!open)} onKeyDown={(e) => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setOpen(true); } }}>
+        onMouseDown={(e) => { if (open && e.button === 0) e.preventDefault(); }}
+        onClick={() => open ? close() : setOpen(true)} onKeyDown={(e) => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setOpen(true); } }}>
         {cur ? <><StateDot kind={cur.kind} /><span className="session-copy"><span className="st">{cur.root.title}</span><span className="sc" title={cur.root.cwd}>{cwdBase(cur.root.cwd)}</span></span></> : <span className="sc">No session</span>}
         {(cur?.needs ?? 0) > 0 && <span className="count warn" title="needs you in this session">{cur!.needs}</span>}
         {others > 0 && <span className="count warn" title="needs you in other sessions">+{others}</span>}
@@ -56,6 +57,8 @@ export function SessionSwitcher() {
         }}>
           {list.map((s) => (
             <button key={s.root.id} className={`sess${s === cur ? ' cur' : ''}`} role="menuitemradio" aria-checked={s === cur}
+              // WebKit blurs without focusing clicked buttons; keep the menu mounted until click.
+              onMouseDown={(e) => { if (e.button === 0) e.preventDefault(); }}
               onClick={() => { selectSession(s.root.id); close(); }}>
               <StateDot kind={s.kind} />
               <span className="session-copy"><span className="st">{s.root.title}</span><span className="sc" title={s.root.cwd}>{cwdBase(s.root.cwd)}</span></span>
