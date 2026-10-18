@@ -3,6 +3,8 @@ import { token } from './url';
 import { refreshUsage } from './conn';
 import { useStore } from './store';
 import { buildChanges, cliStatus, efforts, fieldPreview, groups, inputValue, optionLabel, profileFields, profiles, type Field, type Scope, type SettingsSnapshot } from './settings-model';
+import { Modal } from './Modal';
+import { Select } from './Select';
 import './settings.css';
 
 async function request(scope: Scope, nodeId: string | undefined, body?: unknown, signal?: AbortSignal): Promise<SettingsSnapshot> {
@@ -22,7 +24,6 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   const usageSources = useStore((s) => s.usageSources);
   const usageScanning = useStore((s) => s.usageScanning);
   const connected = useStore((s) => s.connected);
-  const dialog = useRef<HTMLDialogElement>(null);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('Claude');
   const [scope, setScope] = useState<Scope>(nodeId ? 'project' : 'home');
@@ -45,15 +46,10 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   const visibleFields = active.fields.filter((field) => matches(field, active.title));
   const fields = sections.flatMap((group) => group.fields);
   useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const scrollRoots = [document.documentElement, document.body].filter(Boolean);
-    const overflow = scrollRoots.map((root) => root.style.overflow);
-    scrollRoots.forEach((root) => { root.style.overflow = 'hidden'; });
-    dialog.current?.showModal();
-    return () => {
-      scrollRoots.forEach((root, index) => { root.style.overflow = overflow[index]; });
-      if (previous?.isConnected) previous.focus();
-    };
+    const roots = [document.documentElement, document.body].filter(Boolean);
+    const overflow = roots.map((root) => root.style.overflow);
+    roots.forEach((root) => { root.style.overflow = 'hidden'; });
+    return () => roots.forEach((root, index) => { root.style.overflow = overflow[index]; });
   }, []);
   useEffect(() => {
     const controller = new AbortController();
@@ -64,9 +60,10 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   useEffect(() => { content.current?.scrollTo({ top: 0 }); if (scope === 'project' && category === 'Daemon') setCategory('Claude'); }, [category, scope]);
   useEffect(() => { if (error || success || discard) content.current?.scrollTo({ top: 0 }); }, [error, success, discard]);
   const leave = (target: Scope | 'close') => {
-    if (busy || target === scope) return;
-    if (dirty) { setDiscard(target); return; }
+    if (busy || target === scope) return false;
+    if (dirty) { setDiscard(target); return false; }
     if (target === 'close') onClose(); else setScope(target);
+    return true;
   };
   const edit = (key: string, raw: string | null) => { setDrafts((d) => ({ ...d, [key]: raw })); setSuccess(''); setError(''); };
   async function save() {
@@ -99,11 +96,11 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
       </div>
       <div className="settings-control">
         {field.type === 'boolean' ? <button id={id} className="settings-toggle" type="button" role="switch" aria-checked={value === 'true'} aria-labelledby={`${id}-label`} aria-describedby={`${id}-help`} disabled={busy} onClick={() => edit(key, value === 'true' ? 'false' : 'true')}><span className="settings-switch-track"><span /></span><span>{value === 'true' ? 'On' : 'Off'}</span></button>
-        : field.options ? <select {...props}>
+        : field.options ? <Select {...props}>
           {!value && <option value="">{previewUnavailable ? 'Preview available after save' : `Harness default / unset${defaultSuffix}`}</option>}
           {value && !field.options.includes(value) && <option value={value}>{value}{defaultSuffix || ' (current)'}</option>}
           {field.options.map((option) => <option key={option} value={option}>{optionLabel(key, option)}{option === value ? defaultSuffix : ''}</option>)}
-        </select> : field.type === 'lines' ? <textarea {...props} rows={3} /> : <input {...props} list={key.startsWith('profiles.claude.') && key.endsWith('.model') ? 'settings-claude-models' : undefined} type={field.type === 'number' ? 'number' : 'text'} min={field.min} step={field.integer ? 1 : 'any'} />}
+        </Select> : field.type === 'lines' ? <textarea {...props} rows={3} /> : <input {...props} list={key.startsWith('profiles.claude.') && key.endsWith('.model') ? 'settings-claude-models' : undefined} type={field.type === 'number' ? 'number' : 'text'} min={field.min} step={field.integer ? 1 : 'any'} />}
         {showDetail && <div className="settings-detail">
           {previewUnavailable && <span>Preview unavailable until legacy role changes are saved.</span>}
           {explicit && <span>Custom setting</span>}
@@ -120,10 +117,10 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     return <button key={title} className="settings-nav-item" aria-pressed={category === 'CLI diagnostics' ? title === category : active.title === title} onClick={() => setCategory(title)}><SettingsIcon name={title} /><span>{title}</span></button>;
   }
 
-  return <dialog className="settings-dialog" ref={dialog} aria-labelledby="settings-title" onCancel={(event) => { event.preventDefault(); leave('close'); }} onKeyDown={(event) => event.stopPropagation()}>
+  return <Modal className="settings-dialog" label="Settings" onClose={() => leave('close')}>
     <aside className="settings-sidebar">
       <h2 id="settings-title">Settings</h2>
-      <div className="settings-search"><SettingsIcon name="Search" /><input type="search" aria-label="Search settings" placeholder="Search settings" value={search} onChange={(event) => { const query = event.target.value; setSearch(query); if (query.trim()) { const first = sections.find((section) => section.fields.some((field) => `${section.title} ${field.label} ${field.key} ${field.help ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()))); if (first) setCategory(first.title); } }} /></div>
+      <div className="settings-search"><SettingsIcon name="Search" /><input autoFocus type="search" aria-label="Search settings" placeholder="Search settings" value={search} onChange={(event) => { const query = event.target.value; setSearch(query); if (query.trim()) { const first = sections.find((section) => section.fields.some((field) => `${section.title} ${field.label} ${field.key} ${field.help ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()))); if (first) setCategory(first.title); } }} /></div>
       <nav className="settings-categories" aria-label="Settings categories">
         <div className="settings-nav-group"><h3>Agents</h3>{['Claude', 'Pi', 'Codex'].map(navButton)}</div>
         <div className="settings-nav-group"><h3>Workflow</h3>{['Notifications', 'Limits', 'Worktrees', 'Approvals & checks'].map(navButton)}</div>
@@ -132,7 +129,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     </aside>
     <div className="settings-workspace">
     <header className="settings-header">
-      <div className="settings-scope"><label htmlFor="settings-scope">Editing settings for</label><div className="settings-scope-picker"><SettingsIcon name="Globe" /><select id="settings-scope" aria-label="Settings scope" value={scope} disabled={busy} onChange={(event) => leave(event.target.value as Scope)}><option value="home">All repositories</option><option value="project" disabled={!nodeId}>{snapshot?.projectPath?.split('/').filter(Boolean).at(-1) ?? 'This repository'}</option></select></div></div>
+      <div className="settings-scope"><label htmlFor="settings-scope">Editing settings for</label><div className="settings-scope-picker"><SettingsIcon name="Globe" /><Select id="settings-scope" aria-label="Settings scope" value={scope} disabled={busy} onChange={(event) => leave(event.target.value as Scope)}><option value="home">All repositories</option><option value="project" disabled={!nodeId}>{snapshot?.projectPath?.split('/').filter(Boolean).at(-1) ?? 'This repository'}</option></Select></div></div>
       <button className="settings-close" disabled={busy} onClick={() => leave('close')}>Close</button>
       <p className="settings-inheritance-copy">{scope === 'project' ? 'Repository settings override shared defaults. Unset values inherit from all repositories or built-in defaults.' : 'Shared defaults for all repositories. Individual repositories can override these settings.'}{!nodeId && ' Select a node to edit repository settings.'}</p>
     </header>
@@ -169,7 +166,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     </div>
     <footer className="settings-footer"><span role="status">{dirty ? `${Object.keys(drafts).length} unsaved ${Object.keys(drafts).length === 1 ? 'change' : 'changes'}` : 'All changes saved'}</span><button className="btn" disabled={busy || !dirty} onClick={() => { setDrafts({}); setError(''); setSuccess(''); }}>Discard changes</button><button className="btn primary" form="settings-form" type="submit" disabled={busy || !snapshot || !dirty || conflict}>{busy ? 'Please wait…' : 'Save changes'}</button></footer>
     </div>
-  </dialog>;
+  </Modal>;
 }
 
 function SettingsIcon({ name }: { name: string }) {

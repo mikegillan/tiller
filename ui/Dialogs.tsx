@@ -1,3 +1,4 @@
+import { Select } from './Select';
 import { useEffect, useRef, useState } from 'react';
 import { PROFILES, PROFILE_LABELS, profileFor, EFFORTS, type InstalledReleaseNotes, type Profile, type Effort, isAgentKind, type ClientMessage, type Harness, type NodeKind, type Role } from '../src/shared/protocol';
 import { send } from './conn';
@@ -80,10 +81,10 @@ function SpawnDialog({ d }: { d: Spawn }) {
           {IN_APP && <button type="button" className="btn" onClick={() => void pickFolder(cwd).then((p) => p && setCwd(p)).catch(() => {})}>Choose…</button>}
         </div></label>
         {agent && <label>Initial prompt<textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional" /></label>}
-        {agent && <label>Task profile<select value={profile} onChange={(e) => setProfile(e.target.value as Profile)}>{PROFILES.map((p) => <option key={p} value={p}>{PROFILE_LABELS[p]}</option>)}</select></label>}
+        {agent && <label>Task profile<Select value={profile} onChange={(e) => setProfile(e.target.value as Profile)}>{PROFILES.map((p) => <option key={p} value={p}>{PROFILE_LABELS[p]}</option>)}</Select></label>}
         <label>Model<input className="mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="Default" /></label>
-        {agent && <label>Effort<select value={effort} onChange={(e) => setEffort(e.target.value as Effort | '')}><option value="">Default</option>{EFFORTS.filter((e) => choice !== 'codex' || e !== 'max').map((e) => <option key={e}>{e}</option>)}</select></label>}
-        {agent && <label>Coordination role<select value={role} onChange={(e) => setRole(e.target.value as Role)}>{(['orchestrator', 'worker', 'none'] as const).map((r) => <option key={r}>{r}</option>)}</select></label>}
+        {agent && <label>Effort<Select value={effort} onChange={(e) => setEffort(e.target.value as Effort | '')}><option value="">Default</option>{EFFORTS.filter((e) => choice !== 'codex' || e !== 'max').map((e) => <option key={e}>{e}</option>)}</Select></label>}
+        {agent && <label>Coordination role<Select value={role} onChange={(e) => setRole(e.target.value as Role)}>{(['orchestrator', 'worker', 'none'] as const).map((r) => <option key={r}>{r}</option>)}</Select></label>}
         {agent && (
           <label className="check"><input type="checkbox" checked={isolate} onChange={(e) => setIsolate(e.target.checked)} />Isolate in a git worktree
             <small>Its branch is created from the current checkout's HEAD.</small></label>
