@@ -24,8 +24,8 @@ it.each(['update', 'whatsNew'] as const)('renders Markdown in the %s release not
   expect(html).toContain('<h2>Improvements</h2>');
   expect(html).toContain('<li><strong>Readable</strong> notes</li>');
   expect(html).toContain('href="https://github.com/example/tiller"');
-  expect(html).toContain('>Close</button>');
-  if (kind === 'update') expect(html).toContain('>Check releases</button>');
+  expect(html).toContain(kind === 'update' ? '>Later</button>' : '>Close</button>');
+  if (kind === 'update') expect(html).toContain('>Check again</button>');
   expect(getState().update?.releases[0].body).toBe(release.body);
 });
 
@@ -71,11 +71,13 @@ it.each([false, true])('explains a blocked update beside its action (restart onl
     checkedAt: 1, eligible: false, reason, releases: [release], target: release,
   } }));
   const html = renderToStaticMarkup(<Dialogs />);
-  expect(html).toContain('<p id="update-blocked-reason" role="status"><strong>Update blocked.</strong> ' + reason);
+  expect(html).toContain('id="update-blocked-reason" role="status"');
+  expect(html).toContain('<h3>Update blocked</h3>');
+  expect(html).toContain(reason);
   expect(html.split(reason)).toHaveLength(2);
   expect(html).toContain('aria-describedby="update-blocked-reason" disabled=""');
-  expect(html).toContain(restartOnly ? '>Rebuild and restart</button>' : '>Update v1.2.3</button>');
-  expect(html.indexOf('Update blocked.')).toBeLessThan(html.indexOf('>Check releases</button>'));
+  expect(html).toContain(restartOnly ? 'Rebuild and restart</button>' : 'Update v1.2.3</button>');
+  expect(html.indexOf('Update blocked')).toBeLessThan(html.indexOf('>Check again</button>'));
 
   update((s) => ({ update: { ...s.update!, eligible: true, reason: undefined } }));
   const clean = renderToStaticMarkup(<Dialogs />);

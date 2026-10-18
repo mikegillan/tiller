@@ -8,6 +8,7 @@ import { Modal } from '../controls/Modal';
 import { ReleaseNotes } from '../release-notes/ReleaseNotes';
 import { expectSpawn, openDialog, useStore, type Dialog } from '../store';
 import { IN_APP } from '../url';
+import { UpdateDialog } from './UpdateDialog';
 import './dialogs.css';
 
 type Spawn = Extract<Dialog, { kind: 'spawn' }>;
@@ -272,39 +273,6 @@ function WhatsNewDialog({ notes }: { notes: InstalledReleaseNotes }) {
   return <Modal title="What’s new" className="modal release-notes-dialog" resizable onClose={onClose} footer={<div className="btns"><button className="btn" autoFocus onClick={onClose}>Close</button></div>}><InstalledNotes notes={notes} /></Modal>;
 }
 
-function UpdateDialog() {
-  const upd = useStore((s) => s.update);
-  const runtimeBehindCheckout = !!upd?.runtimeSha && upd.runtimeSha !== upd.sha;
-  const available = upd?.target && upd.sha !== upd.target.sha;
-  const restartOnly = !!upd?.target && runtimeBehindCheckout && upd.sha === upd.target.sha && upd.currentVersion === upd.target.tag;
-  const blocked = (available || restartOnly) && !upd?.eligible && !upd?.applying;
-  return (
-    <Modal title="Tiller releases" className="modal release-notes-dialog" resizable onClose={close} footer={<>
-      {blocked && <p id="update-blocked-reason" role="status"><strong>Update blocked.</strong> {upd?.reason || 'Check releases again to find out why this update is unavailable.'}</p>}
-      <div className="btns">
-        <button className="btn" autoFocus onClick={close}>Close</button>
-        <button className="btn" disabled={upd?.applying} onClick={() => send({ t: 'updateCheck' })}>Check releases</button>
-        {(available || restartOnly) && <button className="btn primary" aria-describedby={blocked ? 'update-blocked-reason' : undefined} disabled={!upd?.eligible || upd.applying} onClick={() => send({ t: 'update', tag: upd!.target!.tag, sha: upd!.target!.sha })}>
-          {upd?.applying ? 'Updating…' : restartOnly ? 'Rebuild and restart' : `Update ${upd?.target?.tag}`}
-        </button>}
-      </div>
-    </>}>
-      <p>{upd?.currentVersion ? `Checkout: ${upd.currentVersion}` : 'Source checkout'}{upd?.sha && ` · ${upd.sha.slice(0, 7)}`}</p>
-      {upd?.target && <p>Latest stable release: <b>{upd.target.tag}</b></p>}
-      {runtimeBehindCheckout && <p>The source checkout has moved to {upd?.sha.slice(0, 7)}, while this daemon is running {upd?.runtimeSha?.slice(0, 7)}.</p>}
-      {upd?.reason && !blocked && <p>{upd.reason}</p>}
-      {upd?.fetchError && <p role="alert">{upd.fetchError}</p>}
-      {upd?.failed && <p role="alert">{upd.failed}</p>}
-      <div className="release-notes" tabIndex={0} aria-label="Available release notes">
-        {(upd?.releases.length ? upd.releases : upd?.target ? [upd.target] : []).map((r) => <section key={r.id}>
-          <h3>{r.tag} · {r.name === r.tag ? 'Release notes' : r.name}</h3>
-          <ReleaseNotes body={r.body} />
-        </section>)}
-      </div>
-      {(available || restartOnly) && <p>{restartOnly ? 'Rebuild affected packages, UI and app from the current release, then restart the daemon.' : 'Install this release in the clean main checkout, rebuild changed packages, UI and app, then restart the daemon.'} Working agents will be interrupted and resumed. If the app is rebuilt, quit and reopen Tiller.</p>}
-    </Modal>
-  );
-}
 
 export function Dialogs() {
   const d = useStore((s) => s.dialog);

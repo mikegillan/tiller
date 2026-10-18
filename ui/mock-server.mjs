@@ -14,6 +14,20 @@ const PORT = Number(process.env.TL_MOCK_PORT ?? 7789);
 const DIST = fileURLToPath(new URL('./dist', import.meta.url));
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
+// Optional update preview: TL_MOCK_UPDATE=available|blocked|checking|applying|current|restart|failed|no-target.
+// All updater actions stay in memory; no checkout, build or process is touched.
+const updateScenario = process.env.TL_MOCK_UPDATE;
+const release = { id: 13, tag: 'v0.1.13', name: 'v0.1.13', sha: 'abcdef1234567890', tagObject: 'release-tag', publishedAt: '2026-10-18T12:00:00Z', body: '## Improvements\n\n- Clearer explanations when a checkout blocks updates.\n- Updated setup and development documentation.\n\n## Commits\n\n- 1234567890123456789012345678901234567890 Clarify update blockers\n\nValidated source: 1234567890123456789012345678901234567890\n' };
+let updateStatus = updateScenario ? {
+  sha: '970da3e1234567890', runtimeSha: '970da3e1234567890', currentVersion: 'v0.1.12', checkedAt: Date.now(), eligible: true, target: release, releases: [release],
+  ...(updateScenario === 'blocked' ? { eligible: false, blocker: 'dirty', reason: 'The main checkout has uncommitted or untracked files.' } : {}),
+  ...(updateScenario === 'checking' ? { checking: true } : {}),
+  ...(updateScenario === 'applying' ? { applying: true } : {}),
+  ...(updateScenario === 'failed' ? { eligible: false, fetchError: 'Release check unavailable: the network is offline.', reason: 'Check again when the connection is restored.' } : {}),
+  ...(['current', 'restart'].includes(updateScenario) ? { sha: release.sha, currentVersion: release.tag, ...(updateScenario === 'current' ? { runtimeSha: release.sha } : {}) } : {}),
+  ...(updateScenario === 'no-target' ? { eligible: false, target: undefined, releases: [], reason: 'No published stable releases.' } : {}),
+} : undefined;
+
 const now = Date.now();
 const MIN = 60_000;
 const nodes = new Map();
@@ -142,12 +156,28 @@ wss.on('connection', (ws) => {
       if (m.t !== 'auth' || m.token !== 'mock') return ws.close();
       authed = true;
       clients.add(client);
-      send({ t: 'snapshot', nodes: [...nodes.values()], dnd });
-      setTimeout(() => ws.readyState === 1 && send({ t: 'confirm', confirmId: 'c1', text: 'ui polish wants to close node "shell".\nIt has been idle for 40 minutes.' }), 15_000);
+      send({ t: 'snapshot', nodes: [...nodes.values()], dnd, ...(updateStatus ? { update: updateStatus } : {}) });
+      if (!updateScenario) setTimeout(() => ws.readyState === 1 && send({ t: 'confirm', confirmId: 'c1', text: 'ui polish wants to close node "shell".\nIt has been idle for 40 minutes.' }), 15_000);
       return;
     }
     const n = nodes.get(m.id);
     switch (m.t) {
+      case 'updateCheck':
+        if (updateStatus && !updateStatus.applying && !updateStatus.checking) {
+          updateStatus = { ...updateStatus, checking: true };
+          broadcast({ t: 'update', update: updateStatus });
+          setTimeout(() => {
+            updateStatus = { ...updateStatus, checking: false, checkedAt: Date.now() };
+            broadcast({ t: 'update', update: updateStatus });
+          }, 3000);
+        }
+        break;
+      case 'update':
+        if (updateStatus?.eligible && !updateStatus.applying && !updateStatus.checking && m.tag === release.tag && m.sha === release.sha) {
+          updateStatus = { ...updateStatus, applying: true };
+          broadcast({ t: 'update', update: updateStatus });
+        }
+        break;
       case 'attach': if (n) send({ t: 'data', id: m.id, data: SCREENS[n.kind === 'terminal' ? 'terminal' : 'claude'](n) }); break;
       case 'input': send({ t: 'data', id: m.id, data: m.data === '\r' ? '\r\n$ ' : m.data }); break;
       case 'select': if (n?.unread) { n.unread = false; broadcast({ t: 'node', node: n }); } break;
