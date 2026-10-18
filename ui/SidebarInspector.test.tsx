@@ -141,18 +141,16 @@ it('observes the session body and viewport without overwriting the preferred hei
   vi.stubGlobal('ResizeObserver', class { constructor(fn: () => void) { measured = fn; } observe = observe; disconnect = disconnect; });
   const viewport = { innerHeight: 600, addEventListener: vi.fn(), removeEventListener };
   vi.stubGlobal('window', viewport);
-  const header = { getBoundingClientRect: () => ({ height: 58 }) };
-  const parent = { clientHeight: 700, getBoundingClientRect: () => ({ top: 100 }), querySelector: () => header };
+  const parent = { clientHeight: 700, getBoundingClientRect: () => ({ top: 100 }) };
   root.props.ref.current = { closest: () => parent };
   const cleanup = hooks.effects[0]();
   expect(observe).toHaveBeenCalledWith(parent);
-  expect(observe).toHaveBeenCalledWith(header);
-  expect(hooks.updates.at(-1)).toBe(442);
-  // A maximum-size inspector leaves the tree its full 120px after the 58px header.
-  expect(500 - 58 - inspectorHeight(500, 442)).toBe(120);
+  expect(hooks.updates.at(-1)).toBe(500);
+  // The drawer shares the entire session body with the tree.
+  expect(500 - inspectorHeight(500, 500)).toBe(120);
   viewport.innerHeight = 250;
   measured();
-  expect(hooks.updates.at(-1)).toBe(92);
+  expect(hooks.updates.at(-1)).toBe(150);
   expect(stored.get('tl.sidebarInspectorHeight')).toBe('500');
   cleanup?.();
   expect(disconnect).toHaveBeenCalledOnce();
