@@ -9,9 +9,9 @@ export const efforts = SETTINGS_EFFORTS;
 const fieldHelp: Record<string, string> = {
   'notifications.kinds.needsYou': 'An agent is waiting for your input or approval.',
   'notifications.kinds.errored': 'An agent encounters an error.',
-  'notifications.kinds.done': 'An agent finishes its current work.',
+  'notifications.kinds.done': 'Level for the tree completion summary, or each finished turn when summaries are off.',
   'notifications.kinds.exited': 'An agent process exits.',
-  'notifications.treeDoneSummary': 'Combine completion notifications into one summary for the tree.',
+  'notifications.treeDoneSummary': 'Notify once all agents, including the root, finish. Terminals do not count; pending work and gates delay the summary.',
   'limits.maxDepth': 'Maximum number of nested agent generations.',
   'limits.maxChildren': 'Maximum live children per agent.',
   'limits.stallMinutes': 'Minutes without progress before an agent is considered stalled.',

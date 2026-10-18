@@ -29,7 +29,7 @@ function render(props: Partial<Parameters<typeof Modal>[0]> = {}) {
   hooks.cursor = 0;
   return Modal({ title: 'Notes', children: <input autoFocus />, ...props });
 }
-beforeEach(() => { hooks.slots = []; hooks.effects = []; });
+beforeEach(() => { hooks.slots = []; hooks.effects = []; vi.stubGlobal('document', { activeElement: null }); });
 
 it('opens before mounting autofocus children and footer, preserving custom boxes', () => {
   const props = { className: 'palette', footer: <button autoFocus>Close</button> };
@@ -96,4 +96,46 @@ it('never dismisses an unanswered approval and reopens only while connected', ()
   dialog.isConnected = false;
   tree.props.onClose({ currentTarget: dialog });
   expect(dialog.showModal).toHaveBeenCalledOnce();
+});
+
+
+it('reopens native close when a draft guard rejects dismissal', () => {
+  const onClose = vi.fn(() => false);
+  const tree = render({ onClose });
+  const dialog = { isConnected: true, showModal: vi.fn() };
+  tree.props.onClose({ currentTarget: dialog });
+  expect(onClose).toHaveBeenCalledOnce();
+  expect(dialog.showModal).toHaveBeenCalledOnce();
+  dialog.isConnected = false;
+  tree.props.onClose({ currentTarget: dialog });
+  expect(dialog.showModal).toHaveBeenCalledOnce();
+});
+
+it('restores focus to the connected opener when unmounted', async () => {
+  const opener = { isConnected: true, focus: vi.fn() };
+  vi.stubGlobal('document', { activeElement: opener });
+  render({ restoreFocus: true });
+  const cleanup = hooks.effects[0]() as unknown as () => void;
+  cleanup();
+  await Promise.resolve();
+  expect(opener.focus).toHaveBeenCalledOnce();
+});
+
+
+it('leaves intentional navigation focus alone unless restoration is requested', async () => {
+  const opener = { isConnected: true, focus: vi.fn() };
+  vi.stubGlobal('document', { activeElement: opener });
+  render({ className: 'palette', onClose: vi.fn() });
+  const cleanup = hooks.effects[0]() as unknown as () => void;
+  cleanup();
+  await Promise.resolve();
+  expect(opener.focus).not.toHaveBeenCalled();
+});
+
+it('lets dismissible dialogs reach global shortcuts while protecting mandatory and opted-in dialogs', () => {
+  expect(render({ className: 'palette', onClose: vi.fn() }).props.onKeyDown).toBeUndefined();
+  const stopPropagation = vi.fn();
+  render().props.onKeyDown({ stopPropagation });
+  render({ onClose: vi.fn(), blockGlobalShortcuts: true }).props.onKeyDown({ stopPropagation });
+  expect(stopPropagation).toHaveBeenCalledTimes(2);
 });

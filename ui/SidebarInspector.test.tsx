@@ -56,6 +56,22 @@ it('shows measured context, branch changes and a missing worktree without invent
   for (const value of ['42%', '42k / 100k tokens', 'tl/a', '2 ahead · 1 behind main', '3 uncommitted files', '+42', '−18', 'Missing — resume unavailable', 'No activity reported.']) expect(output).toContain(value);
 });
 
+it('describes a failed reported task as Needs changes while the agent is still working', () => {
+  const output = html({ ...mk('worker', 'root', 0, { state: 'working' }), gate: 'running',
+    outcome: { outcome: 'failed', summary: 'Unresolved review issue', at: 0 } });
+  for (const text of ['<dt>Reported outcome</dt><dd><span title="Reported task outcome">Needs changes</span>', '>working<', '<dt>Completion gate</dt><dd>running</dd>', 'Unresolved review issue']) expect(output).toContain(text);
+  expect(output).not.toContain('Turn errored');
+  expect(output).not.toContain('>failed<');
+});
+
+it.each(['errored', 'exited'] as const)('preserves %s runtime status and failed gate beside a successful report', (state) => {
+  const output = html({ ...mk('worker', 'root', 0, { state: 'done', errored: state === 'errored', exited: state === 'exited' }),
+    gate: 'failed', outcome: { outcome: 'succeeded', at: 0 } });
+  for (const text of [`>${state}<`, '<dt>Completion gate</dt><dd>failed</dd>', '<dt>Reported outcome</dt><dd><span title="Reported task outcome">succeeded</span>']) expect(output).toContain(text);
+  expect(output).not.toContain('Needs changes');
+  if (state === 'errored') expect(output).toContain('Turn errored');
+});
+
 it('does not attach an agent role or model to a plain terminal', () => {
   const output = html({ ...mk('shell', null, 0, { state: 'none' }), kind: 'terminal' });
   expect(output).toContain('terminal');
@@ -141,18 +157,16 @@ it('observes the session body and viewport without overwriting the preferred hei
   vi.stubGlobal('ResizeObserver', class { constructor(fn: () => void) { measured = fn; } observe = observe; disconnect = disconnect; });
   const viewport = { innerHeight: 600, addEventListener: vi.fn(), removeEventListener };
   vi.stubGlobal('window', viewport);
-  const header = { getBoundingClientRect: () => ({ height: 58 }) };
-  const parent = { clientHeight: 700, getBoundingClientRect: () => ({ top: 100 }), querySelector: () => header };
+  const parent = { clientHeight: 700, getBoundingClientRect: () => ({ top: 100 }) };
   root.props.ref.current = { closest: () => parent };
   const cleanup = hooks.effects[0]();
   expect(observe).toHaveBeenCalledWith(parent);
-  expect(observe).toHaveBeenCalledWith(header);
-  expect(hooks.updates.at(-1)).toBe(442);
-  // A maximum-size inspector leaves the tree its full 120px after the 58px header.
-  expect(500 - 58 - inspectorHeight(500, 442)).toBe(120);
+  expect(hooks.updates.at(-1)).toBe(500);
+  // The drawer shares the entire session body with the tree.
+  expect(500 - inspectorHeight(500, 500)).toBe(120);
   viewport.innerHeight = 250;
   measured();
-  expect(hooks.updates.at(-1)).toBe(92);
+  expect(hooks.updates.at(-1)).toBe(150);
   expect(stored.get('tl.sidebarInspectorHeight')).toBe('500');
   cleanup?.();
   expect(disconnect).toHaveBeenCalledOnce();

@@ -54,15 +54,13 @@ export function SidebarInspector({ node, onClose }: { node: NodeView | null; onC
   useLayoutEffect(() => {
     const parent = root.current?.closest<HTMLElement>('.sidebar-session-body');
     if (!parent) return;
-    const header = parent.querySelector<HTMLElement>('.session-activity');
     const measure = () => {
       const bodyHeight = Math.min(parent.clientHeight, window.innerHeight - parent.getBoundingClientRect().top);
-      setAvailable(Math.max(0, bodyHeight - (header?.getBoundingClientRect().height ?? 0)));
+      setAvailable(Math.max(0, bodyHeight));
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(parent);
-    if (header) observer.observe(header);
     window.addEventListener('resize', measure);
     const el = handle.current;
     return () => {
@@ -161,7 +159,7 @@ export function SidebarInspector({ node, onClose }: { node: NodeView | null; onC
         </p></>}
         <h3>Completion</h3>
         <dl className="inspector-facts">
-          {row('Reported outcome', node.outcome ? node.outcome.outcome : 'Not reported')}
+          {row('Reported outcome', node.outcome ? <span title="Reported task outcome">{node.outcome.outcome === 'failed' ? 'Needs changes' : 'succeeded'}</span> : 'Not reported')}
           {row('Completion gate', node.gate ?? node.outcome?.gate ?? 'Not reported')}
         </dl>
         {node.outcome?.summary && <p className="inspector-text">{node.outcome.summary}</p>}

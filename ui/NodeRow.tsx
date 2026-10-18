@@ -1,12 +1,12 @@
 import { ActionButtons } from './ActionButtons';
-import { GateMark, hasChanges, StateDot } from './Bits';
-import { fmtAge } from '../src/shared/format';
+import { CtxBar, GateMark, hasChanges, StateDot } from './Bits';
+import { fmtAge, shortEffort, shortModel } from '../src/shared/format';
 import { useNow } from './hooks';
 import { Icon } from './icons';
 import { RenameInput } from './RenameInput';
 import { selectNode, toggleCollapsed, useStore } from './store';
-import { needsYou } from '../src/shared/protocol';
-import { KIND_LABEL, statusKind, type Row } from './tree';
+import { isAgentKind, needsYou } from '../src/shared/protocol';
+import { kindTag, KIND_LABEL, statusKind, type Row } from './tree';
 
 export function NodeRow({ row, tabStop }: { row: Row; tabStop?: boolean }) {
   const { node, depth, hasChildren, collapsed, descendants } = row;
@@ -14,10 +14,15 @@ export function NodeRow({ row, tabStop }: { row: Row; tabStop?: boolean }) {
   const selected = useStore((s) => s.selected === node.id);
   const renaming = useStore((s) => s.renaming === node.id);
   const s = node.status;
+  const agent = isAgentKind(node.kind);
+  const model = shortModel(s.model ?? node.model);
+  const effort = s.effort ?? node.effort;
+  const branch = node.worktree?.branch ?? s.git?.branch;
   const needs = descendants.filter((d) => needsYou(d.status)).length;
   const blocked = s.state === 'blocked' && !s.exited;
   const kind = statusKind(node);
   const state = kind === 'needs' ? s.state : KIND_LABEL[kind];
+  const outcomeLabel = node.outcome?.outcome === 'failed' ? 'Needs changes' : 'succeeded';
 
   return (
     <div className={`row${selected ? ' sel' : ''}`} role="treeitem" aria-selected={selected} aria-level={depth + 1} aria-expanded={hasChildren ? !collapsed : undefined}
@@ -26,7 +31,7 @@ export function NodeRow({ row, tabStop }: { row: Row; tabStop?: boolean }) {
       onFocus={(e) => { if (e.target === e.currentTarget && !selected) selectNode(node.id); }} onClick={() => selectNode(node.id)}>
       {row.guides.map((g, i) => <span key={i} className={`g${g ? ' v' : ''}`} />)}
       {depth > 0 && <span className={`g e${row.last ? '' : ' t'}`} />}
-      <div className="body">
+      <div className={`body${hasChildren && !collapsed ? ' expanded' : ''}`}>
         <div className="l1">
           {hasChildren ? (
             <button className={`caret${collapsed ? '' : ' open'}`} aria-label={collapsed ? 'Expand' : 'Collapse'}
@@ -44,7 +49,10 @@ export function NodeRow({ row, tabStop }: { row: Row; tabStop?: boolean }) {
           {s.activity && <span className={`row-activity${blocked ? ' warn' : ''}`} title={s.activity}>{s.activity}</span>}
         </div>
         {(node.gate || node.outcome || node.worktree?.missing || hasChanges(node) || collapsed || (s.stalled && !s.exited)) && <div className="row-signals">
-          {node.outcome && <span className={`count${node.outcome.outcome === 'failed' ? ' bad' : ''}`} title={node.outcome.summary ?? node.outcome.note}>outcome {node.outcome.outcome}</span>}
+          {node.outcome && <span role="note" className={`count${node.outcome.outcome === 'failed' ? ' bad' : ''}`}
+            aria-label={`Reported task outcome: ${outcomeLabel}`}
+            title={`Reported task outcome: ${outcomeLabel}${node.outcome.summary ?? node.outcome.note ? ` · ${node.outcome.summary ?? node.outcome.note}` : ''}`}>
+            {node.outcome.outcome === 'failed' ? outcomeLabel : `outcome ${outcomeLabel}`}</span>}
           {node.worktree?.missing && <span className="count warn" title="The worktree directory is gone; resume is refused">worktree missing</span>}
           {node.gate && <GateMark gate={node.gate} />}
           {hasChanges(node) && <span className="count" title={`unmerged work on ${node.status.git!.branch}: merge or close it`}>changes · {node.status.git!.ahead} ahead · {node.status.git!.dirty} dirty</span>}
@@ -54,6 +62,12 @@ export function NodeRow({ row, tabStop }: { row: Row; tabStop?: boolean }) {
           {collapsed && needs > 0 && <span className="count warn">{needs} needs you</span>}
           {s.stalled && !s.exited && <span className="count warn" title="working with no hook event">no activity {fmtAge(now - s.changedAt)}</span>}
         </div>}
+        {agent && <div className="row-meta">
+          <span className="row-model" title={`${kindTag(node)}${s.model ?? node.model ? ` · ${s.model ?? node.model}` : ''}`}>{model || kindTag(node)}</span>
+          {effort && <span className="row-effort" title={`Reasoning effort: ${effort}`}>{shortEffort(effort)}</span>}
+          {s.contextPct !== undefined && <CtxBar pct={s.contextPct} />}
+        </div>}
+        {branch && <div className="row-workspace" title={`Branch: ${branch}`}>{branch}</div>}
       </div>
     </div>
   );

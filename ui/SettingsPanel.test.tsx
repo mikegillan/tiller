@@ -2,6 +2,8 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type { ReactElement, ReactNode } from 'react';
 import { refreshUsage } from './conn';
 import { SettingsPanel } from './SettingsPanel';
+import { Modal } from './Modal';
+import { Select } from './Select';
 import type { SettingsSnapshot } from './settings-model';
 
 // Exercise the component's real handlers and asynchronous requests without a DOM dependency.
@@ -24,7 +26,7 @@ vi.mock('./store', () => ({ useStore: (select: (s: unknown) => unknown) => selec
 vi.mock('./conn', () => ({ refreshUsage: vi.fn() }));
 vi.mock('./url', () => ({ token: () => 'test' }));
 const snapshot: SettingsSnapshot = { scope: 'project', path: '/repo/.tiller/config.json', projectPath: '/repo', revision: 'r1', values: { 'profiles.claude.implementation.model': 'custom' }, entries: { 'profiles.claude.implementation.model': { value: 'custom', source: '/repo/.tiller/config.json' } }, inherited: { 'profiles.claude.implementation.model': { value: 'legacy-worker', source: '/home/config.json' } } };
-let tree: ReactElement;
+let tree: ReactElement<Record<string, any>>;
 const close = vi.fn();
 const fetchMock = vi.fn(async (_url: unknown, options?: RequestInit) => {
   const scope = String(_url).includes('scope=home') ? 'home' : 'project';
@@ -208,9 +210,8 @@ it('keeps a draft across category navigation and confirms Escape before closing'
   input('profiles.claude.implementation.model').props.onChange({ target: { value: 'edited' } }); render();
   click('Limits'); click('Claude');
   expect(input('profiles.claude.implementation.model').props.value).toBe('edited');
-  const preventDefault = vi.fn();
-  elements(tree).find((e) => e.type === 'dialog')!.props.onCancel({ preventDefault }); render();
-  expect(preventDefault).toHaveBeenCalledOnce();
+  expect(tree.type).toBe(Modal);
+  expect(tree.props.onClose()).toBe(false); render();
   expect(close).not.toHaveBeenCalled();
   click('Keep editing');
   expect(input('profiles.claude.implementation.model').props.value).toBe('edited');
@@ -386,4 +387,32 @@ it('resets a saved boolean override to the inherited switch state and sends only
   await submit();
   const saved = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
   expect(JSON.parse(String(saved[1]?.body))).toEqual({ scope: 'home', revision: 'r1', changes: { 'approvals.merge': null } });
+});
+
+
+it('uses shared selects for scope, schema options and every harness effort', () => {
+  expect(tree.type).toBe(Modal);
+  expect(tree.props.label).toBe('Settings');
+  expect(tree.props.restoreFocus).toBe(true);
+  expect(tree.props.blockGlobalShortcuts).toBe(true);
+  expect(tree.props.className).toBe('settings-dialog');
+  expect(elements(tree).find((e) => e.props.id === 'settings-scope')!.type).toBe(Select);
+  for (const harness of ['Claude', 'Pi', 'Codex']) {
+    click(harness);
+    expect(input(`profiles.${harness.toLowerCase()}.implementation.effort`).type).toBe(Select);
+  }
+  click('Notifications');
+  expect(input('notifications.kinds.needsYou').type).toBe(Select);
+});
+
+it('guards every modal dismissal request until the draft is explicitly discarded', () => {
+  input('profiles.claude.implementation.model').props.onChange({ target: { value: 'edited' } }); render();
+  for (let i = 0; i < 3; i++) {
+    expect(tree.props.onClose()).toBe(false); render();
+    expect(close).not.toHaveBeenCalled();
+  }
+  click('Keep editing');
+  expect(input('profiles.claude.implementation.model').props.value).toBe('edited');
+  tree.props.onClose(); render(); confirmDiscard();
+  expect(close).toHaveBeenCalledOnce();
 });

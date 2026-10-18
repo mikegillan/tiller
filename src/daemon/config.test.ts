@@ -35,7 +35,7 @@ describe('loadConfig', () => {
       gate: { command: 'npm test', retries: 5, timeoutMinutes: 10 }, // each gate key resolves on its own
       daemon: { resumeOnStart: true, resumeMaxAgeDays: 7, sessionsKeepDays: 14, digestAfterMinutes: 30, maxLiveNodes: 20, maxWorking: 4 },
       limits: { maxDepth: 3, maxChildren: 2, stallMinutes: 2, maxMessagesPer10Min: 20 },
-      notifications: { kinds: { needsYou: 'sound', errored: 'sound', done: 'silent', exited: 'silent' }, treeDoneSummary: false, quietHours: '22:00-07:00' },
+      notifications: { kinds: { needsYou: 'sound', errored: 'silent', done: 'silent', exited: 'silent' }, treeDoneSummary: true, quietHours: '22:00-07:00' },
     });
     const sources = Object.fromEntries(Object.entries(configEntries(cwd, homeDir)).map(([k, e]) => [k, e.source]));
     expect(sources).toEqual({
@@ -86,6 +86,7 @@ describe('loadConfig', () => {
     expect(c).toMatchObject({ roles: { orchestrator: {}, worker: {} }, approvals: { close: 'never', merge: false }, worktrees: { isolation: 'none', branchPrefix: 'tl/' }, daemon: { resumeOnStart: true, resumeMaxAgeDays: 3 } });
     expect(c.worktrees.include).toBeUndefined();
     expect(c.gate).toBeUndefined();
+    expect(c.notifications).toEqual({ kinds: { needsYou: 'sound', errored: 'silent', done: 'banner', exited: 'silent' }, treeDoneSummary: true });
   });
 
   it('uses shipped global defaults in a fresh home and tl config without creating files', () => {
