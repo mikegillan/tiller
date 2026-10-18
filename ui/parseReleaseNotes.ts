@@ -30,7 +30,7 @@ export function releaseNotes(body: string): { primary: string; original?: string
   const prefix = body.slice(0, start).trimEnd();
   if (!compareOnly.test(prefix.trim())) return { primary: prefix, original: body };
   const subjects = match[1].trimEnd().split('\n').map(line => line.slice(43))
-    .filter(subject => !/^Merge (?:pull request |branch |remote-tracking branch |tag )/.test(subject));
+    .filter(subject => !/^Merge (?:pull request |branch(?:es)? |remote-tracking branch |tag )/.test(subject));
   // Commit subjects are text, not authored Markdown. Escape Markdown punctuation.
   const changes = subjects.map(subject => `- ${subject.replace(/([\\`*{}_\[\]()<>#+.!|~-])/g, '\\$1')}`).join('\n');
   return { primary: [changes || 'No change descriptions provided.', prefix].filter(Boolean).join('\n\n'), original: body };

@@ -67,3 +67,14 @@ it('makes all three historical rollups readable while retaining their complete o
     }
   }
 });
+
+
+it('omits standard plural merge scaffolding only in a recognized generated fallback', () => {
+  const subject = "Merge branches 'feature-a' and 'feature-b' into main";
+  const body = `${compare}\n\n## Commits\n\n- ${sha} Improve release notes\n- ${'b'.repeat(40)} ${subject}\n\nValidated source: ${sha}\n`;
+  const notes = releaseNotes(body);
+  expect(notes.primary).toBe(`- Improve release notes\n\n${compare}`);
+  expect(notes.original).toBe(body);
+  const authored = `## Changes\n\n- ${subject}`;
+  expect(releaseNotes(authored)).toEqual({ primary: authored });
+});
