@@ -36,6 +36,19 @@ it('a history reply replaces the items', () => {
   expect(getState().history.map((a) => a.id)).toEqual(['z']);
 });
 
+it('rejects stale current-session metadata after the live node changes session, including historical requests', () => {
+  update(() => ({ nodes: { switched: { ...mk('switched', null, 0), sessionId: 'new-current', harness: 'codex' } } }));
+  const old = { entries: [{ role: 'assistant' as const, text: 'old answer' }], sessions: [{ sessionId: 'old-current', current: true }] };
+  transcriptRequested('switched');
+  applyServer({ t: 'transcript', id: 'switched', ...old });
+  expect(getState().transcript?.data).toBeUndefined();
+  transcriptRequested('switched', 'historical');
+  const fresh = { ...old, sessions: [{ sessionId: 'new-current', current: true }, { sessionId: 'historical', current: false }] };
+  applyServer({ t: 'transcript', id: 'switched', sessionId: 'historical', ...fresh });
+  applyServer({ t: 'transcript', id: 'switched', sessionId: 'historical', ...old });
+  expect(getState().transcript?.data).toEqual(fresh);
+});
+
 it('a failed spawn stops the wait, so the next node someone else spawns is not selected', () => {
   applyServer({ t: 'snapshot', nodes: [mk('r', null, 1)] });
   expectSpawn();

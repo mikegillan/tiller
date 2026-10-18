@@ -82,7 +82,10 @@ or use it to bypass cross-harness launch restrictions. Terminals cannot change h
 Armed/queued nodes, worktree setup, merge/close operations and running completion gates block a
 switch. Tiller checks the executable and workspace before stopping the old process. A stop that
 does not produce an exit notification within seven seconds refuses the replacement, preventing
-overlapping agents. Startup/authentication or adapter compatibility failures remain visible on
+overlapping agents. The node stays locked while its old process is still stopping; Restart and
+Close cannot bypass that unconfirmed stop. Once exit is observed, it can be changed or restarted
+again. Codex's host also confirms its managed native TUI and app-server exits before exiting.
+Startup/authentication or adapter compatibility failures remain visible on
 the exited node; fix the cause and use Restart or select another harness. No rollback resumes an
 old native context automatically.
 

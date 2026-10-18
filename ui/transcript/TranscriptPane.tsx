@@ -53,27 +53,36 @@ export function TranscriptView({ data, sessionId, onSession, harness = 'claude' 
 
 /**
  * A live or archived node's conversation over the stage; `children` go above it. Asks on open, on reconnect, on a session
- * change and whenever `refresh` changes. Key it by node id so the session choice resets.
+ * change and whenever `refresh` changes. Current requests use the actual session identity so a
+ * replacement cannot reuse the old conversation's cache or in-flight reply. Key by node id only:
+ * an explicitly selected historical session stays selected when the live conversation changes.
  */
-export function TranscriptPane({ id, refresh, harness, children }: { id: string; refresh?: unknown; harness?: Harness; children?: ReactNode }) {
+export function TranscriptPane({ id, currentSessionId, refresh, harness, children }: { id: string; currentSessionId?: string; refresh?: unknown; harness?: Harness; children?: ReactNode }) {
   const [sessionId, setSessionId] = useState<string>();
-  const t = useStore((s) => (s.transcript?.id === id && s.transcript.sessionId === sessionId ? s.transcript : undefined));
+  const requestedSessionId = sessionId ?? currentSessionId;
+  const t = useStore((s) => {
+    const cached = s.transcript;
+    if (cached?.id !== id || cached.sessionId !== requestedSessionId) return undefined;
+    // A historical selection keeps its messages, but needs fresh session metadata after a switch.
+    if (cached.data && currentSessionId && cached.data.sessions.find((s) => s.current)?.sessionId !== currentSessionId) return undefined;
+    return cached;
+  });
   const connected = useStore((s) => s.connected);
   const scroller = useRef<HTMLDivElement>(null);
   const scrolled = useRef<string | undefined>(undefined); // the session already scrolled to its newest entry
 
   useEffect(() => {
     if (!connected) return;
-    transcriptRequested(id, sessionId);
-    send({ t: 'transcript', id, ...(sessionId && { sessionId }) });
-  }, [id, sessionId, connected, refresh]);
+    transcriptRequested(id, requestedSessionId);
+    send({ t: 'transcript', id, ...(requestedSessionId && { sessionId: requestedSessionId }) });
+  }, [id, requestedSessionId, currentSessionId, connected, refresh]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (!t?.data || !el || scrolled.current === (sessionId ?? '')) return;
-    scrolled.current = sessionId ?? '';
+    if (!t?.data || !el || scrolled.current === (requestedSessionId ?? '')) return;
+    scrolled.current = requestedSessionId ?? '';
     el.scrollTop = el.scrollHeight;
-  }, [t?.data, sessionId]);
+  }, [t?.data, requestedSessionId]);
 
   return (
     <div className="transcript" ref={scroller}>

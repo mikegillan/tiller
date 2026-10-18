@@ -211,6 +211,10 @@ export function applyServer(m: ServerMessage) {
         const want = s.transcript;
         // A request without a session is answered for the current one, whether or not the reply names it.
         const current = 'sessions' in data ? data.sessions.find((x) => x.current)?.sessionId : undefined;
+        const liveSession = s.nodes[id]?.sessionId;
+        // The response may have begun reading before the live node changed harness/session.
+        // Reject its old session list even for an explicitly selected historical segment.
+        if (current && liveSession && current !== liveSession) return {};
         if (want?.id !== id || (want.sessionId !== sessionId && !(want.sessionId === undefined && sessionId === current))) return {};
         return { transcript: 'error' in data ? { id, sessionId: want.sessionId, error: data.error } : { id, sessionId: want.sessionId, data } };
       });
