@@ -21,7 +21,7 @@ export function prepareCodexTranscript(n: NodeRecord, sessionDir: string, resume
     return target;
   }
   // A follow-up forks the native thread, so two nodes never append to the same conversation.
-  const copies = [n.sessionId, ...(n.previousSessions ?? [])].flatMap((sid) => {
+  const copies = [n.sessionId, ...(n.previousSessions ?? []).filter((sid) => !n.sessionHistory?.some((s) => s.sessionId === sid))].flatMap((sid) => {
     const from = sid === n.sessionId ? source : join(dirname(source), `${sid}.jsonl`);
     if (!existsSync(from)) return [];
     const to = codexTranscript(sessionDir, n.id, sid);

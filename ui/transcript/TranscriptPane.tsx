@@ -33,13 +33,14 @@ function Entry({ e, assistantName }: { e: TranscriptEntry; assistantName: string
 
 /** A conversation as a timeline; a session picker (current first) when there is more than one session. `sessionId` undefined is the current one. */
 export function TranscriptView({ data, sessionId, onSession, harness = 'claude' }: { data: Transcript; sessionId?: string; onSession: (id: string | undefined) => void; harness?: Harness }) {
-  const assistantName = harness === 'codex' ? 'Codex' : harness === 'pi' ? 'Pi' : 'Claude';
+  const selectedHarness = data.sessions.find((s) => sessionId ? s.sessionId === sessionId : s.current)?.harness ?? harness;
+  const assistantName = selectedHarness === 'codex' ? 'Codex' : selectedHarness === 'pi' ? 'Pi' : 'Claude';
   return (
     <>
       {data.sessions.length > 1 && (
         <label className="sesspick">Session
           <Select value={sessionId ?? ''} onChange={(e) => onSession(e.target.value || undefined)}>
-            {data.sessions.map((s) => <option key={s.sessionId} value={s.current ? '' : s.sessionId}>{s.current ? 'Current session' : `Session ${s.sessionId.slice(0, 8)}`}</option>)}
+            {data.sessions.map((s) => <option key={s.sessionId} value={s.current ? '' : s.sessionId}>{s.current ? 'Current session' : `Session ${s.sessionId.slice(0, 8)}`}{s.harness ? ` · ${s.harness}` : ''}</option>)}
           </Select>
         </label>
       )}

@@ -94,9 +94,9 @@ function transcriptFor(id, sessionId) {
   const live = nodes.get(id), arch = archive.find((a) => a.id === id);
   if (live?.kind === 'terminal') return { error: `${id} is a terminal; only Claude nodes have a transcript` };
   if (!live && !arch) return { error: `no live or archived node ${id}` };
-  const ids = arch ? [arch.sessionId, ...(arch.previousSessions ?? [])] : id === 'tl-d' ? ['11112222-aaaa', '33334444-bbbb'] : [`${id}-session`];
+  const ids = arch ? [arch.sessionId, ...(arch.previousSessions ?? [])] : live.sessionId ? [live.sessionId, ...(live.previousSessions ?? [])] : id === 'tl-d' ? ['11112222-aaaa', '33334444-bbbb'] : [`${id}-session`];
   if (sessionId && !ids.includes(sessionId)) return { error: `no session ${sessionId} on record for ${id}` };
-  const sessions = ids.map((s, i) => ({ sessionId: s, current: i === 0 }));
+  const sessions = ids.map((s, i) => ({ sessionId: s, current: i === 0, ...(live?.harness ? { harness: i === 0 ? live.harness : live.sessionHistory?.find((old) => old.sessionId === s)?.harness ?? 'claude' } : {}) }));
   const t0 = (arch?.closedAt ?? now) - 40 * MIN, title = arch?.title ?? live.title;
   if (sessionId && sessionId !== ids[0]) return { sessions, entries: [
     { role: 'user', at: t0 - 86400_000, text: `Earlier session of ${title}: start on the handshake.` },
@@ -148,12 +148,23 @@ wss.on('connection', (ws) => {
     }
     const n = nodes.get(m.id);
     switch (m.t) {
-      case 'attach': if (n) send({ t: 'data', id: m.id, data: SCREENS[n.kind](n) }); break;
+      case 'attach': if (n) send({ t: 'data', id: m.id, data: SCREENS[n.kind === 'terminal' ? 'terminal' : 'claude'](n) }); break;
       case 'input': send({ t: 'data', id: m.id, data: m.data === '\r' ? '\r\n$ ' : m.data }); break;
       case 'select': if (n?.unread) { n.unread = false; broadcast({ t: 'node', node: n }); } break;
       case 'rename': if (n) { n.title = m.title; broadcast({ t: 'node', node: n }); } break;
       case 'resume': if (n) touch(n, { exited: false, state: n.kind === 'terminal' ? 'none' : 'working' }); break;
       case 'restart': if (n) touch(n, { exited: false, state: n.kind === 'terminal' ? 'none' : 'unknown', activity: 'restarting', contextPct: 0, contextTokens: 0, costUsd: 0, lastAssistantMessage: undefined }); break;
+      case 'changeHarness': {
+        if (!n || n.kind === 'terminal' || !['claude', 'codex', 'pi'].includes(m.harness) || (n.harness ?? 'claude') === m.harness) break;
+        const old = n.sessionId ?? `${n.id}-session`;
+        n.sessionHistory = [...(n.sessionHistory ?? []), { sessionId: old, harness: n.harness ?? 'claude' }];
+        n.previousSessions = [...(n.previousSessions ?? []), old];
+        n.sessionId = `${n.id}-${Date.now()}`;
+        n.kind = 'agent'; n.harness = m.harness;
+        n.model = n.effort = n.permissionMode = n.preset = undefined;
+        touch(n, { exited: false, state: 'unknown', activity: `starting ${m.harness}`, model: undefined, effort: undefined, contextPct: 0, contextTokens: 0, costUsd: 0, lastAssistantMessage: undefined });
+        break;
+      }
       case 'close': if (n?.worktree && !m.worktree && n.title.includes('dirty')) send({ t: 'error', id: m.id, message: 'worktree has 2 uncommitted files and 1 unmerged commit; close with keep or discard' });
         else if (n) { nodes.delete(m.id); broadcast({ t: 'removed', id: m.id }); } break;
       case 'prune': for (const x of [...nodes.values()]) if (x.status.exited && ![...nodes.values()].some((c) => c.parentId === x.id)) { nodes.delete(x.id); broadcast({ t: 'removed', id: x.id }); } break;

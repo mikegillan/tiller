@@ -378,6 +378,16 @@ const tools = {
       return { data: { ok: true } };
     }, true),
 
+  change_harness: tool(
+    'Change agent harness',
+    'Stop an existing agent and start Claude, Codex or Pi with a fresh native context. Keeps node identity, children, workspace and readable history. Clears preset, permission, model and effort overrides and uses the target profile defaults. Only the human may call this.',
+    { nodeId: z.string().min(1), harness: z.enum(['claude', 'codex', 'pi']), prompt: z.string().optional() },
+    async (c, a) => {
+      const r = await c.manager.changeHarness(a.nodeId, a.harness, a.prompt, true);
+      if (!r.ok) throw new Error(r.error);
+      return { data: { ok: true } };
+    }, true),
+
   prune: tool(
     'Remove finished nodes',
     'Remove every exited node that has no live descendant (files and records). A node whose git worktree has uncommitted or unmerged work is kept and listed. Only the human may call this.',
@@ -544,6 +554,7 @@ export function mountMcp(manager: NodeManager, confirm: Ctx['confirm'], focus: C
     if (req.method !== 'POST' || !t) return void res.writeHead(404).end();
     const raw = await readBody(req, res);
     if (raw === undefined) return;
+    if (authenticate(req) !== ctx.caller) return void res.writeHead(401).end();
     try {
       if (t.humanOnly && ctx.caller !== HUMAN) throw new Error(`${name} is only for the human`);
       const args = z.object(t.shape).parse(raw ? JSON.parse(raw) : {});
@@ -565,6 +576,7 @@ export function mountMcp(manager: NodeManager, confirm: Ctx['confirm'], focus: C
       if (t.humanOnly && caller !== HUMAN) continue;
       mcp.registerTool(name, { title: t.title, description: t.description, inputSchema: t.shape }, async (args: unknown) => {
         try {
+          if (authenticate(req) !== caller) throw new Error('node credentials have expired');
           const out = await t.run(ctx, args as never);
           const content = [out.text, out.data === undefined ? undefined : JSON.stringify(out.data)].flatMap((x) => (x === undefined ? [] : [{ type: 'text' as const, text: x }]));
           return { content };

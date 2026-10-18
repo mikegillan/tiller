@@ -19,6 +19,23 @@ function collect(s: PtySession) {
 }
 
 describe('PtySession', () => {
+  it('bounds a stop without treating the sent signal as proof, then observes real exit', async () => {
+    const s = PtySession.spawn({ ...base, file: process.execPath, args: ['-e', "process.on('SIGHUP', () => {}); console.log('ready'); setInterval(() => {}, 1000)"], env: env() });
+    const box = collect(s);
+    try {
+      await until(() => box.out.includes('ready'));
+      expect(await s.terminate(25)).toBe(false);
+      expect(s.exited).toBe(false);
+      const stopped = s.terminate(2000);
+      process.kill(s.pid, 'SIGTERM');
+      expect(await stopped).toBe(true);
+      expect(s.exited).toBe(true);
+      expect(await s.terminate()).toBe(true);
+    } finally {
+      if (!s.exited) process.kill(s.pid, 'SIGTERM');
+    }
+  });
+
   it('delivers data, buffers it, and reports exit', async () => {
     const s = PtySession.spawn({ ...base, file: '/bin/sh', args: ['-c', 'printf "a\\nb\\n"; cat'], env: env(), rows: 10 });
     const box = collect(s);

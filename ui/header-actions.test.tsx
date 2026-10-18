@@ -25,6 +25,17 @@ beforeEach(() => {
 });
 
 describe('node action operations', () => {
+  it('offers harness changes for roots and children, including exited agents, and excludes terminals and queued nodes', () => {
+    for (const node of [mk('root', null, 0), child(), { ...child(), kind: 'agent' as const, harness: 'codex' as const, status: { ...child().status, exited: true } }]) {
+      run(node, 'harness');
+      expect(getState().dialog).toEqual({ kind: 'changeHarness', id: node.id });
+    }
+    for (const node of [{ ...child(), kind: 'terminal' as const }, { ...child(), pending: {} as never }, { ...child(), gate: 'running' as const }]) {
+      expect(actionsFor(node).some((a) => a.key === 'harness')).toBe(false);
+    }
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it('retains root restart and routes child kill through its confirmation dialog', () => {
     run(mk('root', null, 0), 'restart');
     expect(getState().dialog).toEqual({ kind: 'restart', id: 'root' });

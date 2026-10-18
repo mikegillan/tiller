@@ -7,7 +7,7 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
-import type { ClientMessage, Dnd, NativeNotification, ServerMessage, Usage } from '../shared/protocol.js';
+import { HARNESSES, type ClientMessage, type Dnd, type NativeNotification, type ServerMessage, type Usage } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
 import { DEFAULT_PORT } from './home.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
@@ -52,6 +52,7 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('close'), id, force: z.boolean().optional(), worktree: z.enum(['keep', 'discard']).optional() }),
   z.object({ t: z.literal('merge'), id }),
   z.object({ t: z.literal('restart'), id, prompt: z.string().optional() }),
+  z.object({ t: z.literal('changeHarness'), id, harness: z.enum(HARNESSES), prompt: z.string().optional() }),
   z.object({ t: z.literal('resume'), id }),
   z.object({ t: z.literal('prune') }),
   z.object({ t: z.literal('rename'), id, title: z.string() }),
@@ -186,6 +187,11 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
         if (!r.ok) sendTo(c, { t: 'error', message: r.error, id: m.id });
         return;
       }
+      case 'changeHarness': {
+        const r = await manager.changeHarness(m.id, m.harness, m.prompt, true);
+        if (!r.ok) sendTo(c, { t: 'error', message: r.error, id: m.id });
+        return;
+      }
       case 'resume': {
         const r = await manager.resume(m.id);
         if (!r.ok) sendTo(c, { t: 'error', message: r.error, id: m.id });
@@ -275,6 +281,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     if (!nodeId || nodeId === HUMAN) { res.writeHead(401).end(); return; }
     const body = await readBody(req, res, MAX_HOOK_BYTES);
     if (body === undefined) return;
+    if (authenticate(req) !== nodeId) { res.writeHead(401).end(); return; }
     let event: HookEvent;
     try {
       event = JSON.parse(body);

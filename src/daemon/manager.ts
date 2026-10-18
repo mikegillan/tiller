@@ -10,7 +10,7 @@ import { UsageRegistry } from './usage.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
 import { roleFor, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
-import { adapterFor } from './harness.js';
+import { adapterFor, requireHarnessExecutable } from './harness.js';
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
@@ -20,7 +20,7 @@ import { CompletionGate, gateFor } from './completion-gate.js';
 import type { CompletionWatches } from './completion-watches.js';
 import { NodeTokens } from './node-tokens.js';
 
-import { flushInbox, HUMAN, inScope } from './messaging.js';
+import { flushInbox, handoverInbox, HUMAN, inScope, waitForDeliveries } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
 import { buildChildEnv, PtySession } from './pty.js';
 import { count, inside, logError } from './util.js';
@@ -28,7 +28,7 @@ import * as wt from './worktree.js';
 import { addWorktree, closeWorktreeNode, mergeWorktree, readClaudeJson, refreshGit, refreshGitSoon, setMissing, setupThenLaunch, trustedForWorktree, trustPolicy, worktreeCheck, worktreeCommands, worktreeEnv, worktrees, type WorktreeCheck, type WorktreeReport } from './worktree-lifecycle.js';
 import { appendEvent, buildDigest, ensureSession, flushEvents, handoffPrompt, listSessions, markClosed, readEvents, sessionDir, sweepSessions } from './sessions.js';
 import { archivedOf, archiveNode, findArchived, type BranchFate } from './archive.js';
-import { nodeTranscript } from './transcript.js';
+import { adoptSessionHistory, nodeTranscript, recordedSessions } from './transcript.js';
 import { initialState, interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
 
 export { gateFor } from './completion-gate.js';
@@ -111,7 +111,7 @@ export interface NodeRuntime {
   lastHookAt?: number;
   interruptTimer?: NodeJS.Timeout;
   /** Set while the node's worktree is being created, closed or merged; each excludes the others. */
-  busy?: 'creating' | 'closing' | 'merging';
+  busy?: 'creating' | 'closing' | 'merging' | 'changing harness';
   git?: GitState;
   gitTimer?: NodeJS.Timeout;
   /** A worktree setup in progress, so close can stop it. */
@@ -199,11 +199,11 @@ export class NodeManager extends EventEmitter {
   // ---- tokens ----
 
   tokenFor(nodeId: string): string {
-    return this.tokens.tokenFor(nodeId);
+    return this.tokens.tokenFor(nodeId, this.registry.get(nodeId)?.credentialGeneration);
   }
 
   verifyToken(nodeId: string, token: string): boolean {
-    return this.tokens.verify(nodeId, token);
+    return this.tokens.verify(nodeId, token, this.registry.get(nodeId)?.credentialGeneration);
   }
 
   // ---- queries ----
@@ -215,8 +215,8 @@ export class NodeManager extends EventEmitter {
     const withModel = status.model || !rec.model ? status : { ...status, model: rec.model };
     const s = withModel.effort || !rec.effort ? withModel : { ...withModel, effort: rec.effort };
     const { git, outcome, gate } = rt;
-    const shown = gate?.state === 'running' ? { ...s, activity: `gate: ${gate.command}` } : s;
-    return { ...rec, status: git ? { ...shown, git } : shown, unread: !!rt.unread, ...(outcome ? { outcome } : {}), ...(gate ? { gate: gate.state } : {}) };
+    const shown = rt.busy === 'changing harness' ? { ...s, activity: 'changing harness' } : gate?.state === 'running' ? { ...s, activity: `gate: ${gate.command}` } : s;
+    return { ...rec, status: git ? { ...shown, git } : shown, unread: !!rt.unread, ...(outcome ? { outcome } : {}), ...(gate ? { gate: gate.state } : {}), ...(rt.busy === 'changing harness' ? { changingHarness: true } : {}) };
   }
 
   list(): NodeView[] {
@@ -267,8 +267,8 @@ export class NodeManager extends EventEmitter {
       protectedRoots.add(n.id);
       protectedRoots.add(this.rootIdOf(n.id));
       // Protect legacy cross-root transcript references until the next launch adopts them.
-      if (n.transcriptPath && inside(resolve(n.transcriptPath), sessionsRoot)) {
-        protectedRoots.add(relative(sessionsRoot, resolve(n.transcriptPath)).split(sep)[0]!);
+      for (const path of [n.transcriptPath, ...(n.sessionHistory ?? []).map((s) => s.transcriptPath)]) {
+        if (path && inside(resolve(path), sessionsRoot)) protectedRoots.add(relative(sessionsRoot, resolve(path)).split(sep)[0]!);
       }
     }
     return sweepSessions(this.home, protectedRoots, loadConfig(null, this.home).daemon.sessionsKeepDays);
@@ -315,6 +315,7 @@ export class NodeManager extends EventEmitter {
    * and be trusted by Claude. Any failure removes the worktree and branch and discards the record.
    */
   async spawn(req: SpawnRequest): Promise<NodeView> {
+    if (!req.byHuman && req.parentId && this.runtimes.get(req.parentId)?.busy === 'changing harness') throw new Error('parent is changing harness');
     if (req.kind === 'terminal' && req.harness) throw new Error('terminal nodes cannot select a harness');
     if (req.kind === 'claude' && req.harness && req.harness !== 'claude') throw new Error('use kind "agent" for a non-Claude harness');
     // Generic agent children inherit their parent's CLI unless explicitly selected.
@@ -375,6 +376,7 @@ export class NodeManager extends EventEmitter {
       sessionId: adapter ? req.followup?.sessionId ?? randomUUID() : undefined,
       ...(adapter && adapter.id !== 'claude' && req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
       ...(adapter && adapter.id !== 'claude' && req.followup?.previousSessions ? { previousSessions: req.followup.previousSessions } : {}),
+      ...(req.followup?.sessionHistory ? { sessionHistory: req.followup.sessionHistory, previousSessions: req.followup.previousSessions } : {}),
       rootId: parentId ? this.rootIdOf(parentId) : undefined,
       prompt: req.prompt, forkOf: req.fork, forkSession: from?.sessionId, followupOf: req.followup?.id,
       // A follow-up's resumed session keeps counting its cost from where the archived node's last measure left it.
@@ -479,6 +481,7 @@ export class NodeManager extends EventEmitter {
     if (!rec) return { ok: false, error: 'No such node' };
     if (!isAgentKind(rec.kind)) return { ok: false, error: 'Only agent nodes can be resumed' };
     const rt = this.runtimes.get(id)!;
+    if (rt.busy) return { ok: false, error: `${id} is ${rt.busy}` };
     if (rt.session) return { ok: false, error: 'Node is still running' };
     if (rt.setup) return { ok: false, error: 'worktree setup is running' };
     if (rt.needsSetup) return { ok: false, error: 'worktree setup has not succeeded; restart runs it again' };
@@ -488,6 +491,7 @@ export class NodeManager extends EventEmitter {
       const listed = existsSync(w.path) && (await wt.listWorktrees(w.repo).catch(() => [])).some((e) => wt.samePath(e.path, w.path));
       setMissing(this, id, !listed);
       if (!listed) return { ok: false, error: 'worktree missing' };
+      if (rt.busy) return { ok: false, error: `${id} is ${rt.busy}` };
       if (rt.session) return { ok: false, error: 'Node is still running' };
     }
     const status = rt.status!;
@@ -528,12 +532,13 @@ export class NodeManager extends EventEmitter {
     if (rt.setup) return { ok: false, error: 'worktree setup is running' };
     if (rt.busy) return { ok: false, error: `${id} is ${rt.busy}` };
     const old = rec.sessionId;
+    const sessionHistory = this.priorSessions(id);
     this.kill(id);
     rt.lastHookAt = undefined;
     const sessionId = isAgentKind(rec.kind) ? randomUUID() : undefined;
     const transcriptPath = isAgentKind(rec.kind) && adapterFor(rec).id !== 'claude' && rec.transcriptPath && sessionId
       ? join(dirname(rec.transcriptPath), `${sessionId}.jsonl`) : undefined;
-    this.registry.update(id, { sessionId, transcriptPath, previousSessions: [...(rec.previousSessions ?? []), ...(old ? [old] : [])].slice(-MAX_PREVIOUS_SESSIONS) });
+    this.registry.update(id, { sessionId, transcriptPath, previousSessions: [...(rec.previousSessions ?? []), ...(old ? [old] : [])].slice(-MAX_PREVIOUS_SESSIONS), ...(rec.sessionHistory ? { sessionHistory } : {}) });
     rt.status = { state: initialState(rec.kind), activity: 'restarting', changedAt: Date.now() };
     try {
       this.writeFiles(id);
@@ -548,6 +553,82 @@ export class NodeManager extends EventEmitter {
     }
     this.emitNode(id);
     return { ok: true };
+  }
+
+  private priorSessions(id: string) {
+    const rec = this.registry.get(id)!;
+    const records = new Map(recordedSessions(rec).map((s) => [s.sessionId, s]));
+    return [...(rec.previousSessions ?? []), ...(rec.sessionId ? [rec.sessionId] : [])]
+      .slice(-MAX_PREVIOUS_SESSIONS).flatMap((sid) => records.get(sid) ?? []);
+  }
+
+  /** Human-only replacement of an agent's CLI. Native contexts never cross the harness boundary. */
+  async changeHarness(id: string, harness: Harness, prompt?: string, byHuman = false): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!byHuman) return { ok: false, error: 'changing harness is only for the human' };
+    const rec = this.registry.get(id), rt = this.runtimes.get(id);
+    if (!rec || !rt) return { ok: false, error: 'No such node' };
+    if (!isAgentKind(rec.kind)) return { ok: false, error: 'Only agent nodes can change harness' };
+    if (harnessFor(rec) === harness) return { ok: false, error: `Node already uses ${harness}; use Restart for a fresh context` };
+    if (rec.pending) return { ok: false, error: 'node is armed or queued; wait until it launches' };
+    if (rt.busy) return { ok: false, error: `${id} is ${rt.busy}` };
+    if (rt.setup || rt.needsSetup) return { ok: false, error: 'worktree setup must succeed before changing harness; use Restart to retry setup' };
+    if (rt.gate?.state === 'running') return { ok: false, error: 'completion gate is running' };
+    rt.busy = 'changing harness';
+    this.emitNode(id);
+    let disrupted = false;
+    try {
+      const adapter = adapterFor({ kind: 'agent', harness });
+      const defaults = profileDefaults(loadConfig(this.projectDir(rec), this.home), harness, profileFor(rec.profile, rec.parentId, rec.role), roleFor(rec.role, rec.parentId));
+      if (defaults.effort && !isSupportedEffort(harness, defaults.effort)) throw new Error(`unsupported ${harness} effort: ${defaults.effort}`);
+      // Explicit confirmation resets preset/model/effort/permission overrides to target defaults.
+      adapter.validate({});
+      requireHarnessExecutable(harness, this.path);
+      const owner = this.registry.list().find((n) => n.id !== id && n.worktree && inside(rec.cwd, n.worktree.path));
+      const ownerRuntime = owner && this.runtimes.get(owner.id);
+      if (ownerRuntime?.busy || ownerRuntime?.setup || ownerRuntime?.gate?.state === 'running') throw new Error('the shared worktree has a lifecycle operation running');
+      if (rec.worktree) {
+        const w = rec.worktree;
+        const listed = existsSync(w.path) && (await wt.listWorktrees(w.repo)).some((e) => wt.samePath(e.path, w.path));
+        if (!listed) throw new Error('worktree missing');
+        if (harness === 'claude' && !trustedForWorktree(w.repo, readClaudeJson())) throw new Error(`Claude does not trust ${w.repo}; run claude there to trust it before changing harness`);
+      }
+      if (!existsSync(rec.cwd)) throw new Error(`working directory does not exist: ${rec.cwd}`);
+      await waitForDeliveries(this, id);
+      if (this.shutDown) throw new Error('daemon is shutting down');
+      const oldProcess = rt.session;
+      if (oldProcess && !(await oldProcess.terminate())) throw new Error('old process has not exited; harness was not changed. Wait for exit before retrying');
+      disrupted = true;
+      if (this.shutDown) throw new Error('daemon is shutting down');
+      // Rotate only after old shutdown receipts have drained. Old launch files are never rewritten.
+      handoverInbox(this, id);
+      const sessionHistory = this.priorSessions(id), from = harnessFor(rec), sessionId = randomUUID();
+      this.registry.update(id, { kind: 'agent', harness, sessionId, transcriptPath: undefined,
+        previousSessions: [...(rec.previousSessions ?? []), ...(rec.sessionId ? [rec.sessionId] : [])].slice(-MAX_PREVIOUS_SESSIONS), sessionHistory,
+        credentialGeneration: randomUUID(), model: defaults.model, effort: defaults.effort, permissionMode: undefined, preset: undefined,
+        forkSession: undefined, lastCost: undefined });
+      clearTimeout(rt.interruptTimer);
+      rt.lastHookAt = rt.turnStart = rt.lastCostEvent = undefined;
+      rt.starting = false;
+      rt.outcome = rt.gate = rt.launchedPreset = undefined;
+      rt.watches = undefined;
+      rt.status = { state: initialState(rec.kind), activity: `starting ${harness}`, changedAt: Date.now() };
+      this.registry.flush(); // Persist the new identity before any target process can use it.
+      this.writeFiles(id);
+      this.emit('data', id, '\x1bc');
+      this.logEvent(id, 'change_harness', { from, harness, sessionId });
+      this.launch(id, prompt || handoffPrompt(this.sessionDirOf(id)), false);
+      return { ok: true };
+    } catch (err) {
+      const error = (err as Error).message;
+      if (disrupted) {
+        rt.status = { state: 'done', exited: true, errored: true, activity: `Harness change failed: ${error}. Use Restart to retry.`, changedAt: Date.now() };
+        this.liveChanged();
+      }
+      return { ok: false, error };
+    } finally {
+      rt.busy = undefined;
+      this.emitNode(id);
+    }
   }
 
   /**
@@ -645,6 +726,7 @@ export class NodeManager extends EventEmitter {
   }
 
   input(id: string, data: string): void {
+    if (this.runtimes.get(id)?.busy === 'changing harness') return;
     const rt = this.runtimes.get(id), s = rt?.session;
     if (!rt || !s) return;
     if (interruptKeyPressed(rt.status!, data)) {
@@ -678,6 +760,7 @@ export class NodeManager extends EventEmitter {
     const rec = this.registry.get(nodeId), rt = this.runtimes.get(nodeId);
     const prev = rt?.status;
     if (!rec || !rt || !prev) return;
+    if (rec.credentialGeneration && typeof event.session_id === 'string' && event.session_id !== rec.sessionId) return;
     const now = Date.now();
     rt.lastHookAt = now;
     if (event.hook_event_name === 'UserPromptSubmit') {
@@ -809,6 +892,12 @@ export class NodeManager extends EventEmitter {
 
   nodeDir(id: string): string { return join(this.home, 'nodes', id); }
 
+  /** Old processes retain their old token paths; a new generation cannot be read through those paths. */
+  private launchDir(id: string): string {
+    const generation = this.registry.get(id)?.credentialGeneration;
+    return generation ? join(this.nodeDir(id), 'launches', generation) : this.nodeDir(id);
+  }
+
   /** Ids of the nodes with a live process. */
   private liveIds(): string[] {
     return [...this.runtimes].flatMap(([id, rt]) => (rt.session ? [id] : []));
@@ -821,9 +910,9 @@ export class NodeManager extends EventEmitter {
 
   /** Token, hook-headers, settings.json and mcp.json for a node; mcp.json embeds the current endpoint. */
   writeFiles(id: string): void {
-    const dir = this.nodeDir(id);
+    const dir = this.launchDir(id);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const token = this.tokens.writeFiles(dir, id);
+    const token = this.tokens.writeFiles(dir, id, this.registry.get(id)?.credentialGeneration);
     writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token, worktree: !!this.registry.get(id)?.worktree, sessionDir: this.sessionDirOf(id) });
   }
 
@@ -857,6 +946,7 @@ export class NodeManager extends EventEmitter {
   async runGate(id: string, gate: NonNullable<Config['gate']>): Promise<{ ok: boolean; tail: string; failures: number }> {
     const rec = this.registry.get(id), rt = this.runtimes.get(id);
     if (!rec || !rt) return { ok: false, tail: 'node is gone', failures: 0 };
+    if (rt.busy === 'changing harness') return { ok: false, tail: 'node is changing harness', failures: 0 };
     const completion = rt.gate ?? new CompletionGate();
     const env = rec.worktree ? worktreeEnv(this, id, rec.worktree) : buildChildEnv({ PATH: this.path, TL_NODE_ID: id });
     return completion.run(gate, {
@@ -881,25 +971,27 @@ export class NodeManager extends EventEmitter {
     let rec = this.registry.get(id)!;
     // A follow-up's first launch (every launch sets lastActiveAt) resumes the session its record was created with.
     // prune: a restart before that first launch mints a fresh session and loses it; a follow-up has no worktree setup to fail first.
-    resume ||= rec.lastActiveAt === undefined && !!rec.followupOf;
+    resume ||= rec.lastActiveAt === undefined && !!rec.followupOf && !rec.credentialGeneration;
     const forkSession = rec.forkSession; // cleared once the fork has launched
     const owner = rec.worktree ? undefined : this.registry.list().find((n) => n.id !== id && n.worktree && this.session(n.id) && inside(rec.cwd, n.worktree.path));
     const rootId = this.rootIdOf(id), root = this.registry.get(rootId) ?? rec;
     const sessionDir = ensureSession(this.home, { rootId, title: root.title, cwd: root.cwd, createdAt: root.createdAt });
     const adapter = isAgentKind(rec.kind) ? adapterFor(rec) : undefined;
+    if (rec.sessionHistory) rec = this.registry.update(id, { sessionHistory: adoptSessionHistory(rec.sessionHistory, sessionDir, id) })!;
     if (adapter?.prepareTranscript) {
       rec = this.registry.update(id, { transcriptPath: adapter.prepareTranscript(rec, sessionDir, resume) })!;
     }
     const input: LaunchInput = {
-      nodeId: id, nodeDir: this.nodeDir(id), endpoint: this.endpoint, path: this.path, harness: adapter?.id,
+      nodeId: id, nodeDir: this.launchDir(id), endpoint: this.endpoint, path: this.path, harness: adapter?.id,
       title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, profile: rec.profile, sessionId: rec.sessionId ?? '',
       resume, forkSession, transcriptPath: rec.transcriptPath, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
       preset: rec.preset ? loadPreset(rec.preset, this.projectDir(rec), this.home) : undefined,
     };
     const spec = adapter ? adapter.launch(input) : terminalLaunch(input, this.shell);
     const cwd = adapter ? adapter.cwd(rec) : rec.cwd;
-    const s = PtySession.spawn({ ...spec, cwd, ...DEFAULT_SIZE });
     const rt = this.runtimes.get(id)!;
+    if (rt.session) throw new Error('node already has a running process');
+    const s = PtySession.spawn({ ...spec, cwd, ...DEFAULT_SIZE });
     rt.session = s;
     rt.launchedPreset = input.preset ?? {};
     if (adapter && prompt) rt.starting = true;
@@ -908,6 +1000,7 @@ export class NodeManager extends EventEmitter {
     const native = adapter !== undefined && adapter.id !== 'claude';
     let outputTail = ''; // native bridge failures are printed in the terminal
     s.onData((d) => {
+      if (rt.session !== s) return;
       if (native) outputTail = (outputTail + d).slice(-8192);
       this.emit('data', id, d);
     });
@@ -916,6 +1009,7 @@ export class NodeManager extends EventEmitter {
       rt.session = undefined;
       rt.starting = false;
       this.liveChanged();
+      if (rt.busy === 'changing harness') return;
       this.markUnread(id);
       let status = ptyExited(rt.status!, Date.now());
       if (native) {

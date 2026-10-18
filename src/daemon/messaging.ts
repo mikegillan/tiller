@@ -127,6 +127,28 @@ function locked<T>(s: State, to: string, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** Called with the node's lifecycle lock held: let any paste already submitted settle before stopping it. */
+export function waitForDeliveries(m: Mgr, id: string): Promise<void> {
+  return locked(stateOf(m), id, async () => {});
+}
+
+/** After the old process exits, keep unsubmitted prompts and retire claims without replaying ambiguous input. */
+export function handoverInbox(m: Mgr, id: string): void {
+  const s = stateOf(m);
+  for (const item of [...(s.inbox.get(id) ?? [])]) if (item.claimed) unconfirmed(m, id, item.msg.id);
+  for (const entry of s.queues.get(id) ?? []) {
+    clearTimeout(entry.timer);
+    addInbox(m, s, { to: id, from: entry.from, msg: { id: entry.id, from: entry.label, text: frame(entry).text,
+      enqueuedAt: s.status.get(entry.id)?.at ?? Date.now(), ...(entry.steer ? { steer: true } : {}) } });
+  }
+  s.queues.delete(id);
+  clearTimeout(s.retry.get(id));
+  s.retry.delete(id);
+  s.seen.delete(id);
+  saveInbox(s);
+  flushInbox(m);
+}
+
 const verifiedIdle = (v: NodeView) => v.status.state === 'done' && !v.status.stale && v.status.doneSource === 'stop';
 /** A steer pressed Esc, which ends the turn with no Stop hook: done via interrupt is idle enough for it. */
 const readyFor = (v: NodeView, e: Entry | undefined) => verifiedIdle(v) || (!!e?.steer && v.status.state === 'done' && v.status.doneSource === 'interrupt');
@@ -144,6 +166,7 @@ function frame(e: Entry): { text: string; nonce: string } {
 async function attempt(m: Mgr, e: Entry): Promise<Attempt> {
   const check = (): Attempt | undefined => {
     const v = m.view(e.to);
+    if (m.runtimes?.get(e.to)?.busy === 'changing harness') return { wait: 'target is changing harness' };
     if (!v || v.status.exited) return { result: gone };
     if (!readyFor(v, e)) return { wait: `target is ${v.status.state}${v.status.doneSource ? ` (done via ${v.status.doneSource})` : ''}, not verified idle` };
   };
@@ -336,6 +359,7 @@ export function markModLive(m: Mgr, nodeId: string): void {
 
 /** GET /inbox: the node's unacked messages, oldest first. Every poll marks the node mod-live. */
 export function inbox(m: Mgr, nodeId: string): InboxMessage[] {
+  if (m.runtimes?.get(nodeId)?.busy === 'changing harness') return [];
   markModLive(m, nodeId);
   return (stateOf(m).inbox.get(nodeId) ?? []).map((i) => ({ ...i.msg, ...(i.claimed ? { claimed: true } : {}) }));
 }
@@ -347,6 +371,7 @@ export function ack(m: Mgr, nodeId: string, id: string): boolean {
 
 /** POST /claim: the mod is about to submit the message, so it can no longer be withdrawn. False if it is not in that node's inbox. */
 export function claim(m: Mgr, nodeId: string, id: string): boolean {
+  if (m.runtimes?.get(nodeId)?.busy === 'changing harness') return false;
   const s = stateOf(m);
   const i = s.inbox.get(nodeId)?.find((x) => x.msg.id === id);
   if (!i) return false;
@@ -459,6 +484,7 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
   if (!inScope(m, fromId, toId)) return refuse('target is outside your lineage (self, ancestors, siblings, descendants)');
   const target = m.view(toId);
   if (!target || target.status.exited) return out(gone);
+  if (m.runtimes?.get(toId)?.busy === 'changing harness') return refuse('target is changing harness; retry after it starts', true);
   if (fromId === toId) return refuse('cannot send to yourself');
   if (target.kind === 'terminal') return refuse('not an agent node; use write for terminals');
 

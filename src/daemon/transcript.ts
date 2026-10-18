@@ -3,11 +3,11 @@
 // Pi keeps JSONL entries in <treeSessionDir>/agents/<nodeId>/<sessionId>.jsonl,
 // with a tree of id/parentId entries whose active branch is the current conversation.
 // The Codex bridge stores a header plus normalized user/assistant entries in the Claude content format.
-import { existsSync, realpathSync } from 'node:fs';
+import { copyFileSync, constants, existsSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { Harness, Transcript, TranscriptEntry } from '../shared/protocol.js';
+import type { Harness, SessionRecord, Transcript, TranscriptEntry } from '../shared/protocol.js';
 
 /** The most recent messages a transcript read returns. */
 export const MAX_ENTRIES = 2000;
@@ -16,7 +16,41 @@ export const TAIL_BYTES = 8 << 20;
 
 /** One user or assistant message with its text and tool calls in content order. */
 export interface Message { role: 'user' | 'assistant'; at?: number; parts: Array<{ text: string } | { tool: string }> }
-type Node = { cwd: string; sessionId?: string; previousSessions?: string[]; transcriptPath?: string; harness?: Harness };
+type Node = { cwd: string; sessionId?: string; previousSessions?: string[]; sessionHistory?: SessionRecord[]; transcriptPath?: string; harness?: Harness };
+
+/** Materialize legacy paths before changing harness or cwd; never infer an old decoder from the new harness. */
+export function recordedSessions(n: Node): SessionRecord[] {
+  if (!n.sessionId) return [];
+  const harness = n.harness ?? 'claude';
+  const current = n.transcriptPath ?? (harness === 'claude' ? transcriptFor(n.cwd, n.sessionId) : undefined);
+  const prior = new Map(n.sessionHistory?.map((s) => [s.sessionId, s]));
+  return [n.sessionId, ...(n.previousSessions ?? [])].flatMap((sid) => {
+    if (sid !== n.sessionId && prior.has(sid)) return [prior.get(sid)!];
+    return current ? [{ sessionId: sid, harness, transcriptPath: sid === n.sessionId ? current : join(dirname(current), `${sid}.jsonl`) }] : [];
+  });
+}
+
+/** A follow-up owns readable history in its new tree, regardless of the old sessions' decoders. */
+export function adoptSessionHistory(history: SessionRecord[], sessionDir: string, nodeId: string): SessionRecord[] {
+  const dir = join(sessionDir, 'agents', nodeId, 'history');
+  const created: string[] = [];
+  try {
+    return history.map((s) => {
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(s.sessionId)) throw new Error('invalid historical session id');
+      const target = join(dir, `${s.sessionId}.jsonl`);
+      if (s.transcriptPath === target) return s;
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      if (existsSync(s.transcriptPath)) {
+        copyFileSync(s.transcriptPath, target, constants.COPYFILE_EXCL);
+        created.push(target);
+      }
+      return { ...s, transcriptPath: target };
+    });
+  } catch (err) {
+    for (const path of created) rmSync(path, { force: true });
+    throw err;
+  }
+}
 
 /** A parsed JSONL line, as either harness writes it. Unknown fields are ignored. */
 type Entry = {
@@ -140,20 +174,21 @@ export async function readMessages(path: string, harness: Harness = 'claude'): P
 }
 
 /**
- * A node's messages in session `sessionId` (default: its current one). A previous session's file sits next to the
- * current one: both harnesses keep every session of a node in one directory, named `<Tiller-sessionId>.jsonl`.
- * Claude's path is derivable from its cwd, so it falls back to that; Pi is launched with an explicit
- * `--session <treeSessionDir>/agents/<nodeId>/<Tiller-sessionId>.jsonl` and needs the path on record.
+ * A node's messages in session `sessionId` (default: current). Explicit history chooses each segment's
+ * decoder and path. Legacy same-harness records derive prior files beside the current transcript;
+ * Claude's current path can also be derived from cwd, while Pi and Codex need their path on record.
  */
 export async function sessionMessages(n: Node, sessionId?: string): Promise<{ messages: Message[]; truncated: boolean; sessions: Transcript['sessions'] }> {
   if (!n.sessionId) throw new Error('no session on record');
-  const harness = n.harness ?? 'claude';
-  if (harness !== 'claude' && !n.transcriptPath) throw new Error(`a ${harness === 'pi' ? 'Pi' : 'Codex'} node needs its transcript path on record`);
-  const current = n.transcriptPath ?? transcriptFor(n.cwd, n.sessionId);
-  const sessions = [n.sessionId, ...[...(n.previousSessions ?? [])].reverse()].map((s) => ({ sessionId: s, current: s === n.sessionId }));
+  const records = recordedSessions(n);
+  const byId = new Map(records.map((s) => [s.sessionId, s]));
+  const sessions = [n.sessionId, ...[...(n.previousSessions ?? [])].reverse()].map((sid) => ({ sessionId: sid, current: sid === n.sessionId, ...(n.sessionHistory ? { harness: byId.get(sid)?.harness } : {}) }));
   const sid = sessionId ?? n.sessionId;
   if (!sessions.some((s) => s.sessionId === sid)) throw new Error(`no session ${sid} on record for this node`);
-  const path = sid === n.sessionId ? current : join(dirname(current), `${sid}.jsonl`);
+  const record = byId.get(sid);
+  if (sid === n.sessionId && n.sessionHistory && (!record || !existsSync(record.transcriptPath))) return { messages: [], truncated: false, sessions };
+  if (!record) throw new Error(`a ${n.harness === 'pi' ? 'Pi' : 'Codex'} node needs its transcript path on record`);
+  const { transcriptPath: path, harness } = record;
   if (!existsSync(path)) throw new Error(`the transcript of session ${sid} is gone (${path})`);
   return { ...(await readMessages(path, harness)), sessions };
 }

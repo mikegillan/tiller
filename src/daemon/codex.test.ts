@@ -103,6 +103,74 @@ const ready = async (id: string) => {
 const packets = () => readFileSync(join(home, 'rpc.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 
 describe('Codex harness', () => {
+  it('switches a running root across real fake-CLI PTYs without reusing native threads or contaminating history', async () => {
+    await setup();
+    for (const harness of ['claude', 'pi']) {
+      const file = join(home, 'bin', harness);
+      writeFileSync(file, `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2), pi = ${JSON.stringify(harness)} === 'pi';
+const sid = pi ? process.env.TL_SESSION_ID : args[args.indexOf('--session-id') + 1];
+const path = pi ? args[args.indexOf('--session') + 1] : ${JSON.stringify(home)} + '/' + sid + '.jsonl';
+const token = fs.readFileSync(process.env.TL_TOKEN_FILE, 'utf8');
+const headers = { Authorization: 'Bearer ' + token, 'X-TL-Node': process.env.TL_NODE_ID };
+const post = (route, body) => fetch(process.env.TL_ENDPOINT + route, { method: 'POST', headers, body: JSON.stringify(body) });
+fs.writeFileSync(path, JSON.stringify(pi ? { type: 'session', id: 'native-pi', cwd: process.cwd() } : { type: 'system' }) + '\\n' + JSON.stringify(pi ? { type: 'message', message: { role: 'assistant', content: 'Pi history' } } : { type: 'assistant', message: { content: 'Claude history' } }) + '\\n');
+post('/hook', { hook_event_name: 'SessionStart', session_id: sid, transcript_path: path }).then(() => console.log('FAKE ${harness} ready'));
+process.on('SIGHUP', () => setTimeout(async () => {
+ await post('/hook', { hook_event_name: 'SessionEnd', session_id: sid });
+ fs.writeFileSync(${JSON.stringify(home)} + '/stopped-' + sid, 'stopped');
+ process.exit();
+}, 75));
+setInterval(() => {}, 1000);
+`);
+      chmodSync(file, 0o755);
+    }
+    const m = manager!;
+    const node = await m.spawn({ kind: 'agent', harness: 'claude', title: 'Root identity', cwd: home, byHuman: true });
+    await expect.poll(() => m.session(node.id)?.screenTail(40).join('\n')).toContain('FAKE claude ready');
+    const child = await m.spawn({ kind: 'terminal', title: 'Keep child', parentId: node.id, cwd: home });
+    const history: Array<{ sessionId: string; text: string }> = [];
+    let firstNative: string | undefined;
+    for (const harness of ['codex', 'pi', 'claude', 'codex'] as const) {
+      const old = m.view(node.id)!;
+      const transcript = await m.transcript(node.id);
+      history.push({ sessionId: old.sessionId!, text: transcript.entries[0]?.text ?? '' });
+      const token = m.tokenFor(node.id);
+      const oldHeaders = { Authorization: `Bearer ${token}`, 'X-TL-Node': node.id };
+      expect(await m.changeHarness(node.id, harness, undefined, true)).toEqual({ ok: true });
+      expect(m.view(node.id)).toMatchObject({ id: node.id, title: node.title, cwd: home, parentId: null, createdAt: node.createdAt, harness });
+      expect(m.view(child.id)?.parentId).toBe(node.id);
+      expect(m.view(node.id)?.sessionId).not.toBe(old.sessionId);
+      if (old.harness !== 'codex') expect(readFileSync(join(home, `stopped-${old.sessionId}`), 'utf8')).toBe('stopped');
+      if (harness === 'codex') {
+        await ready(node.id);
+        const native = codexHeader(readFileSync(m.registry.get(node.id)!.transcriptPath!, 'utf8')).threadId;
+        if (firstNative) expect(native).not.toBe(firstNative);
+        firstNative ??= native;
+        const sent = await deliver(m, DAEMON, node.id, 'new Codex context');
+        await expect.poll(() => messageStatus(m, DAEMON, sent.messageId!)?.outcome).toBe('delivered');
+        await expect.poll(() => m.view(node.id)?.status.doneSource).toBe('stop');
+      } else await expect.poll(() => m.session(node.id)?.screenTail(40).join('\n')).toContain(`FAKE ${harness} ready`);
+      for (const [path, body] of [
+        ['/hook', { hook_event_name: 'SessionStart', session_id: 'stale-native-id', transcript_path: '/bad' }],
+        ['/mod-event', { event: 'session.measure', payload: { model: 'stale-model', cost: { usd: 999 } } }],
+        ['/ack', { id: 'stale-message' }],
+      ] as const) {
+        expect((await fetch(m.endpoint + path, { method: 'POST', headers: oldHeaders, body: JSON.stringify(body) })).status).toBe(401);
+      }
+      expect(m.view(node.id)?.sessionId).not.toBe('stale-native-id');
+      expect(m.view(node.id)?.status.model).not.toBe('stale-model');
+      for (const past of history) expect((await m.transcript(node.id, past.sessionId)).entries[0]?.text ?? '').toBe(past.text);
+    }
+    await m.close(child.id);
+    await m.close(node.id, true);
+    const followup = await m.followup(node.id, 'continue in Codex');
+    await ready(followup.id);
+    for (const past of history) expect((await m.transcript(followup.id, past.sessionId)).entries[0]?.text ?? '').toBe(past.text);
+    expect(followup.sessionHistory?.every((s) => s.transcriptPath.includes(followup.id))).toBe(true);
+  });
+
   it('rejects restrictions that cannot be translated', () => {
     expect(() => codexAdapter.validate({ permissionMode: 'plan' })).toThrow(/permissionMode/);
     for (const preset of [{ tools: [] }, { disallowedTools: [] }, { maxTurns: 1 }]) {

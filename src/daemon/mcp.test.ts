@@ -79,6 +79,15 @@ describe('mcp api', () => {
     expect((await api('list_nodes', {}, 'n-ghost', manager.tokenFor('n-ghost'))).status).toBe(401);
   });
 
+  it('allows changing harness only with human credentials and validates target values', async () => {
+    const id = (await spawnT('restricted caller')).body.data.nodeId;
+    expect((await api('change_harness', { nodeId: id, harness: 'pi' }, id, manager.tokenFor(id))).body.error).toContain('only for the human');
+    expect((await api('change_harness', { nodeId: id, harness: 'pi' }, 'human', 'wrong')).status).toBe(401);
+    expect((await api('change_harness', { nodeId: id, harness: 'invalid' })).body.error).toContain('harness');
+    expect((await api('change_harness', { nodeId: id, harness: 'pi' })).body.error).toContain('Only agent nodes');
+    await manager.close(id, true);
+  });
+
   it('spawn is idempotent per requestId and parents the node to the caller', async () => {
     const a = await spawnT('parent', 'human', admin, { requestId: 'r1' });
     const id = a.body.data.nodeId as string;
@@ -369,7 +378,7 @@ describe('mcp api', () => {
     };
     const human = await connect('human', admin);
     const humanTools = (await human.listTools()).tools;
-    expect(humanTools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'dnd', 'followup', 'history', 'list_nodes', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'transcript', 'update', 'withdraw', 'worktrees', 'write']);
+    expect(humanTools.map((t) => t.name).sort()).toEqual(['change_harness', 'close', 'diff', 'dnd', 'followup', 'history', 'list_nodes', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'transcript', 'update', 'withdraw', 'worktrees', 'write']);
     expect(Object.fromEntries(humanTools.map((t) => [t.name, t.title]))).toMatchObject({
       send: 'Send message', spawn: 'Start node', notify_when: 'Watch node completion', read: 'Read node output',
       history: 'List past agents', followup: 'Continue past agent', merge: 'Merge node changes',

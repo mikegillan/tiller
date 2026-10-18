@@ -28,6 +28,14 @@ Each target holds at most 16 queued messages, and a message expires after 5 minu
 
 ## Steering
 
+During a human-requested harness change, inbox intake and claims pause. A paste already in flight
+settles its receipt before the process is stopped. Shutdown acknowledgments may still confirm
+accepted prompts. After exit, unclaimed prompts stay queued for the replacement; any remaining
+claimed prompt retires as `stalled`, not retryable, because acceptance is ambiguous. It is never
+replayed automatically. Old launch credentials expire before the new process starts, and a late
+old hook, measure or acknowledgment cannot affect the replacement. New sends during the switch
+are refused with a retry hint.
+
 A send with mode `now` (`tl send --now`) is a steer. If the target is working, its turn is interrupted and the message is delivered at once, ahead of the other queued messages, with an extra envelope line telling the target it was interrupted on purpose. With the mod running, the mod claims the steer, aborts the turn and submits it; without the mod, the daemon presses Esc in the terminal and pastes the message once the turn has stopped. To a target that is not working, mode `now` is the same as the default `queue`. The orchestrator prompt reserves steering for a worker heading the wrong way.
 
 ## Withdrawing

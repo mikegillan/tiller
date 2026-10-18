@@ -1,6 +1,6 @@
 // CLI-specific policy. Coordination remains the daemon's existing MCP + inbox HTTP protocol.
-import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { accessSync, constants, mkdirSync, statSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isSupportedEffort } from '../shared/harness-policy.js';
 import { harnessFor, type Harness, type NodeRecord } from '../shared/protocol.js';
@@ -103,4 +103,16 @@ export function adapterFor(node: { kind: NodeRecord['kind']; harness?: Harness }
   const id = harnessFor(node), adapter = adapters[id];
   if (!adapter) throw new Error(`unsupported harness: ${id}`);
   return adapter;
+}
+
+/** Check the actual CLI, including Codex whose launch spec starts the Node bridge first. */
+export function requireHarnessExecutable(harness: Harness, path: string): void {
+  const found = path.split(delimiter).some((dir) => {
+    try {
+      const file = join(dir || '.', harness);
+      accessSync(file, constants.X_OK);
+      return statSync(file).isFile();
+    } catch { return false; }
+  });
+  if (!found) throw new Error(`${harness} executable not found on the daemon PATH; install it before changing harness`);
 }

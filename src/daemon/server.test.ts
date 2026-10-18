@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { request } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
@@ -52,6 +53,17 @@ async function until<T>(find: () => T | undefined, ms = 5000): Promise<T> {
 }
 
 describe('websocket', () => {
+  it('accepts an authenticated human harness request and validates the target before dispatch', async () => {
+    const change = vi.spyOn(manager, 'changeHarness').mockResolvedValue({ ok: true });
+    await connect(); await until(() => seen.find((m) => m.t === 'snapshot'));
+    send({ t: 'changeHarness', id: 'root', harness: 'pi', prompt: 'go' });
+    await until(() => change.mock.calls.length || undefined);
+    expect(change).toHaveBeenCalledExactlyOnceWith('root', 'pi', 'go', true);
+    ws!.send(JSON.stringify({ t: 'changeHarness', id: 'root', harness: 'invalid' }));
+    await until(() => seen.find((m) => m.t === 'error' && m.message === 'Malformed message'));
+    expect(change).toHaveBeenCalledTimes(1);
+  });
+
   it('discovers all supported tools in the initial snapshot with no live nodes', async () => {
     await connect();
     const snapshot = await until(() => seen.find((m) => m.t === 'snapshot'));
@@ -139,6 +151,29 @@ describe('websocket', () => {
 });
 
 describe('POST /hook', () => {
+  it.each(['/hook', '/mod-event', '/api/report_outcome'])('fences an old authenticated %s request whose body finishes after credential rotation', async (path) => {
+    const rec = manager.registry.create({ kind: 'agent', harness: 'pi', title: 'old runtime', cwd: home, parentId: null, sessionId: 'public-session' });
+    manager.runtimes.set(rec.id, { status: { state: 'working', changedAt: 1 } });
+    const token = manager.tokenFor(rec.id);
+    const verify = vi.spyOn(manager, 'verifyToken');
+    const req = request(manager.endpoint + path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': rec.id } });
+    const response = new Promise<number>((resolve, reject) => {
+      req.on('response', (res) => { res.resume(); res.on('end', () => resolve(res.statusCode!)); });
+      req.on('error', reject);
+    });
+    req.write('{');
+    await expect.poll(() => verify.mock.calls.length).toBeGreaterThan(0);
+    manager.registry.update(rec.id, { credentialGeneration: 'fresh-launch' });
+    const body = path === '/hook' ? { hook_event_name: 'SessionStart', session_id: 'old-native', transcript_path: '/stale' }
+      : path === '/mod-event' ? { event: 'session.measure', payload: { cost: { usd: 999 }, model: 'stale' } }
+        : { outcome: 'succeeded', summary: 'stale outcome' };
+    req.end(JSON.stringify(body).slice(1));
+    expect(await response).toBe(401);
+    expect(manager.view(rec.id)).toMatchObject({ sessionId: 'public-session', status: { state: 'working', changedAt: 1 } });
+    expect(manager.view(rec.id)?.outcome).toBeUndefined();
+    expect(manager.view(rec.id)?.spentUsd).toBeUndefined();
+  });
+
   const post = (nodeId: string, token: string, body: object) => fetch(`${manager.endpoint}/hook`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': nodeId, 'Content-Type': 'application/json' },

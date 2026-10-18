@@ -22,17 +22,17 @@ export class NodeTokens {
     }
   }
 
-  tokenFor(nodeId: string): string {
-    return createHmac('sha256', this.secret).update(nodeId).digest('hex');
+  tokenFor(nodeId: string, generation?: string): string {
+    return createHmac('sha256', this.secret).update(generation ? `${nodeId}\0${generation}` : nodeId).digest('hex');
   }
 
-  verify(nodeId: string, token: string): boolean {
-    return safeEqual(token, this.tokenFor(nodeId));
+  verify(nodeId: string, token: string, generation?: string): boolean {
+    return safeEqual(token, this.tokenFor(nodeId, generation));
   }
 
   /** The node directory already exists. Returns the token for the launch configuration. */
-  writeFiles(dir: string, nodeId: string): string {
-    const token = this.tokenFor(nodeId);
+  writeFiles(dir: string, nodeId: string, generation?: string): string {
+    const token = this.tokenFor(nodeId, generation);
     writeFileSync(join(dir, 'token'), token, { mode: 0o600 });
     writeFileSync(join(dir, 'hook-headers'), `Authorization: Bearer ${token}\nX-TL-Node: ${nodeId}\n`, { mode: 0o600 }); // read by hook.sh via curl -H @file
     return token;

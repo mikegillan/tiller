@@ -167,8 +167,12 @@ export interface NodeRecord {
   sessionId?: string;
   /** Harness transcript file, from SessionStart (or found by resume). Persisted so Resume can find it. */
   transcriptPath?: string;
-  /** Session ids from before each restart, oldest first (at most 10), for a later history feature. */
+  /** Session ids from before each restart or harness change, oldest first (at most 10). */
   previousSessions?: string[];
+  /** Explicit locations/decoders for prior sessions, which may have used another harness. */
+  sessionHistory?: SessionRecord[];
+  /** Credential generation after a harness change; absent keeps legacy credentials compatible. */
+  credentialGeneration?: string;
   /** Total spend in USD across all of the node's sessions, summed from the mod's session.measure. */
   spentUsd?: number;
   /** Spend on one local day (YYYY-MM-DD); a later day starts over. */
@@ -215,12 +219,15 @@ export interface NodeView extends NodeRecord {
   outcome?: Outcome;
   /** The completion gate's last run for this node: running now, or how it ended. */
   gate?: 'running' | 'passed' | 'failed';
+  changingHarness?: boolean;
 }
+
+export interface SessionRecord { sessionId: string; harness: Harness; transcriptPath: string }
 
 /** One user or assistant message of a node's conversation, for the transcript viewer. `tools` names the tools an assistant message called. */
 export interface TranscriptEntry { role: 'user' | 'assistant'; at?: number; text: string; tools?: string[] }
 /** A node's conversation (live or archived). `sessions` lists the sessions on record, current first; `truncated` when older entries were cut. */
-export interface Transcript { entries: TranscriptEntry[]; sessions: { sessionId: string; current: boolean }[]; truncated?: boolean }
+export interface Transcript { entries: TranscriptEntry[]; sessions: { sessionId: string; current: boolean; harness?: Harness }[]; truncated?: boolean }
 
 /** What close keeps of a Claude node so it can be found, read, followed up or forked later. One line per node in <sessionDir>/archive.jsonl. */
 export interface ArchivedNode {
@@ -239,6 +246,7 @@ export interface ArchivedNode {
   prompt?: string;
   sessionId?: string;
   previousSessions?: string[];
+  sessionHistory?: SessionRecord[];
   transcriptPath?: string;
   lastAssistantMessage?: string;
   outcome?: Outcome;
@@ -354,6 +362,7 @@ export type ClientMessage =
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
   | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.mergeStyle style
   | { t: 'restart'; id: string; prompt?: string } // relaunch with a fresh session: clears context, keeps the node and its children; prompt is its first prompt
+  | { t: 'changeHarness'; id: string; harness: Harness; prompt?: string } // human only: fresh context, target defaults; preserve node and history
   | { t: 'resume'; id: string }
   | { t: 'prune' }                             // remove every exited node that has no live descendant
   | { t: 'rename'; id: string; title: string }
