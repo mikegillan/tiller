@@ -11,8 +11,8 @@ import { send } from './conn';
 import { mk } from './fixtures';
 import { flattenSession } from './tree';
 
-const hooks = vi.hoisted(() => ({ open: false, setOpen: vi.fn() }));
-vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useState: () => [hooks.open, hooks.setOpen], useRef: () => ({ current: null }), useMemo: (fn: () => unknown) => fn(), useEffect: () => {} }));
+const hooks = vi.hoisted(() => ({ open: false, setOpen: vi.fn(), effects: [] as (() => unknown)[] }));
+vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useState: () => [hooks.open, hooks.setOpen], useRef: () => ({ current: null }), useMemo: (fn: () => unknown) => fn(), useEffect: (fn: () => unknown) => hooks.effects.push(fn) }));
 vi.mock('./store', async (original) => {
   const store = await original<typeof import('./store')>();
   return { ...store, useStore: (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()) };
@@ -36,7 +36,7 @@ const a = { ...mk('a', null, 1), cwd: '/current/root' };
 const b = { ...mk('b', null, 2), cwd: '/other/root' };
 const child = { ...mk('child', 'a', 3), cwd: '/child/worktree' };
 beforeEach(() => {
-  vi.clearAllMocks(); hooks.open = false;
+  vi.clearAllMocks(); hooks.open = false; hooks.effects.length = 0;
   update(() => ({ nodes: { a, b, child }, order: ['a', 'child', 'b'], selected: 'child', session: 'a', collapsed: [], opened: [], historyOpen: false, renaming: null, dialog: null }));
 });
 
@@ -165,4 +165,35 @@ it.each(['Enter', ' '])('selects the focused row with %j without scrolling or op
   expect(getState().selected).toBe('child');
   expect(getState().dialog).toBeNull();
   expect(send).not.toHaveBeenCalled();
+});
+
+it('moves direct tree-row focus to the row selected by Cmd+number before subsequent navigation', () => {
+  update(() => ({ selected: 'a' }));
+  let shortcut: (event: Record<string, unknown>) => void = () => {};
+  vi.stubGlobal('addEventListener', (_type: string, handler: typeof shortcut) => { shortcut = handler; });
+  App(); hooks.effects.pop()!();
+  const active = { getAttribute: () => 'treeitem' };
+  vi.stubGlobal('document', { activeElement: active });
+  const preventDefault = vi.fn();
+  shortcut({ metaKey: true, key: '2', preventDefault });
+  expect(getState().selected).toBe('child');
+  expect(preventDefault).toHaveBeenCalledOnce();
+  const tree = find(Sidebar({ onSettings: () => {} }), (el) => el.props.role === 'tree');
+  const selectedRow = { focus: vi.fn(), scrollIntoView: vi.fn() };
+  tree.props.ref.current = { querySelector: () => selectedRow, contains: (el: unknown) => el === active };
+  hooks.effects.pop()!();
+  expect(selectedRow.focus).toHaveBeenCalledOnce();
+  expect(selectedRow.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+  vi.unstubAllGlobals();
+});
+
+it.each(['button', 'input', 'menu', 'terminal'])('selection synchronization preserves nested or external %s focus', (role) => {
+  const active = { getAttribute: () => role };
+  vi.stubGlobal('document', { activeElement: active });
+  const tree = find(Sidebar({ onSettings: () => {} }), (el) => el.props.role === 'tree');
+  const selectedRow = { focus: vi.fn(), scrollIntoView: vi.fn() };
+  tree.props.ref.current = { querySelector: () => selectedRow, contains: () => role !== 'terminal' };
+  hooks.effects.pop()!();
+  expect(selectedRow.focus).not.toHaveBeenCalled();
+  vi.unstubAllGlobals();
 });

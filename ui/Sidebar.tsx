@@ -44,8 +44,14 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
   const history = useStore((s) => s.historyOpen);
   const panelOpen = useStore((s) => s.panel);
 
-  // Keep the selected row in view when selection moves (keyboard, palette, focus message).
-  useEffect(() => { tree.current?.querySelector('.row.sel')?.scrollIntoView({ block: 'nearest' }); }, [selected]);
+  // Keep keyboard focus aligned with selection, including global Cmd+number shortcuts.
+  // Nested controls and portalled menus retain their own focus.
+  useEffect(() => {
+    const row = tree.current?.querySelector<HTMLElement>('.row.sel');
+    row?.scrollIntoView({ block: 'nearest' });
+    const active = document.activeElement;
+    if (tree.current && (active === tree.current || (active?.getAttribute('role') === 'treeitem' && tree.current.contains(active)))) row?.focus();
+  }, [selected]);
 
   return (
     <aside className="sidebar">
