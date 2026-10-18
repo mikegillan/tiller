@@ -303,7 +303,7 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
   writeNotes(notesPath, notes, true);
   notes = readNotes(notesPath, repository, runtimeSha);
   const unread = () => notes.unread?.releases[0]?.sha === runtimeSha ? notes.unread : undefined;
-  let status: UpdateStatus = { installedNotes: unread(), runtimeSha, sha: runtimeSha, checkedAt: 0, eligible: false, releases: [], reason: 'not checked yet' };
+  let status: UpdateStatus = { installedNotes: unread(), runtimeSha, sha: runtimeSha, checkedAt: 0, checking: false, eligible: false, releases: [], reason: 'not checked yet' };
   let checking: Promise<UpdateStatus> | undefined;
   let applying = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -325,7 +325,7 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
     if (locked) { nextCheckAt = Date.now() + UPDATE_CHECK_INTERVAL; schedule(); return; }
     void check().catch(() => { /* check publishes a recoverable failure and schedules a retry. */ });
   };
-  const set = (s: UpdateStatus) => { status = { ...s, installedNotes: unread(), runtimeSha, applying }; o.onChange(status); return status; };
+  const set = (s: UpdateStatus) => { status = { ...s, installedNotes: unread(), runtimeSha, checking: !!checking, applying }; o.onChange(status); return status; };
   const check = () => {
     if (checking) return checking;
     if (applying) return Promise.resolve(status);
@@ -344,13 +344,17 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
         writeNotes(notesPath, next);
         return next;
       });
-      return set(s);
+      return s;
     };
-    checking = perform().catch((e: unknown) => set({ ...status, checkedAt: Date.now(), eligible: false, reason: 'release check unavailable; try again later', fetchError: e instanceof Error ? e.message : String(e) })).then((s) => {
+    checking = Promise.resolve().then(perform).catch((e: unknown): UpdateStatus => ({ ...status, checkedAt: Date.now(), eligible: false, reason: 'release check unavailable; try again later', fetchError: e instanceof Error ? e.message : String(e) })).then((s) => {
       failures = s.fetchError ? failures + 1 : 0;
       nextCheckAt = Date.now() + (failures ? Math.min(6 * 3600_000, 10 * 60_000 * 2 ** Math.min(failures, 6)) : UPDATE_CHECK_INTERVAL);
-      return s;
-    }).finally(() => { checking = undefined; schedule(); });
+      checking = undefined;
+      return set(s);
+    }).finally(schedule);
+    // Assign the shared promise before broadcasting so concurrent callers join it.
+    set({ ...status, eligible: false });
+    schedule();
     return checking;
   };
   return {

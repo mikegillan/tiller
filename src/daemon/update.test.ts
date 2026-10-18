@@ -481,6 +481,65 @@ describe('automatic discovery while a UI is connected', () => {
     };
     return { updater, changed, spawnHelper, list, tick };
   };
+  it.each([false, true])('publishes coalesced manual check progress and clears it after failure=%s', async (fail) => {
+    const { updater, changed, list } = setup();
+    await updater.check();
+    expect(updater.status().eligible).toBe(true);
+    changed.mockClear();
+    let finish!: () => void;
+    list.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      finish = () => fail ? reject(new Error('offline')) : resolve([...rows]);
+    }));
+    const pending = updater.check();
+    expect(updater.check()).toBe(pending);
+    expect(updater.status()).toMatchObject({ checking: true, eligible: false });
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(changed.mock.calls[0][0]).toMatchObject({ checking: true, eligible: false });
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    finish();
+    expect(await pending).toMatchObject({ checking: false, eligible: !fail });
+    expect(updater.status().checking).toBe(false);
+    expect(changed.mock.calls.map(([s]) => s.checking)).toEqual([true, false]);
+    expect(changed.mock.calls[1][0].fetchError).toBe(fail ? 'offline' : undefined);
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+  it('clears progress after a notes-state error before discovery starts', async () => {
+    const { updater, changed, list } = setup();
+    const path = join(dir, 'update-notes.json');
+    rmSync(path); mkdirSync(path);
+    expect(await updater.check()).toMatchObject({ checking: false, eligible: false, fetchError: expect.any(String) });
+    expect(changed.mock.calls.map(([s]) => s.checking)).toEqual([true, false]);
+    expect(list).not.toHaveBeenCalled();
+  });
+  it('waits for fresh eligibility before applying and keeps checking off during installation', async () => {
+    commit('approved'); release('v0.1.1');
+    const { updater, changed, list, spawnHelper } = setup();
+    const target = (await updater.check()).target!;
+    let finish!: (rows: PublishedRelease[]) => void;
+    list.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = updater.check();
+    const applying = updater.apply({ tag: target.tag, sha: target.sha });
+    expect(spawnHelper).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    finish([...rows]); await pending; await applying;
+    expect(spawnHelper).toHaveBeenCalledTimes(1);
+    expect(await updater.check()).toMatchObject({ applying: true, checking: false });
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(changed.mock.calls.every(([s]) => !(s.checking && s.applying))).toBe(true);
+  });
+  it('refuses a waiting apply when the refresh fails', async () => {
+    commit('approved'); release('v0.1.1');
+    const { updater, list, spawnHelper } = setup();
+    const target = (await updater.check()).target!;
+    let fail!: (error: Error) => void;
+    list.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    const pending = updater.check();
+    const refused = expect(updater.apply({ tag: target.tag, sha: target.sha })).rejects.toThrow('release changed; check and review again');
+    await vi.waitFor(() => expect(fail).toBeTypeOf('function'));
+    fail(new Error('offline')); await pending; await refused;
+    expect(updater.status()).toMatchObject({ checking: false, applying: false, eligible: false });
+    expect(spawnHelper).not.toHaveBeenCalled();
+  });
   it('discovers a newly published release on one shared timer, without installing or marking notes unread', async () => {
     fakeClock();
     const { updater, changed, spawnHelper, list } = setup();
@@ -495,7 +554,7 @@ describe('automatic discovery while a UI is connected', () => {
     const discovery = new Promise((resolve) => changed.mockImplementationOnce(resolve));
     await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL);
     await discovery; await updater.check();
-    expect(changed.mock.calls.length).toBe(calls + 1);
+    expect(changed.mock.calls.length).toBe(calls + 2);
     expect(list).toHaveBeenCalledTimes(2);
     expect(updater.status()).toMatchObject({ target: { tag: 'v0.1.1' }, eligible: true });
     expect(updater.status().installedNotes).toBeUndefined();
@@ -522,16 +581,18 @@ describe('automatic discovery while a UI is connected', () => {
   });
   it('coalesces manual checks with discovery and does not rearm after closing during a request', async () => {
     fakeClock();
-    const { updater, list } = setup();
+    const { updater, list, changed } = setup();
     let finish!: (rows: PublishedRelease[]) => void;
     list.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     updater.start(); await vi.advanceTimersByTimeAsync(0);
     const first = updater.check();
     expect(updater.check()).toBe(first);
+    expect(updater.status()).toMatchObject({ checking: true, eligible: false });
     updater.stop();
     // Wait until the real Git subprocess reaches the mocked release request.
     await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
     finish([...rows]); await first;
+    expect(changed.mock.calls.map(([s]) => s.checking)).toEqual([true, false]);
     expect(list).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -540,7 +601,7 @@ describe('automatic discovery while a UI is connected', () => {
     const { updater, list, tick } = setup();
     list.mockRejectedValueOnce(new Error('offline'));
     updater.start(); await tick(0);
-    expect(updater.status()).toMatchObject({ eligible: false, fetchError: 'offline' });
+    expect(updater.status()).toMatchObject({ checking: false, eligible: false, fetchError: 'offline' });
     await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL);
     expect(list).toHaveBeenCalledTimes(1);
     await tick(UPDATE_CHECK_INTERVAL);
@@ -560,7 +621,7 @@ describe('automatic discovery while a UI is connected', () => {
     const target = updater.status().target!;
     await updater.apply({ tag: target.tag, sha: target.sha });
     await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL);
-    expect((await updater.check()).applying).toBe(true);
+    expect(await updater.check()).toMatchObject({ applying: true, checking: false });
     expect(list).toHaveBeenCalledTimes(1);
     exit(1);
     await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL); await updater.check();
