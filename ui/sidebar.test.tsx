@@ -10,10 +10,11 @@ import { RenameInput } from './RenameInput';
 import { getState, setRenaming, update } from './store';
 import { send } from './conn';
 import { mk } from './fixtures';
+import type { NodeView } from '../src/shared/protocol';
 import { flattenSession } from './tree';
 
-const hooks = vi.hoisted(() => ({ open: false, setOpen: vi.fn(), effects: [] as (() => unknown)[] }));
-vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useState: () => [hooks.open, hooks.setOpen], useRef: () => ({ current: null }), useMemo: (fn: () => unknown) => fn(), useEffect: (fn: () => unknown) => hooks.effects.push(fn) }));
+const hooks = vi.hoisted(() => ({ open: false, setOpen: vi.fn(), effects: [] as (() => unknown)[], refs: [] as { current: unknown }[] }));
+vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useState: () => [hooks.open, hooks.setOpen], useRef: () => hooks.refs.shift() ?? ({ current: null }), useMemo: (fn: () => unknown) => fn(), useEffect: (fn: () => unknown) => hooks.effects.push(fn) }));
 vi.mock('./store', async (original) => {
   const store = await original<typeof import('./store')>();
   return { ...store, useStore: (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()) };
@@ -38,7 +39,7 @@ const a = { ...mk('a', null, 1), cwd: '/current/root' };
 const b = { ...mk('b', null, 2), cwd: '/other/root' };
 const child = { ...mk('child', 'a', 3), cwd: '/child/worktree' };
 beforeEach(() => {
-  vi.clearAllMocks(); hooks.open = false; hooks.effects.length = 0;
+  vi.clearAllMocks(); hooks.open = false; hooks.effects.length = 0; hooks.refs.length = 0;
   update(() => ({ nodes: { a, b, child }, order: ['a', 'child', 'b'], selected: 'child', session: 'a', collapsed: [], opened: [], historyOpen: false, renaming: null, dialog: null }));
 });
 
@@ -200,60 +201,90 @@ it.each(['button', 'input', 'menu', 'terminal'])('selection synchronization pres
   vi.unstubAllGlobals();
 });
 
-it('counts all session nodes and activity even when terminals and descendants are collapsed', () => {
-  const terminal = { ...mk('terminal', 'child', 4, { state: 'working' }), kind: 'terminal' as const };
-  const blocked = mk('blocked', 'child', 5, { state: 'blocked' });
-  update((s) => ({ nodes: { ...s.nodes, terminal, blocked }, order: [...s.order, 'terminal', 'blocked'], collapsed: ['a'] }));
-  const sidebar = Sidebar({ onSettings: () => {} });
-  const heading = find(sidebar, (el) => el.props.className === 'session-activity');
-  const html = renderToStaticMarkup(heading);
-  expect(html).toContain('Session activity <span>4</span>');
-  expect(html).toContain('3 working');
-  expect(html).toContain('1 needs you');
-  expect(elements(sidebar).filter((el) => el.type === NodeRow)).toHaveLength(1);
+it.each([null, '', 'invalid', '1', 'true'])('opens the drawer by default for preference %j', (value) => {
+  vi.stubGlobal('localStorage', { getItem: () => value });
+  expect(readSidebarDetails()).toBe(true);
+  vi.unstubAllGlobals();
 });
 
-it('persists Details visibility, passes selection, and restores the toggle focus on close', () => {
-  const setItem = vi.fn();
-  vi.stubGlobal('localStorage', { getItem: () => null, setItem });
-  expect(readSidebarDetails()).toBe(false);
-  vi.stubGlobal('localStorage', { getItem: () => '1', setItem });
-  expect(readSidebarDetails()).toBe(true);
-  hooks.open = true;
-  const sidebar = Sidebar({ onSettings: () => {} });
-  const toggle = find(sidebar, (el) => el.props.className === 'btn details-toggle');
-  expect(toggle.props['aria-expanded']).toBe(true);
-  expect(toggle.props['aria-controls']).toBe('sidebar-inspector');
-  const inspector = find(sidebar, (el) => el.type === SidebarInspector);
-  expect(inspector.props.node).toBe(child);
-  const focus = vi.fn(); toggle.props.ref.current = { focus };
-  inspector.props.onClose();
+it('follows selection while open, persists closing across selection and reload, and reopens from the bottom strip', () => {
+  const stored = new Map<string, string>();
+  vi.stubGlobal('localStorage', { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) });
+  hooks.open = readSidebarDetails();
+  let sidebar = Sidebar({ onSettings: () => {} });
+  expect(find(sidebar, (el) => el.type === SidebarInspector).props.node).toBe(child);
+  expect(elements(sidebar).some((el) => el.props.className === 'session-activity' || el.props.className === 'details-reopen')).toBe(false);
+  update(() => ({ selected: 'a' }));
+  sidebar = Sidebar({ onSettings: () => {} });
+  expect(find(sidebar, (el) => el.type === SidebarInspector).props.node).toBe(a);
+  find(sidebar, (el) => el.type === SidebarInspector).props.onClose();
   expect(hooks.setOpen).toHaveBeenLastCalledWith(false);
-  expect(setItem).toHaveBeenLastCalledWith('tl.sidebarDetails', '0');
-  expect(focus).toHaveBeenCalledOnce();
-  toggle.props.onClick();
-  expect(setItem).toHaveBeenLastCalledWith('tl.sidebarDetails', '0');
+  expect(stored.get('tl.sidebarDetails')).toBe('0');
+  hooks.open = readSidebarDetails();
+  update(() => ({ selected: 'child' }));
+  sidebar = Sidebar({ onSettings: () => {} });
+  expect(elements(sidebar).some((el) => el.type === SidebarInspector)).toBe(false);
+  const reopen = find(sidebar, (el) => el.props.className === 'details-reopen');
+  expect(reopen.props['aria-expanded']).toBe(false);
+  reopen.props.onClick();
+  expect(hooks.setOpen).toHaveBeenLastCalledWith(true);
+  expect(stored.get('tl.sidebarDetails')).toBe('1');
+  hooks.open = readSidebarDetails();
+  expect(find(Sidebar({ onSettings: () => {} }), (el) => el.type === SidebarInspector).props.node).toBe(child);
   update(() => ({ historyOpen: true }));
-  const history = Sidebar({ onSettings: () => {} });
-  expect(elements(history).some((el) => el.type === SidebarInspector || el.props.role === 'tree')).toBe(false);
+  expect(elements(Sidebar({ onSettings: () => {} })).some((el) => el.type === SidebarInspector || el.props.role === 'tree')).toBe(false);
   expect(readSidebarDetails()).toBe(true);
-  vi.stubGlobal('localStorage', { getItem() { throw Error('blocked'); }, setItem() { throw Error('blocked'); } });
-  expect(readSidebarDetails()).toBe(false);
-  expect(() => saveSidebarDetails(true)).not.toThrow();
   vi.unstubAllGlobals();
 });
 
-it('opens Details from its default closed state and persists the explicit choice', () => {
-  const setItem = vi.fn();
-  vi.stubGlobal('localStorage', { getItem: () => null, setItem });
-  const sidebar = Sidebar({ onSettings: () => {} });
-  expect(elements(sidebar).some((el) => el.type === SidebarInspector)).toBe(false);
-  const toggle = find(sidebar, (el) => el.props.className === 'btn details-toggle');
-  expect(toggle.props['aria-expanded']).toBe(false);
-  toggle.props.onClick();
-  expect(hooks.setOpen).toHaveBeenCalledWith(true);
-  expect(setItem).toHaveBeenCalledWith('tl.sidebarDetails', '1');
+it('focuses the mounted drawer only after an explicit reopen and restores the mounted strip on close', () => {
+  const strip = { focus: vi.fn() }, separator = { focus: vi.fn() };
+  const buttonRef = { current: strip }, requested = { current: false };
+  const treeRef = { current: { parentElement: { querySelector: vi.fn(() => separator) } } };
+  const render = (open: boolean) => {
+    hooks.open = open;
+    hooks.refs.push(buttonRef, requested, treeRef);
+    const sidebar = Sidebar({ onSettings: () => {} });
+    return { sidebar, focusEffect: hooks.effects.at(-2)! };
+  };
+  const initial = render(true);
+  initial.focusEffect();
+  expect(separator.focus).not.toHaveBeenCalled();
+  find(initial.sidebar, (el) => el.type === SidebarInspector).props.onClose();
+  const closed = render(false);
+  closed.focusEffect();
+  expect(strip.focus).toHaveBeenCalledOnce();
+  find(closed.sidebar, (el) => el.props.className === 'details-reopen').props.onClick();
+  const reopened = render(true);
+  reopened.focusEffect();
+  expect(separator.focus).toHaveBeenCalledOnce();
+  expect(requested.current).toBe(false);
+});
+
+it('defaults open when storage is unavailable and tolerates saving', () => {
+  vi.stubGlobal('localStorage', { getItem() { throw Error('blocked'); }, setItem() { throw Error('blocked'); } });
+  expect(readSidebarDetails()).toBe(true);
+  expect(() => saveSidebarDetails(false)).not.toThrow();
   vi.unstubAllGlobals();
+});
+
+it('shows reported model, effort and context on agent rows and falls back to launch configuration', () => {
+  const configured = { ...child, kind: 'agent' as const, harness: 'codex' as const, model: 'gpt-6.1-sol', effort: 'high' as const };
+  const output = (node: NodeView) => renderToStaticMarkup(<NodeRow row={{ node, depth: 1, hasChildren: false, collapsed: false, descendants: [], guides: [], last: true }} />);
+  let html = output(configured);
+  for (const value of ['gpt-6.1-sol', '>high<', '>working<']) expect(html).toContain(value);
+  html = output({ ...configured, status: { ...configured.status, model: 'claude-sonnet-5-5', effort: 'medium', contextPct: 0 } });
+  for (const value of ['sonnet 5.5', '>med<', '0%']) expect(html).toContain(value);
+  expect(html).not.toContain('gpt-6.1-sol');
+  html = output({ ...configured, status: { ...configured.status, git: { branch: 'tl/reported-branch', base: 'main', ahead: 0, behind: 0, dirty: 0, additions: 0, deletions: 0 } } });
+  expect(html).toContain('>tl/reported-branch<');
+  html = output({ ...configured, model: undefined, effort: undefined });
+  expect(html).toContain('>codex<');
+  expect(html).not.toContain('row-effort'); expect(html).not.toContain('class="ctx');
+  const terminal = { ...configured, kind: 'terminal' as const, status: { ...configured.status, state: 'none' as const } };
+  html = renderToStaticMarkup(<NodeRow row={{ node: terminal, depth: 0, hasChildren: false, collapsed: false, descendants: [], guides: [], last: true }} />);
+  expect(html).toContain('terminal ·');
+  expect(html).not.toContain('row-meta');
 });
 
 it('keeps reported outcomes distinct from process state and gate, and surfaces hidden unread and stalled activity', () => {
@@ -262,7 +293,18 @@ it('keeps reported outcomes distinct from process state and gate, and surfaces h
   update(() => ({ nodes: { a: node, child: hidden }, order: ['a', 'child'], collapsed: ['a'] }));
   const row = flattenSession(getState().nodes, getState().order, 'a', ['a'])[0];
   const html = renderToStaticMarkup(<NodeRow row={row} />);
-  for (const text of ['outcome failed', 'gate running', 'working', 'worktree missing', 'unread', 'stalled below']) expect(html).toContain(text);
+  for (const text of ['>Needs changes<', 'aria-label="Reported task outcome: Needs changes"', 'title="Reported task outcome: Needs changes · Needs another attempt"', 'gate running', 'working', 'worktree missing', 'unread', 'stalled below']) expect(html).toContain(text);
+  expect(html).not.toContain('outcome failed');
+  expect(html).not.toContain('errored');
+});
+
+it.each(['errored', 'exited'] as const)('keeps a successful report independent from %s runtime state and a failed gate', (state) => {
+  const node = { ...a, status: { ...a.status, state: 'done' as const, errored: state === 'errored', exited: state === 'exited' },
+    gate: 'failed' as const, outcome: { outcome: 'succeeded' as const, at: 0 } };
+  const row = flattenSession({ a: node }, ['a'], 'a', [])[0];
+  const html = renderToStaticMarkup(<NodeRow row={row} />);
+  for (const text of ['>outcome succeeded<', 'aria-label="Reported task outcome: succeeded"', 'gate failed', `>${state}<`]) expect(html).toContain(text);
+  expect(html).not.toContain('Needs changes');
 });
 
 it('keeps Cmd+0 as the tree entry point without selecting or opening node actions', () => {

@@ -1,3 +1,4 @@
+import { Select } from './Select';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { Harness, Transcript, TranscriptEntry } from '../src/shared/protocol';
 import { send } from './conn';
@@ -37,9 +38,9 @@ export function TranscriptView({ data, sessionId, onSession, harness = 'claude' 
     <>
       {data.sessions.length > 1 && (
         <label className="sesspick">Session
-          <select value={sessionId ?? ''} onChange={(e) => onSession(e.target.value || undefined)}>
+          <Select value={sessionId ?? ''} onChange={(e) => onSession(e.target.value || undefined)}>
             {data.sessions.map((s) => <option key={s.sessionId} value={s.current ? '' : s.sessionId}>{s.current ? 'Current session' : `Session ${s.sessionId.slice(0, 8)}`}</option>)}
-          </select>
+          </Select>
         </label>
       )}
       {data.truncated && <p className="hint">Older messages are not shown.</p>}
