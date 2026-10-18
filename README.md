@@ -23,7 +23,7 @@ What it checks, for reference:
 
 - macOS with the Xcode Command Line Tools (`xcode-select --install`), which Tauri needs to build the native app.
 - Homebrew, and Node 24 or newer (`brew install node`).
-- An agent CLI on your PATH: `claude` (Claude Code, `curl -fsSL https://claude.ai/install.sh | bash`), or `pi` 1.2.x (`npm install -g @earendil-works/pi-coding-agent@~1.2.0`). See [docs/harnesses.md](docs/harnesses.md) for Pi setup and limitations.
+- An agent CLI on your PATH: `claude` (Claude Code, `curl -fsSL https://claude.ai/install.sh | bash`), or `pi` 1.2.x or 1.3.x (`npm install -g @earendil-works/pi-coding-agent@~1.3.0`). See [docs/harnesses.md](docs/harnesses.md) for Pi setup and limitations.
 - Rust, through Homebrew's rustup: `brew install rustup`, then `"$(brew --prefix rustup)/bin/rustup" default stable`, which installs the stable toolchain and leaves your shell profile alone. That rustup is keg-only, so `cargo` is not on your PATH by default; `bin/setup` and `bin/tl-app` add it themselves. To run `npm run app:build` or `cargo` from your own shell, add `export PATH="$(brew --prefix rustup)/bin:$PATH"` to `~/.zshrc`.
 - Optional: `terminal-notifier` (`brew install terminal-notifier`), so clicking a macOS notification selects the node.
 - `tl` on your PATH pointing at this checkout. `npm link` puts `tl` (the client), `tld` (the daemon in the foreground) and `tl-app` (the native app) there; if you have another tiller checkout linked, `tl doctor` says where `tl` points.

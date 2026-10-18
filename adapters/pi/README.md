@@ -133,7 +133,7 @@ If a claim disappears from the daemon, two consecutive misses release it locally
 
 ## Pi API compatibility
 
-Target: `@earendil-works/pi-coding-agent` **1.2.x**. The adapter relies on:
+Target: `@earendil-works/pi-coding-agent` **1.2.x and 1.3.x**. The adapter relies on:
 
 - `pi.on("session_start" | "session_before_switch" | "session_before_fork" |
   "session_before_tree" | "session_shutdown" | "before_agent_start" | "agent_start" |
@@ -144,7 +144,7 @@ Target: `@earendil-works/pi-coding-agent` **1.2.x**. The adapter relies on:
 - `ctx.isIdle()`, `ctx.abort()`, `ctx.getContextUsage()`, `ctx.sessionManager.getSessionId() /
   getSessionFile() / getEntries()`, `ctx.model`, `ctx.ui.notify`, `ctx.shutdown()`
 
-The bridge reads the public host-supplied `VERSION` export and requires a stable **1.2.x** version
+The bridge reads the public host-supplied `VERSION` export and requires a stable **1.2.x or 1.3.x** version
 before registering MCP or reading credentials. `pi.on` accepting an event name is not proof the
 build emits it; the version gate pins the documented native event contract. Unknown, older, newer,
 and prerelease versions fail closed. It also checks `registerMcpServer`, `unregisterMcpServer`,

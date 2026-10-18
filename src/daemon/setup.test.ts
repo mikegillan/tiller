@@ -49,11 +49,25 @@ describe('bin/setup --check', () => {
     expect(r.stdout).toMatch(/missing\s+Claude Code \(claude\)\s+fix: curl -fsSL https:\/\/claude\.ai\/install\.sh \| bash/);
   });
 
-  it('reports a Pi outside 1.2.x as the wrong version', () => {
+  it.each(['1.2.3', '1.3.0'])('accepts compatible Pi %s when explicitly selected', (version) => {
+    stubs({ node: 'v24.1.0', pi: version });
+    const r = run(['--check', '--no-app', '--harness', 'pi']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(`ok             Pi ${version}`);
+  });
+
+  it.each(['1.3.0-rc.1', '1.4.0'])('rejects unverified Pi %s', (version) => {
+    stubs({ node: 'v24.1.0', pi: version });
+    const r = run(['--check', '--no-app', '--harness', 'pi']);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain(`Pi ${version}, the adapter needs 1.2.x or 1.3.x`);
+  });
+
+  it('reports a Pi outside 1.2.x and 1.3.x as the wrong version', () => {
     stubs({ node: 'v24.1.0', pi: '0.87.1' });
     const r = run(['--check']);
     expect(r.status).toBe(1);
-    expect(r.stdout).toMatch(/wrong version\s+Pi 0\.87\.1, the adapter needs 1\.2\.x\s+fix: npm install -g @earendil-works\/pi-coding-agent@~1\.2\.0/);
+    expect(r.stdout).toMatch(/wrong version\s+Pi 0\.87\.1, the adapter needs 1\.2\.x or 1\.3\.x\s+fix: npm install -g @earendil-works\/pi-coding-agent@~1\.3\.0/);
   });
 
   it('reports a rustup proxy without a toolchain as missing, without letting it download one', () => {
@@ -75,9 +89,9 @@ describe('bin/setup install', () => {
     writeFileSync(settings, '{"roles":{"worker":{"model":"custom"}}}\n');
     const lock = readFileSync(join(ROOT, 'package-lock.json'), 'utf8');
     const r = run(['--harness', 'pi', '--no-app'], { TL_SETUP_TTY: join(dir, 'answer') });
-    expect(r.stdout).toContain('Plan:\n  1. npm install -g @earendil-works/pi-coding-agent@~1.2.0\n  2. brew install terminal-notifier\n  3. npm ci\n  4. npm link\n');
+    expect(r.stdout).toContain('Plan:\n  1. npm install -g @earendil-works/pi-coding-agent@~1.3.0\n  2. brew install terminal-notifier\n  3. npm ci\n  4. npm link\n');
     const log = readFileSync(join(dir, 'log'), 'utf8').split('\n').filter((l) => !l.startsWith('brew --prefix'));
-    expect(log).toEqual(['npm install -g @earendil-works/pi-coding-agent@~1.2.0', 'brew install terminal-notifier', 'npm ci', 'npm link', '']);
+    expect(log).toEqual(['npm install -g @earendil-works/pi-coding-agent@~1.3.0', 'brew install terminal-notifier', 'npm ci', 'npm link', '']);
     expect(r.stdout).toContain('Checking again:');
     expect(readFileSync(join(ROOT, 'package-lock.json'), 'utf8')).toBe(lock);
     expect(readFileSync(settings, 'utf8')).toBe('{"roles":{"worker":{"model":"custom"}}}\n');

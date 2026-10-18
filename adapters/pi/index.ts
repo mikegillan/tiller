@@ -244,7 +244,7 @@ export default function tillerPiExtension(
     // incompatible Pi never runs as a half node that silently misses its tools or messages.
     const missing = missingCapabilities(pi);
     const version = await (dependencies.getVersion ?? nativePiVersion)();
-    if (!supportsNativeEvents(version)) missing.push(`native Pi 1.2.x events (version ${version ?? "unknown"})`);
+    if (!supportsNativeEvents(version)) missing.push(`native Pi 1.2.x/1.3.x events (version ${version ?? "unknown"})`);
     if (typeof ctx.isIdle !== "function") missing.push("ctx.isIdle");
     if (typeof ctx.abort !== "function") missing.push("ctx.abort");
     if (typeof ctx.shutdown !== "function") missing.push("ctx.shutdown");

@@ -132,6 +132,19 @@ afterEach(() => {
 afterAll(() => rmSync(tokenDir, { recursive: true, force: true }));
 
 describe("tiller pi extension", () => {
+  it.each(["1.2.0", "1.3.0"])("activates MCP and lifecycle forwarding on Pi %s", async (version) => {
+    setBaseEnv();
+    const calls = stubFetch();
+    const pi = fakePi();
+    const shutdown = vi.fn();
+    nativeExtension(pi.api, { getVersion: async () => version });
+    await pi.emit("session_start", { reason: "startup" }, fakeContext({ shutdown }));
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(pi.mcp).toHaveLength(1);
+    expect(calls.some((call) => call.body?.hook_event_name === "SessionStart")).toBe(true);
+    await pi.emit("session_shutdown", { reason: "quit" });
+  });
+
   it("fails closed when on() accepts unknown event names but the host event contract is unsupported", async () => {
     setBaseEnv();
     const calls = stubFetch();

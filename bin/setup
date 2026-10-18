@@ -32,7 +32,7 @@ case $harness in ''|claude|pi|codex) ;; *) bad_harness ;; esac
 
 BREW_INSTALL='/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 CLAUDE_INSTALL='curl -fsSL https://claude.ai/install.sh | bash'
-PI_INSTALL='npm install -g @earendil-works/pi-coding-agent@~1.2.0'
+PI_INSTALL='npm install -g @earendil-works/pi-coding-agent@~1.3.0'
 RUST_INSTALL='"$(brew --prefix rustup)/bin/rustup" default stable'
 RUST_HINT='export PATH="$(brew --prefix rustup)/bin:$PATH"'
 
@@ -76,16 +76,16 @@ check_harness() {
   local c=missing p=missing x=missing pv= xv= remote= server=
   if command -v claude >/dev/null && claude --version >/dev/null 2>&1; then c=ok; fi
   if command -v pi >/dev/null; then
-    pv=$(pi --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    case $pv in 1.2.*) p=ok ;; *) p="wrong version" ;; esac
+    pv=$(pi --version 2>/dev/null | head -1)
+    if printf '%s\n' "$pv" | grep -Eq '^1\.(2|3)\.[0-9]+$'; then p=ok; else p="wrong version"; fi
   fi
   if [ "$c" = ok ]; then local cv; cv=$(claude --version 2>/dev/null | head -1); line ok "Claude Code ${cv% (Claude Code)}"
   elif [ -x "$HOME/.local/bin/claude" ]; then c="not on PATH"; line "not on PATH" "Claude Code at ~/.local/bin/claude" 'export PATH="$HOME/.local/bin:$PATH" (add it to ~/.zshrc)'
   else line missing "Claude Code (claude)" "$CLAUDE_INSTALL"; fi
   case $p in
     ok) line ok "Pi $pv" ;;
-    missing) line missing "Pi 1.2.x (pi), optional with Claude Code" "$PI_INSTALL" ;;
-    *) line "wrong version" "Pi ${pv:-unknown}, the adapter needs 1.2.x" "$PI_INSTALL" ;;
+    missing) line missing "Pi 1.2.x or 1.3.x (pi), optional with Claude Code" "$PI_INSTALL" ;;
+    *) line "wrong version" "Pi ${pv:-unknown}, the adapter needs 1.2.x or 1.3.x" "$PI_INSTALL" ;;
   esac
   # Probe advertised transport capabilities without starting a server or accessing an account.
   if command -v codex >/dev/null; then
