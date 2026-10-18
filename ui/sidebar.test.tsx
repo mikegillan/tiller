@@ -156,3 +156,13 @@ it('guides the empty state to the single sidebar New session action', () => {
   expect(elements(empty).filter((el) => el.type === 'button')).toHaveLength(0);
   expect(JSON.stringify(empty.props.children)).toContain('Choose New session in the sidebar to get started.');
 });
+
+it.each(['Enter', ' '])('selects the focused row with %j without scrolling or opening child actions', (key) => {
+  const tree = find(Sidebar({ onSettings: () => {} }), (el) => el.props.role === 'tree');
+  const preventDefault = vi.fn();
+  tree.props.onKeyDown({ key, target: { closest: () => null }, preventDefault });
+  expect(preventDefault).toHaveBeenCalledOnce();
+  expect(getState().selected).toBe('child');
+  expect(getState().dialog).toBeNull();
+  expect(send).not.toHaveBeenCalled();
+});

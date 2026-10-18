@@ -28,7 +28,8 @@ function onKey(e: React.KeyboardEvent, rows: Row[], selected: string | null) {
     selectNode(r.node.id);
     Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="treeitem"]')).find((el) => el.dataset.id === r.node.id)?.focus();
   };
-  if (e.key === 'j' || e.key === 'ArrowDown') go(i + 1);
+  if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); selectNode(row.node.id); }
+  else if (e.key === 'j' || e.key === 'ArrowDown') go(i + 1);
   else if (e.key === 'k' || e.key === 'ArrowUp') go(i - 1);
   else if (row && (e.key === 'h' || e.key === 'ArrowLeft') && row.hasChildren && !row.collapsed) { e.preventDefault(); toggleCollapsed(row.node.id); }
   else if (row && (e.key === 'l' || e.key === 'ArrowRight') && row.collapsed) { e.preventDefault(); toggleCollapsed(row.node.id); }
