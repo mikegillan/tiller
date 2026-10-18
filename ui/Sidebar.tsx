@@ -1,12 +1,21 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { send } from './conn';
 import { HistoryPanel } from './History';
 import { Icon } from './icons';
 import { NodeRow } from './NodeRow';
 import { SessionSwitcher } from './SessionSwitcher';
+import { SidebarInspector } from './SidebarInspector';
 import { SidebarResize } from './SidebarResize';
-import { flattenSession, type Row } from './tree';
+import { flattenSession, statusKind, type Row } from './tree';
 import { selectNode, toggleCollapsed, toggleHistory, useStore } from './store';
+
+const DETAILS_KEY = 'tl.sidebarDetails';
+export function readSidebarDetails(): boolean {
+  try { return localStorage.getItem(DETAILS_KEY) === '1'; } catch { return false; }
+}
+export function saveSidebarDetails(open: boolean) {
+  try { localStorage.setItem(DETAILS_KEY, open ? '1' : '0'); } catch { /* per-viewer convenience only */ }
+}
 
 export function useRows(): Row[] {
   const nodes = useStore((s) => s.nodes);
@@ -39,6 +48,14 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
   const rows = useRows();
   const selected = useStore((s) => s.selected);
   const exited = useStore((s) => Object.values(s.nodes).filter((n) => n.status.exited).length);
+  const node = useStore((s) => s.selected ? s.nodes[s.selected] ?? null : null);
+  const [detailsOpen, setDetailsOpen] = useState(readSidebarDetails);
+  const detailsButton = useRef<HTMLButtonElement>(null);
+  const changeDetails = (open: boolean) => { setDetailsOpen(open); saveSidebarDetails(open); };
+  // Descendants include hidden rows and terminals; visible row counts would under-report activity.
+  const sessionNodes = rows.length ? [rows[0].node, ...rows[0].descendants] : [];
+  const working = sessionNodes.filter((n) => statusKind(n) === 'working').length;
+  const needs = sessionNodes.filter((n) => statusKind(n) === 'needs').length;
   const tree = useRef<HTMLDivElement>(null);
   const tabStop = rows.some((r) => r.node.id === selected) ? selected : rows[0]?.node.id;
   const history = useStore((s) => s.historyOpen);
@@ -57,9 +74,19 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
     <aside className="sidebar">
       <SessionSwitcher />
       {history ? <HistoryPanel /> : (
-        <div className="tree" role="tree" aria-label="Session agents" tabIndex={rows.length ? -1 : 0} ref={tree} onKeyDown={(e) => onKey(e, rows, selected)}>
-          {rows.map((r) => <NodeRow key={r.node.id} row={r} tabStop={r.node.id === tabStop} />)}
-          {!rows.length && <p className="hint">No sessions yet.</p>}
+        <div className="sidebar-session-body">
+          <header className="session-activity">
+            <div className="session-activity-copy"><h2>Session activity <span>{sessionNodes.length}</span></h2>
+              <p>{working} working<span aria-hidden="true"> · </span><span className={needs ? 'warn' : undefined}>{needs} needs you</span></p>
+            </div>
+            <button ref={detailsButton} className="btn details-toggle" aria-expanded={detailsOpen} aria-controls="sidebar-inspector"
+              onClick={() => changeDetails(!detailsOpen)}>Details</button>
+          </header>
+          <div className="tree" role="tree" aria-label="Session nodes" tabIndex={rows.length ? -1 : 0} ref={tree} onKeyDown={(e) => onKey(e, rows, selected)}>
+            {rows.map((r) => <NodeRow key={r.node.id} row={r} tabStop={r.node.id === tabStop} />)}
+            {!rows.length && <p className="hint">Choose New session to start an agent or terminal.</p>}
+          </div>
+          {detailsOpen && <SidebarInspector node={node} onClose={() => { changeDetails(false); detailsButton.current?.focus(); }} />}
         </div>
       )}
       <footer className="sidefoot">
