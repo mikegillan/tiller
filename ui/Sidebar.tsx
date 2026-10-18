@@ -59,8 +59,9 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
   const panelOpen = useStore((s) => s.panel);
 
   useEffect(() => {
-    if (!detailsOpen && restoreDetailsFocus.current) {
-      detailsButton.current?.focus();
+    if (restoreDetailsFocus.current) {
+      const target = detailsOpen ? tree.current?.parentElement?.querySelector<HTMLElement>('.inspector-resize') : detailsButton.current;
+      target?.focus();
       restoreDetailsFocus.current = false;
     }
   }, [detailsOpen]);
@@ -85,7 +86,7 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
           </div>
           {detailsOpen ? <SidebarInspector node={node} onClose={() => { restoreDetailsFocus.current = true; changeDetails(false); }} /> :
             <button ref={detailsButton} className="details-reopen" aria-expanded={false} aria-controls="sidebar-inspector"
-              onClick={() => changeDetails(true)}><Icon name="chevron" size={12} />Show details</button>}
+              onClick={() => { restoreDetailsFocus.current = true; changeDetails(true); }}><Icon name="chevron" size={12} />Show details</button>}
         </div>
       )}
       <footer className="sidefoot">
