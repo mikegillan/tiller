@@ -1,0 +1,31 @@
+/* The extra class opts into sizing; existing compact and custom dialog boxes keep their styles. */
+.dlg > .modal-resizable {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: min(760px, calc(100vw - 32px));
+  height: min(680px, 80dvh);
+  min-width: min(360px, calc(100vw - 32px));
+  min-height: min(320px, calc(100dvh - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  resize: both;
+  overflow: hidden;
+}
+.dlg > .modal-resizable.modal-expanded {
+  /* Native resizing writes inline dimensions. Preserve those for Restore size. */
+  width: calc(100vw - 32px) !important;
+  height: calc(100dvh - 32px) !important;
+  resize: none;
+}
+.modal-resizable > .modal-header { display: flex; flex: none; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+.modal-resizable > .modal-header h2 { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.modal-resizable .modal-expand { flex: none; margin-left: auto; height: 28px; }
+.modal-resizable > .modal-body { flex: 1; min-height: 0; min-width: 0; overflow: auto; overflow-wrap: anywhere; scrollbar-gutter: stable; }
+.modal-resizable > .modal-footer { flex: none; }
+.modal-resizable > .modal-footer .btns { flex-wrap: wrap; }
+.modal-resizable .modal-expand:focus-visible, .modal-resizable > .modal-body:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (max-width: 480px), (max-height: 480px) {
+  .dlg > .modal-resizable { padding: 16px; }
+  .modal-resizable > .modal-header { gap: 8px; margin-bottom: 12px; }
+}
