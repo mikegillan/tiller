@@ -1,21 +1,28 @@
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NodeRegistry } from './nodes.js';
 
 let dir: string;
 let file: string;
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   dir = mkdtempSync(join(tmpdir(), 'tl-nodes-'));
   file = join(dir, 'state.json');
+});
+afterEach(() => {
+  vi.clearAllTimers();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  rmSync(dir, { recursive: true, force: true });
 });
 
 const mk = (r: NodeRegistry, title: string, parentId: string | null = null) =>
   r.create({ parentId, kind: 'terminal', title, cwd: '/tmp' });
 
 describe('NodeRegistry', () => {
-  it('round-trips create/update/remove through the file, leaving no .tmp', async () => {
+  it('round-trips create/update/remove through the file, leaving no .tmp', () => {
     const r = new NodeRegistry(file);
     const a = mk(r, 'a');
     const b = mk(r, 'b', a.id);
@@ -23,7 +30,7 @@ describe('NodeRegistry', () => {
     expect(a.id).toMatch(/^n-[0-9a-f]{8}$/);
     r.update(b.id, { title: 'B2', sessionId: 's1' });
     r.remove(c.id);
-    await new Promise((res) => setTimeout(res, 120));
+    vi.advanceTimersByTime(50);
     expect(readdirSync(dir)).toEqual(['state.json']);
     expect(JSON.parse(readFileSync(file, 'utf8')).version).toBe(1);
 
@@ -43,13 +50,24 @@ describe('NodeRegistry', () => {
     r.flush();
   });
 
-  it('debounces: several changes produce one write', async () => {
+  it('debounces: several changes produce one write', () => {
     const r = new NodeRegistry(file);
-    mk(r, 'a');
+    const flush = vi.spyOn(r, 'flush');
+    const a = mk(r, 'a');
     mk(r, 'b');
+    r.update(a.id, { title: 'A2' });
     expect(readdirSync(dir)).toEqual([]);
-    await new Promise((res) => setTimeout(res, 120));
+    vi.advanceTimersByTime(49);
+    expect(readdirSync(dir)).toEqual([]);
+    expect(flush).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
     expect(JSON.parse(readFileSync(file, 'utf8')).nodes).toHaveLength(2);
+    expect(JSON.parse(readFileSync(file, 'utf8')).nodes.map((n: { title: string }) => n.title)).toEqual(['A2', 'b']);
+    expect(readdirSync(dir)).toEqual(['state.json']);
+    expect(flush).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(200);
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('renames a corrupt file aside and starts empty', () => {
