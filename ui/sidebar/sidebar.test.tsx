@@ -39,7 +39,7 @@ const a = { ...mk('a', null, 1), cwd: '/current/root' };
 const b = { ...mk('b', null, 2), cwd: '/other/root' };
 const child = { ...mk('child', 'a', 3), cwd: '/child/worktree' };
 beforeEach(() => {
-  vi.clearAllMocks(); hooks.open = false; hooks.effects.length = 0; hooks.refs.length = 0;
+  vi.clearAllMocks(); hooks.setOpen.mockReset(); hooks.open = false; hooks.effects.length = 0; hooks.refs.length = 0;
   update(() => ({ nodes: { a, b, child }, order: ['a', 'child', 'b'], selected: 'child', session: 'a', collapsed: [], opened: [], historyOpen: false, renaming: null, dialog: null }));
 });
 
@@ -74,6 +74,77 @@ it('supports wrapping arrow navigation and Home/End within the session menu', ()
     menu.props.onKeyDown({ key, target: items[current], currentTarget: { querySelectorAll: () => items }, preventDefault });
     expect(items[next].focus).toHaveBeenCalled(); expect(preventDefault).toHaveBeenCalled();
   }
+});
+
+it('keeps WebKit mouse focus changes from removing session options before click, in both directions', () => {
+  update((s) => ({ nodes: { ...s.nodes, b: { ...b, kind: 'agent', harness: 'codex', status: { ...b.status, model: 'gpt-6.1-sol' } } } }));
+  hooks.setOpen.mockImplementation((open: boolean) => { hooks.open = open; });
+  const trigger = { focus: vi.fn() };
+  const box = { contains: (target: unknown) => target === trigger };
+  const render = () => {
+    hooks.refs.push({ current: box }, { current: trigger }, { current: null });
+    return SessionSwitcher();
+  };
+  for (const id of ['b', 'a']) {
+    find(render(), (el) => el.props.className === 'current').props.onClick();
+    let tree = render();
+    const option = elements(tree).find((el) => el.props.role === 'menuitemradio' && !el.props['aria-checked'])!;
+    let prevented = false;
+    option.props.onMouseDown?.({ button: 0, preventDefault: () => { prevented = true; } });
+    // macOS WebKit blurs the focused option without focusing the clicked button.
+    // React flushes that blur before mouseup/click, so a closed menu loses the click.
+    if (!prevented) tree.props.onBlur({ currentTarget: box, relatedTarget: null });
+    tree = render();
+    expect(hooks.open).toBe(true);
+    find(tree, (el) => el.props.role === 'menuitemradio' && !el.props['aria-checked']).props.onClick();
+    expect(getState().session).toBe(id);
+    expect(getState().selected).toBe(id);
+    expect(hooks.open).toBe(false);
+    expect(trigger.focus).toHaveBeenCalledTimes(id === 'b' ? 1 : 2);
+  }
+});
+
+it('lets a WebKit pointer click on the open trigger close the menu without reopening it', () => {
+  hooks.open = true;
+  hooks.setOpen.mockImplementation((open: boolean) => { hooks.open = open; });
+  const box = { contains: () => false };
+  let tree = SessionSwitcher();
+  let prevented = false;
+  find(tree, (el) => el.props.className === 'current').props.onMouseDown?.({ button: 0, preventDefault: () => { prevented = true; } });
+  if (!prevented) tree.props.onBlur({ currentTarget: box, relatedTarget: null });
+  tree = SessionSwitcher();
+  find(tree, (el) => el.props.className === 'current').props.onClick();
+  expect(hooks.open).toBe(false);
+});
+
+it('closes the session menu on focus departure and outside clicks, and restores focus on Escape', () => {
+  hooks.open = true;
+  const trigger = { focus: vi.fn() };
+  const item = { focus: vi.fn() };
+  const box = { contains: (target: unknown) => target === item || target === trigger };
+  hooks.refs.push({ current: box }, { current: trigger }, { current: { querySelector: () => item } });
+  const listeners = new Map<string, (e: any) => void>();
+  vi.stubGlobal('addEventListener', (name: string, listener: (e: any) => void) => listeners.set(name, listener));
+  vi.stubGlobal('removeEventListener', vi.fn());
+  const tree = SessionSwitcher();
+  const cleanup = hooks.effects.at(-1)!() as () => void;
+  expect(item.focus).toHaveBeenCalledOnce();
+  tree.props.onBlur({ currentTarget: box, relatedTarget: item });
+  listeners.get('mousedown')!({ target: item });
+  expect(hooks.setOpen).not.toHaveBeenCalled();
+  tree.props.onBlur({ currentTarget: box, relatedTarget: {} });
+  expect(hooks.setOpen).toHaveBeenLastCalledWith(false);
+  hooks.setOpen.mockClear();
+  listeners.get('mousedown')!({ target: {} });
+  expect(hooks.setOpen).toHaveBeenCalledWith(false);
+  const preventDefault = vi.fn();
+  listeners.get('keydown')!({ key: 'Escape', preventDefault });
+  expect(preventDefault).toHaveBeenCalledOnce();
+  expect(trigger.focus).toHaveBeenCalledOnce();
+  cleanup();
+  expect(removeEventListener).toHaveBeenCalledWith('mousedown', listeners.get('mousedown'));
+  expect(removeEventListener).toHaveBeenCalledWith('keydown', listeners.get('keydown'));
+  vi.unstubAllGlobals();
 });
 
 it('keeps Settings, History, and Clear exited reachable without a redundant footer New child', () => {
