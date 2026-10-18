@@ -23,7 +23,7 @@ function TermView({ id, visible, exited }: { id: string; visible: boolean; exite
     t.fit.fit();
     send({ t: 'select', id });
     send({ t: 'attach', id, cols: t.term.cols, rows: t.term.rows });
-    if (!exited) t.term.focus();
+    if (!exited && !document.activeElement?.closest('.tree')) t.term.focus();
     return () => send({ t: 'detach', id });
   }, [id, visible, connected, exited]);
 

@@ -18,10 +18,16 @@ export function useRows(): Row[] {
 
 /** j/k (or arrows) move the selection, h/l collapse and expand. Only reached when focus is in the sidebar. */
 function onKey(e: React.KeyboardEvent, rows: Row[], selected: string | null) {
-  if ((e.target as HTMLElement).tagName === 'INPUT' || e.metaKey || e.ctrlKey || e.altKey) return;
+  if ((e.target as HTMLElement).closest('button, input, textarea, select, a, [role="menu"], [contenteditable="true"]') || e.metaKey || e.ctrlKey || e.altKey) return;
   const i = rows.findIndex((r) => r.node.id === selected);
   const row = rows[i];
-  const go = (j: number) => { const r = rows[Math.min(rows.length - 1, Math.max(0, j))]; if (r) { e.preventDefault(); selectNode(r.node.id); } };
+  const go = (j: number) => {
+    const r = rows[Math.min(rows.length - 1, Math.max(0, j))];
+    if (!r) return;
+    e.preventDefault();
+    selectNode(r.node.id);
+    Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="treeitem"]')).find((el) => el.dataset.id === r.node.id)?.focus();
+  };
   if (e.key === 'j' || e.key === 'ArrowDown') go(i + 1);
   else if (e.key === 'k' || e.key === 'ArrowUp') go(i - 1);
   else if (row && (e.key === 'h' || e.key === 'ArrowLeft') && row.hasChildren && !row.collapsed) { e.preventDefault(); toggleCollapsed(row.node.id); }
@@ -33,6 +39,7 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
   const selected = useStore((s) => s.selected);
   const exited = useStore((s) => Object.values(s.nodes).filter((n) => n.status.exited).length);
   const tree = useRef<HTMLDivElement>(null);
+  const tabStop = rows.some((r) => r.node.id === selected) ? selected : rows[0]?.node.id;
   const history = useStore((s) => s.historyOpen);
   const panelOpen = useStore((s) => s.panel);
 
@@ -43,8 +50,8 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
     <aside className="sidebar">
       <SessionSwitcher />
       {history ? <HistoryPanel /> : (
-        <div className="tree" role="tree" aria-label="Session agents" tabIndex={0} ref={tree} onKeyDown={(e) => onKey(e, rows, selected)}>
-          {rows.map((r) => <NodeRow key={r.node.id} row={r} />)}
+        <div className="tree" role="tree" aria-label="Session agents" tabIndex={rows.length ? -1 : 0} ref={tree} onKeyDown={(e) => onKey(e, rows, selected)}>
+          {rows.map((r) => <NodeRow key={r.node.id} row={r} tabStop={r.node.id === tabStop} />)}
           {!rows.length && <p className="hint">No sessions yet.</p>}
         </div>
       )}

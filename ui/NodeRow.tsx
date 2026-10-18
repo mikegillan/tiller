@@ -8,7 +8,7 @@ import { selectNode, toggleCollapsed, useStore } from './store';
 import { needsYou } from '../src/shared/protocol';
 import { kindTag, KIND_LABEL, statusKind, type Row } from './tree';
 
-export function NodeRow({ row }: { row: Row }) {
+export function NodeRow({ row, tabStop }: { row: Row; tabStop?: boolean }) {
   const { node, depth, hasChildren, collapsed, descendants } = row;
   const now = useNow();
   const selected = useStore((s) => s.selected === node.id);
@@ -21,7 +21,8 @@ export function NodeRow({ row }: { row: Row }) {
 
   return (
     <div className={`row${selected ? ' sel' : ''}`} role="treeitem" aria-selected={selected} aria-level={depth + 1} aria-expanded={hasChildren ? !collapsed : undefined}
-      data-id={node.id} onClick={() => selectNode(node.id)}>
+      data-id={node.id} tabIndex={(tabStop ?? selected) ? 0 : -1}
+      onFocus={(e) => { if (e.target === e.currentTarget && !selected) selectNode(node.id); }} onClick={() => selectNode(node.id)}>
       {row.guides.map((g, i) => <span key={i} className={`g${g ? ' v' : ''}`} />)}
       {depth > 0 && <span className={`g e${row.last ? '' : ' t'}`} />}
       <div className="body">

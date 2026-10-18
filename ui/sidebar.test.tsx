@@ -2,6 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Sidebar } from './Sidebar';
+import { App } from './App';
 import { NodeRow } from './NodeRow';
 import { SessionSwitcher } from './SessionSwitcher';
 import { RenameInput } from './RenameInput';
@@ -17,7 +18,8 @@ vi.mock('./store', async (original) => {
   return { ...store, useStore: (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()) };
 });
 vi.mock('./conn', () => ({ send: vi.fn() }));
-vi.mock('./hooks', () => ({ useNow: () => 10_000 }));
+vi.mock('./TerminalPane', () => ({ TerminalPane: () => null }));
+vi.mock('./hooks', () => ({ useNow: () => 10_000, useDocumentSync: () => {} }));
 type Element = ReactElement<Record<string, any>>;
 function elements(node: ReactNode): Element[] {
   if (Array.isArray(node)) return node.flatMap(elements);
@@ -87,10 +89,11 @@ it('keeps Settings, History, and Clear exited reachable without a redundant foot
 it('preserves tree keyboard selection and collapse, while ignoring rename input keys', () => {
   update(() => ({ selected: 'a' }));
   const tree = () => find(Sidebar({ onSettings: () => {} }), (el) => el.props.role === 'tree');
-  const key = (value: string, tagName = 'DIV') => tree().props.onKeyDown({ key: value, target: { tagName }, preventDefault: vi.fn() });
+  const focus = vi.fn();
+  const key = (value: string, tagName = 'DIV') => tree().props.onKeyDown({ key: value, target: { closest: () => tagName === 'INPUT' ? {} : null }, currentTarget: { querySelectorAll: () => [{ dataset: { id: getState().selected }, focus }] }, preventDefault: vi.fn() });
   key('ArrowLeft'); expect(getState().collapsed).toEqual(['a']);
   key('ArrowRight'); expect(getState().collapsed).toEqual([]);
-  key('j'); expect(getState().selected).toBe('child');
+  key('j'); expect(getState().selected).toBe('child'); expect(focus).toHaveBeenCalledOnce();
   key('k', 'INPUT'); expect(getState().selected).toBe('child');
   key('k'); expect(getState().selected).toBe('a');
 });
@@ -116,4 +119,40 @@ it('preserves inline rename commit and cancellation handlers', () => {
   vi.clearAllMocks(); setRenaming(child.id);
   input.props.onKeyDown({ key: 'Escape', stopPropagation: vi.fn() });
   expect(getState().renaming).toBeNull(); expect(send).not.toHaveBeenCalled();
+});
+
+it('gives the selected leaf a roving tab stop and selects a directly focused row', () => {
+  const rows = flattenSession(getState().nodes, getState().order, 'a', []);
+  expect(NodeRow({ row: rows[0] }).props.tabIndex).toBe(-1);
+  expect(NodeRow({ row: rows[1] }).props.tabIndex).toBe(0);
+  const root = NodeRow({ row: rows[0] });
+  const target = {};
+  root.props.onFocus({ target, currentTarget: target });
+  expect(getState().selected).toBe('a');
+  expect(NodeRow({ row: rows[0] }).props.tabIndex).toBe(0);
+  expect(NodeRow({ row: rows[1] }).props.tabIndex).toBe(-1);
+});
+
+it.each(['button', 'input', 'textarea', 'select', 'menu'])('leaves nested %s navigation to that control', () => {
+  const tree = find(Sidebar({ onSettings: () => {} }), (el) => el.props.role === 'tree');
+  const preventDefault = vi.fn();
+  tree.props.onKeyDown({ key: 'ArrowUp', target: { closest: () => ({}) }, preventDefault });
+  expect(preventDefault).not.toHaveBeenCalled();
+  expect(getState().selected).toBe('child');
+});
+
+it('keeps an entry tab stop when the selected descendant is collapsed out of the tree', () => {
+  update(() => ({ collapsed: ['a'] }));
+  const sidebar = Sidebar({ onSettings: () => {} });
+  const rows = elements(sidebar).filter((el) => el.type === NodeRow);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].props.tabStop).toBe(true);
+  expect(find(sidebar, (el) => el.props.role === 'tree').props.tabIndex).toBe(-1);
+});
+
+it('guides the empty state to the single sidebar New session action', () => {
+  update(() => ({ nodes: {}, order: [], selected: null, session: null, archived: null }));
+  const empty = find(App(), (el) => el.props.className === 'empty');
+  expect(elements(empty).filter((el) => el.type === 'button')).toHaveLength(0);
+  expect(JSON.stringify(empty.props.children)).toContain('Choose New session in the sidebar to get started.');
 });
