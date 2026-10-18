@@ -75,7 +75,7 @@ export function UpdateDialog() {
     </section>}
     {actionable && <details className="update-installation"><summary><UpdateIcon name="document" /><span>Installation details</span><Icon name="chevron" /></summary>
       <p>{restartOnly ? 'Rebuild affected packages, UI and app from the current release, then restart the daemon.' : 'Install this release in the clean main checkout, rebuild changed packages, UI and app, then restart the daemon.'} If the app is rebuilt, quit and reopen Tiller.</p>
-      <p>Automatic resumption depends on daemon resume settings, idle-age limits, and available session history and workspaces. You can also resume eligible agents manually.</p>
+      <p>Automatic resumption follows your resume-on-start setting and idle-age limit. Resuming a session also requires its transcript and workspace to remain available.</p>
     </details>}
   </Modal>;
 }
