@@ -368,12 +368,21 @@ describe('mcp api', () => {
       return c;
     };
     const human = await connect('human', admin);
-    expect((await human.listTools()).tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'dnd', 'followup', 'history', 'list_nodes', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'transcript', 'update', 'withdraw', 'worktrees', 'write']);
+    const humanTools = (await human.listTools()).tools;
+    expect(humanTools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'dnd', 'followup', 'history', 'list_nodes', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'transcript', 'update', 'withdraw', 'worktrees', 'write']);
+    expect(Object.fromEntries(humanTools.map((t) => [t.name, t.title]))).toMatchObject({
+      send: 'Send message', spawn: 'Start node', notify_when: 'Watch node completion', read: 'Read node output',
+      history: 'List past agents', followup: 'Continue past agent', merge: 'Merge node changes',
+    });
     await human.close();
     const client = await connect(id, manager.tokenFor(id));
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'history', 'list_nodes', 'merge', 'message_status', 'notify_when', 'read', 'rename', 'report_outcome', 'send', 'spawn', 'withdraw', 'write']);
     expect(tools.find((t) => t.name === 'spawn')!.inputSchema.required).toEqual(['kind', 'title']); // cwd defaults to a fork source's
+    expect(Object.fromEntries(tools.map((t) => [t.name, t.title]))).toMatchObject({
+      notify_when: 'Watch node completion', read: 'Read node output', history: 'List past agents',
+      spawn: 'Start node',
+    });
     const r = (await client.callTool({ name: 'report_outcome', arguments: { outcome: 'succeeded' } })) as { content: Array<{ text: string }> };
     expect(r.content[0].text).toBe('{"ok":true}');
     await client.close();

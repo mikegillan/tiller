@@ -52,7 +52,7 @@ export class CodexBridge {
   async start(endpoint: string, nodeId: string): Promise<void> {
     this.initialization = await this.rpc.request('initialize', { clientInfo: { name: 'tiller', title: 'Tiller', version: '0.0.0' }, capabilities: { experimentalApi: true } });
     this.rpc.send({ method: 'initialized' });
-    const name = `tl_${randomBytes(6).toString('hex')}`;
+    const name = `tiller_${randomBytes(6).toString('hex')}`;
     const params: Record<string, unknown> = {
       cwd: process.cwd(), developerInstructions: this.o.instructions + `
 
