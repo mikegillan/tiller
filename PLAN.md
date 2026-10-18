@@ -223,8 +223,8 @@ approval fires nothing until the tool finishes, so "blocked for 20 min" looks th
 has finished a turn that started after the armed node was created (or has exited). nodeterm's sharpest lesson:
 idle means the turn ended, not the job. So also `after_success`, released only by
 `report_outcome succeeded`, and blocked by `failed` with the note shown on the waiting node.
-Built in src/daemon/deps.ts and the manager's schedule(), together with notify_when and the
-daemon.maxWorking spawn queue.
+Built in src/daemon/scheduling.ts for dependency launches and the daemon.maxWorking spawn queue;
+messaging.ts wires notify_when delivery, with each caller's runtime owning its completion watches.
 
 ## 9. Front ends
 

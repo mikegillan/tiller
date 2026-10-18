@@ -1,8 +1,8 @@
-// Dependency launches (spawn after / afterSuccess), the daemon.maxWorking queue, and notify_when: when a set of nodes
-// counts as finished, and holding a node back until then.
+// Dependency launches (spawn after / afterSuccess) and the daemon.maxWorking queue.
 import { outcomeLine } from '../shared/format.js';
 import { isAgentKind, type AgentState, type Isolation, type NodeView, type Pending } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
+import { turnDone } from './completion-watches.js';
 import type { NodeManager, NodeRuntime, SpawnRequest } from './manager.js';
 import { DAEMON, deliver } from './messaging.js';
 import { initialState } from './status.js';
@@ -10,12 +10,6 @@ import { logError } from './util.js';
 import { addWorktree } from './worktree-lifecycle.js';
 
 type Mgr = Pick<NodeManager, 'view' | 'turnStartedAt'>;
-
-/** Whether `id` has finished a turn begun at or after `since`, has exited, or is gone. */
-export function turnDone(m: Mgr, id: string, since: number): boolean {
-  const v = m.view(id);
-  return !v || !!v.status.exited || (v.status.state === 'done' && (m.turnStartedAt(id) ?? -Infinity) >= since);
-}
 
 const succeeded = (v: NodeView | undefined) => v?.outcome?.outcome === 'succeeded' && v.outcome.gate !== 'failed';
 
@@ -136,74 +130,4 @@ function release(m: NodeManager, id: string): void {
   } catch (err) {
     fail(err as Error);
   }
-}
-
-// ---- notify_when ----
-
-const NOTIFY_TTL_MS = 12 * 3600_000;
-export type NotifyWhen = { ids: string[]; when: 'all' | 'any'; of: 'turn' | 'success' };
-/** since: per id, the turn start (or report time) that counts: the turn in progress at registration, else a later one. */
-export interface Watch extends NotifyWhen { caller: string; at: number; since: Record<string, number> }
-/** Managers whose node events already re-check the watches. */
-const listening = new WeakSet<NodeManager>();
-
-/** One line per id: its outcome when it reported one, else its state. */
-function line(m: Mgr, id: string): string {
-  const v = m.view(id);
-  if (!v) return `${id}: closed`;
-  const o = v.outcome;
-  if (o) return `${id}: ${outcomeLine(o)}`;
-  return `${id}: ${v.status.exited ? 'exited' : v.status.state}`;
-}
-
-function finished(m: Mgr, w: Watch, id: string): boolean {
-  if (w.of === 'turn') return turnDone(m, id, w.since[id]);
-  const v = m.view(id);
-  return !v || !!v.status.exited || (v.outcome?.at ?? -Infinity) >= w.since[id];
-}
-
-const ACTIVE = ['working', 'waiting', 'blocked'];
-
-function check(m: Mgr & Pick<NodeManager, 'on'>, all: Map<string, Watch>, key: string): void {
-  const w = all.get(key)!;
-  const done = w.ids.filter((id) => finished(m, w, id));
-  if (w.when === 'all' ? done.length < w.ids.length : !done.length) return;
-  all.delete(key);
-  const text = `${done.length} of ${w.ids.length} finished:\n${w.ids.map((id) => line(m, id)).join('\n')}`;
-  deliver(m as NodeManager, DAEMON, w.caller, text, { fromLabel: `tiller (notify_when ${w.when} of ${w.of})`, replyTo: null }).catch(logError);
-}
-
-/** Whether `caller` has a pending notify_when that covers `id`. */
-export function watching(m: Partial<Pick<NodeManager, 'runtimes'>>, caller: string, id: string): boolean {
-  return [...(m.runtimes?.get(caller)?.watches?.values() ?? [])].some((w) => w.ids.includes(id));
-}
-
-/**
- * Register a one-shot notice to `caller` when all or any of `ids` finish (a turn, or a report_outcome). Replaces the
- * caller's pending one for the same id set. Returns whether it replaced one. The message may go out before this returns.
- */
-export function notifyWhen(m: NodeManager, caller: string, req: NotifyWhen): { replaced: boolean } {
-  if (!listening.has(m)) {
-    listening.add(m);
-    const sweep = () => {
-      const now = Date.now();
-      for (const { watches } of m.runtimes.values()) {
-        for (const [k, w] of watches ?? []) {
-          if (now - w.at > NOTIFY_TTL_MS) watches!.delete(k);
-          else check(m, watches!, k);
-        }
-      }
-    };
-    m.on('node', sweep);
-    m.on('removed', sweep);
-  }
-  const all = (m.runtimes.get(caller)!.watches ??= new Map()); // the caller's runtime goes, and its watches with it, when it is closed
-  const ids = [...new Set(req.ids)].sort();
-  const key = `${caller}\0${ids.join(',')}`;
-  const replaced = all.has(key);
-  const now = Date.now();
-  const since = Object.fromEntries(ids.map((id) => [id, ACTIVE.includes(m.view(id)?.status.state ?? '') ? m.turnStartedAt(id) ?? now : now]));
-  all.set(key, { ...req, ids, caller, at: now, since });
-  check(m, all, key);
-  return { replaced };
 }
