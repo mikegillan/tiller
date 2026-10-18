@@ -46,6 +46,27 @@ it('keeps safe web links separate from the app and fragment links within the doc
 
 it('preserves accessible footnote references and backlinks', () => {
   const html = render('A detail[^1].\n\n[^1]: More context.');
-  expect(html).toContain('aria-describedby="footnote-label"');
+  expect(html).toMatch(/aria-describedby="markdown-[^"]+-footnote-label"/);
   expect(html).toContain('aria-label="Back to reference 1"');
+});
+
+it('keeps sibling footnote targets, references and accessible labels local to each instance', () => {
+  const source = 'Detail[^1] and again[^1]. [Local](#note)\n\n[^1]: Context.';
+  const html = renderToStaticMarkup(<><Markdown>{source}</Markdown><Markdown>{source}</Markdown></>);
+  const bodies = [...html.matchAll(/<div class="markdown">([\s\S]*?)<\/div>/g)].map((match) => match[1]);
+  expect(bodies).toHaveLength(2);
+  const allIds = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+  expect(allIds).toHaveLength(8); // Label, definition and two references in each body.
+  expect(new Set(allIds).size).toBe(allIds.length);
+  for (const body of bodies) {
+    const ids = [...body.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+    const targets = [...body.matchAll(/href="#([^"]+)"/g)].map((match) => match[1]).filter((target) => target !== 'note');
+    expect(targets).toHaveLength(4); // Two references and their two backlinks.
+    for (const target of targets) expect(ids).toContain(target);
+    const descriptions = [...body.matchAll(/aria-describedby="([^"]+)"/g)].map((match) => match[1]);
+    expect(descriptions).toHaveLength(2);
+    for (const description of descriptions) expect(ids).toContain(description);
+    expect(body).toContain('<a href="#note">Local</a>');
+    expect(body).not.toContain('target="_blank"');
+  }
 });

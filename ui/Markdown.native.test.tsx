@@ -5,7 +5,7 @@ import { openExternalUrl } from './externalLink';
 const state = vi.hoisted(() => ({ native: true, failed: false, setError: vi.fn() }));
 vi.mock('./url', () => ({ get IN_APP() { return state.native; } }));
 vi.mock('./externalLink', () => ({ openExternalUrl: vi.fn() }));
-vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useState: () => [state.failed, state.setError] }));
+vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useId: () => 'native-test', useState: () => [state.failed, state.setError] }));
 afterEach(() => { vi.clearAllMocks(); state.native = true; state.failed = false; });
 
 it('intercepts native web links and exposes failures without navigating away from Tiller', async () => {
