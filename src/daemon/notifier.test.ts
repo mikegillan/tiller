@@ -225,6 +225,9 @@ describe('createNotifier', () => {
     expect(s.calls).toHaveLength(0);
     child.gate = 'passed';
     s.notify.observe(child); // gate completion has no notify event
+    expect(s.calls).toHaveLength(0);
+    child.outcome = { outcome: 'succeeded', gate: 'passed', at: 1 };
+    s.notify.observe(child);
     expect(s.calls).toHaveLength(1);
     s.notify(ev('done', 'c'));
     expect(s.calls).toHaveLength(1);
@@ -310,6 +313,34 @@ describe('createNotifier', () => {
     root.outcome = { outcome: 'failed', gate: 'failed', at: 30 };
     s.notify.observe(root);
     expect(s.calls).toHaveLength(2);
+  });
+
+  it.each([
+    { outcome: undefined, exited: false },
+    { outcome: { outcome: 'failed' as const, gate: 'failed' as const, at: 1 }, exited: false },
+    { outcome: { outcome: 'failed' as const, gate: 'failed' as const, at: 1 }, exited: true },
+  ])('waits for the current outcome after a late successful gate (prior report and exit: %j)', ({ outcome, exited }) => {
+    const root = node('session', { state: 'working' }, { id: 'r', outcome });
+    const s = setup(0, { nodes: [root] });
+    s.notify.observe(root);
+    root.gate = 'running';
+    s.notify.observe(root);
+    root.status = reduce(root.status, { hook_event_name: 'Stop' }, 10);
+    s.notify.observe(root); // the worker ended its turn after report_outcome returned pending
+    s.notify(ev('done', 'r'));
+    expect(s.calls).toHaveLength(0);
+    if (exited) {
+      root.status = ptyExited(root.status, 15);
+      s.notify.observe(root);
+    }
+    root.gate = 'passed';
+    s.notify.observe(root); // manager.runGate emits before mcp.runGate records the report
+    expect(s.calls).toHaveLength(0);
+    root.outcome = { outcome: 'succeeded', gate: 'passed', at: 20 };
+    s.notify.observe(root);
+    expect(s.calls.map((c) => c[c.indexOf('-message') + 1])).toEqual(['tree session finished: 1 succeeded, 0 failed']);
+    s.notify(ev('done', 'r'));
+    expect(s.calls).toHaveLength(1);
   });
 
   it('rechecks remaining agents when an unfinished child is closed', () => {

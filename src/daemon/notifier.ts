@@ -133,12 +133,15 @@ export function createNotifier(d: NotifierDeps): ((n: NotifyEvent) => void) & { 
       const prev = observed.get(v.id);
       // setOutcome replaces the outcome object. A retained report cannot finalize a later gate attempt.
       const outcomeBeforeGate = v.gate === 'running' && prev?.gate !== 'running' ? v.outcome : prev?.outcomeBeforeGate;
-      const gateFinal = v.gate !== 'failed' || (v.outcome?.outcome === 'failed' && v.outcome !== outcomeBeforeGate);
+      const freshOutcome = !!v.outcome && v.outcome !== outcomeBeforeGate;
+      const gateFinal = !v.gate || (freshOutcome && (v.gate === 'passed' || v.outcome?.outcome === 'failed'));
+      // A passed gate emits before its report is stored, including when the agent has already exited.
+      const gatePending = !gateFinal && (v.gate === 'passed' || !v.status.exited);
       if (v.pending || v.gate === 'running' || (!v.status.exited && (
         ['working', 'waiting', 'blocked', 'armed', 'queued'].includes(v.status.state)
         || (v.status.state === 'unknown' && (!prev || prev.sessionId !== v.sessionId || prev.exited))
       ))) newWork = true;
-      if (v.pending || v.gate === 'running' || (!v.status.exited && !gateFinal) || !finished(v.status)) complete = false;
+      if (v.pending || v.gate === 'running' || gatePending || !finished(v.status)) complete = false;
       observed.set(v.id, { sessionId: v.sessionId, exited: !!v.status.exited, gate: v.gate, outcomeBeforeGate });
     }
     if (newWork) {
