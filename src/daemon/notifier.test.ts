@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { dndActive, type Dnd, type NodeStatus, type NodeView } from '../shared/protocol.js';
 import { loadConfig, type Notifications } from './config.js';
 import { NodeRegistry } from './nodes.js';
+import { ptyExited, reduce } from './status.js';
 import { content, createNotifier, decide, inQuietHours, notifyArgs, type NotifierDeps } from './notifier.js';
 
 const node = (title: string, status: Partial<NodeStatus> = {}, more: Partial<NodeView> = {}): NodeView => ({
@@ -255,6 +256,60 @@ describe('createNotifier', () => {
     root.outcome = { outcome: 'failed', gate: 'failed', at: 1 };
     s.notify.observe(root);
     expect(s.calls[0]).toContain('tree session finished: 0 succeeded, 1 failed');
+  });
+
+  it('does not rearm when SessionEnd follows an announced Stop and the PTY later exits', () => {
+    const root = node('session', { state: 'working' }, { id: 'r', sessionId: 'session-1' });
+    const s = setup(0, { nodes: [root] });
+    s.notify.observe(root);
+    root.status = reduce(root.status, { hook_event_name: 'Stop' }, 10);
+    s.notify.observe(root);
+    s.notify(ev('done', 'r'));
+    expect(s.calls).toHaveLength(1);
+    root.status = reduce(root.status, { hook_event_name: 'SessionEnd' }, 20);
+    s.notify.observe(root);
+    s.tick(6000);
+    root.status = ptyExited(root.status, 30);
+    s.notify.observe(root);
+    s.notify(ev('exited', 'r'));
+    expect(s.calls).toHaveLength(1);
+  });
+
+  it('accepts a fresh explicit failed report without gate metadata after a failed gate', () => {
+    const root = node('session', {}, { id: 'r', gate: 'running' });
+    const s = setup(0, { nodes: [root] });
+    s.notify.observe(root);
+    root.gate = 'failed';
+    s.notify.observe(root);
+    expect(s.calls).toHaveLength(0);
+    root.outcome = { outcome: 'failed', at: 1 }; // report_outcome failed bypasses the gate
+    s.notify.observe(root);
+    expect(s.calls[0]).toContain('tree session finished: 0 succeeded, 1 failed');
+  });
+
+  it.each(['turn', 'restart'] as const)('rejects a retained failed outcome after a new %s while a failed gate awaits retry', (cycle) => {
+    const root = node('session', {}, { id: 'r', gate: 'failed', sessionId: 'session-1', outcome: { outcome: 'failed', gate: 'failed', at: 1 } });
+    const s = setup(0, { nodes: [root] });
+    s.notify(ev('done', 'r'));
+    expect(s.calls).toHaveLength(1);
+    if (cycle === 'restart') {
+      root.sessionId = 'session-2';
+      root.status = { state: 'unknown', activity: 'restarting', changedAt: 5 };
+      s.notify.observe(root);
+    }
+    root.status = reduce(root.status, { hook_event_name: 'UserPromptSubmit', prompt_id: 'next' }, 10);
+    s.notify.observe(root);
+    root.gate = 'running';
+    s.notify.observe(root);
+    root.status = reduce(root.status, { hook_event_name: 'Stop' }, 20);
+    s.notify.observe(root);
+    root.gate = 'failed';
+    s.notify.observe(root);
+    s.notify(ev('done', 'r'));
+    expect(s.calls).toHaveLength(1);
+    root.outcome = { outcome: 'failed', gate: 'failed', at: 30 };
+    s.notify.observe(root);
+    expect(s.calls).toHaveLength(2);
   });
 
   it('rechecks remaining agents when an unfinished child is closed', () => {

@@ -90,9 +90,12 @@ const failed = (v: NodeView) => !!v.status.errored || v.outcome?.outcome === 'fa
  */
 export function createNotifier(d: NotifierDeps): ((n: NotifyEvent) => void) & { observe(node: NodeView): void } {
   const last = new Map<string, number>();
-  /** Roots whose finish has been announced, until one of their nodes is seen unfinished again. */
+  /** Roots whose finish has been announced, until one of their agents starts new work. */
   const announced = new Set<string>();
   const active = new Set<string>();
+  const observed = new Map<string, {
+    sessionId?: string; exited: boolean; gate: NodeView['gate']; outcomeBeforeGate: NodeView['outcome'];
+  }>();
   const log = d.log ?? console.log;
   const post = (id: string, kind: NotifyEvent['kind'], key: string, c: Omit<Content, 'sound'>, now: number) => {
     const say = (what: string) => log(`notify ${id} ${key}: ${what}`);
@@ -125,13 +128,24 @@ export function createNotifier(d: NotifierDeps): ((n: NotifyEvent) => void) & { 
     if (!root || !d.config(root.id).treeDoneSummary) return;
     const agents = tree.filter((v) => isAgentKind(v.kind));
     if (!agents.length) return;
-    const complete = agents.every((v) => !v.pending && v.gate !== 'running'
-      && (v.status.exited || v.gate !== 'failed' || v.outcome?.gate === 'failed') && finished(v.status));
-    if (!complete) {
+    let complete = true, newWork = false;
+    for (const v of agents) {
+      const prev = observed.get(v.id);
+      // setOutcome replaces the outcome object. A retained report cannot finalize a later gate attempt.
+      const outcomeBeforeGate = v.gate === 'running' && prev?.gate !== 'running' ? v.outcome : prev?.outcomeBeforeGate;
+      const gateFinal = v.gate !== 'failed' || (v.outcome?.outcome === 'failed' && v.outcome !== outcomeBeforeGate);
+      if (v.pending || v.gate === 'running' || (!v.status.exited && (
+        ['working', 'waiting', 'blocked', 'armed', 'queued'].includes(v.status.state)
+        || (v.status.state === 'unknown' && (!prev || prev.sessionId !== v.sessionId || prev.exited))
+      ))) newWork = true;
+      if (v.pending || v.gate === 'running' || (!v.status.exited && !gateFinal) || !finished(v.status)) complete = false;
+      observed.set(v.id, { sessionId: v.sessionId, exited: !!v.status.exited, gate: v.gate, outcomeBeforeGate });
+    }
+    if (newWork) {
       announced.delete(root.id);
       active.add(root.id);
-      return;
     }
+    if (!complete) return;
     if (announced.has(root.id) || (!completionEvent && !active.has(root.id))) return;
     announced.add(root.id);
     active.delete(root.id);
