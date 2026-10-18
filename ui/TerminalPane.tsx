@@ -11,7 +11,9 @@ function TermView({ id, visible, exited }: { id: string; visible: boolean; exite
   useEffect(() => {
     const { term } = createTerm(id, el.current!);
     const sub = term.onData((data) => send({ t: 'input', id, data }));
-    return () => { sub.dispose(); disposeTerm(id); };
+    // Legacy mouse reports contain raw bytes, including after a serialized screen attach.
+    const binarySub = term.onBinary((data) => send({ t: 'input', id, data, binary: true }));
+    return () => { sub.dispose(); binarySub.dispose(); disposeTerm(id); };
   }, [id]);
 
   // Becoming visible (or reconnecting / resuming while visible): reset, fit, attach. The reply is a serialized screen to write as-is.

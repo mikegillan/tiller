@@ -356,7 +356,7 @@ export type ClientMessage =
   | { t: 'visibility'; focused: boolean }       // whether this client's window is in front; the daemon skips OS notifications for a node a focused client has selected
   | { t: 'attach'; id: string; cols: number; rows: number } // start receiving data; replies with a data message holding the serialized screen
   | { t: 'detach'; id: string }
-  | { t: 'input'; id: string; data: string }
+  | { t: 'input'; id: string; data: string; binary?: boolean } // binary: data contains raw byte values (xterm legacy mouse reports)
   | { t: 'resize'; id: string; cols: number; rows: number }
   | { t: 'select'; id: string }                // clears unread
   | { t: 'spawn'; kind: NodeKind; harness?: Harness; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; profile?: Profile; parentId?: string | null; isolation?: Isolation; base?: string; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); the node must run the claude harness

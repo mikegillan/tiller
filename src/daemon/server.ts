@@ -45,7 +45,8 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('visibility'), focused: z.boolean() }),
   z.object({ t: z.literal('attach'), id, cols: size, rows: size }),
   z.object({ t: z.literal('detach'), id }),
-  z.object({ t: z.literal('input'), id, data: z.string() }),
+  z.object({ t: z.literal('input'), id, data: z.string(), binary: z.boolean().optional() })
+    .refine((m) => !m.binary || /^[\x00-\xff]*$/.test(m.data)),
   z.object({ t: z.literal('resize'), id, cols: size, rows: size }),
   z.object({ t: z.literal('select'), id }),
   z.object({ t: z.literal('spawn'), ...SPAWN_FIELDS, parentId: z.string().nullable().optional() }),
@@ -158,7 +159,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
         return;
       }
       case 'detach': c.attached.delete(m.id); return;
-      case 'input': manager.input(m.id, m.data); return;
+      case 'input': manager.input(m.id, m.data, m.binary); return;
       case 'resize': manager.resize(m.id, m.cols, m.rows); return;
       case 'visibility': {
         const wasAway = !anyFocused();
