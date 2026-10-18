@@ -103,10 +103,11 @@ describe("missingCapabilities", () => {
 });
 
 describe("native event contract", () => {
-  it("only accepts stable native Pi 1.2.x versions; pi.on alone cannot prove event support", () => {
-    expect(supportsNativeEvents("1.2.0")).toBe(true);
-    expect(supportsNativeEvents("1.2.17")).toBe(true);
-    for (const version of [undefined, "1.1.9", "1.3.0", "1.2.0-fork", "bad"]) {
+  it("only accepts verified stable Pi 1.2.x and 1.3.x event contracts", () => {
+    for (const version of ["1.2.0", "1.2.17", "1.3.0", "1.3.17"]) {
+      expect(supportsNativeEvents(version)).toBe(true);
+    }
+    for (const version of [undefined, "1.1.9", "1.4.0", "2.0.0", "1.2.0-fork", "1.3.0-rc.1", "bad"]) {
       expect(supportsNativeEvents(version)).toBe(false);
     }
   });

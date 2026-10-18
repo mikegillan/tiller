@@ -6,7 +6,7 @@
  * object at load time and the shapes below match it structurally. Keeping the types here also
  * lets the pure helpers and the bridge be unit-tested with a fake Pi, without installing Pi.
  *
- * Compatibility target: @earendil-works/pi-coding-agent 1.2.x (see docs/extensions.md and
+ * Compatibility target: @earendil-works/pi-coding-agent 1.2.x/1.3.x (see docs/extensions.md and
  * dist/core/extensions/types.d.ts).
  */
 

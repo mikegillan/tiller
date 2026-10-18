@@ -38,11 +38,11 @@ tl --harness pi
 tl new "Pi session" --harness pi --model openai/gpt-5 --prompt "Inspect this repository"
 ```
 
-The adapter targets **`@earendil-works/pi-coding-agent` 1.2.x**, which has native HTTP MCP
+The adapter targets **`@earendil-works/pi-coding-agent` 1.2.x and 1.3.x**, which has native HTTP MCP
 registration and the `agent_settled` extension event. At startup it checks Pi's version and the
 APIs it needs. Any other version, including older, newer and prerelease builds, makes the node
-shut down instead of running half-connected, with the reason in its row's activity. Each new Pi minor release therefore stops Pi nodes
-at startup until the adapter is updated for it.
+shut down instead of running half-connected, with the reason in its row's activity. Unverified Pi minor releases stop Pi nodes
+at startup until the adapter is updated for them.
 
 Pi uses its own provider credentials and subscriptions; Tiller supplies neither. Cost shows as 0
 for providers that report none, such as `claude-bridge` on a subscription.

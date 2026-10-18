@@ -123,7 +123,7 @@ export async function nativePiVersion(): Promise<string | undefined> {
 
 /** Pi has no event-capability query. Pin the documented native event contract, fail closed otherwise. */
 export function supportsNativeEvents(version: string | undefined): boolean {
-  return typeof version === "string" && /^1\.2\.\d+$/.test(version);
+  return typeof version === "string" && /^1\.(?:2|3)\.\d+$/.test(version);
 }
 
 /** The subset of the Pi API the capability gate inspects before any resource is registered. */
