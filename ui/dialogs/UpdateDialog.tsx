@@ -27,7 +27,7 @@ export function UpdateDialog() {
   const available = !!upd?.target && upd.sha !== upd.target.sha;
   const restartOnly = !!upd?.target && runtimeBehindCheckout && upd.sha === upd.target.sha && upd.currentVersion === upd.target.tag;
   const actionable = available || restartOnly;
-  const blocked = actionable && !upd?.eligible && !upd?.applying;
+  const blocked = actionable && !upd?.eligible && !upd?.applying && !upd?.checking;
   const busy = !!upd?.checking || !!upd?.applying;
   const releases = upd?.releases.length ? upd.releases : upd?.target ? [upd.target] : [];
   const title = upd?.applying ? 'Installing update' : restartOnly ? 'Restart required' : available ? 'Update available' : 'Tiller releases';
@@ -60,11 +60,11 @@ export function UpdateDialog() {
     {blocked && <section className="update-blocker" id="update-blocked-reason" role="status">
       <UpdateIcon name="warning" />
       <div><h3>{upd?.blocker === 'dirty' ? 'Save your changes to continue' : 'Update blocked'}</h3>
-        <p>{upd?.reason || 'Check again to find out why this update is unavailable.'}</p>
+        <p>{upd?.blocker === 'dirty' ? 'The main checkout has uncommitted or untracked files.' : upd?.reason || 'Check again to find out why this update is unavailable.'}</p>
         {upd?.blocker === 'dirty' && <ol><li>Move changes to a task worktree, or stash them, including untracked files.</li><li>Check again to enable the update.</li></ol>}
       </div>
     </section>}
-    {upd?.reason && !blocked && <p>{upd.reason}</p>}
+    {upd?.reason && !blocked && !upd.checking && <p>{upd.reason}</p>}
     {upd?.fetchError && <p className="update-error" role="alert">{upd.fetchError}</p>}
     {upd?.failed && <p className="update-error" role="alert">{upd.failed}</p>}
     <p className="update-progress" role="status" aria-live="polite">{busy && <><UpdateIcon name="spinner" />{upd?.applying ? 'Installing update…' : 'Checking for updates…'}</>}</p>

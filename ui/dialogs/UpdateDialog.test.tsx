@@ -34,9 +34,12 @@ it('shows release hierarchy, accurate checkout metadata, installation disclosure
 });
 
 it('only gives dirty-specific remediation for an explicit blocker, including older-daemon fallback', () => {
-  const dirty = render({ eligible: false, reason: 'The main checkout has uncommitted files.', blocker: 'dirty' });
+  const dirty = render({ eligible: false, reason: 'The main checkout is not clean. Move or stash changes, then check releases again.', blocker: 'dirty' });
   expect(dirty).toContain('Save your changes to continue');
   expect(dirty).toContain('Move changes to a task worktree, or stash them, including untracked files.');
+  expect(dirty).not.toContain('Move or stash changes');
+  expect(dirty).toContain('The main checkout has uncommitted or untracked files.');
+  expect(dirty.match(/stash/g)).toHaveLength(1);
   expect(dirty).not.toContain('ready to install');
   expect(dirty.indexOf('update-blocked-reason')).toBeLessThan(dirty.indexOf('What’s new'));
   const generic = render({ eligible: false, reason: 'Cannot fast-forward to the release.' });
@@ -52,6 +55,23 @@ it.each(['checking', 'applying'] as const)('announces %s with indeterminate SVGs
   expect(html).toContain('class="update-spinner"');
   expect(html.match(/disabled=""/g)).toHaveLength(2);
   expect(html).not.toContain('%');
+});
+
+it('treats daemon refresh ineligibility as checking, hiding stale reasons and blockers until completion', () => {
+  const reason = 'The main checkout is not clean. Move or stash changes, then check releases again.';
+  const checking = render({ checking: true, eligible: false, reason, blocker: undefined });
+  expect(checking).toContain('Checking for updates…');
+  expect(checking.match(/disabled=""/g)).toHaveLength(2);
+  expect(checking).not.toContain(reason);
+  expect(checking).not.toContain('update-blocked-reason');
+  expect(checking).not.toContain('Update blocked');
+  expect(checking).not.toContain('Save your changes');
+  expect(checking).not.toContain('M7 10V7'); // The lock path must not appear during a refresh.
+  expect(checking).not.toContain('Resolve the blocker');
+  expect(checking).not.toContain('ready to install');
+  const completed = render({ checking: false, eligible: false, reason, blocker: 'dirty' });
+  expect(completed).toContain('Save your changes');
+  expect(render({ checking: false, eligible: true })).toContain('ready to install');
 });
 
 it('preserves rebuild-only and distinguishes running daemon from checkout', () => {

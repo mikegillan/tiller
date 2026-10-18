@@ -17,11 +17,12 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
 // Optional update preview: TL_MOCK_UPDATE=available|blocked|checking|applying|current|restart|failed|no-target.
 // All updater actions stay in memory; no checkout, build or process is touched.
 const updateScenario = process.env.TL_MOCK_UPDATE;
+const dirtyReason = 'The main checkout is not clean: it contains uncommitted or untracked files. Move or stash those changes (including untracked files), then check releases again.';
 const release = { id: 13, tag: 'v0.1.13', name: 'v0.1.13', sha: 'abcdef1234567890', tagObject: 'release-tag', publishedAt: '2026-10-18T12:00:00Z', body: '## Improvements\n\n- Clearer explanations when a checkout blocks updates.\n- Updated setup and development documentation.\n\n## Commits\n\n- 1234567890123456789012345678901234567890 Clarify update blockers\n\nValidated source: 1234567890123456789012345678901234567890\n' };
 let updateStatus = updateScenario ? {
   sha: '970da3e1234567890', runtimeSha: '970da3e1234567890', currentVersion: 'v0.1.12', checkedAt: Date.now(), eligible: true, target: release, releases: [release],
-  ...(updateScenario === 'blocked' ? { eligible: false, blocker: 'dirty', reason: 'The main checkout has uncommitted or untracked files.' } : {}),
-  ...(updateScenario === 'checking' ? { checking: true } : {}),
+  ...(updateScenario === 'blocked' ? { eligible: false, blocker: 'dirty', reason: dirtyReason } : {}),
+  ...(updateScenario === 'checking' ? { checking: true, eligible: false, blocker: undefined, reason: dirtyReason } : {}),
   ...(updateScenario === 'applying' ? { applying: true } : {}),
   ...(updateScenario === 'failed' ? { eligible: false, fetchError: 'Release check unavailable: the network is offline.', reason: 'Check again when the connection is restored.' } : {}),
   ...(['current', 'restart'].includes(updateScenario) ? { sha: release.sha, currentVersion: release.tag, ...(updateScenario === 'current' ? { runtimeSha: release.sha } : {}) } : {}),
@@ -164,10 +165,11 @@ wss.on('connection', (ws) => {
     switch (m.t) {
       case 'updateCheck':
         if (updateStatus && !updateStatus.applying && !updateStatus.checking) {
-          updateStatus = { ...updateStatus, checking: true };
+          const result = updateStatus;
+          updateStatus = { ...result, eligible: false, blocker: undefined, checking: true };
           broadcast({ t: 'update', update: updateStatus });
           setTimeout(() => {
-            updateStatus = { ...updateStatus, checking: false, checkedAt: Date.now() };
+            updateStatus = { ...result, checking: false, checkedAt: Date.now() };
             broadcast({ t: 'update', update: updateStatus });
           }, 3000);
         }
