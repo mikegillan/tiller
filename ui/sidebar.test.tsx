@@ -1,7 +1,8 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { Sidebar } from './Sidebar';
+import { Sidebar, readSidebarDetails, saveSidebarDetails } from './Sidebar';
+import { SidebarInspector } from './SidebarInspector';
 import { App } from './App';
 import { NodeRow } from './NodeRow';
 import { SessionSwitcher } from './SessionSwitcher';
@@ -18,6 +19,7 @@ vi.mock('./store', async (original) => {
   return { ...store, useStore: (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()) };
 });
 vi.mock('./conn', () => ({ send: vi.fn() }));
+vi.mock('./SidebarInspector', () => ({ SidebarInspector: () => null }));
 vi.mock('./TerminalPane', () => ({ TerminalPane: () => null }));
 vi.mock('./hooks', () => ({ useNow: () => 10_000, useDocumentSync: () => {} }));
 type Element = ReactElement<Record<string, any>>;
@@ -195,5 +197,86 @@ it.each(['button', 'input', 'menu', 'terminal'])('selection synchronization pres
   tree.props.ref.current = { querySelector: () => selectedRow, contains: () => role !== 'terminal' };
   hooks.effects.pop()!();
   expect(selectedRow.focus).not.toHaveBeenCalled();
+  vi.unstubAllGlobals();
+});
+
+it('counts all session nodes and activity even when terminals and descendants are collapsed', () => {
+  const terminal = { ...mk('terminal', 'child', 4, { state: 'working' }), kind: 'terminal' as const };
+  const blocked = mk('blocked', 'child', 5, { state: 'blocked' });
+  update((s) => ({ nodes: { ...s.nodes, terminal, blocked }, order: [...s.order, 'terminal', 'blocked'], collapsed: ['a'] }));
+  const sidebar = Sidebar({ onSettings: () => {} });
+  const heading = find(sidebar, (el) => el.props.className === 'session-activity');
+  const html = renderToStaticMarkup(heading);
+  expect(html).toContain('Session activity <span>4</span>');
+  expect(html).toContain('3 working');
+  expect(html).toContain('1 needs you');
+  expect(elements(sidebar).filter((el) => el.type === NodeRow)).toHaveLength(1);
+});
+
+it('persists Details visibility, passes selection, and restores the toggle focus on close', () => {
+  const setItem = vi.fn();
+  vi.stubGlobal('localStorage', { getItem: () => null, setItem });
+  expect(readSidebarDetails()).toBe(false);
+  vi.stubGlobal('localStorage', { getItem: () => '1', setItem });
+  expect(readSidebarDetails()).toBe(true);
+  hooks.open = true;
+  const sidebar = Sidebar({ onSettings: () => {} });
+  const toggle = find(sidebar, (el) => el.props.className === 'btn details-toggle');
+  expect(toggle.props['aria-expanded']).toBe(true);
+  expect(toggle.props['aria-controls']).toBe('sidebar-inspector');
+  const inspector = find(sidebar, (el) => el.type === SidebarInspector);
+  expect(inspector.props.node).toBe(child);
+  const focus = vi.fn(); toggle.props.ref.current = { focus };
+  inspector.props.onClose();
+  expect(hooks.setOpen).toHaveBeenLastCalledWith(false);
+  expect(setItem).toHaveBeenLastCalledWith('tl.sidebarDetails', '0');
+  expect(focus).toHaveBeenCalledOnce();
+  toggle.props.onClick();
+  expect(setItem).toHaveBeenLastCalledWith('tl.sidebarDetails', '0');
+  update(() => ({ historyOpen: true }));
+  const history = Sidebar({ onSettings: () => {} });
+  expect(elements(history).some((el) => el.type === SidebarInspector || el.props.role === 'tree')).toBe(false);
+  expect(readSidebarDetails()).toBe(true);
+  vi.stubGlobal('localStorage', { getItem() { throw Error('blocked'); }, setItem() { throw Error('blocked'); } });
+  expect(readSidebarDetails()).toBe(false);
+  expect(() => saveSidebarDetails(true)).not.toThrow();
+  vi.unstubAllGlobals();
+});
+
+it('opens Details from its default closed state and persists the explicit choice', () => {
+  const setItem = vi.fn();
+  vi.stubGlobal('localStorage', { getItem: () => null, setItem });
+  const sidebar = Sidebar({ onSettings: () => {} });
+  expect(elements(sidebar).some((el) => el.type === SidebarInspector)).toBe(false);
+  const toggle = find(sidebar, (el) => el.props.className === 'btn details-toggle');
+  expect(toggle.props['aria-expanded']).toBe(false);
+  toggle.props.onClick();
+  expect(hooks.setOpen).toHaveBeenCalledWith(true);
+  expect(setItem).toHaveBeenCalledWith('tl.sidebarDetails', '1');
+  vi.unstubAllGlobals();
+});
+
+it('keeps reported outcomes distinct from process state and gate, and surfaces hidden unread and stalled activity', () => {
+  const node = { ...a, gate: 'running' as const, outcome: { outcome: 'failed' as const, summary: 'Needs another attempt', at: 0 }, worktree: { branch: 'tl/a', base: 'main', baseSha: 'abc', repo: '/repo', path: '/gone', missing: true } };
+  const hidden = { ...child, unread: true, status: { ...child.status, stalled: true } };
+  update(() => ({ nodes: { a: node, child: hidden }, order: ['a', 'child'], collapsed: ['a'] }));
+  const row = flattenSession(getState().nodes, getState().order, 'a', ['a'])[0];
+  const html = renderToStaticMarkup(<NodeRow row={row} />);
+  for (const text of ['outcome failed', 'gate running', 'working', 'worktree missing', 'unread', 'stalled below']) expect(html).toContain(text);
+});
+
+it('keeps Cmd+0 as the tree entry point without selecting or opening node actions', () => {
+  let shortcut: (event: Record<string, unknown>) => void = () => {};
+  vi.stubGlobal('addEventListener', (_type: string, handler: typeof shortcut) => { shortcut = handler; });
+  App(); hooks.effects.pop()!();
+  const focus = vi.fn(); const querySelector = vi.fn(() => ({ focus }));
+  vi.stubGlobal('document', { querySelector });
+  const preventDefault = vi.fn();
+  shortcut({ metaKey: true, key: '0', preventDefault });
+  expect(querySelector).toHaveBeenCalledWith('.tree');
+  expect(focus).toHaveBeenCalledOnce();
+  expect(preventDefault).toHaveBeenCalledOnce();
+  expect(getState().selected).toBe('child');
+  expect(getState().dialog).toBeNull();
   vi.unstubAllGlobals();
 });
