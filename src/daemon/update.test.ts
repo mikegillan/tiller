@@ -190,10 +190,10 @@ describe('release checkout', () => {
   });
   it('blocks dirty, untracked, local commits, detached and linked worktrees', async () => {
     commit('two'); release('v0.1.1');
-    writeFileSync(join(work, 'local'), 'keep'); expect((await checkUpdate(work, source)).reason).toContain('untracked'); rmSync(join(work, 'local'));
-    writeFileSync(join(work, 'README'), 'keep'); expect((await checkUpdate(work, source)).reason).toContain('uncommitted'); git(work, 'checkout', '--', 'README');
+    writeFileSync(join(work, 'local'), 'keep'); expect(await checkUpdate(work, source)).toMatchObject({ eligible: false, reason: expect.stringContaining('main checkout is not clean') }); rmSync(join(work, 'local'));
+    writeFileSync(join(work, 'README'), 'keep'); expect(await checkUpdate(work, source)).toMatchObject({ eligible: false, reason: expect.stringContaining('uncommitted or untracked files. Move or stash') }); git(work, 'checkout', '--', 'README');
     git(work, 'commit', '--allow-empty', '-qm', 'local'); expect((await checkUpdate(work, source)).reason).toContain('local or unreleased');
-    git(work, 'checkout', '--detach', '-q'); expect((await checkUpdate(work, source)).reason).toContain('main branch');
+    git(work, 'checkout', '--detach', '-q'); expect((await checkUpdate(work, source)).reason).toContain('must be on main');
     git(work, 'checkout', '-q', 'main');
     const linked = join(dir, 'linked'); git(work, 'worktree', 'add', '-q', '--detach', linked);
     expect((await checkUpdate(linked, source)).eligible).toBe(false);

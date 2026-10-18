@@ -61,3 +61,24 @@ it.each(['claude', 'pi', 'codex'] as const)('preserves spawn harness order and %
   const labels = [...effort!.matchAll(/<option[^>]*>([^<]+)<\/option>/g)].map((match) => match[1]);
   expect(labels).toEqual(harness === 'codex' ? ['Default', 'low', 'medium', 'high', 'xhigh'] : ['Default', 'low', 'medium', 'high', 'xhigh', 'max']);
 });
+
+
+it.each([false, true])('explains a blocked update beside its action (restart only: %s)', (restartOnly) => {
+  const reason = 'The main checkout is not clean: it contains uncommitted or untracked files. Move or stash those changes (including untracked files), then check releases again.';
+  update(() => ({ dialog: { kind: 'update' }, update: {
+    sha: restartOnly ? release.sha : 'old', runtimeSha: 'old',
+    currentVersion: restartOnly ? release.tag : undefined,
+    checkedAt: 1, eligible: false, reason, releases: [release], target: release,
+  } }));
+  const html = renderToStaticMarkup(<Dialogs />);
+  expect(html).toContain('<p id="update-blocked-reason" role="status"><strong>Update blocked.</strong> ' + reason);
+  expect(html.split(reason)).toHaveLength(2);
+  expect(html).toContain('aria-describedby="update-blocked-reason" disabled=""');
+  expect(html).toContain(restartOnly ? '>Rebuild and restart</button>' : '>Update v1.2.3</button>');
+  expect(html.indexOf('Update blocked.')).toBeLessThan(html.indexOf('>Check releases</button>'));
+
+  update((s) => ({ update: { ...s.update!, eligible: true, reason: undefined } }));
+  const clean = renderToStaticMarkup(<Dialogs />);
+  expect(clean).not.toContain('update-blocked-reason');
+  expect(clean).not.toContain('class="btn primary" disabled');
+});

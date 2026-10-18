@@ -91,13 +91,13 @@ export function githubReleases(request: typeof fetch = fetch): ReleaseSource {
 }
 const ancestor = async (repo: string, a: string, b: string) => (await tryGit(repo, 'merge-base', '--is-ancestor', a, b)) !== undefined;
 async function safeCheckout(repo: string): Promise<string | undefined> {
-  if (await tryGit(repo, 'symbolic-ref', '--short', '-q', 'HEAD') !== 'main') return 'updates require the main branch';
+  if (await tryGit(repo, 'symbolic-ref', '--short', '-q', 'HEAD') !== 'main') return 'The primary checkout must be on main to update. Switch it to main, then check releases again.';
   const common = await git(repo, 'rev-parse', '--git-common-dir');
   const dir = await git(repo, 'rev-parse', '--git-dir');
   if (resolve(repo, common) !== resolve(repo, dir)) return 'updates require the primary checkout, not a linked worktree';
   for (const name of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'BISECT_LOG'])
     if (existsSync(resolve(repo, await git(repo, 'rev-parse', '--git-path', name)))) return 'a git operation is in progress';
-  if (await git(repo, 'status', '--porcelain', '--untracked-files=all')) return 'uncommitted or untracked files';
+  if (await git(repo, 'status', '--porcelain', '--untracked-files=all')) return 'The main checkout is not clean: it contains uncommitted or untracked files. Move or stash those changes (including untracked files), then check releases again.';
 }
 async function remoteTag(repo: string, origin: string, tag: string): Promise<string> {
   const refs = await git(repo, 'ls-remote', '--exit-code', '--refs', origin, `refs/tags/${tag}`);
