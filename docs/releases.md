@@ -24,6 +24,15 @@ There is no manual-dispatch shortcut around validation.
 - Releases contain source and notes. This workflow produces no signed binaries
   or updater asset manifest and does not bump package, Cargo or app manifests.
 
+Manual and automatic discovery share one in-flight check. The daemon broadcasts
+`checking: true` with installation eligibility disabled at the start, then
+`checking: false` with the fresh result or failure. Checks requested during
+installation retain the current `applying` status without starting discovery.
+The optional `blocker: 'dirty'` identifies a proven dirty primary `main`
+checkout; other blockers and check failures retain the human-readable reason.
+Installation restarts the daemon after building, interrupting running agents;
+they can resume afterward under the existing [resume policy](sessions.md#resume-on-daemon-start).
+
 The release body starts with GitHub-generated PR notes using an explicit previous
 published stable tag. When GitHub returns only a compare link or no description,
 it starts with actual non-merge commit subjects instead, without hashes. Subjects

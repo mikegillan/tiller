@@ -734,7 +734,7 @@ export class NodeManager extends EventEmitter {
     this.emitNode(id);
   }
 
-  input(id: string, data: string): void {
+  input(id: string, data: string, binary = false): void {
     if (this.runtimes.get(id)?.busy === 'changing harness') return;
     const rt = this.runtimes.get(id), s = rt?.session;
     if (!rt || !s) return;
@@ -749,7 +749,7 @@ export class NodeManager extends EventEmitter {
       }, INTERRUPT_MS);
       rt.interruptTimer.unref();
     }
-    s.write(data).catch(logError);
+    s.write(binary ? Buffer.from(data, 'latin1') : data).catch(logError);
   }
 
   resize(id: string, cols: number, rows: number): void {

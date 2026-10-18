@@ -1,0 +1,57 @@
+.dlg > .update-dialog { width: min(800px, calc(100vw - 32px)); height: min(820px, calc(100dvh - 48px)); padding: 28px 30px 24px; }
+.update-dialog > .modal-header { margin-bottom: 8px; align-items: center; }
+.update-dialog > .modal-header h2 { font-size: 30px; line-height: 1.2; letter-spacing: -0.02em; }
+.update-dialog > .modal-body { padding-right: 4px; }
+.update-dialog p.update-subtitle { font-size: 18px; line-height: 1.5; margin-bottom: 22px; }
+.update-versions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; color: var(--dim); font-size: 15px; }
+.update-version-pair { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
+.update-versions strong { padding: 7px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--fg); font-size: 17px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.update-versions > svg { margin: 0 8px; flex: none; }
+.update-dialog p.update-checkout { margin: 8px 0 20px; }
+.update-checkout code { font: inherit; font-variant-numeric: tabular-nums; }
+.update-blocker { display: flex; align-items: flex-start; gap: 16px; margin: 22px 0 26px; padding: 20px; border: 1px solid var(--needs); border-radius: 10px; background: color-mix(in srgb, var(--needs) 9%, var(--surface)); }
+.update-blocker > svg { flex: none; width: 28px; height: 28px; color: var(--needs); }
+.update-blocker h3 { margin: 0 0 10px; font-size: 18px; color: var(--fg); }
+.update-blocker p { margin: 0; color: var(--fg); line-height: 1.6; }
+.update-blocker ol { margin: 12px 0 0; padding-left: 22px; line-height: 1.7; }
+.update-dialog p.update-error { color: var(--bad); }
+.update-progress { display: flex; align-items: center; gap: 8px; }
+.update-progress:empty { display: none; }
+.update-notes { margin: 24px 0; }
+.update-notes > h3 { font-size: 22px; margin: 0 0 16px; letter-spacing: -0.01em; }
+.update-notes h4 { font-size: 16px; margin: 20px 0 10px; }
+.update-notes .markdown { font-size: 14px; line-height: 1.65; }
+.update-notes .markdown h2 { font-size: 17px; margin: 18px 0 8px; }
+.update-notes .markdown p { color: var(--fg); }
+.update-installation { border: 1px solid var(--line); border-radius: 8px; margin: 20px 0 4px; }
+.update-installation > summary { display: flex; align-items: center; gap: 12px; padding: 14px 16px; cursor: pointer; list-style: none; font-size: 15px; }
+.update-installation > summary::-webkit-details-marker { display: none; }
+.update-installation > summary > span { flex: 1; }
+.update-installation[open] > summary > svg:last-child { transform: rotate(90deg); }
+.update-installation > p { margin: 0; padding: 0 16px 16px; line-height: 1.6; }
+.update-dialog > .modal-footer { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 16px; }
+.update-dialog p.update-interruption { font-size: 12px; line-height: 1.5; margin-bottom: 16px; }
+.update-dialog .update-actions { margin: 0; gap: 10px; }
+.update-actions .btn { min-height: 38px; height: auto; padding: 8px 16px; white-space: normal; justify-content: center; }
+.update-actions .update-later { margin-right: auto; border-color: transparent; background: transparent; color: var(--dim); }
+.update-spinner { flex: none; animation: update-spin 1s linear infinite; }
+@keyframes update-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .update-spinner { animation: none; } }
+@media (max-width: 520px), (max-height: 480px) {
+  .dlg > .update-dialog { padding: 16px; height: calc(100dvh - 32px); }
+  .update-dialog > .modal-header h2 { font-size: 24px; }
+  .update-dialog .modal-expand { max-width: 86px; height: auto; white-space: normal; }
+  .update-dialog p.update-subtitle { font-size: 16px; }
+  .update-versions { gap: 8px; font-size: 13px; }
+  .update-versions strong { font-size: 14px; padding: 5px 8px; }
+  .update-versions > svg { margin: 0; }
+  .update-blocker { padding: 14px; gap: 10px; }
+  .update-actions .btn { padding: 7px 10px; }
+  .update-dialog p.update-interruption { margin-bottom: 10px; }
+}
+
+@media (max-width: 520px) {
+  .update-dialog .update-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .update-actions .update-later { grid-column: 1 / -1; justify-self: start; }
+  .update-version-pair { gap: 8px; }
+}

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import xterm from '@xterm/headless';
 import { PtySession, buildChildEnv, classify, composerTextOf, loginShellPath } from './pty.js';
 
 const base = { cwd: '/tmp', cols: 80, rows: 24 };
@@ -48,6 +49,45 @@ describe('PtySession', () => {
     await until(() => box.out.includes('hi'));
     s.kill();
     await until(() => s.exited);
+  });
+
+  it('preserves mouse encoding in snapshots across split modes, disable and reset without consuming native modes', async () => {
+    const s = PtySession.spawn({ ...base, file: process.execPath, args: ['-e',
+      "process.stdin.setRawMode(true); process.stdin.on('data', d => process.stdout.write(d)); console.log('ready')"], env: env() });
+    const box = collect(s);
+    try {
+      await until(() => box.out.includes('ready'));
+      const cases = [
+        ['\x1b[?1049;1003;1006;2004h', 1006, 'alternate', 'any'],
+        ['\x1b[?10', 1006, 'alternate', 'any'],
+        ['06l', 0, 'alternate', 'any'],
+        ['\x1b[?1006;1016h', 1016, 'alternate', 'any'],
+        ['\x1b[?1006l', 0, 'alternate', 'any'],
+        ['\x1b[?1016;1006h', 1006, 'alternate', 'any'],
+        ['\x1b[!p', 1006, 'alternate', 'any'], // xterm soft reset retains mouse modes.
+        ['\x1b[?1016l', 0, 'alternate', 'any'],
+        ['\x1b[?1006h\x1bc', 0, 'normal', 'none'],
+        ['\x1b[?1002;1006h', 1006, 'normal', 'drag'], // RIS leaves observers installed.
+        ['\x1b[?1002l', 1006, 'normal', 'none'], // Encoding survives capture being disabled.
+        ['\x1b[?1016:1h', 1016, 'normal', 'none'], // xterm uses the primary parameter.
+      ] as const;
+      for (const [sequence, encoding, buffer, tracking] of cases) {
+        const offset = box.out.length;
+        await s.write(sequence);
+        await until(() => box.out.length >= offset + sequence.length);
+        await s.flush();
+        const restored = new xterm.Terminal({ allowProposedApi: true });
+        try {
+          let response = '';
+          restored.onData((data) => { response += data; });
+          await new Promise<void>((resolve) => restored.write(s.snapshot() + '\x1b[?1006$p\x1b[?1016$p', resolve));
+          expect(response).toBe(`\x1b[?1006;${encoding === 1006 ? 1 : 2}$y\x1b[?1016;${encoding === 1016 ? 1 : 2}$y`);
+          expect(restored.buffer.active.type).toBe(buffer);
+          expect(restored.modes.mouseTrackingMode).toBe(tracking);
+          if (sequence.includes('2004h')) expect(restored.modes.bracketedPasteMode).toBe(true);
+        } finally { restored.dispose(); }
+      }
+    } finally { await s.terminate(); }
   });
 
   it('rejects a missing cwd with a clear error', () => {
