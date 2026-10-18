@@ -44,10 +44,10 @@ The layer column says where a key may be set: "project, home" means either file,
 | `daemon.maxLiveNodes` | integer | `20` | home | An agent's spawn is refused once this many nodes are live. |
 | `daemon.maxWorking` | integer | `0` | home | Claude nodes working at once; past it a spawn is queued. 0 means no cap. |
 | `notifications.kinds.needsYou` | `banner`, `sound`, `silent` | `sound` | project, home | How a node that needs approval or an answer is notified. |
-| `notifications.kinds.errored` | as above | `sound` | project, home | How a turn that ended in an error is notified. |
-| `notifications.kinds.done` | as above | `banner` | project, home | How a finished turn is notified. |
-| `notifications.kinds.exited` | as above | `banner` | project, home | How an exited node is notified. |
-| `notifications.treeDoneSummary` | boolean | `false` | project, home | Replace per-node done and exited notifications with one per tree once all its Claude nodes are done or exited. |
+| `notifications.kinds.errored` | as above | `silent` | project, home | How a turn that ended in an error is notified. |
+| `notifications.kinds.done` | as above | `banner` | project, home | Level for the tree completion summary, or individual finished turns when tree summaries are disabled. |
+| `notifications.kinds.exited` | as above | `silent` | project, home | How an exited node is notified. |
+| `notifications.treeDoneSummary` | boolean | `true` | project, home | Replace per-agent done and exited notifications with one per tree once all agents finish, including the root; pending launches and unresolved gates delay completion. |
 | `notifications.quietHours` | `"HH:MM-HH:MM"` | none | project, home | Local time span, which may cross midnight, during which only needs-you notifications are shown, without sound. |
 | `limits.maxDepth` | integer | `3` | project, home | An agent's spawn is refused when the new node would sit more than this many levels below its root. |
 | `limits.maxChildren` | integer | `8` | project, home | An agent's spawn is refused when the parent already has this many live children. |

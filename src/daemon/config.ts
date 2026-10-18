@@ -78,8 +78,8 @@ export const ConfigFile = z.object({
   }).strict().optional(),
   /**
    * kinds: how each notify kind is shown; sound means a banner with a sound.
-   * treeDoneSummary: once every node of a tree is done or exited, one "tree <title> finished" notification replaces the
-   * per-node done and exited ones. quietHours: everything is silent then, except needsYou, which is a banner without sound.
+   * treeDoneSummary: once all agents finish, with no pending launches or unresolved gates, one tree notification
+   * replaces per-agent done and exited notifications. quietHours: everything is silent then, except needsYou, which is a banner without sound.
    */
   notifications: z.object({
     kinds: z.object({ needsYou: Level, done: Level, errored: Level, exited: Level }).strict().optional(),
@@ -129,8 +129,8 @@ export const DEFAULTS = {
   'worktrees.protected': ['main', 'master'], 'worktrees.taskBranch': 'tl/{slug}',
   'gate.command': undefined, 'gate.retries': 2, 'gate.timeoutMinutes': 10,
   'daemon.resumeOnStart': true, 'daemon.resumeMaxAgeDays': 3, 'daemon.sessionsKeepDays': 14, 'daemon.digestAfterMinutes': 10, 'daemon.maxLiveNodes': 20, 'daemon.maxWorking': 0,
-  'notifications.kinds.needsYou': 'sound', 'notifications.kinds.errored': 'sound', 'notifications.kinds.done': 'banner', 'notifications.kinds.exited': 'banner',
-  'notifications.treeDoneSummary': false, 'notifications.quietHours': undefined,
+  'notifications.kinds.needsYou': 'sound', 'notifications.kinds.errored': 'silent', 'notifications.kinds.done': 'banner', 'notifications.kinds.exited': 'silent',
+  'notifications.treeDoneSummary': true, 'notifications.quietHours': undefined,
   'limits.maxDepth': 3, 'limits.maxChildren': 8, 'limits.stallMinutes': 5, 'limits.maxMessagesPer10Min': 20,
 } satisfies Flat;
 

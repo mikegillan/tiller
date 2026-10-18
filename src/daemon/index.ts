@@ -22,7 +22,7 @@ const server = await startServer(manager, { port: daemonPort(manager.home) }).ca
 });
 const tl = fileURLToPath(new URL('../../bin/tl', import.meta.url));
 const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-manager.on('notify', createNotifier({
+const notifier = createNotifier({
   view: (id) => manager.view(id),
   tree: (id) => {
     const root = manager.view(manager.registry.lineage(id).at(-1)?.id ?? id);
@@ -38,7 +38,12 @@ manager.on('notify', createNotifier({
   // A click runs this under sh with a bare PATH, so hand it the daemon's home and PATH.
   onClick: (id) => `TL_HOME=${sq(manager.home)} PATH=${sq(path)} ${sq(tl)} select ${id}`,
   run: runDetached,
-}));
+});
+manager.on('notify', notifier);
+manager.on('node', notifier.observe);
+manager.on('removed', () => {
+  for (const node of manager.list()) if (node.parentId === null) notifier.observe(node);
+});
 writeFileSync(join(manager.home, PORT_FILE), `${server.port}\n`); // lets `tl` find the daemon without TL_PORT
 writeFileSync(join(manager.home, REPO_FILE), fileURLToPath(new URL('../..', import.meta.url))); // lets the Tauri app find bin/tld
 if (process.env.TL_DEBUG) manager.on('hook', (id, ev) => console.log(`${new Date().toISOString().slice(11, 23)} hook ${id.slice(0, 6)} ${JSON.stringify({ e: ev.hook_event_name, err: ev.error, tool: ev.tool_name, type: ev.notification_type, prompt: (ev.prompt_id as string | undefined)?.slice(0, 6), msg: ev.message, mode: ev.permission_mode })}`));
