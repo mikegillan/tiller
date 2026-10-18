@@ -78,3 +78,41 @@ it('keeps healthy shared-account usage available when another reporter fails', (
   expect(html).toContain('42% used');
   expect(html).not.toContain('Usage unavailable');
 });
+
+it('presents duplicate unidentified Claude session readings as one latest summary with expandable observations', () => {
+  fixture.state.usageSources = [source({ id: 'discovery:claude', tool: 'claude' }), ...[43, 38, 44].map((percentUsed, i) => report({
+    id: `claude-${i}`, tool: 'claude', accountId: undefined, at: fixture.now - [60_000, 480_000, 0][i],
+    rateLimits: [{ kind: 'five_hour', percentUsed, resetsAt: '2026-10-17T14:00:00Z' }, { kind: 'seven_day', percentUsed: 9, resetsAt: '2026-10-20T12:00:00Z' }],
+  }))];
+  const html = render();
+  const summary = html.slice(0, html.indexOf('<details'));
+  expect(summary).toContain('44% used'); expect(summary).toContain('9% used');
+  expect(summary).not.toContain('43% used'); expect(summary).not.toContain('38% used');
+  expect(html).toContain('Latest session reading'); expect(html).toContain('Account identity unavailable');
+  expect(html).toContain('<summary>2 other session readings</summary>');
+  expect(html).toContain('43% used'); expect(html).toContain('38% used'); expect(html).toContain('8m ago');
+  expect(html).not.toContain('Separate quota');
+});
+
+it('keeps identified Claude accounts and model pools visible even when reset times match', () => {
+  fixture.state.usageSources = [source({ id: 'discovery:claude', tool: 'claude' }),
+    report({ tool: 'claude', accountId: 'one' }), report({ id: 'two', tool: 'claude', accountId: 'two' }),
+    report({ id: 'opus', tool: 'claude', accountId: undefined, scope: 'model', model: 'opus' }),
+    report({ id: 'sonnet', tool: 'claude', accountId: undefined, scope: 'model', model: 'sonnet' })];
+  const html = render();
+  expect(html.match(/<progress /g)).toHaveLength(8);
+  expect(html).toContain('Separate quota 1'); expect(html).toContain('Separate quota 2');
+  expect(html).toContain('opus model limit'); expect(html).toContain('sonnet model limit');
+  expect(html).not.toContain('<details');
+});
+
+it('keeps the latest unidentified failure visible and retains healthy older observations without borrowing windows', () => {
+  fixture.state.usageSources = [report({ id: 'older', tool: 'claude', accountId: undefined, at: fixture.now - 480_000 }),
+    report({ id: 'latest', tool: 'claude', accountId: undefined, availability: 'unavailable', rateLimits: [{ kind: 'five_hour', percentUsed: 44, observedAt: fixture.now - 360_000 }] })];
+  const html = render();
+  const summary = html.slice(0, html.indexOf('<details'));
+  expect(summary).toContain('Usage unavailable'); expect(summary).toContain('Stale reading');
+  expect(summary).toContain('44% used'); expect(summary).not.toContain('16% used');
+  expect(html).toContain('<summary>1 other session reading</summary>');
+  expect(html).toContain('16% used'); expect(html).toContain('8m ago');
+});
