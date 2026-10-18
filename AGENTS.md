@@ -46,9 +46,13 @@ Run checks appropriate to the changed area from the repository root:
 | Release helpers | `node --test scripts/release-test.mjs` |
 | Native Rust app | `cargo test --locked --all-targets --manifest-path src-tauri/Cargo.toml` |
 
-Tests generally live beside their source as `*.test.ts` or `*.test.tsx`. Keep daemon integration tests isolated with temporary homes and ephemeral ports, as in `src/daemon/server.test.ts`. Vitest deliberately runs files serially: some tests create real git repositories and child processes. `mod/` tests run only through the Claude plugin runner.
+Tests generally live beside their source as `*.test.ts` or `*.test.tsx`. Keep daemon integration tests isolated with temporary homes and ephemeral ports, as in `src/daemon/server.test.ts`. Vitest runs up to two test files at once to bound resource use for tests that create real git repositories and child processes. `mod/` tests run only through the Claude plugin runner.
 
-`.github/workflows/ci.yml` is the CI reference: it checks types, Vitest, release helpers, the production UI build and Rust on macOS. `.tiller/config.json` defines a separate worker completion gate (root and UI typechecks plus Vitest); it does not cover every CI check.
+Implementation workers must run relevant focused tests for their changes and report the commands and results. Reviewers run targeted checks as needed to assess the diff; read-only analyses do not need broad testing. The orchestrator runs the full Vitest suite (`npm test`) once on the final integrated tree before publication.
+
+`.tiller/config.json` defines an automatic worker completion gate: `npm run typecheck` (root and Pi adapter) plus the UI typecheck. The gate does not select or run focused tests. Workers' focused tests and the orchestrator's integration checks remain required manual checks; passing the gate does not replace them.
+
+`.github/workflows/ci.yml` remains the authoritative CI reference: it checks types, the full Vitest suite, release helpers, the production UI build and Rust on macOS. The worker gate does not cover every CI check.
 
 ## Conventions and boundaries
 
