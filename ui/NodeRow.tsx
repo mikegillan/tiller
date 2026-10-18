@@ -1,12 +1,12 @@
 import { ActionButtons } from './ActionButtons';
-import { CtxBar, GateMark, hasChanges, StateDot } from './Bits';
-import { shortModel, fmtAge } from '../src/shared/format';
+import { GateMark, hasChanges, StateDot } from './Bits';
+import { fmtAge } from '../src/shared/format';
 import { useNow } from './hooks';
 import { Icon } from './icons';
 import { RenameInput } from './RenameInput';
 import { selectNode, toggleCollapsed, useStore } from './store';
 import { needsYou } from '../src/shared/protocol';
-import { kindTag, KIND_LABEL, statusKind, type Row } from './tree';
+import { KIND_LABEL, statusKind, type Row } from './tree';
 
 export function NodeRow({ row, tabStop }: { row: Row; tabStop?: boolean }) {
   const { node, depth, hasChildren, collapsed, descendants } = row;
@@ -21,6 +21,7 @@ export function NodeRow({ row, tabStop }: { row: Row; tabStop?: boolean }) {
 
   return (
     <div className={`row${selected ? ' sel' : ''}`} role="treeitem" aria-selected={selected} aria-level={depth + 1} aria-expanded={hasChildren ? !collapsed : undefined}
+      title={`${node.title}${node.worktree ? ` · ${node.worktree.branch}` : ''}${s.model ?? node.model ? ` · ${s.model ?? node.model}` : ''}`}
       data-id={node.id} tabIndex={(tabStop ?? selected) ? 0 : -1}
       onFocus={(e) => { if (e.target === e.currentTarget && !selected) selectNode(node.id); }} onClick={() => selectNode(node.id)}>
       {row.guides.map((g, i) => <span key={i} className={`g${g ? ' v' : ''}`} />)}
@@ -35,26 +36,24 @@ export function NodeRow({ row, tabStop }: { row: Row; tabStop?: boolean }) {
           {renaming ? <RenameInput id={node.id} title={node.title} /> : <span className={`title${s.exited ? ' dim' : ''}`} title={node.title}>{node.title}</span>}
           {node.unread && <i className="unread" title="unread" />}
           {node.muted && <span className="muted" title="notifications muted"><Icon name="bellOff" size={11} /></span>}
+          <span className="age" title="Time since last state change">{fmtAge(now - s.changedAt)}</span>
           <ActionButtons node={node} />
         </div>
         <div className="row-status">
-          <span className={`row-state ${kind}`}>{state}</span>
+          <span className={`row-state ${kind}`}>{node.kind === 'terminal' ? `terminal · ${state}` : state}</span>
           {s.activity && <span className={`row-activity${blocked ? ' warn' : ''}`} title={s.activity}>{s.activity}</span>}
-          <span className="age">{fmtAge(now - s.changedAt)}</span>
         </div>
-        {(node.gate || hasChanges(node) || collapsed || (s.stalled && !s.exited)) && <div className="row-signals">
+        {(node.gate || node.outcome || node.worktree?.missing || hasChanges(node) || collapsed || (s.stalled && !s.exited)) && <div className="row-signals">
+          {node.outcome && <span className={`count${node.outcome.outcome === 'failed' ? ' bad' : ''}`} title={node.outcome.summary ?? node.outcome.note}>outcome {node.outcome.outcome}</span>}
+          {node.worktree?.missing && <span className="count warn" title="The worktree directory is gone; resume is refused">worktree missing</span>}
           {node.gate && <GateMark gate={node.gate} />}
-          {hasChanges(node) && <span className="count" title={`unmerged work on ${node.status.git!.branch}: merge or close it`}>changes</span>}
+          {hasChanges(node) && <span className="count" title={`unmerged work on ${node.status.git!.branch}: merge or close it`}>changes · {node.status.git!.ahead} ahead · {node.status.git!.dirty} dirty</span>}
           {collapsed && <span className="count" title={`${descendants.length} hidden`}>+{descendants.length}</span>}
+          {collapsed && descendants.some((d) => d.unread) && <span className="count" title="Hidden nodes have unread activity">unread</span>}
+          {collapsed && descendants.some((d) => d.status.stalled && !d.status.exited) && <span className="count warn">stalled below</span>}
           {collapsed && needs > 0 && <span className="count warn">{needs} needs you</span>}
           {s.stalled && !s.exited && <span className="count warn" title="working with no hook event">no activity {fmtAge(now - s.changedAt)}</span>}
         </div>}
-        <div className="row-meta">
-          <span className="row-model" title={`${kindTag(node)}${s.model ?? node.model ? ` · ${s.model ?? node.model}` : ''}`}>{shortModel(s.model ?? node.model) || kindTag(node)}</span>
-          {node.worktree && <span className="row-branch" title={`branch ${node.worktree.branch} from ${node.worktree.base}`}>{node.worktree.branch}</span>}
-          {node.worktree?.missing && <span className="warn" title="the worktree directory is gone; resume is refused">missing</span>}
-          {s.contextPct !== undefined && <CtxBar pct={s.contextPct} />}
-        </div>
       </div>
     </div>
   );
