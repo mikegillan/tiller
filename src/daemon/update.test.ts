@@ -1,29 +1,42 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyUpdate, checkUpdate, compareVersions, createUpdater, githubReleases, githubRepo, updateLine, UPDATE_CHECK_INTERVAL, type PublishedRelease, type ReleaseSource } from './update.js';
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
   cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.com' },
 }).trim();
 let dir: string, seed: string, work: string, rows: PublishedRelease[], source: ReleaseSource;
+let template: string | undefined, initialRows: PublishedRelease[];
 const commit = (path: string, text = path) => { writeFileSync(join(seed, path), text); git(seed, 'add', path); git(seed, 'commit', '-qm', text); };
 const release = (tag: string) => {
   git(seed, 'tag', tag); git(seed, 'push', '-q', 'origin', 'main', '--tags');
   const r = { id: rows.length + 1, tag, name: tag, body: `Notes for ${tag}`, publishedAt: '2026-10-17T00:00:00Z' }; rows.push(r); return r;
 };
-beforeEach(() => {
+function setupCheckout() {
+  if (!template) {
+    dir = mkdtempSync(join(tmpdir(), 'tiller-release-test-'));
+    git(dir, 'init', '-q', '--bare', '--initial-branch=main', 'origin.git');
+    git(dir, 'clone', '-q', 'origin.git', 'seed'); seed = join(dir, 'seed');
+    rows = [];
+    commit('README', 'first'); release('v0.1.0');
+    git(dir, 'clone', '-q', 'origin.git', 'work'); work = join(dir, 'work');
+    git(work, 'remote', 'set-url', 'origin', 'https://github.com/example/tiller.git');
+    // Keep the seed's pushes inside each copy. The template has ordinary .git directories, no linked worktrees.
+    git(seed, 'remote', 'set-url', 'origin', '../origin.git');
+    template = dir;
+    initialRows = rows;
+  }
   dir = mkdtempSync(join(tmpdir(), 'tiller-release-test-'));
-  git(dir, 'init', '-q', '--bare', '--initial-branch=main', 'origin.git');
-  git(dir, 'clone', '-q', 'origin.git', 'seed'); seed = join(dir, 'seed');
-  rows = []; source = { transport: join(dir, 'origin.git'), list: async () => [...rows], get: async (_repo, id) => rows.find((r) => r.id === id)! };
-  commit('README', 'first'); release('v0.1.0');
-  git(dir, 'clone', '-q', 'origin.git', 'work'); work = join(dir, 'work');
-  git(work, 'remote', 'set-url', 'origin', 'https://github.com/example/tiller.git');
-
-});
-afterEach(() => { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); });
+  // cpSync copies files rather than hard-linking writable Git state. Never run tests against the template.
+  cpSync(template, dir, { recursive: true });
+  seed = join(dir, 'seed'); work = join(dir, 'work');
+  rows = structuredClone(initialRows);
+  source = { transport: join(dir, 'origin.git'), list: async () => [...rows], get: async (_repo, id) => rows.find((r) => r.id === id)! };
+}
+afterEach(() => { vi.useRealTimers(); });
+afterAll(() => { if (template) rmSync(template, { recursive: true, force: true }); });
 
 describe('published releases', () => {
   it('keeps legacy update status without runtimeSha from implying an older daemon', () => {
@@ -50,6 +63,8 @@ describe('published releases', () => {
 });
 
 describe('release checkout', () => {
+  beforeEach(setupCheckout);
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
   it('pins the latest release and rolls up missed notes without following unreleased main', async () => {
     commit('two'); release('v0.1.1'); commit('three'); release('v0.1.2');
     const target = git(seed, 'rev-parse', 'HEAD'); commit('unreleased'); git(seed, 'push', '-q', 'origin', 'main');
@@ -273,6 +288,8 @@ describe('release checkout', () => {
 });
 
 describe('installed unread release notes', () => {
+  beforeEach(setupCheckout);
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
   const updater = (onChange = vi.fn()) => createUpdater({ repo: work, home: dir, source, onChange, spawnHelper: vi.fn(() => { throw new Error('must not apply'); }) });
   const install = async (tag: string) => {
     commit(`file-${tag}`); release(tag);
@@ -448,6 +465,8 @@ describe('installed unread release notes', () => {
 
 
 describe('automatic discovery while a UI is connected', () => {
+  beforeEach(setupCheckout);
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
   // Fake only the scheduler; fixture Git subprocesses still run normally.
   const fakeClock = () => vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   const setup = () => {
