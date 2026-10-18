@@ -31,7 +31,7 @@
  * - `sendUserMessage`/`isIdle`/`abort` are injected, so the bridge is tested with a fake Pi.
  */
 
-import type { InboxMessage } from "./client.ts";
+import type { InboxMessage } from "../shared/client.ts";
 
 /** The subset of `TillerClient` the bridge uses; tests inject a fake. */
 export interface TillerClientLike {

@@ -33,7 +33,7 @@
 
 import { randomBytes } from "node:crypto";
 import { TillerBridge } from "./bridge.ts";
-import { readToken, TillerClient } from "./client.ts";
+import { readToken, TillerClient } from "../shared/client.ts";
 import {
   missingCapabilities,
   nativePiVersion,

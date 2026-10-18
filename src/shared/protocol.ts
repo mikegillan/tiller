@@ -1,12 +1,10 @@
 // Shared contracts between daemon, UI and the agent-facing API. Keep this file small and stable.
+import type { Harness, Profile, Effort } from './harness-policy.js';
+export { HARNESSES, PROFILES, PROFILE_LABELS, EFFORTS, type Harness, type Profile, type Effort } from './harness-policy.js';
 
 /** `agent` is any agent harness; the harness field names which one. `terminal` is a plain login shell. */
 export const NODE_KINDS = ['claude', 'agent', 'terminal'] as const;
 export type NodeKind = (typeof NODE_KINDS)[number];
-
-/** The agent CLIs a node can run. A node with an agent kind defaults to claude when it names none (legacy records). */
-export const HARNESSES = ['claude', 'pi', 'codex'] as const;
-export type Harness = (typeof HARNESSES)[number];
 
 /** An agent node runs an agent harness; a terminal node is a shell with no agent behind it. */
 export const isAgentKind = (kind: NodeKind): boolean => kind !== 'terminal';
@@ -72,19 +70,9 @@ export interface NodeStatus {
 export const ROLES = ['orchestrator', 'worker', 'none'] as const;
 export type Role = (typeof ROLES)[number];
 
-/** Task behavior, independent of the coordination role and selected harness. */
-export const PROFILES = ['orchestrator', 'implementation', 'explorer', 'mechanical', 'reviewer'] as const;
-export type Profile = (typeof PROFILES)[number];
-export const PROFILE_LABELS: Record<Profile, string> = {
-  orchestrator: 'Orchestrator', implementation: 'Implementation', explorer: 'Explorer', mechanical: 'Mechanical worker', reviewer: 'Reviewer',
-};
 /** Explicit profile wins; otherwise the effective coordination role selects its coherent task default. */
 export const profileFor = (profile: Profile | undefined, parentId: string | null, role?: Role): Profile =>
   profile ?? ((role ?? (parentId ? 'worker' : 'orchestrator')) === 'orchestrator' ? 'orchestrator' : 'implementation');
-
-/** Values for claude's `--effort`. */
-export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-export type Effort = (typeof EFFORTS)[number];
 
 export const ISOLATIONS = ['none', 'worktree'] as const;
 export type Isolation = (typeof ISOLATIONS)[number];

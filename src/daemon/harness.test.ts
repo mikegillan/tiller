@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { adapterFor, claudeAdapter, piAdapter } from './harness.js';
+import { adapterFor, claudeAdapter, codexAdapter, piAdapter } from './harness.js';
 import { claudeLaunch, type LaunchInput } from './launch.js';
 import { NodeManager } from './manager.js';
 import { startServer, type DaemonServer } from './server.js';
@@ -43,6 +43,14 @@ describe('harness boundary', () => {
       expect(() => piAdapter.validate({ preset })).toThrow(/preset tools/);
     }
     expect(() => piAdapter.launch({ ...input(), forkSession: 'old' })).toThrow(/forking/);
+  });
+  it('preserves independent launch effort validation for Codex and Pi', () => {
+    for (const effort of ['low', 'medium', 'high', 'xhigh'] as const) {
+      const spec = codexAdapter.launch({ ...input(), effort });
+      expect(JSON.parse(spec.args.at(-1)!).effort).toBe(effort);
+    }
+    expect(() => codexAdapter.launch({ ...input(), effort: 'max' })).toThrow('unsupported Codex effort: max');
+    expect(piAdapter.launch({ ...input(), effort: 'max' }).args).toContain('max');
   });
   it('uses an archived session path when resuming', () => {
     const i = { ...input(), resume: true, transcriptPath: join(home, 'old', 'session.jsonl') };

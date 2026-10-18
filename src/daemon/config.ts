@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { PROFILES, isSupportedEffort } from '../shared/harness-policy.js';
 import { EFFORTS, ISOLATIONS, type Harness, type Profile, type Role } from '../shared/protocol.js';
 import { SETTINGS_HARNESSES, SETTINGS_PROFILES, SETTINGS_PROFILE_DEFAULTS, type SettingsEntry } from '../shared/settings.js';
 import { homeDir } from './home.js';
@@ -17,10 +18,12 @@ export type NotifyLevel = (typeof NOTIFY_LEVELS)[number];
 const QUIET_HOURS = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
 
 const RoleDefaults = z.object({ model: z.string().min(1).optional(), effort: z.enum(EFFORTS).optional() }).strict();
-const ProfileDefaults = z.object({ orchestrator: RoleDefaults.optional(), implementation: RoleDefaults.optional(), explorer: RoleDefaults.optional(), mechanical: RoleDefaults.optional(), reviewer: RoleDefaults.optional() }).strict();
+const ProfileDefaults = z.object(Object.fromEntries(
+  PROFILES.map((profile) => [profile, RoleDefaults.optional()]),
+) as Record<Profile, z.ZodOptional<typeof RoleDefaults>>).strict();
 const CodexProfileDefaults = ProfileDefaults.superRefine((profiles, ctx) => {
   for (const [profile, defaults] of Object.entries(profiles)) {
-    if (defaults?.effort === 'max') ctx.addIssue({ code: 'custom', path: [profile, 'effort'], message: 'unsupported Codex effort: max (use low, medium, high or xhigh)' });
+    if (defaults?.effort && !isSupportedEffort('codex', defaults.effort)) ctx.addIssue({ code: 'custom', path: [profile, 'effort'], message: 'unsupported Codex effort: max (use low, medium, high or xhigh)' });
   }
 });
 const Level = z.enum(NOTIFY_LEVELS).optional();

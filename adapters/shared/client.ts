@@ -3,7 +3,7 @@
  *
  * Mirrors `mod/hooks/api.ts`: every request carries `Authorization: Bearer <token>` and
  * `X-TL-Node: <nodeId>`. `fetch` is injectable so the pure helpers can be tested without a
- * network or Pi.
+ * network or agent harness.
  */
 
 import { readFile } from "node:fs/promises";
@@ -42,7 +42,7 @@ export interface TillerClientOptions {
   nodeId: string;
   token: string;
   fetch?: TillerFetchLike;
-  /** Per-request timeout. A local daemon answers quickly; a hung request must not stall Pi. Default 5000. */
+  /** Per-request timeout. A local daemon answers quickly; a hung request must not stall the adapter. Default 5000. */
   timeoutMs?: number;
 }
 

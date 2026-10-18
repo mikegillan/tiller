@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { authHeaders, readToken, TillerClient, TillerHttpError } from "./client.ts";
-import type { TillerFetchLike, TillerResponseLike } from "./client.ts";
+import { authHeaders, readToken, TillerClient, TillerHttpError } from "./client.js";
+import type { TillerFetchLike, TillerResponseLike } from "./client.js";
 
 function response(status: number, body = ""): TillerResponseLike {
   return { status, text: async () => body };
