@@ -1,11 +1,11 @@
 // Worktree nodes against a throwaway git repo under the test's home, with a fake claude on PATH. Never this repo.
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { history } from './archive.js';
 import { NodeManager, type SpawnRequest } from './manager.js';
 import { mountMcp } from './mcp.js';
@@ -17,15 +17,20 @@ const commit = (dir: string, file: string) => { writeFileSync(join(dir, file), `
 
 
 let home = '', repo = '', m: NodeManager;
+let template: string | undefined;
 
 function setup(): void {
   home = realpathSync(mkdtempSync(join(tmpdir(), 'tl-wt-')));
   vi.stubEnv('HOME', home); // trustPolicy reads ~/.claude.json; git then reads no global config
   repo = join(home, 'repo');
-  mkdirSync(repo);
-  g(repo, 'init', '-q', '-b', 'dev');
-  for (const [k, v] of [['user.email', 't@example.com'], ['user.name', 'T'], ['commit.gpgsign', 'false']]) g(repo, 'config', k!, v!);
-  commit(repo, 'README');
+  if (!template) {
+    template = mkdtempSync(join(tmpdir(), 'tl-wt-template-'));
+    g(template, 'init', '-q', '-b', 'dev');
+    for (const [k, v] of [['user.email', 't@example.com'], ['user.name', 'T'], ['commit.gpgsign', 'false']]) g(template, 'config', k!, v!);
+    commit(template, 'README');
+  }
+  // Copy before creating any linked worktrees: each test owns its .git and all absolute worktree metadata.
+  cpSync(template, repo, { recursive: true });
   writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [repo]: { hasTrustDialogAccepted: true } } }));
   const bin = join(home, 'bin');
   mkdirSync(bin);
@@ -52,6 +57,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   rmSync(home, { recursive: true, force: true });
 });
+afterAll(() => { if (template) rmSync(template, { recursive: true, force: true }); });
 
 describe('worktree nodes', () => {
   it('spawn creates the worktree, branch, marker and exclude line, and launches claude from the main checkout with --worktree', async () => {
