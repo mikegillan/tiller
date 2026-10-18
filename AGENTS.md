@@ -12,6 +12,14 @@ Tiller runs Claude Code, Pi and Codex sessions as child processes of a local Nod
 - `src-tauri/`: native Rust app shell and Tauri configuration.
 - `docs/`: behavior and configuration references. Start with `docs/harnesses.md`, `docs/messaging.md`, `docs/worktrees.md` or `docs/sessions.md` for the affected subsystem. `PLAN.md` and `docs/design/` contain design rationale; check current code and behavior docs when plans differ.
 
+## GitHub pull requests and merges
+
+- Make changes on task branches. Integrate worker branches into the task branch, not `main`.
+- Deliver changes through a GitHub pull request. Push the task branch and open or update its PR when authorized to publish the work.
+- Merge into `main` through GitHub after required checks and reviews pass. Do not merge or fast-forward local `main` to deliver changes, and do not push directly to `main`, unless the user explicitly requests an exception to this workflow.
+- Treat requests such as "merge into main" as requests to merge the PR on GitHub, not as instructions for a local merge followed by a direct push. Sync local `main` from GitHub afterward.
+- Report the PR link, check status, and GitHub merge result clearly; distinguish local commits from pushed changes and merged PRs.
+
 ## Setup and development
 
 Use Node.js 24+ and npm from the repository root. `npm ci` installs the locked dependencies; keep lifecycle scripts enabled because `postinstall` fixes the macOS `node-pty` spawn helper. Native app development also needs Rust and Xcode Command Line Tools; see `README.md` for setup.

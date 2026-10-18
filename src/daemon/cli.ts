@@ -341,7 +341,7 @@ switch (cmd) {
     const result = await call('update', {}, true);
     if (f.check) break;
     const s = result.data;
-    if (!s?.eligible || !s.target || s.sha === s.target.sha) break;
+    if (!s?.eligible || !s.target || (s.sha === s.target.sha && (!s.runtimeSha || s.runtimeSha === s.target.sha))) break;
     await call('update', { apply: true, tag: s.target.tag, sha: s.target.sha });
     break;
   }

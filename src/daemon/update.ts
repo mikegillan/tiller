@@ -11,7 +11,7 @@ import type { InstalledReleaseNotes, ReleaseUpdate, UpdateStatus } from '../shar
 export const REPO = fileURLToPath(new URL('../..', import.meta.url));
 export const UPDATE_LOG = 'update.log';
 export const UPDATE_LOCK = 'update.lock';
-export const UPDATE_CHECK_INTERVAL = 10 * 60_000;
+export const UPDATE_CHECK_INTERVAL = 2 * 60_000;
 const exec = promisify(execFile);
 const git = async (repo: string, ...args: string[]) => (await exec('git', args, {
   cwd: repo, timeout: 60_000, maxBuffer: 8 * 1024 * 1024,
@@ -169,7 +169,9 @@ export async function checkUpdate(repo: string, source: ReleaseSource = githubRe
   } catch (e) { return { ...base, reason: 'release check unavailable; try again later', fetchError: (e as Error).message }; }
 }
 export function updateLine(s: UpdateStatus): string {
-  const head = s.fetchError ? `${s.reason}: ${s.fetchError}` : !s.target ? s.reason : s.sha === s.target.sha
+  const runtimeBehind = !!s.runtimeSha && s.runtimeSha !== s.sha;
+  const head = s.fetchError ? `${s.reason}: ${s.fetchError}` : !s.target ? s.reason : runtimeBehind && s.sha === s.target.sha
+    ? `checkout at ${s.target.tag}; daemon is running older code (${s.runtimeSha?.slice(0, 7)})` : s.sha === s.target.sha
     ? `up to date at ${s.target.tag}` : `${s.target.tag} available (${s.target.sha.slice(0, 7)})${s.reason ? `; cannot update: ${s.reason}` : ''}`;
   return [head, ...s.releases.map((r) => `\n${r.tag} — ${r.name}\n${r.body || 'No release notes provided.'}`)].join('\n');
 }
@@ -196,21 +198,27 @@ export async function applyUpdate(o: { repo: string; log: string; expected: Upda
     catch (e) { const err = e as Error & { stdout?: string; stderr?: string }; say((err.stdout ?? '') + (err.stderr ?? '')); throw new Error(`${cmd} ${args.join(' ')} failed: ${err.message}`); }
   };
   try {
+    const runtimeSha = o.expected.runtimeSha;
     const s = await checkUpdate(o.repo, o.source);
     const target = o.expected.target;
     if (!target || !s.target || !s.eligible || s.sha !== o.expected.sha || s.origin !== o.expected.origin
       || s.target.id !== target.id || s.target.tag !== target.tag || s.target.sha !== target.sha || s.target.tagObject !== target.tagObject || JSON.stringify(s.releases) !== JSON.stringify(o.expected.releases))
       throw new Error(`release or checkout changed; check again${s.reason ? `: ${s.reason}` : ''}`);
-    if (s.sha === target.sha) throw new Error('already at the latest release');
+    const restartOnly = s.sha === target.sha && !!runtimeSha && runtimeSha !== target.sha;
+    if (s.sha === target.sha && !restartOnly) throw new Error('already at the latest release');
     const publishedNow = await (o.source ?? githubReleases()).get(s.repository!, target.id);
     if (JSON.stringify(publishedNow) !== JSON.stringify({ id: target.id, tag: target.tag, name: target.name, body: target.body, publishedAt: target.publishedAt }))
       throw new Error('release changed; review its notes again');
     if (await remoteTag(o.repo, await releaseTransport(o.repo, s.origin!, s.repository!, o.source), target.tag) !== target.tagObject) throw new Error('released tag moved; check again');
     if (await safeCheckout(o.repo) || await git(o.repo, 'rev-parse', 'HEAD') !== s.sha) throw new Error('checkout changed; check again');
-    const changed = (await git(o.repo, 'diff', '--name-only', s.sha, target.sha)).split('\n');
-    const plan = planSteps(changed, existsSync(join(o.repo, 'src-tauri/target/release/bundle/macos/Tiller.app')));
-    await run('git', ['merge', '--ff-only', '--no-edit', '--no-overwrite-ignore', target.sha]);
-    moved = true;
+    const appBuilt = existsSync(join(o.repo, 'src-tauri/target/release/bundle/macos/Tiller.app'));
+    const runtimeDiffers = !!runtimeSha && runtimeSha !== s.sha;
+    const changed = (await git(o.repo, 'diff', '--name-only', runtimeDiffers ? runtimeSha : s.sha, target.sha)).split('\n');
+    const plan = restartOnly ? { install: true, ui: true, app: appBuilt } : planSteps(changed, appBuilt);
+    if (!restartOnly) {
+      await run('git', ['merge', '--ff-only', '--no-edit', '--no-overwrite-ignore', target.sha]);
+      moved = true;
+    }
     for (const [needed, args] of [[plan.install, ['ci']], [plan.ui, ['run', 'ui:build']], [plan.app, ['run', 'app:build']]] as const) {
       if (needed) { started.push([...args]); await run('npm', [...args], 30 * 60_000); }
     }
@@ -218,13 +226,13 @@ export async function applyUpdate(o: { repo: string; log: string; expected: Upda
     if (o.restart) { restartAttempted = true; await o.restart(target.sha); }
     say(`updated to ${target.tag} at ${target.sha}`);
   } catch (e) {
-    if (moved) {
+    if (moved || (restartAttempted && !!o.expected.runtimeSha && o.expected.runtimeSha !== o.expected.target?.sha)) {
       try {
         // --keep refuses to discard edits made during a build. Never reset a checkout someone moved.
         if (await git(o.repo, 'rev-parse', 'HEAD') !== o.expected.target!.sha || await tryGit(o.repo, 'symbolic-ref', '--short', '-q', 'HEAD') !== 'main') throw new Error('HEAD or branch changed during update');
-        await run('git', ['reset', '--keep', o.expected.sha]);
+        if (moved) await run('git', ['reset', '--keep', o.expected.sha]);
         for (const args of started) await run('npm', args, 30 * 60_000);
-        if (restartAttempted && o.restart) await o.restart(o.expected.sha);
+        if (restartAttempted && o.restart) await o.restart(moved ? o.expected.sha : o.expected.target!.sha);
       } catch (rollback) { throw new Error(`${(e as Error).message}; rollback incomplete: ${(rollback as Error).message}; see ${o.log}`); }
     }
     say((e as Error).message);
@@ -340,7 +348,7 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
     };
     checking = perform().catch((e: unknown) => set({ ...status, checkedAt: Date.now(), eligible: false, reason: 'release check unavailable; try again later', fetchError: e instanceof Error ? e.message : String(e) })).then((s) => {
       failures = s.fetchError ? failures + 1 : 0;
-      nextCheckAt = Date.now() + Math.min(6 * 3600_000, UPDATE_CHECK_INTERVAL * 2 ** Math.min(failures, 6));
+      nextCheckAt = Date.now() + (failures ? Math.min(6 * 3600_000, 10 * 60_000 * 2 ** Math.min(failures, 6)) : UPDATE_CHECK_INTERVAL);
       return s;
     }).finally(() => { checking = undefined; schedule(); });
     return checking;
@@ -369,7 +377,7 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
       if (applying) throw new Error('an update is already running');
       if (!status.target || expected.tag !== status.target.tag || expected.sha !== status.target.sha) throw new Error('release changed; check and review again');
       if (!status.eligible) throw new Error(`cannot update: ${status.reason}`);
-      if (status.sha === status.target.sha) throw new Error('already at the latest release');
+      if (status.sha === status.target.sha && (!status.runtimeSha || status.runtimeSha === status.target.sha)) throw new Error('already at the latest release');
       const approved = status;
       applying = true; set(status);
       const log = join(o.home, UPDATE_LOG);

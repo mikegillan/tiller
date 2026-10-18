@@ -9,7 +9,7 @@ import { send } from './conn';
 import { toggleDnd } from './hooks';
 
 const effects = vi.hoisted(() => [] as (() => unknown)[]);
-vi.mock('./Modal', () => ({ Modal: ({ children }: { children: ReactNode }) => children }));
+vi.mock('./Modal', () => ({ Modal: ({ children, footer }: { children: ReactNode; footer?: ReactNode }) => <>{children}{footer}</> }));
 vi.mock('./store', async (original) => {
   const store = await original<typeof import('./store')>();
   return { ...store, useStore: (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()) };
@@ -22,7 +22,7 @@ function elements(node: ReactNode): Element[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== 'object' || !('props' in node)) return [];
   const element = node as Element;
-  return [element, ...elements(element.props.children)];
+  return [element, ...elements(element.props.children), ...elements(element.props.footer)];
 }
 function command(key: string) {
   const element = elements(Palette()).find((el) => el.key === `cmd:${key}`);
@@ -74,6 +74,21 @@ it('shows discovered availability and opens release management without installin
     expect(renderToStaticMarkup(<StatusBar />)).not.toContain('Update available');
     expect(renderToStaticMarkup(<StatusBar />)).toContain('What’s new');
   }
+});
+
+it('offers a rebuild and restart when the clean checkout is current but the daemon is older', () => {
+  const release = { id: 2, tag: 'v0.1.1', sha: 'source', name: 'v0.1.1', body: 'Release notes', tagObject: 'tag', publishedAt: '' };
+  update(() => ({ update: { sha: 'source', runtimeSha: 'running', currentVersion: release.tag, checkedAt: 1, eligible: true, releases: [], target: release }, dialog: null }));
+  expect(renderToStaticMarkup(<StatusBar />)).toContain('Restart to finish update');
+  elements(StatusBar()).find((el) => el.props.className === 'update-available')!.props.onClick();
+  const html = renderToStaticMarkup(<Dialogs />);
+  expect(html).toContain('Rebuild and restart');
+  expect(html).toContain('source checkout has moved');
+  const dialog = Dialogs() as ReactElement<Record<string, any>>;
+  const renderDialog = dialog.type as (props: Record<string, any>) => ReactNode;
+  const action = elements(renderDialog(dialog.props)).find((el) => el.type === 'button' && el.props.className === 'btn primary');
+  action!.props.onClick();
+  expect(send).toHaveBeenCalledWith({ t: 'update', tag: release.tag, sha: release.sha });
 });
 
 it('keeps Activity, notification toggling, and update management reachable through palette handlers', () => {

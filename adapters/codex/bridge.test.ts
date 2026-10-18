@@ -31,6 +31,16 @@ async function setup(messages: InboxMessage[], resumeHistory?: string, effort?: 
 }
 
 describe('Codex delivery failures', () => {
+  it('uses a recognizable, per-launch Tiller MCP namespace with a 48-bit random suffix', async () => {
+    const { rpc } = await setup([]);
+    const params = vi.mocked(rpc.request).mock.calls.find(([method]) => method === 'thread/start')![1];
+    const config = params.config as Record<string, unknown>;
+    const names = Object.keys(config).map((key) => key.match(/^mcp_servers\.(.+)$/)?.[1]).filter(Boolean);
+    expect(names).toHaveLength(1);
+    expect(names[0]).toMatch(/^tiller_[a-f0-9]{12}$/);
+    expect(names[0]!.length).toBeLessThanOrEqual(24);
+  });
+
   it('reads account quotas once on attachment without starting a turn', async () => {
     const { client, rpc } = await setup([]);
     rpc.request.mockResolvedValueOnce({ accountId: 'account', rateLimits: { limitId: 'codex', primary: { usedPercent: 25, windowDurationMins: 300 } } } as any);
