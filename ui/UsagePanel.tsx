@@ -72,7 +72,7 @@ export function UsagePanel({ onClose }: { onClose: () => void }) {
           <h3 className={groups.length === 1 ? 'usage-sr-only' : ''}>{name}</h3>
           {groups.map((group, index) => {
             const [latest, ...others] = group.reports;
-            return <div className="usage-observation-group" key={latest.id}>
+            return <div className="usage-observation-group" key={group.id}>
               {group.unidentified ? <>
                 <p className="usage-report-label">Latest session reading</p>
                 <p className="usage-caption">Account identity is not reported.</p>

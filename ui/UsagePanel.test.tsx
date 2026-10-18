@@ -116,3 +116,25 @@ it('keeps the latest unidentified failure visible and retains healthy older obse
   expect(html).toContain('<summary>1 other session reading</summary>');
   expect(html).toContain('16% used'); expect(html).toContain('8m ago');
 });
+
+it('preserves the disclosure parent key when another session supplies the newest reading', () => {
+  const first = report({ id: 'first', tool: 'claude', accountId: undefined, at: fixture.now - 1000 });
+  const second = report({ id: 'second', tool: 'claude', accountId: undefined, at: fixture.now });
+  const groupKey = () => {
+    const groups: string[] = [];
+    const visit = (node: ReactNode): void => {
+      if (Array.isArray(node)) { node.forEach(visit); return; }
+      if (!node || typeof node !== 'object' || !('props' in node)) return;
+      const element = node as import('react').ReactElement<{ className?: string; children?: ReactNode }>;
+      if (element.props.className === 'usage-observation-group') groups.push(String(element.key));
+      visit(element.props.children);
+    };
+    visit(UsagePanel({ onClose: () => {} }));
+    expect(groups).toHaveLength(1);
+    return groups[0];
+  };
+  fixture.state.usageSources = [first, second];
+  const before = groupKey();
+  fixture.state.usageSources = [{ ...first, at: fixture.now + 1000 }, second];
+  expect(groupKey()).toBe(before);
+});

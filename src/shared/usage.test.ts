@@ -76,3 +76,16 @@ it('keeps input order for equally fresh observations without dropping any report
   const older = { ...source, id: 'older', at: 100 };
   expect(groupUsageObservations([older, first, second])[0].reports).toEqual([first, second, older]);
 });
+
+it('keeps group identity when the newest reporting session changes and distinguishes pool ID from display name', () => {
+  const first = { ...source, id: 'first', at: 100 };
+  const second = { ...source, id: 'second', at: 200 };
+  const [before] = groupUsageObservations([first, second]);
+  const [after] = groupUsageObservations([{ ...first, at: 300 }, second]);
+  expect(before.reports[0].id).toBe('second');
+  expect(after.reports[0].id).toBe('first');
+  expect(after.id).toBe(before.id);
+  const pools = groupUsageObservations([{ ...first, poolId: 'shared' }, { ...second, pool: 'shared' }]);
+  expect(pools).toHaveLength(2);
+  expect(pools[0].id).not.toBe(pools[1].id);
+});

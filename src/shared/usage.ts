@@ -26,18 +26,18 @@ export function usageScope(source: UsageSource): string {
 }
 
 /** Overview-only groups of observations, never evidence that sessions share an account. */
-export function groupUsageObservations(sources: UsageSource[]): { unidentified: boolean; reports: UsageSource[] }[] {
-  const groups: { unidentified: boolean; reports: UsageSource[] }[] = [];
+export function groupUsageObservations(sources: UsageSource[]): { id: string; unidentified: boolean; reports: UsageSource[] }[] {
+  const groups: { id: string; unidentified: boolean; reports: UsageSource[] }[] = [];
   const unidentified = new Map<string, typeof groups[number]>();
   for (const source of sources) {
     if (source.tool !== 'claude' || source.accountId) {
-      groups.push({ unidentified: false, reports: [source] });
+      groups.push({ id: JSON.stringify(['source', source.id]), unidentified: false, reports: [source] });
       continue;
     }
-    const key = JSON.stringify([source.provider ?? '', source.poolId ?? source.pool ?? '', source.scope, source.model ?? '']);
+    const key = JSON.stringify(['observations', source.tool, source.provider ?? '', source.poolId === undefined ? ['name', source.pool ?? ''] : ['id', source.poolId], source.scope, source.model ?? '']);
     let group = unidentified.get(key);
     if (!group) {
-      group = { unidentified: true, reports: [] };
+      group = { id: key, unidentified: true, reports: [] };
       unidentified.set(key, group); groups.push(group);
     }
     group.reports.push(source);
