@@ -87,6 +87,10 @@ guard remains advisory; see [Worktrees and safety](../../docs/harnesses.md#workt
 Cross-harness spawning follows the same delegation guard as Pi: a restricted Claude parent
 cannot bypass its restrictions by selecting Codex. A Codex parent may spawn Codex children.
 
+The node-scoped HTTP client is shared with Pi in `adapters/shared/client.ts`. The readable
+transcript header format/parser lives in `src/shared/codex-transcript.ts`; transcript path
+selection and adoption remain in the daemon.
+
 ## Validation
 
 The protocol subset was checked against generated bindings from `codex-cli 0.162.1` and the

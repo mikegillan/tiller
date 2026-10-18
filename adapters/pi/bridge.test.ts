@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { TillerBridge } from "./bridge.ts";
 import type { TillerClientLike } from "./bridge.ts";
-import type { InboxMessage } from "./client.ts";
+import type { InboxMessage } from "../shared/client.ts";
 
 class FakeClient implements TillerClientLike {
   inboxBatches: InboxMessage[][] = [];

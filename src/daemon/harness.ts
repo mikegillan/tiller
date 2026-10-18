@@ -2,6 +2,7 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isSupportedEffort } from '../shared/harness-policy.js';
 import { harnessFor, type Harness, type NodeRecord } from '../shared/protocol.js';
 import { claudeLaunch, nodeEnv, systemPrompt, type LaunchInput, type LaunchSpec } from './launch.js';
 import type { Preset } from './presets.js';
@@ -81,7 +82,7 @@ export const codexAdapter: HarnessAdapter = {
     this.validate(i);
     if (i.forkSession) throw new Error('Codex session forking through spawn is not supported; use followup');
     if (!i.sessionDir) throw new Error('Codex needs a persistent Tiller session directory');
-    if (i.effort && !['low', 'medium', 'high', 'xhigh'].includes(i.effort)) throw new Error(`unsupported Codex effort: ${i.effort}`);
+    if (i.effort && !isSupportedEffort('codex', i.effort)) throw new Error(`unsupported Codex effort: ${i.effort}`);
     const transcriptPath = i.transcriptPath ?? codexTranscript(i.sessionDir, i.nodeId, i.sessionId);
     return {
       file: process.execPath,

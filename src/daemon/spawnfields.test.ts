@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { SPAWN_FIELDS, spawnKind } from './spawnfields.js';
 
 describe('SPAWN_FIELDS harness and kind', () => {
-  it('accepts claude and pi and rejects anything else', () => {
+  it('accepts supported harnesses and rejects anything else', () => {
     expect(SPAWN_FIELDS.harness.parse('pi')).toBe('pi');
+    expect(SPAWN_FIELDS.harness.parse('codex')).toBe('codex');
     expect(SPAWN_FIELDS.harness.parse('claude')).toBe('claude');
     expect(SPAWN_FIELDS.harness.safeParse('bogus').success).toBe(false);
     expect(SPAWN_FIELDS.harness.safeParse(undefined).success).toBe(true);
@@ -36,5 +37,13 @@ describe('profile validation shared by CLI, MCP and WebSocket', () => {
     expect(SPAWN_FIELDS.profile.parse(undefined)).toBeUndefined();
     for (const profile of ['worker', 'none', 'researcher', 'bogus']) expect(SPAWN_FIELDS.profile.safeParse(profile).success).toBe(false);
     expect(SPAWN_FIELDS.role.safeParse('implementation').success).toBe(false);
+  });
+});
+
+describe('spawn effort vocabulary', () => {
+  it('accepts all generic effort values before harness-specific validation', () => {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) expect(SPAWN_FIELDS.effort.parse(effort)).toBe(effort);
+    expect(SPAWN_FIELDS.effort.parse(undefined)).toBeUndefined();
+    for (const effort of ['', 'extreme', 'HIGH', null, 1]) expect(SPAWN_FIELDS.effort.safeParse(effort).success).toBe(false);
   });
 });
