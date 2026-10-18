@@ -393,6 +393,8 @@ it('resets a saved boolean override to the inherited switch state and sends only
 it('uses shared selects for scope, schema options and every harness effort', () => {
   expect(tree.type).toBe(Modal);
   expect(tree.props.label).toBe('Settings');
+  expect(tree.props.restoreFocus).toBe(true);
+  expect(tree.props.blockGlobalShortcuts).toBe(true);
   expect(tree.props.className).toBe('settings-dialog');
   expect(elements(tree).find((e) => e.props.id === 'settings-scope')!.type).toBe(Select);
   for (const harness of ['Claude', 'Pi', 'Codex']) {

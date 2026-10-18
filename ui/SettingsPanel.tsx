@@ -117,7 +117,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     return <button key={title} className="settings-nav-item" aria-pressed={category === 'CLI diagnostics' ? title === category : active.title === title} onClick={() => setCategory(title)}><SettingsIcon name={title} /><span>{title}</span></button>;
   }
 
-  return <Modal className="settings-dialog" label="Settings" onClose={() => leave('close')}>
+  return <Modal className="settings-dialog" label="Settings" restoreFocus blockGlobalShortcuts onClose={() => leave('close')}>
     <aside className="settings-sidebar">
       <h2 id="settings-title">Settings</h2>
       <div className="settings-search"><SettingsIcon name="Search" /><input autoFocus type="search" aria-label="Search settings" placeholder="Search settings" value={search} onChange={(event) => { const query = event.target.value; setSearch(query); if (query.trim()) { const first = sections.find((section) => section.fields.some((field) => `${section.title} ${field.label} ${field.key} ${field.help ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()))); if (first) setCategory(first.title); } }} /></div>

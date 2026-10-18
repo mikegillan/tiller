@@ -5,9 +5,11 @@ import './modal.css';
  * Native modal dialog. Escape and a backdrop click call `onClose`; omit it for dialogs that must be answered.
  * Return false from `onClose` when dismissal is guarded (for example, an unsaved draft).
  * `title` is shown as a heading and names the dialog; `label` names a dialog without one. `className` replaces the `modal` box.
+ * Opt into `restoreFocus` for dismissals that return to the opener; navigation dialogs keep their new selection.
+ * Mandatory dialogs block global shortcuts; `blockGlobalShortcuts` also protects editable settings.
  * Opt content dialogs into `resizable`; put actions in `footer` to keep them outside the scrolling body.
  */
-export function Modal({ title, label = title, className = 'modal', onClose, resizable = false, footer, children }: { title?: string; label?: string; className?: string; onClose?: () => void | boolean; resizable?: boolean; footer?: ReactNode; children: ReactNode }) {
+export function Modal({ title, label = title, className = 'modal', onClose, resizable = false, restoreFocus = false, blockGlobalShortcuts = !onClose, footer, children }: { title?: string; label?: string; className?: string; onClose?: () => void | boolean; resizable?: boolean; restoreFocus?: boolean; blockGlobalShortcuts?: boolean; footer?: ReactNode; children: ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
   const [expanded, setExpanded] = useState(false);
   // Children mount once the dialog is open, so their autoFocus lands (nothing in a closed dialog can take focus).
@@ -17,8 +19,8 @@ export function Modal({ title, label = title, className = 'modal', onClose, resi
     ref.current?.showModal();
     setShown(true);
     // Layout cleanup runs before removal; wait until the opener is no longer inert.
-    return () => { queueMicrotask(() => { if (previous?.isConnected) previous.focus(); }); };
-  }, []);
+    return () => { queueMicrotask(() => { if (restoreFocus && previous?.isConnected) previous.focus(); }); };
+  }, [restoreFocus]);
   return (
     <dialog
       ref={ref}
@@ -30,7 +32,7 @@ export function Modal({ title, label = title, className = 'modal', onClose, resi
         const accepted = onClose?.();
         if ((!onClose || accepted === false) && e.currentTarget.isConnected) e.currentTarget.showModal();
       }}
-      onKeyDown={(e) => e.stopPropagation()}
+      onKeyDown={blockGlobalShortcuts ? (e) => e.stopPropagation() : undefined}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
     >
       <div className={`${className}${resizable ? ` modal-resizable${expanded ? ' modal-expanded' : ''}` : ''}`}>
