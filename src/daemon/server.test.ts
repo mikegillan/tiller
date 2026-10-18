@@ -108,6 +108,40 @@ describe('websocket', () => {
     expect(seen).toEqual([]);
   });
 
+  it('preserves raw wheel bytes and Unicode text through websocket input to a real PTY', async () => {
+    await connect();
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    const { id } = await manager.spawn({ kind: 'terminal', title: 'raw input', cwd: home });
+    send({ t: 'attach', id, cols: 100, rows: 24 });
+    const output = () => seen.flatMap((m) => m.t === 'data' && m.id === id ? [m.data] : []).join('');
+    send({ t: 'input', id, data: "stty raw -echo; printf '\\nBYTE_READY\\n'; dd bs=1 count=19 2>/dev/null | od -An -tx1\r" });
+    await until(() => output().includes('\nBYTE_READY\n') || undefined);
+    // Legacy wheel up/down at column 100, row 3, followed by ordinary UTF-8 text.
+    send({ t: 'input', id, data: '\x1b[M`\x84#\x1b[Ma\x84#', binary: true });
+    send({ t: 'input', id, data: 'hé🌍' });
+    await until(() => output().includes('8d') || undefined);
+    const hex = output().split('\nBYTE_READY\n')[1].trim().replace(/\s+/g, ' ');
+    expect(hex).toContain('1b 5b 4d 60 84 23 1b 5b 4d 61 84 23 68 c3 a9 f0 9f 8c 8d');
+  });
+
+  it('validates binary byte strings without restricting ordinary Unicode input', async () => {
+    const input = vi.spyOn(manager, 'input');
+    await connect();
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    for (const message of [
+      { t: 'input', id: 'missing', data: 'Ā', binary: true },
+      { t: 'input', id: 'missing', data: '🌍', binary: true },
+      { t: 'input', id: 'missing', data: 'bytes', binary: 'true' },
+    ]) ws!.send(JSON.stringify(message));
+    await until(() => seen.filter((m) => m.t === 'error' && m.message === 'Malformed message').length === 3 || undefined);
+    expect(input).not.toHaveBeenCalled();
+    send({ t: 'input', id: 'missing', data: '\x00\xff', binary: true });
+    send({ t: 'input', id: 'missing', data: '🌍', binary: false });
+    await until(() => input.mock.calls.length === 2 || undefined);
+    expect(input).toHaveBeenNthCalledWith(1, 'missing', '\x00\xff', true);
+    expect(input).toHaveBeenNthCalledWith(2, 'missing', '🌍', false);
+  });
+
   it('runs a terminal node end to end', async () => {
     await connect();
     await until(() => seen.find((m) => m.t === 'snapshot'));
