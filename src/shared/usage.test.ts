@@ -69,3 +69,10 @@ it('preserves per-window observation times, unavailable snapshots and sparse rea
   expect(group.reports[1].availability).toBe('unavailable');
   expect(group.reports[1].rateLimits[1].observedAt).toBe(90);
 });
+
+it('keeps input order for equally fresh observations without dropping any reports', () => {
+  const first = { ...source, id: 'first', at: 300 };
+  const second = { ...source, id: 'second', at: 300 };
+  const older = { ...source, id: 'older', at: 100 };
+  expect(groupUsageObservations([older, first, second])[0].reports).toEqual([first, second, older]);
+});

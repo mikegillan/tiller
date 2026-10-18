@@ -75,7 +75,7 @@ export function UsagePanel({ onClose }: { onClose: () => void }) {
             return <div className="usage-observation-group" key={latest.id}>
               {group.unidentified ? <>
                 <p className="usage-report-label">Latest session reading</p>
-                <p className="usage-caption">Account identity unavailable; session readings may share an account.</p>
+                <p className="usage-caption">Account identity is not reported.</p>
               </> : groups.length > 1 && <p className="usage-report-label">Separate quota {index + 1}</p>}
               {renderReport(latest, groups.length === 1 ? name : undefined, group.unidentified)}
               {others.length > 0 && <details className="usage-observations">

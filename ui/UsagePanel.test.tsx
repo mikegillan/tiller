@@ -88,7 +88,7 @@ it('presents duplicate unidentified Claude session readings as one latest summar
   const summary = html.slice(0, html.indexOf('<details'));
   expect(summary).toContain('44% used'); expect(summary).toContain('9% used');
   expect(summary).not.toContain('43% used'); expect(summary).not.toContain('38% used');
-  expect(html).toContain('Latest session reading'); expect(html).toContain('Account identity unavailable');
+  expect(html).toContain('Latest session reading'); expect(html).toContain('Account identity is not reported.');
   expect(html).toContain('<summary>2 other session readings</summary>');
   expect(html).toContain('43% used'); expect(html).toContain('38% used'); expect(html).toContain('8m ago');
   expect(html).not.toContain('Separate quota');
