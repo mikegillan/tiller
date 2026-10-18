@@ -30,7 +30,7 @@
 .row:hover { background: var(--hover); }
 .row.sel { background: var(--sidebar-selection); box-shadow: inset 1px 0 var(--working); }
 .row.sel .title { color: var(--fg); }
-.row:focus-visible { outline: 2px solid var(--working); outline-offset: -2px; }
+.row:focus-visible, .tree:focus-visible .row[tabindex="0"] { outline: 2px solid var(--working); outline-offset: -2px; }
 .body { flex: 1; min-width: 0; padding: 5px 12px 6px 0; }
 .l1 { display: flex; align-items: center; gap: 6px; height: 24px; position: relative; }
 .title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
