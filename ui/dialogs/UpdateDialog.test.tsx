@@ -14,7 +14,7 @@ vi.mock('../store', async (original) => {
 });
 const release = { id: 1, tag: 'v0.1.13', name: 'v0.1.13', sha: 'new', tagObject: 'tag', publishedAt: '', body: '## Improvements\n\n- Clearer updates.' };
 const base: UpdateStatus = { sha: 'old', runtimeSha: 'old', currentVersion: 'v0.1.12', checkedAt: 1, eligible: true, target: release, releases: [release] };
-function render(patch: Partial<UpdateStatus> & { checking?: boolean; blocker?: 'dirty' } = {}) {
+function render(patch: Partial<UpdateStatus> = {}) {
   update(() => ({ update: { ...base, ...patch } }));
   return renderToStaticMarkup(<UpdateDialog />);
 }

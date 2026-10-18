@@ -1,4 +1,3 @@
-import type { UpdateStatus } from '../../src/shared/protocol';
 import { send } from '../conn';
 import { Modal } from '../controls/Modal';
 import { Icon } from '../controls/icons';
@@ -6,8 +5,6 @@ import { ReleaseNotes } from '../release-notes/ReleaseNotes';
 import { openDialog, useStore } from '../store';
 import './update-dialog.css';
 
-// Optional fields keep this surface compatible with older daemon snapshots.
-type DialogUpdate = UpdateStatus & { checking?: boolean; blocker?: string };
 const close = () => openDialog(null);
 
 function UpdateIcon({ name }: { name: 'warning' | 'lock' | 'document' | 'spinner' | 'arrow' }) {
@@ -22,7 +19,7 @@ function UpdateIcon({ name }: { name: 'warning' | 'lock' | 'document' | 'spinner
 }
 
 export function UpdateDialog() {
-  const upd: DialogUpdate | undefined = useStore((s) => s.update);
+  const upd = useStore((s) => s.update);
   const runtimeBehindCheckout = !!upd?.runtimeSha && upd.runtimeSha !== upd.sha;
   const available = !!upd?.target && upd.sha !== upd.target.sha;
   const restartOnly = !!upd?.target && runtimeBehindCheckout && upd.sha === upd.target.sha && upd.currentVersion === upd.target.tag;
@@ -32,8 +29,8 @@ export function UpdateDialog() {
   const releases = upd?.releases.length ? upd.releases : upd?.target ? [upd.target] : [];
   const title = upd?.applying ? 'Installing update' : restartOnly ? 'Restart required' : available ? 'Update available' : 'Tiller releases';
   const subtitle = upd?.applying ? 'Building and restarting Tiller. This may take a few minutes.'
-    : restartOnly ? 'Rebuild the current release to finish updating the running daemon.'
     : upd?.checking ? 'Checking for the latest stable release and update eligibility.'
+    : restartOnly ? 'Rebuild the current release to finish updating the running daemon.'
     : available ? `Tiller ${upd?.target?.tag}${blocked ? ' is available. Resolve the blocker below to continue.' : ' is ready to install.'}`
     : upd?.target && !runtimeBehindCheckout && !upd.fetchError ? 'Your checkout is at the latest stable release.'
     : 'Check for the latest stable Tiller release.';
