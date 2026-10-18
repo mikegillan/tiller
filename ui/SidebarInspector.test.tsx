@@ -56,6 +56,22 @@ it('shows measured context, branch changes and a missing worktree without invent
   for (const value of ['42%', '42k / 100k tokens', 'tl/a', '2 ahead · 1 behind main', '3 uncommitted files', '+42', '−18', 'Missing — resume unavailable', 'No activity reported.']) expect(output).toContain(value);
 });
 
+it('describes a failed reported task as Needs changes while the agent is still working', () => {
+  const output = html({ ...mk('worker', 'root', 0, { state: 'working' }), gate: 'running',
+    outcome: { outcome: 'failed', summary: 'Unresolved review issue', at: 0 } });
+  for (const text of ['<dt>Reported outcome</dt><dd><span title="Reported task outcome">Needs changes</span>', '>working<', '<dt>Completion gate</dt><dd>running</dd>', 'Unresolved review issue']) expect(output).toContain(text);
+  expect(output).not.toContain('Turn errored');
+  expect(output).not.toContain('>failed<');
+});
+
+it.each(['errored', 'exited'] as const)('preserves %s runtime status and failed gate beside a successful report', (state) => {
+  const output = html({ ...mk('worker', 'root', 0, { state: 'done', errored: state === 'errored', exited: state === 'exited' }),
+    gate: 'failed', outcome: { outcome: 'succeeded', at: 0 } });
+  for (const text of [`>${state}<`, '<dt>Completion gate</dt><dd>failed</dd>', '<dt>Reported outcome</dt><dd><span title="Reported task outcome">succeeded</span>']) expect(output).toContain(text);
+  expect(output).not.toContain('Needs changes');
+  if (state === 'errored') expect(output).toContain('Turn errored');
+});
+
 it('does not attach an agent role or model to a plain terminal', () => {
   const output = html({ ...mk('shell', null, 0, { state: 'none' }), kind: 'terminal' });
   expect(output).toContain('terminal');
