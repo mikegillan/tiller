@@ -368,12 +368,15 @@ describe('mcp api', () => {
       return c;
     };
     const human = await connect('human', admin);
-    expect((await human.listTools()).tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'dnd', 'followup', 'history', 'list_nodes', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'transcript', 'update', 'withdraw', 'worktrees', 'write']);
+    const humanTools = (await human.listTools()).tools;
+    expect(humanTools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'dnd', 'followup', 'history', 'list_nodes', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'transcript', 'update', 'withdraw', 'worktrees', 'write']);
+    expect(humanTools.find((t) => t.name === 'send')).toMatchObject({ name: 'send', annotations: { title: 'Send message' } });
     await human.close();
     const client = await connect(id, manager.tokenFor(id));
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'history', 'list_nodes', 'merge', 'message_status', 'notify_when', 'read', 'rename', 'report_outcome', 'send', 'spawn', 'withdraw', 'write']);
     expect(tools.find((t) => t.name === 'spawn')!.inputSchema.required).toEqual(['kind', 'title']); // cwd defaults to a fork source's
+    expect(tools.find((t) => t.name === 'spawn')).toMatchObject({ name: 'spawn', annotations: { title: 'Start worker' } });
     const r = (await client.callTool({ name: 'report_outcome', arguments: { outcome: 'succeeded' } })) as { content: Array<{ text: string }> };
     expect(r.content[0].text).toBe('{"ok":true}');
     await client.close();

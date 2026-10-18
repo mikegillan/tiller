@@ -167,14 +167,15 @@ async function runGate(m: NodeManager, id: string, gate: NonNullable<Config['gat
 // ---- tools ----
 
 /** humanOnly: refused to agents over /api and not listed to them over MCP. */
-function tool<S extends z.ZodRawShape>(description: string, shape: S, run: (c: Ctx, a: z.infer<z.ZodObject<S>>) => Promise<Out>, humanOnly = false) {
-  return { description, shape, run: run as (c: Ctx, a: never) => Promise<Out>, humanOnly };
+function tool<S extends z.ZodRawShape>(title: string, description: string, shape: S, run: (c: Ctx, a: z.infer<z.ZodObject<S>>) => Promise<Out>, humanOnly = false) {
+  return { title, description, shape, run: run as (c: Ctx, a: never) => Promise<Out>, humanOnly };
 }
 
 const spawned = new Map<string, { args: string; result: unknown; at: number }>();
 
 const tools = {
   list_nodes: tool(
+    'List nodes',
     `List the nodes you can see (yourself, your ancestors, siblings and descendants) as an indented tree plus JSON. The text starts with one line of account-level Claude usage (5-hour and 7-day rate-limit windows, percent used and reset time), which every node draws on. Each node has id, parentId, title, kind (claude, agent or terminal), harness (claude, pi or codex on generic agent nodes), cwd, state (working, waiting, blocked, done, unknown, none; armed: waiting on spawn dependencies, queued: waiting on daemon.maxWorking, with the reason in activity),flags (errored, interrupted, exited, stale, stalled: working with no hook event for limits.stallMinutes), age, current activity, its last assistant message truncated to ${PREVIEW_CHARS} characters, the outcome it reported through report_outcome, if any ({ outcome, note, summary, changedFiles, verified, openQuestions, gate }: read these before calling read on a finished worker), gate (its completion gate: running, passed or failed), spentUsd (its total spend across sessions) and subtreeSpentUsd (with all its descendants), and for a node with its own git worktree, worktree { path, branch, base, ahead, behind, dirty, missing, merged }: its commits not yet in base, base's commits not on the branch, the count of uncommitted files, and whether merge has merged it. Use it to find node ids before calling send, read or close.`,
     {},
     async (c) => {
@@ -184,6 +185,7 @@ const tools = {
     }),
 
   spawn: tool(
+    'Start worker',
     'Open a new node as a child of yourself and return its id. kind "claude" starts Claude Code; kind "agent" starts the selected `harness` (claude, pi or codex), inheriting your harness when omitted; kind "terminal" starts a login shell. `cwd` must be an existing directory. Spawning never changes what the user is looking at. `role` picks the role prompt the node gets: "orchestrator", "worker" or "none"; by default a node you spawn is a worker. `profile` selects task guidance independently of role: orchestrator, implementation, explorer, mechanical or reviewer; defaults follow the effective coordination role (orchestrator maps to orchestrator, worker/none to implementation). Omit `model` and `effort` to use per-harness profile config, then legacy Claude role config. Explicit arguments win over presets, which win over config. Explorer and reviewer profiles provide portable read-only instructions; they do not enforce tool restrictions. Claude children inherit a same-harness parent permissionMode when omitted. Pi and Codex reject permissionMode and presets with tools/disallowedTools/maxTurns rather than ignoring restrictions. isolation "worktree" (agent nodes only) gives the child its own git worktree at <main checkout>/.claude/worktrees/<id> on a new branch from its base, which needs a repo with a commit (Claude also requires its own workspace trust), and the reply then carries worktree { path, branch, base }. `base` (worktree isolation only) names the branch the child forks from and is merged back into; it is created at the HEAD of the checkout `cwd` is in when it does not exist. Pass the same base to every worker of one task so their merges accumulate on it. Without base, the base is the branch checked out at `cwd`, unless that is protected (worktrees.protected, default main and master, plus origin\'s default branch) or detached: then a new branch named by worktrees.taskBranch (default "tl/{slug}" from the title) is created for it. Omitting isolation uses the project config (default "none"), so a child whose cwd is inside an existing worktree shares that tree. `preset` names a spawn preset (.tiller/agents/<name>.md in the main checkout of `cwd`, else ~/.tiller/agents/<name>.md; built-in: "reviewer", "researcher"): it sets the role text, model, effort, permissionMode, isolation and tool restrictions, and any argument you pass overrides it. Pass a unique `requestId` so a retry after a timeout returns the original node (with replayed: true) instead of opening a second one; reusing a requestId with different arguments is an error. `after` and `afterSuccess` (node ids in your scope) create the node armed, with no process yet: it launches by itself, exactly as this spawn would, once each `after` node has finished a turn that began after this spawn (or has exited), and each `afterSuccess` node has reported succeeded through report_outcome (gate passed, when one is configured). A failed report blocks it and you get a message; close it to drop it. When the daemon config sets daemon.maxWorking and that many agent nodes are working, a new node is queued instead and launched in creation order as others stop. The reply then has state "armed" or "queued" and what it waits on. `fork` (Claude nodes only: kind "claude", or "agent" on harness claude) starts the node from a copy of another node\'s conversation, then `prompt`: a node in your scope, or a closed node of your tree (see history); `cwd` then defaults to that node\'s.',
     { ...SPAWN_FIELDS, cwd: SPAWN_FIELDS.cwd.optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), requestId: z.string().optional() },
     async (c, { requestId, cwd, ...req }) => {
@@ -211,16 +213,19 @@ const tools = {
     }),
 
   send: tool(
+    'Send message',
     `Send a message to another agent node (self excluded; scope is your parent, siblings, and descendants). The message reaches the target as a prompt inside a framed envelope that shows the target who sent it and where to reply. Delivery is normally queued and confirmed asynchronously: the reply has outcome "queued" and a messageId, and the target's plugin submits the message when the target is idle (up to ${QUEUE_CAP} queued, for ${QUEUE_TTL_MS / 60_000} minutes). Call message_status with the messageId to see when it becomes delivered. If the target has no plugin running, the message is instead pasted into its prompt when it is idle, and the reply may be delivered, stalled or queued. Outcomes: queued (still waiting), delivered, stalled (pasted but not confirmed, do not resend blindly), expired and queueFull (not delivered; resend later), withdrawn, gone, refused (the detail says why). Only one send per target per ${RATE_MS / 1000} seconds is accepted. Terminal nodes cannot receive messages; use write. mode "now" steers: if the target is working, its turn is interrupted and the message delivered at once, with an envelope line saying so (the reply and message_status carry steer: true); to an idle target it is the same as the default "queue". Use it only to stop a worker heading the wrong way. A queued message can be taken back with withdraw.`,
     { nodeId: z.string().min(1), text: z.string().min(1), mode: z.enum(['queue', 'now']).optional() },
     async (c, a) => ({ data: await deliver(c.manager, c.caller, a.nodeId, a.text, { mode: a.mode }) })),
 
   withdraw: tool(
+    'Withdraw message',
     'Take back a message you sent that is still queued (not yet submitted to or pasted into the target). Its outcome becomes "withdrawn" and it is never delivered. A message with any other outcome (see send), or one being submitted, cannot be withdrawn, and the error says why. Takes the messageId from the send reply.',
     { messageId: z.string().min(1) },
     async (c, a) => ({ data: (await withdraw(c.manager, c.caller, a.messageId)).result })),
 
   message_status: tool(
+    'Check message status',
     'Look up the current outcome of a message you sent, which is how you confirm a queued message was delivered. It returns the same result as send (outcomes are listed there), with outcome queued until the message settles. Takes the messageId from the send reply.',
     { messageId: z.string().min(1) },
     async (c, a) => {
@@ -230,6 +235,7 @@ const tools = {
     }),
 
   notify_when: tool(
+    'Wait for workers',
     'Get one message when a set of nodes finishes, instead of polling list_nodes or having each worker report separately. Returns at once; later you receive a single framed message "N of M finished:" with one line per node giving its outcome (or its state). when "all" waits for every node, "any" for the first. of "turn" counts a node once it finishes the turn in progress now, or for an idle node its next turn (exiting or closing counts too); of "success" counts a node once it calls report_outcome (either verdict) from now on, or within the turn in progress now. Ids must be in your scope. One pending notify_when per id set: calling again with the same ids replaces it. It expires after 12 hours.',
     { ids: z.array(z.string().min(1)).min(1), when: z.enum(['all', 'any']), of: z.enum(['turn', 'success']) },
     async (c, a) => {
@@ -239,6 +245,7 @@ const tools = {
     }),
 
   read: tool(
+    'Read worker output',
     'Read another node (yourself, your ancestors, siblings or descendants). what "summary" returns the last `lines` (default 30) user and assistant messages of an agent node\'s conversation, with tool calls reduced to a "[tool: name]" marker; "transcript" returns the whole conversation (capped at the most recent 200 KB); "terminal" returns the last `lines` (default 60) rows of the node\'s screen and works for terminal nodes too. Summary and transcript also take a closed node of your tree (see history).',
     { nodeId: z.string().min(1), what: z.enum(['summary', 'transcript', 'terminal']), lines: z.number().int().min(1).max(5000).optional() },
     async (c, a) => {
@@ -257,6 +264,7 @@ const tools = {
     }),
 
   history: tool(
+    'List past workers',
     `List the closed agent nodes of your tree, newest first, one line each: id, title, when it closed, a one-line brief of what it did and how it ended (with its branch's fate), branch and spend. \`query\` keeps those whose title, first prompt or last message contains it. Read one with read, continue its work by spawning with fork. At most ${HISTORY_LINES} lines. \`rootId\` picks a tree for the human only.`,
     { query: z.string().optional(), rootId: z.string().min(1).optional() },
     async (c, a) => {
@@ -266,6 +274,7 @@ const tools = {
     }),
 
   transcript: tool(
+    'Read session transcript',
     'A live or closed Claude node\'s conversation in one of its sessions (default: the current one), as read "transcript" prints it, with its session ids. Only the human may call this.',
     { nodeId: z.string().min(1), sessionId: z.string().min(1).optional() },
     async (c, a) => {
@@ -275,11 +284,13 @@ const tools = {
     }, true),
 
   followup: tool(
+    'Continue past worker',
     'Continue a closed agent node\'s session as a new live node using its harness that starts on `prompt`, with its title (unless `title`), model, effort, role and profile, under its parent when that is still live. Only the human may call this.',
     { nodeId: z.string().min(1), prompt: z.string().min(1), title: z.string().min(1).optional() },
     async (c, a) => ({ data: { nodeId: (await c.manager.followup(a.nodeId, a.prompt, a.title)).id } }), true),
 
   write: tool(
+    'Type in terminal',
     'Type raw keystrokes into another node\'s terminal (yourself, ancestors, siblings or descendants), for example to answer a prompt in a terminal node or press Enter. The human must approve each call in the UI; if they decline or nobody is watching you get {ok:false, reason:"denied"}. Text is limited to 2000 characters. For talking to an agent node use send, which is safer.',
     { nodeId: z.string().min(1), text: z.string().min(1).max(MAX_WRITE_CHARS) },
     async (c, a) => {
@@ -293,6 +304,7 @@ const tools = {
     }),
 
   close: tool(
+    'Close nodes',
     'Close and delete nodes. Every id must exist and be a descendant of yours, otherwise the whole batch is refused and nothing is closed. Orchestrators (root nodes) cannot be closed by agents. The human approves the batch once in the UI; if they decline you get {ok:false, reason:"denied"}. The project config (approvals.close in .tiller/config.json) can skip that approval: "always" skips it, "done" skips it when every node in the batch is done, has exited or has called report_outcome (so a worker can be closed as soon as its report arrives), and the default "never" always asks. A node with its own git worktree closes only when the tree is clean, its branch is merged and no other live node works in it; otherwise the batch is refused, nothing is closed, and the error says why. `worktree` decides instead for the whole batch: "keep" commits uncommitted changes as a WIP commit and keeps the branch, "discard" deletes the worktree and branch with any unmerged work, and always needs the human\'s approval.',
     { nodeIds: z.array(z.string().min(1)).min(1), force: z.boolean().optional(), worktree: z.enum(['keep', 'discard']).optional() },
     async (c, a) => {
@@ -327,6 +339,7 @@ const tools = {
     }),
 
   merge: tool(
+    'Merge worker changes',
     'Merge the git branch of one of your descendants that has its own worktree into the branch it was created from (its base), in the project\'s merge style (worktrees.mergeStyle in .tiller/config.json: "merge", the default, makes a merge commit; "squash" makes one commit; "ff-only" only fast-forwards). Refused, with nothing changed, when the base is a protected branch (worktrees.protected, default main and master, plus origin\'s default branch: spawn with a `base` branch instead and have the human open a pull request from it), while the node is working, when its worktree has uncommitted files, when the base is checked out somewhere with uncommitted changes, A conflict with the base is checked first without touching any file: the reply is then {ok:false, conflicts:[paths]}; send the worker a rebase instruction rather than resolving it yourself, then merge again. The merge or squash commit is signed when the repo\'s git config sets commit.gpgsign, and a signing failure refuses the merge with git\'s error. The human approves each merge in the UI unless the project config sets approvals.merge; if they decline you get {ok:false, reason:"denied"}. Close the node afterwards to remove its worktree and branch.',
     { nodeId: z.string().min(1) },
     async (c, a) => {
@@ -347,6 +360,7 @@ const tools = {
     }),
 
   resume: tool(
+    'Resume node',
     'Relaunch an exited Claude node with its previous conversation. Only the human may call this.',
     { nodeId: z.string().min(1) },
     async (c, a) => {
@@ -356,6 +370,7 @@ const tools = {
     }, true),
 
   restart: tool(
+    'Restart node',
     'Restart a node: kill its process and relaunch it with a fresh session, which clears its context. Its title, directory, model, effort and children are kept. `prompt` is its first prompt; without one, a node whose tree has a handoff.md in its session directory is told to read it first. Only the human may call this.',
     { nodeId: z.string().min(1), prompt: z.string().optional() },
     async (c, a) => {
@@ -365,6 +380,7 @@ const tools = {
     }, true),
 
   prune: tool(
+    'Remove finished nodes',
     'Remove every exited node that has no live descendant (files and records). A node whose git worktree has uncommitted or unmerged work is kept and listed. Only the human may call this.',
     {},
     async (c) => {
@@ -374,6 +390,7 @@ const tools = {
     }, true),
 
   diff: tool(
+    'Review changes',
     `Show what a node with its own git worktree (yourself or one of your descendants) changed since it branched from its base: its commits plus its uncommitted and untracked files, as one unified diff of the working tree against where the branch started. Patch text stops after ${MAX_PATCH_BYTES >> 20} MB; the remaining files are listed with their line counts only, as are binary files. stat true lists only the files and counts.`,
     { nodeId: z.string().min(1), stat: z.boolean().optional() },
     async (c, a) => {
@@ -382,6 +399,7 @@ const tools = {
     }),
 
   worktrees: tool(
+    'Manage worktrees',
     'List tiller git worktrees for the repo `cwd` is in (all known repos when omitted): node worktrees, orphans (a worktree with no node) and kept branches. clean "safe" removes the orphans and kept branches that are clean and merged; "force" removes all of them and reports the commits and files that went. Only the human may call this.',
     { cwd: z.string().min(1).optional(), clean: z.enum(['safe', 'force']).optional() },
     async (c, a) => {
@@ -390,6 +408,7 @@ const tools = {
     }, true),
 
   select: tool(
+    'Show node',
     'Make the web UI and app show a node (they switch to it). Only the human may call this.',
     { nodeId: z.string().min(1) },
     async (c, a) => {
@@ -400,6 +419,7 @@ const tools = {
     }, true),
 
   shutdown: tool(
+    'Stop Tiller',
     'Stop the daemon: flush the registry, kill every node process and exit. The nodes are not resumed on the next start. Only the human may call this.',
     {},
     async (c) => {
@@ -409,6 +429,7 @@ const tools = {
     }, true),
 
   mute: tool(
+    'Mute notifications',
     'Stop (muted true) or restore one node\'s OS notifications; the mute is kept across restarts. Only the human may call this.',
     { nodeId: z.string().min(1), muted: z.boolean() },
     async (c, a) => {
@@ -417,6 +438,7 @@ const tools = {
     }, true),
 
   dnd: tool(
+    'Set do not disturb',
     'Turn do not disturb on, for `minutes` when given, or off: it stops every OS notification and is not kept across a daemon restart. Without `on`, only report it. Only the human may call this.',
     { on: z.boolean().optional(), minutes: z.number().positive().max(7 * 24 * 60).optional() },
     async (c, a) => {
@@ -426,6 +448,7 @@ const tools = {
     }, true),
 
   update: tool(
+    'Update Tiller',
     'Check published stable GitHub releases and roll-up notes. With apply, install the exact reviewed tag and commit, rebuild and restart the daemon, resuming live nodes. Human only.',
     { apply: z.boolean().optional(), tag: z.string().optional(), sha: z.string().optional() },
     async (c, a) => {
@@ -437,6 +460,7 @@ const tools = {
     }, true),
 
   sessions_clean: tool(
+    'Clean old sessions',
     'Delete the session directories that daemon.sessionsKeepDays has expired now, rather than at the daily sweep. Only the human may call this.',
     {},
     async (c) => {
@@ -445,6 +469,7 @@ const tools = {
     }, true),
 
   rename: tool(
+    'Rename node',
     'Change the title of yourself or one of your descendants.',
     { nodeId: z.string().min(1), title: z.string().min(1) },
     async (c, a) => {
@@ -454,6 +479,7 @@ const tools = {
     }),
 
   report_outcome: tool(
+    'Report task outcome',
     'Report how your own task ended: "succeeded" or "failed", with an optional short note. Call it once when your work is finished so whoever launched you can tell the difference between done and done well. It is about yourself only. Fill the structured fields too, so your parent can read your result from list_nodes without reading your transcript: summary (what you did, in a sentence or two), changedFiles (paths), verified (what you ran to check the work and its result) and openQuestions (anything left for your parent to decide). If the project configures a completion gate (config `gate`), a "succeeded" report is accepted only once the gate command passes in your directory: the reply says whether the gate passed or failed (with the command\'s output and the attempts you have left); fix the problem and call report_outcome again. A gate still running after 30 seconds is replied to as pending, and a failure then arrives as a message instead. Any report while your gate runs is refused. When no attempts are left the outcome is recorded as failed. Your parent is told of every recorded outcome.',
     {
       outcome: z.enum(['succeeded', 'failed']), note: z.string().optional(), summary: z.string().optional(), changedFiles: z.array(z.string()).optional(),
@@ -538,7 +564,7 @@ export function mountMcp(manager: NodeManager, confirm: Ctx['confirm'], focus: C
     const mcp = new McpServer({ name: 'tiller', version: '0.0.0' });
     for (const [name, t] of Object.entries(tools)) {
       if (t.humanOnly && caller !== HUMAN) continue;
-      mcp.registerTool(name, { description: t.description, inputSchema: t.shape }, async (args: unknown) => {
+      mcp.registerTool(name, { title: t.title, description: t.description, inputSchema: t.shape }, async (args: unknown) => {
         try {
           const out = await t.run(ctx, args as never);
           const content = [out.text, out.data === undefined ? undefined : JSON.stringify(out.data)].flatMap((x) => (x === undefined ? [] : [{ type: 'text' as const, text: x }]));
