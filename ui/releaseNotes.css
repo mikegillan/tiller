@@ -1,0 +1,5 @@
+.release-technical { margin-top: 1em; }
+.release-technical summary { width: fit-content; cursor: pointer; color: var(--dim); }
+.release-technical summary:hover { color: var(--fg); }
+.release-technical summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.release-technical pre { margin: .75em 0 0; padding: 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); font: .9em/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }

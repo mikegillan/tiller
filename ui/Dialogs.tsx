@@ -3,7 +3,7 @@ import { PROFILES, PROFILE_LABELS, profileFor, EFFORTS, type InstalledReleaseNot
 import { send } from './conn';
 import type { TauriWindow } from './hooks';
 import { Modal } from './Modal';
-import { Markdown } from './Markdown';
+import { ReleaseNotes } from './ReleaseNotes';
 import { expectSpawn, openDialog, useStore, type Dialog } from './store';
 import { IN_APP } from './url';
 
@@ -214,7 +214,7 @@ function InstalledNotes({ notes }: { notes: InstalledReleaseNotes }) {
     <div className="release-notes" tabIndex={0} aria-label="Installed release notes">
       {notes.releases.map((release) => <section key={release.id}>
         <h3>{release.tag}{release.name !== release.tag && ` · ${release.name}`}</h3>
-        <Markdown>{release.body || 'No release notes provided.'}</Markdown>
+        <ReleaseNotes body={release.body} />
       </section>)}
     </div>
   </>;
@@ -257,7 +257,7 @@ function UpdateDialog() {
       <div className="release-notes" tabIndex={0} aria-label="Available release notes">
         {(upd?.releases.length ? upd.releases : upd?.target ? [upd.target] : []).map((r) => <section key={r.id}>
           <h3>{r.tag} · {r.name === r.tag ? 'Release notes' : r.name}</h3>
-          <Markdown>{r.body || 'No release notes provided.'}</Markdown>
+          <ReleaseNotes body={r.body} />
         </section>)}
       </div>
       {(available || restartOnly) && <p>{restartOnly ? 'Rebuild affected packages, UI and app from the current release, then restart the daemon.' : 'Install this release in the clean main checkout, rebuild changed packages, UI and app, then restart the daemon.'} Working agents will be interrupted and resumed. If the app is rebuilt, quit and reopen Tiller.</p>}
