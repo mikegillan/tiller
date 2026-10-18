@@ -62,7 +62,7 @@ export function App() {
             {!node && !archived && (
               <div className="empty">
                 <p>No sessions yet.</p>
-                <button className="btn primary" onClick={() => openDialog({ kind: 'spawn', parentId: null, cwd: '' })}>New session</button>
+                <p>Choose New session in the sidebar to get started.</p>
               </div>
             )}
           </div>
