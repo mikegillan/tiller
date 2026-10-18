@@ -14,6 +14,7 @@ import { adapterFor } from './harness.js';
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
+import { isSupportedEffort } from '../shared/harness-policy.js';
 import { arm, scheduleSoon } from './scheduling.js';
 import { CompletionGate, gateFor } from './completion-gate.js';
 import type { CompletionWatches } from './completion-watches.js';
@@ -332,7 +333,7 @@ export class NodeManager extends EventEmitter {
     const profile = adapter ? profileFor(req.profile ?? p.profile, parentId, role) : undefined;
     const defaults: Pick<NodeRecord, 'model' | 'effort'> = adapter ? profileDefaults(config, adapter.id, profile!, roleFor(role, parentId)) : {};
     const model = req.model ?? p.model ?? defaults.model, effort = req.effort ?? p.effort ?? defaults.effort;
-    if (adapter?.id === 'codex' && effort && !['low', 'medium', 'high', 'xhigh'].includes(effort)) throw new Error(`unsupported Codex effort: ${effort}`);
+    if (adapter?.id === 'codex' && effort && !isSupportedEffort('codex', effort)) throw new Error(`unsupported Codex effort: ${effort}`);
     const parent = parentId ? this.registry.get(parentId) : undefined;
     // Other harnesses cannot carry Claude restrictions. Only the human, a same-harness parent,
     // or an unrestricted Claude parent may select them. This is not a process sandbox.
