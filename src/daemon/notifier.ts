@@ -1,8 +1,8 @@
-// The daemon approves every OS notification: one per node and kind, titled with the node, saying what it needs.
+// The daemon applies notification policy to actionable attention and tree completion.
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
-import { dndActive, finished, type Dnd, type NativeNotification, type NodeView } from '../shared/protocol.js';
+import { dndActive, finished, isAgentKind, type Dnd, type NativeNotification, type NodeView } from '../shared/protocol.js';
 import type { Notifications, NotifyLevel } from './config.js';
 import type { NotifyEvent } from './manager.js';
 
@@ -85,13 +85,14 @@ const failed = (v: NodeView) => !!v.status.errored || v.outcome?.outcome === 'fa
 
 /**
  * Returns the 'notify' listener. Nothing is sent for a muted node, during do not disturb, or for a node a focused client
- * is looking at; then the notifications config picks banner, sound or silent; at most one per node and kind every 5 s.
- * With treeDoneSummary, done and exited are replaced by one notification once the whole tree is finished.
+ * is looking at; then the notifications config picks banner, sound or silent; individual events are throttled to one per node and kind every 5 s.
+ * With treeDoneSummary, agent done and exited are replaced by one notification per completed work cycle.
  */
-export function createNotifier(d: NotifierDeps): (n: NotifyEvent) => void {
+export function createNotifier(d: NotifierDeps): ((n: NotifyEvent) => void) & { observe(node: NodeView): void } {
   const last = new Map<string, number>();
   /** Roots whose finish has been announced, until one of their nodes is seen unfinished again. */
   const announced = new Set<string>();
+  const active = new Set<string>();
   const log = d.log ?? console.log;
   const post = (id: string, kind: NotifyEvent['kind'], key: string, c: Omit<Content, 'sound'>, now: number) => {
     const say = (what: string) => log(`notify ${id} ${key}: ${what}`);
@@ -101,7 +102,7 @@ export function createNotifier(d: NotifierDeps): (n: NotifyEvent) => void {
     const { level, why } = decide(kind, d.config(id), new Date(now));
     if (level === 'silent') return say(`suppressed (${why})`);
     const k = `${id}:${key}`;
-    if (now - (last.get(k) ?? -Infinity) < THROTTLE_MS) return say('suppressed (throttled)');
+    if (key !== 'tree' && now - (last.get(k) ?? -Infinity) < THROTTLE_MS) return say('suppressed (throttled)');
     last.set(k, now);
     const payload = { ...c, id, sound: level === 'sound' };
     const fallback = () => {
@@ -118,25 +119,38 @@ export function createNotifier(d: NotifierDeps): (n: NotifyEvent) => void {
       fallback();
     });
   };
-  return (n) => {
+  const summarize = (id: string, now: number, completionEvent = false) => {
+    const tree = d.tree(id);
+    const root = tree[0] ?? d.view(id);
+    if (!root || !d.config(root.id).treeDoneSummary) return;
+    const agents = tree.filter((v) => isAgentKind(v.kind));
+    if (!agents.length) return;
+    const complete = agents.every((v) => !v.pending && v.gate !== 'running'
+      && (v.status.exited || v.gate !== 'failed' || v.outcome?.gate === 'failed') && finished(v.status));
+    if (!complete) {
+      announced.delete(root.id);
+      active.add(root.id);
+      return;
+    }
+    if (announced.has(root.id) || (!completionEvent && !active.has(root.id))) return;
+    announced.add(root.id);
+    active.delete(root.id);
+    const bad = agents.filter(failed).length;
+    post(root.id, 'done', 'tree', { title: root.title, body: `tree ${root.title} finished: ${agents.length - bad} succeeded, ${bad} failed` }, now);
+  };
+  const notify = (n: NotifyEvent) => {
     const node = d.view(n.id);
     if (!node) return;
     const now = (d.now ?? Date.now)();
-    const tree = d.tree(n.id);
-    const root = tree[0] ?? node;
-    if (d.config(n.id).treeDoneSummary) {
-      const agents = tree.filter((v) => v.kind !== 'terminal'); // a plain terminal never finishes
-      if (!agents.length || !agents.every((v) => finished(v.status))) announced.delete(root.id);
-      // An exit after the tree was announced (a node quitting once done) is not a new finish.
-      else if (n.kind !== 'needsYou' && (n.kind !== 'exited' || !announced.has(root.id))) {
-        announced.add(root.id);
-        const bad = agents.filter(failed).length;
-        post(root.id, 'done', 'tree', { title: root.title, body: `tree ${root.title} finished: ${agents.length - bad} succeeded, ${bad} failed` }, now);
-      }
-      if ((n.kind === 'done' || n.kind === 'exited') && node.kind !== 'terminal') return log(`notify ${n.id} ${n.kind}: suppressed (treeDoneSummary)`);
+    summarize(n.id, now, n.kind !== 'needsYou' && isAgentKind(node.kind));
+    const root = d.tree(n.id)[0] ?? node;
+    if (d.config(root.id).treeDoneSummary && (n.kind === 'done' || n.kind === 'exited') && isAgentKind(node.kind)) {
+      return log(`notify ${n.id} ${n.kind}: suppressed (treeDoneSummary)`);
     }
     post(n.id, n.kind, n.kind, content(node, n.kind, root.title), now);
   };
+  // Working, pending, restart and gate transitions do not emit notification events.
+  return Object.assign(notify, { observe: (node: NodeView) => summarize(node.id, (d.now ?? Date.now)()) });
 }
 
 /** First executable named `name` on `path`, else undefined. */

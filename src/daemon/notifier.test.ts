@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { dndActive, type Dnd, type NodeStatus, type NodeView } from '../shared/protocol.js';
-import type { Notifications } from './config.js';
+import { loadConfig, type Notifications } from './config.js';
 import { NodeRegistry } from './nodes.js';
 import { content, createNotifier, decide, inQuietHours, notifyArgs, type NotifierDeps } from './notifier.js';
 
@@ -11,7 +11,7 @@ const node = (title: string, status: Partial<NodeStatus> = {}, more: Partial<Nod
   id: 'n1', parentId: null, kind: 'claude', title, cwd: '/', createdAt: 0, unread: false,
   status: { state: 'done', changedAt: 0, ...status }, ...more,
 });
-const DEFAULTS: Notifications = { kinds: { needsYou: 'sound', errored: 'sound', done: 'banner', exited: 'banner' }, treeDoneSummary: false };
+const DEFAULTS = loadConfig(null, mkdtempSync(join(tmpdir(), 'tl-notify-'))).notifications;
 const at = (hhmm: string) => new Date(`2026-10-13T${hhmm}:00`);
 
 describe('content', () => {
@@ -56,8 +56,8 @@ describe('notifyArgs', () => {
 });
 
 describe('decide', () => {
-  it('defaults to today: sound for needs-you and errors, a plain banner for done and exited', () => {
-    expect((['needsYou', 'errored', 'done', 'exited'] as const).map((k) => decide(k, DEFAULTS, at('12:00')).level)).toEqual(['sound', 'sound', 'banner', 'banner']);
+  it('defaults to actionable attention and a banner level for tree completion', () => {
+    expect((['needsYou', 'errored', 'done', 'exited'] as const).map((k) => decide(k, DEFAULTS, at('12:00')).level)).toEqual(['sound', 'silent', 'banner', 'silent']);
   });
 
   it('follows the kinds map', () => {
@@ -145,7 +145,7 @@ describe('createNotifier', () => {
   });
 
   it('throttles per node and kind for 5 s', () => {
-    const s = setup();
+    const s = setup(0, { cfg: { treeDoneSummary: false } });
     s.notify(ev('needsYou'));
     s.tick(4000); s.notify(ev('needsYou'));
     s.notify(ev('done'));
@@ -194,12 +194,100 @@ describe('createNotifier', () => {
     s.notify(ev('done', 'a'));
     expect(s.calls).toHaveLength(0);
     b.status = { state: 'done', errored: true, changedAt: 0 };
-    s.notify(ev('errored', 'b')); // a failure still notifies on its own, and finishes the tree
-    expect(s.calls.map((c) => c[c.indexOf('-message') + 1])).toEqual(['tree sess finished: 2 succeeded, 2 failed', 'Turn failed']);
+    s.notify(ev('errored', 'b')); // failure stays visible in the single final summary
+    expect(s.calls.map((c) => c[c.indexOf('-message') + 1])).toEqual(['tree sess finished: 2 succeeded, 2 failed']);
     b.status = { ...b.status, exited: true };
     s.notify(ev('exited', 'b')); // an exit after the finish is not a new one
-    expect(s.calls).toHaveLength(2);
-    s.notify(ev('exited', 't')); // a plain terminal is outside the summary and notifies as before
-    expect(s.calls[2]).toContain('Exited');
+    s.tick(6000);
+    s.notify(ev('done', 'a')); // repeated completion events never repeat a summary
+    s.notify(ev('exited', 't')); // terminal exits are silent by default
+    expect(s.calls).toHaveLength(1);
   });
+
+  it.each(['working', 'queued', 'armed', 'waiting', 'blocked', 'unknown'] as const)('waits for every agent, including a %s root', (state) => {
+    const root = node('session', { state }, { id: 'r', kind: 'agent', harness: 'codex' });
+    const child = node('child', {}, { id: 'c', parentId: 'r' });
+    const s = setup(0, { nodes: [root, child] });
+    s.notify(ev('done', 'c'));
+    s.notify(ev('errored', 'c'));
+    expect(s.calls).toHaveLength(0);
+    root.status.state = 'done';
+    s.notify(ev('done', 'r'));
+    expect(s.calls).toHaveLength(1);
+  });
+
+  it('waits for pending launches and gates, then rearms on new work even in a short cycle', () => {
+    const root = node('session', {}, { id: 'r' });
+    const child = node('child', {}, { id: 'c', parentId: 'r', gate: 'running' });
+    const s = setup(0, { nodes: [root, child] });
+    s.notify(ev('done', 'r'));
+    expect(s.calls).toHaveLength(0);
+    child.gate = 'passed';
+    s.notify.observe(child); // gate completion has no notify event
+    expect(s.calls).toHaveLength(1);
+    s.notify(ev('done', 'c'));
+    expect(s.calls).toHaveLength(1);
+
+    child.pending = { after: [], afterSuccess: [], met: [] };
+    s.notify.observe(child);
+    s.notify(ev('done', 'r'));
+    expect(s.calls).toHaveLength(1);
+    delete child.pending;
+    child.status = { state: 'working', activity: 'restarting', changedAt: 1 };
+    s.notify.observe(child);
+    s.notify(ev('done', 'r'));
+    expect(s.calls).toHaveLength(1);
+    child.status = { state: 'done', exited: true, changedAt: 2 };
+    s.notify.observe(child);
+    expect(s.calls).toHaveLength(2);
+    s.notify(ev('exited', 'c'));
+    expect(s.calls).toHaveLength(2);
+  });
+
+  it('waits after a failed gate until retries resolve or a final failed outcome is recorded', () => {
+    const root = node('session', {}, { id: 'r', gate: 'running' });
+    const s = setup(0, { nodes: [root] });
+    s.notify.observe(root);
+    root.gate = 'failed';
+    s.notify.observe(root);
+    s.notify(ev('done', 'r'));
+    expect(s.calls).toHaveLength(0);
+    root.outcome = { outcome: 'failed', gate: 'failed', at: 1 };
+    s.notify.observe(root);
+    expect(s.calls[0]).toContain('tree session finished: 0 succeeded, 1 failed');
+  });
+
+  it('rechecks remaining agents when an unfinished child is closed', () => {
+    const root = node('session', {}, { id: 'r' });
+    const child = node('child', { state: 'armed' }, { id: 'c', parentId: 'r' });
+    const nodes = [root, child];
+    const s = setup(0, { nodes });
+    s.notify.observe(child);
+    s.notify(ev('done', 'r'));
+    expect(s.calls).toHaveLength(0);
+    nodes.pop();
+    s.notify.observe(root); // the removed listener rechecks surviving roots
+    expect(s.calls[0]).toContain('tree session finished: 1 succeeded, 0 failed');
+  });
+
+  it('still notifies actionable questions and approval after an error, while other agents are active', () => {
+    const root = node('session', { state: 'working' }, { id: 'r' });
+    const child = node('child', { errored: true }, { id: 'c', parentId: 'r' });
+    const s = setup(0, { nodes: [root, child] });
+    s.notify(ev('errored', 'c'));
+    child.status = { state: 'waiting', activity: 'question: Retry?', changedAt: 1 };
+    s.notify(ev('needsYou', 'c'));
+    s.tick(5000);
+    child.status = { state: 'blocked', activity: 'needs approval: Bash', changedAt: 2 };
+    s.notify(ev('needsYou', 'c'));
+    expect(s.calls.map((c) => c[c.indexOf('-message') + 1])).toEqual(['Asks: Retry?', 'Needs approval: Bash']);
+    expect(s.calls.every((c) => c.includes('-sound'))).toBe(true);
+  });
+
+  it('preserves explicit per-node notification overrides when tree summaries are disabled', () => {
+    const s = setup(0, { cfg: { treeDoneSummary: false, kinds: { needsYou: 'sound', errored: 'sound', done: 'banner', exited: 'banner' } } });
+    for (const kind of ['errored', 'done', 'exited'] as const) s.notify(ev(kind));
+    expect(s.calls).toHaveLength(3);
+  });
+
 });
