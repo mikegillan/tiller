@@ -1,6 +1,6 @@
 // The real Codex TUI owns the terminal; the bridge observes and delivers through its app-server.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { TillerClient, readToken } from '../pi/client.js';
+import { TillerClient, readToken } from '../shared/client.js';
 import { CodexRpc } from './rpc.js';
 import { CodexBridge, type BridgeOptions } from './bridge.js';
 import { CodexTerminal } from './terminal.js';

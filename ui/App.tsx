@@ -1,22 +1,22 @@
 import { useEffect, useState } from 'react';
 import { finished, isAgentKind } from '../src/shared/protocol';
 import { ActivityDrawer } from './ActivityDrawer';
-import { Dialogs } from './Dialogs';
+import { Dialogs } from './dialogs/Dialogs';
 import { DiffPane } from './DiffPane';
 import { ExitedCard } from './ExitedCard';
-import { ArchivePane } from './History';
+import { ArchivePane } from './transcript/History';
 import { useDocumentSync } from './hooks';
 import { LastMessagePanel } from './LastMessagePanel';
 import { Palette } from './Palette';
-import { Sidebar, useRows } from './Sidebar';
+import { Sidebar, useRows } from './sidebar/Sidebar';
 import { StatusBar } from './StatusBar';
 import { TerminalPane } from './TerminalPane';
 import { TitleBar } from './TitleBar';
-import { TranscriptPane } from './TranscriptPane';
+import { TranscriptPane } from './transcript/TranscriptPane';
 import { ConfirmModal, DigestCard, Toasts } from './Toasts';
 import { getState, openDialog, selectNode, useStore } from './store';
 import { IN_APP } from './url';
-import { SettingsPanel } from './SettingsPanel';
+import { SettingsPanel } from './settings/SettingsPanel';
 
 if (IN_APP) document.documentElement.dataset.app = '1';
 

@@ -12,7 +12,6 @@ spawn processes.
  adapters/pi/
    index.ts      extension factory (loaded by pi)
    bridge.ts     inbox poll / claim / submit / ack / steer state machine
-   client.ts     Tiller HTTP client (node-scoped bearer auth)
    config.ts     TL_* environment parsing
    lifecycle.ts  pure Pi-event -> Tiller /hook and /mod-event mappers
    types.ts      structural subset of the Pi API (host supplies Pi)
@@ -165,11 +164,14 @@ installing a second Pi runtime.
 Tests and typechecking run from the repository root:
 
 ```sh
-npx vitest run adapters/pi
+npx vitest run adapters/pi adapters/shared
 npx tsc -p adapters/pi/tsconfig.json
 ```
 
-The suite covers config parsing, the HTTP client, the lifecycle
+The shared HTTP client and its tests live in `adapters/shared/client.ts` and
+`adapters/shared/client.test.ts`; both Pi and Codex use its node-scoped bearer auth.
+
+The suite covers config parsing, the lifecycle
 mappers, and the bridge state machine (idle delivery, daemon-held messages, steer abort, poll
 non-overlap, timer cleanup, unconfirmed retirement, late acceptance/reload races, ack failure) with an injectable fake Pi and fetch.
 

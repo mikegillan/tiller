@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DiffFile, NodeView } from '../src/shared/protocol';
-import { Counts } from './Bits';
+import { Counts } from './controls/Bits';
 import { send } from './conn';
 import { formatComments, parsePatch, type DiffLine, type ReviewComment } from './diff';
 import { addComment, diffRequested, removeComment, useStore } from './store';

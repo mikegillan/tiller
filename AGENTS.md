@@ -8,9 +8,10 @@ Tiller runs Claude Code, Pi and Codex sessions as child processes of a local Nod
 - `src/shared/`: daemon/UI contracts in `protocol.ts` and shared pure helpers.
 - `adapters/pi/` and `adapters/codex/`: harness bridges; `src/daemon/harness.ts` defines the adapter boundary and launch policy. Each adapter has its own README.
 - `mod/`: Claude Code plugin. See `mod/README.md` for hook restrictions and its separate test runner.
-- `ui/`: React + xterm.js; `store.ts` holds shared UI state, `theme.css` holds theme variables, and `icons.tsx` holds inline SVG icons. See `ui/README.md` for the mock daemon and browser development workflow.
+- `ui/`: React + xterm.js. `App.tsx` composes the shell; `sidebar/`, `settings/`, `dialogs/`, `release-notes/` and `transcript/` group features, and `controls/` holds reusable components and icons. `store.ts` holds shared UI state; component state stays with its owner. See `ui/README.md` for the module map, styles and mock daemon workflow.
 - `src-tauri/`: native Rust app shell and Tauri configuration.
-- `docs/`: behavior and configuration references. Start with `docs/harnesses.md`, `docs/messaging.md`, `docs/worktrees.md` or `docs/sessions.md` for the affected subsystem. `PLAN.md` and `docs/design/` contain design rationale; check current code and behavior docs when plans differ.
+- `docs/`: behavior and configuration references, indexed in [docs/README.md](docs/README.md). `PLAN.md` and `docs/design/` contain historical design rationale; check current code and behavior docs when plans differ.
+- `spike/`: manual experiments using real sessions and local daemons, described in [spike/README.md](spike/README.md); these are separate from automated tests.
 
 ## GitHub pull requests and merges
 

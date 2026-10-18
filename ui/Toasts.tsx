@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { send } from './conn';
-import { Modal } from './Modal';
+import { Modal } from './controls/Modal';
 import { fmtAge } from '../src/shared/format';
 import { dismissDigest, dismissToast, dropConfirm, selectNode, useStore, type Toast } from './store';
 

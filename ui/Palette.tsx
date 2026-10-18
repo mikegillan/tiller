@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react';
 import { dndActive, harnessFor, isAgentKind, type NodeView } from '../src/shared/protocol';
-import { StateDot } from './Bits';
+import { StateDot } from './controls/Bits';
 import { cwdBase } from './format';
-import { Modal } from './Modal';
-import { ancestry } from './sessions';
+import { Modal } from './controls/Modal';
+import { ancestry } from './sidebar/sessions';
 import { activityUnread, openDialog, selectNode, setActivityOpen, toggleHistory, useStore, type Dialog } from './store';
 import { toggleDnd, useNow } from './hooks';
 import { send } from './conn';
-import { statusKind } from './tree';
+import { statusKind } from './sidebar/tree';
 
 export function Palette() {
   const nodes = useStore((s) => s.nodes);

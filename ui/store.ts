@@ -1,8 +1,8 @@
 import { useSyncExternalStore } from 'react';
 import type { ArchivedNode, InstalledReleaseNotes, Diff, DigestItem, Dnd, ServerMessage, Transcript, UpdateStatus, Usage, UsageSource } from '../src/shared/protocol';
 import type { ReviewComment } from './diff';
-import { pickInitial, rootOf } from './sessions';
-import { insertSorted, type Nodes } from './tree';
+import { pickInitial, rootOf } from './sidebar/sessions';
+import { insertSorted, type Nodes } from './sidebar/tree';
 import { wantedNode } from './url';
 
 export type Tone = 'info' | 'ok' | 'warn' | 'bad';

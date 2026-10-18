@@ -1,3 +1,6 @@
+import { HARNESSES as SETTINGS_HARNESSES, PROFILES as SETTINGS_PROFILES, HARNESS_EFFORTS as SETTINGS_EFFORTS, EFFORTS } from './harness-policy.js';
+export { SETTINGS_HARNESSES, SETTINGS_PROFILES, SETTINGS_EFFORTS };
+
 /** Human/admin Settings HTTP contract. null removes an explicit override. */
 export type SettingsScope = 'project' | 'home';
 export interface SettingsEntry { value?: unknown; source: string }
@@ -15,13 +18,6 @@ export interface SettingsField {
   key: string; label: string; type: 'text' | 'number' | 'boolean' | 'select' | 'lines';
   options?: readonly string[]; min?: number; integer?: boolean; description?: string;
 }
-export const SETTINGS_HARNESSES = ['claude', 'pi', 'codex'] as const;
-export const SETTINGS_PROFILES = ['orchestrator', 'implementation', 'explorer', 'mechanical', 'reviewer'] as const;
-export const SETTINGS_EFFORTS = {
-  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
-  pi: ['low', 'medium', 'high', 'xhigh', 'max'],
-  codex: ['low', 'medium', 'high', 'xhigh'],
-} as const;
 /** Portable defaults used only after explicit profiles and legacy Claude roles.
  * Sonnet/Haiku aliases can resolve to older provider models without effort support:
  * https://code.claude.com/docs/en/model-config#adjust-effort-level
@@ -40,7 +36,7 @@ export const SETTINGS_PROFILE_DEFAULTS: { [Harness in typeof SETTINGS_HARNESSES[
 const field = (key: string, type: SettingsField['type'], extra: Partial<SettingsField> = {}): SettingsField => ({ key, label: key.split('.').at(-1)!, type, ...extra });
 export const SETTINGS_FIELDS: SettingsField[] = [
   ...SETTINGS_HARNESSES.flatMap(h => SETTINGS_PROFILES.flatMap(p => [field(`profiles.${h}.${p}.model`, 'text'), field(`profiles.${h}.${p}.effort`, 'select', { options: SETTINGS_EFFORTS[h] })])),
-  ...['orchestrator', 'worker'].flatMap(r => [field(`roles.${r}.model`, 'text'), field(`roles.${r}.effort`, 'select', { options: ['low', 'medium', 'high', 'xhigh', 'max'] })]),
+  ...['orchestrator', 'worker'].flatMap(r => [field(`roles.${r}.model`, 'text'), field(`roles.${r}.effort`, 'select', { options: EFFORTS })]),
   field('approvals.close', 'select', { options: ['never', 'done', 'always'] }), field('approvals.merge', 'boolean'),
   field('worktrees.isolation', 'select', { options: ['none', 'worktree'] }),
   field('worktrees.mergeStyle', 'select', { options: ['merge', 'squash', 'ff-only'] }),
