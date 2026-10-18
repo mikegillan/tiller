@@ -54,10 +54,15 @@ export function SidebarInspector({ node, onClose }: { node: NodeView | null; onC
   useLayoutEffect(() => {
     const parent = root.current?.closest<HTMLElement>('.sidebar-session-body');
     if (!parent) return;
-    const measure = () => setAvailable(Math.max(0, Math.min(parent.clientHeight, window.innerHeight - parent.getBoundingClientRect().top)));
+    const header = parent.querySelector<HTMLElement>('.session-activity');
+    const measure = () => {
+      const bodyHeight = Math.min(parent.clientHeight, window.innerHeight - parent.getBoundingClientRect().top);
+      setAvailable(Math.max(0, bodyHeight - (header?.getBoundingClientRect().height ?? 0)));
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(parent);
+    if (header) observer.observe(header);
     window.addEventListener('resize', measure);
     const el = handle.current;
     return () => {
