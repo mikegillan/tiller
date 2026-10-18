@@ -108,13 +108,19 @@ it('lets a WebKit pointer click on the open trigger close the menu without reope
   hooks.open = true;
   hooks.setOpen.mockImplementation((open: boolean) => { hooks.open = open; });
   const box = { contains: () => false };
-  let tree = SessionSwitcher();
+  const trigger = { focus: vi.fn() };
+  const render = () => {
+    hooks.refs.push({ current: box }, { current: trigger }, { current: null });
+    return SessionSwitcher();
+  };
+  let tree = render();
   let prevented = false;
   find(tree, (el) => el.props.className === 'current').props.onMouseDown?.({ button: 0, preventDefault: () => { prevented = true; } });
   if (!prevented) tree.props.onBlur({ currentTarget: box, relatedTarget: null });
-  tree = SessionSwitcher();
+  tree = render();
   find(tree, (el) => el.props.className === 'current').props.onClick();
   expect(hooks.open).toBe(false);
+  expect(trigger.focus).toHaveBeenCalledOnce();
 });
 
 it('closes the session menu on focus departure and outside clicks, and restores focus on Escape', () => {

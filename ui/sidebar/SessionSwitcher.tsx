@@ -33,7 +33,7 @@ export function SessionSwitcher() {
       <button className="current" ref={trigger} aria-label={`Switch session: ${cur?.root.title ?? 'No session'}`}
         aria-haspopup="menu" aria-expanded={open} aria-controls={open ? 'session-menu' : undefined}
         onMouseDown={(e) => { if (open && e.button === 0) e.preventDefault(); }}
-        onClick={() => setOpen(!open)} onKeyDown={(e) => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setOpen(true); } }}>
+        onClick={() => open ? close() : setOpen(true)} onKeyDown={(e) => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setOpen(true); } }}>
         {cur ? <><StateDot kind={cur.kind} /><span className="session-copy"><span className="st">{cur.root.title}</span><span className="sc" title={cur.root.cwd}>{cwdBase(cur.root.cwd)}</span></span></> : <span className="sc">No session</span>}
         {(cur?.needs ?? 0) > 0 && <span className="count warn" title="needs you in this session">{cur!.needs}</span>}
         {others > 0 && <span className="count warn" title="needs you in other sessions">+{others}</span>}
