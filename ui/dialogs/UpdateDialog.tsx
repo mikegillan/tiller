@@ -38,7 +38,7 @@ export function UpdateDialog() {
     : upd?.target && !runtimeBehindCheckout && !upd.fetchError ? 'Your checkout is at the latest stable release.'
     : 'Check for the latest stable Tiller release.';
   return <Modal title={title} className="modal update-dialog" resizable restoreFocus onClose={close} footer={<>
-    {actionable && <p className="update-interruption">Running agents will be suspended during the update. Eligible agents resume automatically if resume on start is enabled; others can be resumed manually.</p>}
+    {actionable && <p className="update-interruption">Updating will suspend running agents when Tiller restarts. Their sessions are kept so they can be resumed.</p>}
     <div className="btns update-actions">
       <button className="btn update-later" autoFocus onClick={close}>Later</button>
       <button className={`btn${blocked || !actionable ? ' primary' : ''}`} disabled={busy} onClick={() => send({ t: 'updateCheck' })}>

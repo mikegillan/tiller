@@ -28,8 +28,8 @@ it('shows release hierarchy, accurate checkout metadata, installation disclosure
   expect(html).toContain('Checkout <code>old</code>');
   expect(html).toContain('What’s new in v0.1.13');
   expect(html).toContain('Installation details');
-  expect(html).toContain('Running agents will be suspended during the update.');
-  expect(html).toContain('if resume on start is enabled; others can be resumed manually.');
+  expect(html).toContain('Updating will suspend running agents when Tiller restarts.');
+  expect(html).toContain('Their sessions are kept so they can be resumed.');
   expect(html).not.toContain('<details class="update-installation" open');
 });
 
