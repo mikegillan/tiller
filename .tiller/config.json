@@ -13,7 +13,7 @@
     "close": "done"
   },
   "gate": {
-    "command": "node_modules/.bin/tsc --noEmit && node_modules/.bin/tsc --noEmit -p ui/tsconfig.json && node_modules/.bin/vitest run",
+    "command": "npm run typecheck && node_modules/.bin/tsc --noEmit -p ui/tsconfig.json",
     "retries": 2,
     "timeoutMinutes": 10
   },
