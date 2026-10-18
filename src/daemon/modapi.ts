@@ -47,6 +47,7 @@ export function modApi(manager: NodeManager, authenticate: (req: http.IncomingMe
     }
     const raw = await readBody(req, res);
     if (raw === undefined) return true;
+    if (authenticate(req) !== caller) { res.writeHead(401).end(); return true; }
     try {
       const body = JSON.parse(raw || '{}');
       if (path === '/ack') {

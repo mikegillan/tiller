@@ -33,6 +33,15 @@ describe('transcript', () => {
     expect(renderToStaticMarkup(<TranscriptView data={data} onSession={() => {}} harness="pi" />)).toContain('<span class="who">Pi</span>');
   });
 
+  it('labels historical messages by that session’s harness after changing the live harness', () => {
+    const mixed: Transcript = { ...data, sessions: [{ sessionId: 'new', current: true, harness: 'codex' }, { sessionId: 'old', current: false, harness: 'pi' }] };
+    const html = renderToStaticMarkup(<TranscriptView data={mixed} sessionId="old" onSession={() => {}} harness="codex" />);
+    expect(html).toContain('<span class="who">Pi</span>');
+    expect(html).not.toContain('<span class="who">Codex</span>');
+    expect(html).toContain('Current session · codex');
+    expect(html).toContain('Session old · pi');
+  });
+
   it('shows the session picker only with more than one session, current first and others by short id', () => {
     expect(render(data)).not.toContain('<select');
     const html = render({ ...data, sessions: [...data.sessions, { sessionId: '5a4b3c2d-7777-8888', current: false }] });

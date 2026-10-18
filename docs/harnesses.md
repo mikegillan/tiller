@@ -64,6 +64,33 @@ Pi's. An explicit `effort` becomes Pi's `--thinking`.
 
 ## Sessions
 
+### Change an existing agent's harness
+
+Open the node's **More actions → Change harness…** menu, including on a root session or an exited
+agent. Select Claude, Codex or Pi and confirm. The current process stops before the replacement
+launches. The new harness starts a fresh native conversation, even when that node used the same
+harness in an earlier session. An optional first prompt can point it at the work to continue;
+otherwise Tiller points it at the tree's `handoff.md` when available.
+
+The node keeps its identity, title, parent, children, working directory and worktree. Earlier
+transcripts remain readable in the Transcript session picker, labeled with their harness.
+Model, effort, preset and Claude permission overrides are cleared; the selected harness's task
+profile defaults and configured permission/approval settings apply. Review those settings before
+switching a restricted session. Changing harness is a human/admin action; agents cannot invoke it
+or use it to bypass cross-harness launch restrictions. Terminals cannot change harness.
+
+Armed/queued nodes, worktree setup, merge/close operations and running completion gates block a
+switch. Tiller checks the executable and workspace before stopping the old process. A stop that
+does not produce an exit notification within seven seconds refuses the replacement, preventing
+overlapping agents. Startup/authentication or adapter compatibility failures remain visible on
+the exited node; fix the cause and use Restart or select another harness. No rollback resumes an
+old native context automatically.
+
+For local admin integrations, `POST /api/change_harness` takes `nodeId`, `harness` (`claude`,
+`codex` or `pi`) and an optional `prompt` with the human token. It has the same fresh-context
+consequences as the dialog; the caller supplies confirmation. Requesting the current harness is
+refused with a Restart hint.
+
 `tl send`, `tl read`, `tl transcript`, `tl resume`, `tl restart`, `tl followup`, dependency
 launches and outcome reporting work with Pi nodes. Pi conversation files live under
 `~/.tiller/sessions/<rootId>/agents/<nodeId>/<sessionId>.jsonl`. They survive node close and

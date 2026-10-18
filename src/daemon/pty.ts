@@ -89,6 +89,26 @@ export class PtySession {
     if (!this.exited) this.pty.kill();
   }
 
+  /** Wait for the PTY's exit notification; a sent signal alone does not prove termination. */
+  terminate(timeoutMs = 7000): Promise<boolean> {
+    if (this.exited) return Promise.resolve(true);
+    return new Promise((resolve, reject) => {
+      const finish = (exited: boolean) => {
+        clearTimeout(timer);
+        this.exitCbs = this.exitCbs.filter((cb) => cb !== onExit);
+        resolve(exited);
+      };
+      const onExit = () => finish(true);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      this.onExit(onExit);
+      try { this.kill(); } catch (err) {
+        clearTimeout(timer);
+        this.exitCbs = this.exitCbs.filter((cb) => cb !== onExit);
+        reject(err);
+      }
+    });
+  }
+
   /** Resolves once everything received so far has been parsed into the buffer. */
   flush(): Promise<void> {
     return new Promise((res) => this.term.write('', res));

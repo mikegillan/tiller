@@ -30,6 +30,20 @@ Orchestrators are protected from being closed by accident. Agents cannot close t
 
 ## History, follow-up and fork
 
+The app's **Change harness…** action also starts a fresh context on an existing agent, including a
+root. It preserves the node and workspace, resets launch overrides to the target harness's
+defaults, and retains the previous session's harness and transcript location. See
+[changing harness](harnesses.md#change-an-existing-agents-harness) for confirmation and failure behavior.
+
+After a harness change, restart continues with the currently selected harness and resume resumes
+only its current conversation. Each recorded historical session retains its own decoder and
+location, including after another restart or node close. The newest ten previous session IDs
+remain selectable, matching restart's existing retention limit; changing harness never deletes
+transcript files. A follow-up continues only the archived node's final harness/session and owns
+copies of its recorded readable history in the new tree. Older segments are read-only history,
+not native contexts to resume across harnesses. Codex native thread IDs remain in Codex transcript
+headers, separate from the public Tiller session IDs in the picker and API.
+
 Closing a Claude node (close, kill, prune, or closing its root) appends one line for it to `archive.jsonl` in the tree's session directory: its title, directory, model, effort, role, first prompt, session ids, transcript path, last message, reported outcome, spend, and for a worktree node its branch with what close did to it (merged into its base, kept with a WIP commit, or discarded). A one-line `brief` (at most 200 characters) sums up what the node did and how it ended, from its outcome's summary or note, else its last message, else its first prompt, followed by the branch's fate. Terminal nodes, and Claude nodes that never launched, are not archived. The archive goes with the session directory when the sweep deletes it. Agents can write to the session directory, so `archive.jsonl` is advisory data: the daemon takes a line's tree from the directory it sits in, never from the line, but trusts the rest of it (such as the transcript path).
 
 `tl history [--root ID] [QUERY]` lists the closed nodes, newest first, of one tree or all, keeping those whose title, first prompt or last message contains QUERY. The agents' `history` tool lists their own tree's in the same terse form, so an orchestrator can find a closed worker; its `read` tool reads a closed node of its own tree too. `tl transcript <id> [--session SID]` prints a live or closed node's conversation; SID picks one of its earlier sessions, read from the same directory as the current transcript, since Claude keeps every session of a project there.

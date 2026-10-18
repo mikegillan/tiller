@@ -43,7 +43,7 @@ export function preparePiTranscript(n: NodeRecord, sessionDir: string, resume = 
   }
   // Copy the current file and any recorded prior sessions, never append to the archived source.
   // Validate before writing, and refuse collisions rather than silently resuming stale content.
-  const copies = [n.sessionId, ...(n.previousSessions ?? [])].map((sid) => {
+  const copies = [n.sessionId, ...(n.previousSessions ?? []).filter((sid) => !n.sessionHistory?.some((s) => s.sessionId === sid))].map((sid) => {
     const to = piTranscript(sessionDir, n.id, sid);
     const from = sid === n.sessionId ? source : join(dirname(source), `${sid}.jsonl`);
     if (!existsSync(from) && (sid !== n.sessionId || !resume)) return undefined; // Missing prior file, or a fresh restart session.

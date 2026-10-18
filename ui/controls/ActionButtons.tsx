@@ -22,6 +22,7 @@ export function actionsFor(node: NodeView): Act[] {
       ? { key: 'mute', label: 'Unmute notifications', icon: 'bell', run: () => send({ t: 'mute', id: node.id, muted: false }) }
       : { key: 'mute', label: 'Mute notifications', icon: 'bellOff', run: () => send({ t: 'mute', id: node.id, muted: true }) },
     ...(isAgentKind(node.kind) && harnessFor(node) === 'claude' ? [{ key: 'fork', label: 'Fork…', icon: 'fork' as const, run: () => openDialog({ kind: 'fork', from: node.id, title: node.title, cwd: node.cwd, parentId: node.parentId }) }] : []),
+    ...(isAgentKind(node.kind) && !node.pending && node.gate !== 'running' ? [{ key: 'harness', label: 'Change harness…', icon: 'restart' as const, run: () => openDialog({ kind: 'changeHarness', id: node.id }) }] : []),
     ...(exited && isAgentKind(node.kind) ? [{ key: 'resume', label: 'Resume', icon: 'play' as const, run: () => send({ t: 'resume', id: node.id }) }] : []),
     ...(canMerge(node) ? [{ key: 'merge', label: `Merge into ${node.status.git!.base}`, icon: 'merge' as const, run: () => send({ t: 'merge', id: node.id }) }] : []),
     last,
@@ -95,11 +96,11 @@ export function ActionButtons({ node, labels }: { node: NodeView; labels?: boole
   return (
     <span className={`actions node-actions${labels ? ' labelled' : ''}`} onClick={(e) => e.stopPropagation()}>
       {primary.map((a) => (
-        <button key={a.key} className={`btn ${labels && a.key === 'child' ? 'primary' : 'icon'} node-action-${a.key}`} title={a.label} aria-label={a.label} onClick={a.run}>
+        <button key={a.key} className={`btn ${labels && a.key === 'child' ? 'primary' : 'icon'} node-action-${a.key}`} title={a.label} aria-label={a.label} disabled={node.changingHarness} onClick={a.run}>
           <Icon name={a.icon} size={14} />{labels && <span>{a.label}</span>}
         </button>
       ))}
-      <button ref={trigger} className="btn icon node-action-more" title="More actions" aria-label={`More actions for ${node.title}`} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
+      <button ref={trigger} className="btn icon node-action-more" title="More actions" aria-label={`More actions for ${node.title}`} disabled={node.changingHarness} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
         onClick={() => open ? close() : reveal()}
         onKeyDown={(e) => {
           if (e.metaKey || e.ctrlKey || e.altKey) return;

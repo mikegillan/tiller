@@ -17,6 +17,7 @@ export type Dialog =
   | { kind: 'spawn'; parentId: string | null; cwd: string }
   | { kind: 'kill'; id: string }
   | { kind: 'restart'; id: string }
+  | { kind: 'changeHarness'; id: string }
   | { kind: 'followup'; id: string; title: string }
   /** Spawn a Claude node that starts from `from`'s conversation (a live or archived node). */
   | { kind: 'fork'; from: string; title: string; cwd: string; parentId: string | null }

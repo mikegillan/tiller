@@ -20,6 +20,9 @@ After `npm run ui:build` the mock also serves the built UI: open `http://127.0.0
 
 ## URL and keyboard
 
+The mock supports **More actions → Change harness…** in memory, including mixed-harness session
+labels. It starts no agent processes and requires no authenticated provider account.
+
 - `?k=<token>` is stored in localStorage and removed from the address bar. `?node=<id>` selects that node and its session; the UI keeps it in step with the selection.
 - Cmd+K jump to any node, Cmd+1..9 select the Nth row of the current session, Cmd+0 focus the sidebar tree.
 - With the tree focused: j/k or arrows move, h/l collapse and expand.
