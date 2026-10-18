@@ -1,3 +1,5 @@
+mod external_links;
+
 use std::{env, fs, path::PathBuf, process::{Command, Stdio}, thread, time::{Duration, Instant}};
 use tauri::{image::Image, menu::{Menu, MenuItem, PredefinedMenuItem}, tray::TrayIconBuilder, AppHandle, Manager, RunEvent, Url, Wry};
 
@@ -89,7 +91,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![set_tray])
+        .invoke_handler(tauri::generate_handler![set_tray, external_links::open_external_url])
         .setup(|app| {
             TrayIconBuilder::with_id("tl")
                 .icon(dot(GREEN))
