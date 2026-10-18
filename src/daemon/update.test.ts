@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyUpdate, checkUpdate, compareVersions, createUpdater, githubReleases, githubRepo, UPDATE_CHECK_INTERVAL, type PublishedRelease, type ReleaseSource } from './update.js';
+import { applyUpdate, checkUpdate, compareVersions, createUpdater, githubReleases, githubRepo, updateLine, UPDATE_CHECK_INTERVAL, type PublishedRelease, type ReleaseSource } from './update.js';
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
   cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.com' },
 }).trim();
@@ -26,6 +26,10 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); });
 
 describe('published releases', () => {
+  it('keeps legacy update status without runtimeSha from implying an older daemon', () => {
+    const target = { id: 1, tag: 'v0.1.0', name: 'v0.1.0', body: '', publishedAt: '', sha: 'current', tagObject: 'tag' };
+    expect(updateLine({ sha: 'current', checkedAt: 1, eligible: true, releases: [], target })).toBe('up to date at v0.1.0');
+  });
   it('accepts only safe GitHub repository origins', () => {
     for (const url of ['https://github.com/a/b.git', 'git@github.com:a/b.git', 'ssh://git@github.com/a/b']) expect(githubRepo(url)).toBe('a/b');
     for (const url of ['https://github.com.evil/a/b', 'https://token@github.com/a/b', 'file:///a/b', 'https://github.com/a/b?x=1', 'https://github.com/a/..', 'git@evil:a/b']) expect(githubRepo(url)).toBeUndefined();
@@ -73,6 +77,59 @@ describe('release checkout', () => {
     expect(git(work, 'status', '--porcelain')).toBe('');
     expect(paths.map((p) => readFileSync(join(work, p), 'utf8'))).toEqual(before);
     expect(existsSync(join(work, '.git/update.lock'))).toBe(false);
+  });
+  it('rebuilds and restarts a clean current-release checkout when the daemon runs older code', async () => {
+    mkdirSync(join(seed, 'ui')); commit('ui/app', 'released'); release('v0.1.1');
+    commit('README', 'documentation only'); release('v0.1.2');
+    const target = git(seed, 'rev-parse', 'HEAD');
+    const status = { ...await checkUpdate(work, source), runtimeSha: git(work, 'rev-parse', 'HEAD') };
+    git(work, 'merge', '--ff-only', target);
+    const current = { ...await checkUpdate(work, source), runtimeSha: status.runtimeSha };
+    expect(current).toMatchObject({ eligible: true, sha: target, runtimeSha: status.runtimeSha, releases: [] });
+    const bin = join(dir, 'bin'), calls = join(dir, 'calls'); mkdirSync(bin);
+    writeFileSync(join(bin, 'npm'), `#!/bin/sh\necho "$*" >> '${calls}'\n`); chmodSync(join(bin, 'npm'), 0o755);
+    const restart = vi.fn(async (sha: string) => expect(sha).toBe(target));
+    await applyUpdate({ repo: work, log: join(dir, 'log'), expected: current, source, restart, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    expect(readFileSync(calls, 'utf8')).toContain('run ui:build');
+    expect(restart).toHaveBeenCalledOnce();
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(target);
+  });
+  it('keeps an already-current source checkout and retries restart against that checkout after failure', async () => {
+    mkdirSync(join(seed, 'ui')); commit('ui/app', 'runtime change'); release('v0.1.1');
+    commit('README', 'later docs only'); release('v0.1.2');
+    const target = git(seed, 'rev-parse', 'HEAD');
+    const runtimeSha = git(work, 'rev-parse', 'HEAD');
+    await checkUpdate(work, source);
+    git(work, 'merge', '--ff-only', target);
+    const current = { ...await checkUpdate(work, source), runtimeSha };
+    const bin = join(dir, 'bin'), calls = join(dir, 'calls'); mkdirSync(bin);
+    writeFileSync(join(bin, 'npm'), `#!/bin/sh\necho "$*" >> '${calls}'\n`); chmodSync(join(bin, 'npm'), 0o755);
+    const restart = vi.fn(async (sha: string) => {
+      expect(sha).toBe(target);
+      if (restart.mock.calls.length === 1) throw new Error('temporary restart failure');
+    });
+    await expect(applyUpdate({ repo: work, log: join(dir, 'log'), expected: current, source, restart, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })).rejects.toThrow('temporary restart failure');
+    expect(restart).toHaveBeenCalledTimes(2);
+    expect(readFileSync(calls, 'utf8')).toContain('run ui:build');
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(target);
+  });
+  it('rebuilds changes from the running runtime through a newer source checkout to a docs-only latest release', async () => {
+    mkdirSync(join(seed, 'ui')); commit('ui/app', 'runtime change'); release('v0.1.1');
+    const checkout = git(seed, 'rev-parse', 'HEAD');
+    commit('README', 'latest docs only'); release('v0.1.2');
+    const target = git(seed, 'rev-parse', 'HEAD');
+    const runtimeSha = git(work, 'rev-parse', 'HEAD');
+    await checkUpdate(work, source);
+    git(work, 'merge', '--ff-only', checkout);
+    const expected = { ...await checkUpdate(work, source), runtimeSha };
+    expect(expected.sha).toBe(checkout);
+    const bin = join(dir, 'bin'), calls = join(dir, 'calls'); mkdirSync(bin);
+    writeFileSync(join(bin, 'npm'), `#!/bin/sh\necho "$*" >> '${calls}'\n`); chmodSync(join(bin, 'npm'), 0o755);
+    const restart = vi.fn(async (sha: string) => expect(sha).toBe(target));
+    await applyUpdate({ repo: work, log: join(dir, 'log'), expected, source, restart, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    expect(readFileSync(calls, 'utf8')).toContain('run ui:build');
+    expect(restart).toHaveBeenCalledOnce();
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(target);
   });
   it('preserves ignored local files when the release begins tracking their path', async () => {
     commit('.gitignore', 'private\n'); release('v0.1.1');
@@ -207,6 +264,11 @@ describe('release checkout', () => {
     expect(results.map((r) => r.status)).toEqual(['fulfilled', 'rejected']);
     expect(helpers).toHaveBeenCalledTimes(1);
     expect(helpers.mock.calls[0][0]).toMatchObject({ target: { tag: expected.tag, sha: expected.sha } });
+  });
+  it('keeps the same-runtime release check as a no-op', async () => {
+    const u = createUpdater({ repo: work, home: dir, source, onChange: () => {}, spawnHelper: vi.fn(() => 'fixture') });
+    await u.check();
+    await expect(u.apply({ tag: u.status().target!.tag, sha: u.status().target!.sha })).rejects.toThrow('already at the latest release');
   });
 });
 

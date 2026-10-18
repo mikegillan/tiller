@@ -26,7 +26,8 @@ export function StatusBar() {
   const today = useStore((s) => todaySpend(Object.values(s.nodes), now));
   const update = useStore((s) => s.update);
   const notes = update?.installedNotes;
-  const available = update?.target && update.sha !== update.target.sha && update.releases.length > 0 && !update.fetchError && !update.applying;
+  const runtimeBehindCheckout = !!update?.runtimeSha && update.runtimeSha !== update.sha;
+  const available = update?.target && ((update.sha !== update.target.sha && update.releases.length > 0) || (runtimeBehindCheckout && update.sha === update.target.sha && update.currentVersion === update.target.tag)) && !update.fetchError && !update.applying;
   return (
     <>
     <footer className="statusbar" role="status">
@@ -48,7 +49,7 @@ export function StatusBar() {
       </div>
       {today > 0 && <span title="spent today, all nodes">{fmtUsd(today)} today</span>}
       <span className="spacer" />
-      {available && <button className="update-available" onClick={() => openDialog({ kind: 'update' })} aria-haspopup="dialog">Update available</button>}
+      {available && <button className="update-available" onClick={() => openDialog({ kind: 'update' })} aria-haspopup="dialog">{runtimeBehindCheckout && update!.sha === update!.target!.sha ? 'Restart to finish update' : 'Update available'}</button>}
       {!!notes?.releases.length && <button className="whats-new" onClick={() => openDialog({ kind: 'whatsNew', notes })} aria-haspopup="dialog">What’s new</button>}
     </footer>
     {usageOpen && <UsagePanel onClose={closeUsage} />}

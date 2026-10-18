@@ -235,19 +235,22 @@ function WhatsNewDialog({ notes }: { notes: InstalledReleaseNotes }) {
 
 function UpdateDialog() {
   const upd = useStore((s) => s.update);
+  const runtimeBehindCheckout = !!upd?.runtimeSha && upd.runtimeSha !== upd.sha;
   const available = upd?.target && upd.sha !== upd.target.sha;
+  const restartOnly = !!upd?.target && runtimeBehindCheckout && upd.sha === upd.target.sha && upd.currentVersion === upd.target.tag;
   return (
     <Modal title="Tiller releases" className="modal release-notes-dialog" resizable onClose={close} footer={
       <div className="btns">
         <button className="btn" autoFocus onClick={close}>Close</button>
         <button className="btn" disabled={upd?.applying} onClick={() => send({ t: 'updateCheck' })}>Check releases</button>
-        {available && <button className="btn primary" disabled={!upd?.eligible || upd.applying} onClick={() => send({ t: 'update', tag: upd!.target!.tag, sha: upd!.target!.sha })}>
-          {upd?.applying ? 'Updating…' : `Update ${upd?.target?.tag}`}
+        {(available || restartOnly) && <button className="btn primary" disabled={!upd?.eligible || upd.applying} onClick={() => send({ t: 'update', tag: upd!.target!.tag, sha: upd!.target!.sha })}>
+          {upd?.applying ? 'Updating…' : restartOnly ? 'Rebuild and restart' : `Update ${upd?.target?.tag}`}
         </button>}
       </div>
     }>
       <p>{upd?.currentVersion ? `Checkout: ${upd.currentVersion}` : 'Source checkout'}{upd?.sha && ` · ${upd.sha.slice(0, 7)}`}</p>
       {upd?.target && <p>Latest stable release: <b>{upd.target.tag}</b></p>}
+      {runtimeBehindCheckout && <p>The source checkout has moved to {upd?.sha.slice(0, 7)}, while this daemon is running {upd?.runtimeSha?.slice(0, 7)}.</p>}
       {upd?.reason && <p>{upd.reason}</p>}
       {upd?.fetchError && <p role="alert">{upd.fetchError}</p>}
       {upd?.failed && <p role="alert">{upd.failed}</p>}
@@ -257,7 +260,7 @@ function UpdateDialog() {
           <Markdown>{r.body || 'No release notes provided.'}</Markdown>
         </section>)}
       </div>
-      {available && <p>Install this release in the clean main checkout, rebuild changed packages, UI and app, then restart the daemon. Working agents will be interrupted and resumed. If the app is rebuilt, quit and reopen Tiller.</p>}
+      {(available || restartOnly) && <p>{restartOnly ? 'Rebuild affected packages, UI and app from the current release, then restart the daemon.' : 'Install this release in the clean main checkout, rebuild changed packages, UI and app, then restart the daemon.'} Working agents will be interrupted and resumed. If the app is rebuilt, quit and reopen Tiller.</p>}
     </Modal>
   );
 }
