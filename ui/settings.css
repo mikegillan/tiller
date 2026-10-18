@@ -56,6 +56,7 @@
 .settings-profile legend { padding: 0 6px; font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
 .settings-profile .settings-field { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(48px, auto) auto; align-content: start; gap: 8px; padding: 0; border: 0; }
 .settings-profile .settings-label { padding-top: 0; }
+.settings-profile .settings-control input, .settings-profile .settings-control select { box-sizing: border-box; height: 36px; }
 .settings-footer { flex: none; display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--line); padding: 14px 28px; background: var(--bg); }
 .settings-footer > span { margin-right: auto; color: var(--dim); font-size: 13px; }
 .settings-footer .btn { justify-content: center; font-size: 15px; height: auto; min-height: 36px; padding: 7px 12px; border-radius: 6px; }
