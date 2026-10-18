@@ -19,7 +19,10 @@
 .usage-panel .usage-caption, .usage-panel .usage-report-label { margin: 6px 0 0; font-size: 12px; line-height: 1.5; }
 .usage-panel .usage-report-label { margin: 0 0 10px; }
 .usage-quota + .usage-quota { margin-top: 16px; }
-.usage-quota-report + .usage-quota-report { margin-top: 24px; }
+.usage-quota-report + .usage-quota-report, .usage-observation-group + .usage-observation-group { margin-top: 24px; }
+.usage-observations { margin-top: 16px; }
+.usage-observations summary { cursor: pointer; font-size: 12px; line-height: 1.5; }
+.usage-observations > .usage-quota-report { margin-top: 16px; }
 .usage-panel .usage-notice { font-size: 13px; }
 .usage-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 8px; }
 .usage-panel .usage-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
