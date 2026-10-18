@@ -71,6 +71,13 @@ daemon is unavailable. Unknown claims remain unconfirmed for daemon retirement, 
 or falsely acknowledged. Native events not written to stdout before termination, or arriving
 after the 250 ms cutoff, cannot be retained. A forced process kill can bypass all cleanup.
 
+The host tracks the native TUI and app-server through their spawned child handles. Shutdown sends
+TERM, escalates after 250 ms to KILL, and waits up to another second for each actual exit event.
+Closed stdio and a successful signal return are not exit confirmation. Both children must have
+exited before the host exits. If termination remains unconfirmed, the host stays alive until the
+child exit events arrive, so a harness change fails closed rather than starting another agent.
+This does not extend the 250 ms stdout cutoff or the bridge's five-second receipt budget.
+
 The bridge writes readable normalized JSONL transcripts under
 `sessions/<rootId>/agents/<nodeId>/<Tiller-sessionId>.jsonl`. The header stores Codex's separate
 native thread id; Tiller's session identity stays stable. Resume uses `thread/resume`, restart

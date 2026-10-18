@@ -185,7 +185,12 @@ it('refuses to replace an unproven stopped process, and supports an already exit
   expect(await change(id, 'pi')).toMatchObject({ ok: false, error: expect.stringContaining('has not exited') });
   expect(processes).toHaveLength(1);
   expect(manager.view(id)!.harness).toBe('claude');
+  expect(manager.view(id)!.changingHarness).toBe(true);
+  expect(manager.restart(id)).toMatchObject({ ok: false });
+  await expect(manager.close(id, true)).rejects.toThrow('changing harness');
+  expect(await change(id, 'pi')).toMatchObject({ ok: false });
   processes[0].exit();
+  expect(manager.view(id)!.changingHarness).toBeUndefined();
   expect(await change(id, 'pi')).toEqual({ ok: true });
 });
 
