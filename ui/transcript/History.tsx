@@ -78,7 +78,7 @@ export function ArchivePane({ a }: { a: ArchivedNode }) {
   const now = useNow();
   const fork = () => openDialog({ kind: 'fork', from: a.id, title: a.title, cwd: a.cwd, parentId: a.parentId && getState().nodes[a.parentId] ? a.parentId : null });
   return (
-    <TranscriptPane key={a.id} id={a.id} harness={a.harness}>
+    <TranscriptPane key={a.id} id={a.id} currentSessionId={a.sessionId} harness={a.harness}>
       <header className="archhead">
         <div className="tb1">
           <h1 title={a.title}>{a.title}</h1>

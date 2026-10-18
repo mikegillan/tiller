@@ -60,7 +60,7 @@ describe('Codex RPC shutdown', () => {
     expect(await pending).toBe('Codex connection closed');
   });
 
-  it('forces teardown after 250ms when native stdout never closes', async () => {
+  it('cuts off native stdout at 250ms but waits for post-escalation exit', async () => {
     vi.useFakeTimers();
     let done = false;
     const shutdown = rpc.shutdown();
@@ -69,8 +69,20 @@ describe('Codex RPC shutdown', () => {
     await vi.advanceTimersByTimeAsync(249);
     expect(done).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
-    await stopped;
     expect(child.kill).toHaveBeenCalledWith('SIGKILL');
     expect(child.stdout.destroyed).toBe(true);
+    expect(done).toBe(false);
+    child.emit('exit', null, 'SIGKILL');
+    await stopped;
+    expect(done).toBe(true);
+  });
+
+  it('rejects shutdown when even escalated app-server exit cannot be confirmed', async () => {
+    vi.useFakeTimers();
+    const stopped = rpc.shutdown().catch((error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(1250);
+    expect(await stopped).toContain('exit was not confirmed');
+    child.emit('exit', null, 'SIGKILL');
+    await rpc.processExit;
   });
 });

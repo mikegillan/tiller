@@ -112,6 +112,8 @@ export interface NodeRuntime {
   interruptTimer?: NodeJS.Timeout;
   /** Set while the node's worktree is being created, closed or merged; each excludes the others. */
   busy?: 'creating' | 'closing' | 'merging' | 'changing harness';
+  /** A failed harness-change stop still owns the lifecycle lock until its actual process exits. */
+  stoppingAfterFailedChange?: boolean;
   git?: GitState;
   gitTimer?: NodeJS.Timeout;
   /** A worktree setup in progress, so close can stop it. */
@@ -215,7 +217,7 @@ export class NodeManager extends EventEmitter {
     const withModel = status.model || !rec.model ? status : { ...status, model: rec.model };
     const s = withModel.effort || !rec.effort ? withModel : { ...withModel, effort: rec.effort };
     const { git, outcome, gate } = rt;
-    const shown = rt.busy === 'changing harness' ? { ...s, activity: 'changing harness' } : gate?.state === 'running' ? { ...s, activity: `gate: ${gate.command}` } : s;
+    const shown = rt.busy === 'changing harness' ? { ...s, activity: rt.stoppingAfterFailedChange ? 'waiting for old process exit; harness unchanged' : 'changing harness' } : gate?.state === 'running' ? { ...s, activity: `gate: ${gate.command}` } : s;
     return { ...rec, status: git ? { ...shown, git } : shown, unread: !!rt.unread, ...(outcome ? { outcome } : {}), ...(gate ? { gate: gate.state } : {}), ...(rt.busy === 'changing harness' ? { changingHarness: true } : {}) };
   }
 
@@ -596,7 +598,14 @@ export class NodeManager extends EventEmitter {
       await waitForDeliveries(this, id);
       if (this.shutDown) throw new Error('daemon is shutting down');
       const oldProcess = rt.session;
-      if (oldProcess && !(await oldProcess.terminate())) throw new Error('old process has not exited; harness was not changed. Wait for exit before retrying');
+      if (oldProcess) {
+        try {
+          if (!(await oldProcess.terminate())) throw new Error('old process has not exited; harness was not changed. Wait for exit before retrying');
+        } catch (error) {
+          rt.stoppingAfterFailedChange = !oldProcess.exited;
+          throw error;
+        }
+      }
       disrupted = true;
       if (this.shutDown) throw new Error('daemon is shutting down');
       // Rotate only after old shutdown receipts have drained. Old launch files are never rewritten.
@@ -626,7 +635,7 @@ export class NodeManager extends EventEmitter {
       }
       return { ok: false, error };
     } finally {
-      rt.busy = undefined;
+      if (!rt.stoppingAfterFailedChange) rt.busy = undefined;
       this.emitNode(id);
     }
   }
@@ -1009,7 +1018,11 @@ export class NodeManager extends EventEmitter {
       rt.session = undefined;
       rt.starting = false;
       this.liveChanged();
-      if (rt.busy === 'changing harness') return;
+      if (rt.busy === 'changing harness' && !rt.stoppingAfterFailedChange) return;
+      if (rt.stoppingAfterFailedChange) {
+        rt.stoppingAfterFailedChange = false;
+        rt.busy = undefined;
+      }
       this.markUnread(id);
       let status = ptyExited(rt.status!, Date.now());
       if (native) {

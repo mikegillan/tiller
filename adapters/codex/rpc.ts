@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { ManagedChild } from './child.js';
 
 export type Packet = { id?: string | number; method?: string; params?: Record<string, any>; result?: any; error?: { code: number; message: string } };
 export class RpcError extends Error {
@@ -13,14 +14,14 @@ export class CodexRpc {
   private pending = new Map<number, { resolve: (result: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private closed = false;
   private readonly drained: Promise<void>;
-  private readonly processClosed: Promise<void>;
+  private readonly process: ManagedChild;
   private shutdownTask?: Promise<void>;
   onPacket: (packet: Packet) => void = () => {};
   onClose: (error: Error) => void = () => {};
 
   constructor(env: NodeJS.ProcessEnv, stderr: (text: string) => void) {
     this.child = spawn('codex', ['app-server', '--listen', 'stdio://'], { env, stdio: 'pipe' });
-    this.processClosed = new Promise<void>((resolve) => { this.child.once('close', () => resolve()); });
+    this.process = new ManagedChild(this.child);
     const lines = createInterface({ input: this.child.stdout });
     this.drained = new Promise<void>((resolve) => { lines.once('close', resolve); });
     lines.on('line', (line) => {
@@ -44,7 +45,7 @@ export class CodexRpc {
     this.child.on('exit', (code) => {
       if (!this.closed) {
         const error = new Error(`Codex app-server exited (${code})`);
-        void this.shutdown(error).then(() => this.onClose(error));
+        void this.shutdown(error).then(() => this.onClose(error), (stopError: Error) => this.onClose(stopError));
       }
     });
   }
@@ -81,20 +82,23 @@ export class CodexRpc {
     return this.shutdownTask ??= this.drain(error);
   }
 
+  get processExit(): Promise<void> { return this.process.exit; }
+
   private async drain(error?: Error): Promise<void> {
     this.close(error);
+    const stopped = this.process.terminate();
     let timer: NodeJS.Timeout | undefined;
     try {
-      await Promise.race([Promise.all([this.drained, this.processClosed]), new Promise<void>((resolve) => {
+      await Promise.race([Promise.all([this.drained, this.process.exit]), new Promise<void>((resolve) => {
         timer = setTimeout(resolve, 250);
       })]);
     } finally {
       clearTimeout(timer);
-      this.child.kill('SIGKILL');
       this.child.stdout.destroy();
       this.child.stderr.destroy();
       this.child.stdin.destroy();
     }
+    if (!await stopped) throw new Error('Codex app-server exit was not confirmed after termination');
   }
 
   close(error = new Error('Codex connection closed')): void {
@@ -105,6 +109,6 @@ export class CodexRpc {
       request.reject(error);
     }
     this.pending.clear();
-    this.child.kill();
+    this.process.beginStop();
   }
 }

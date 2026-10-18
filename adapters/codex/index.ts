@@ -4,12 +4,14 @@ import { TillerClient, readToken } from '../shared/client.js';
 import { CodexRpc } from './rpc.js';
 import { CodexBridge, type BridgeOptions } from './bridge.js';
 import { CodexTerminal } from './terminal.js';
+import { ManagedChild } from './child.js';
 
 let rpc: CodexRpc | undefined;
 let client: TillerClient | undefined;
 let bridge: CodexBridge | undefined;
 let terminal: CodexTerminal | undefined;
 let tui: ChildProcess | undefined;
+let tuiProcess: ManagedChild | undefined;
 let closing = false;
 let diagnostics = '';
 let backendError: Error | undefined;
@@ -17,11 +19,22 @@ async function close(error?: Error): Promise<void> {
   if (closing) return;
   closing = true;
   bridge?.beginShutdown();
-  tui?.kill();
-  terminal?.close();
-  await rpc?.shutdown();
+  const tuiStopped = tuiProcess?.terminate();
+  try { terminal?.close(); } catch (closeError) { error ??= closeError as Error; }
+  let unconfirmed: Error | undefined;
+  try { await rpc?.shutdown(); } catch (error) { unconfirmed = error as Error; }
   try { await bridge?.stop(); } catch { /* Daemon shutdown can close HTTP first. */ }
   client?.dispose();
+  if (tuiStopped && !await tuiStopped) unconfirmed ??= new Error('Codex terminal exit was not confirmed after termination');
+  if (unconfirmed) {
+    console.error(`Error: ${unconfirmed.message}; keeping the host alive until managed children exit. Harness replacement must wait.`);
+    // An unproven stop must not look like successful PTY termination to the daemon.
+    // Keep a referenced handle even if the children have closed all of their stdio.
+    const keepAlive = setInterval(() => {}, 1000);
+    await Promise.all([tuiProcess?.exit, rpc?.processExit]);
+    clearInterval(keepAlive);
+    error ??= unconfirmed;
+  }
   if (error) console.error(`Error: ${backendError ? diagnostics.trim() || backendError.message : error.message}`);
   process.exit(error ? 1 : 0);
 }
@@ -41,15 +54,18 @@ try {
   process.on('SIGTERM', () => { void close(); });
   process.on('SIGHUP', () => { void close(); });
   await bridge.start(endpoint, nodeId);
+  if (closing) throw new Error('Codex startup interrupted');
   terminal = new CodexTerminal(rpc, bridge.initialization, bridge.nativeThreadId, () => bridge!.startPolling(), fatal,
     bridge.hasHistory ? undefined : bridge.startResult);
   await terminal.listen();
+  if (closing) throw new Error('Codex startup interrupted');
   const args = ['--remote', `unix://${terminal.socketPath}`];
   if (options.model) args.push('--model', options.model);
   if (options.effort && bridge.freshThread) args.push('-c', `model_reasoning_effort=${JSON.stringify(options.effort)}`);
   if (bridge.hasHistory) args.push('resume', bridge.nativeThreadId);
   if (options.prompt) args.push('--', options.prompt);
   tui = spawn('codex', args, { env: process.env, stdio: 'inherit' });
+  tuiProcess = new ManagedChild(tui);
   tui.on('error', fatal);
   tui.on('exit', (code) => { void close(code ? new Error(`Codex terminal exited (${code})`) : undefined); });
 } catch (error) { await close(error as Error); }

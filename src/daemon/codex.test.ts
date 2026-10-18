@@ -1,8 +1,8 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { codexAdapter } from './harness.js';
 import { codexHeader } from './codex-session.js';
 import { NodeManager } from './manager.js';
@@ -13,6 +13,7 @@ let home: string, manager: NodeManager | undefined, server: DaemonServer | undef
 beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'tl-codex-')); });
 afterEach(async () => {
   await manager?.shutdown(); await server?.close(); manager = undefined; server = undefined;
+  vi.unstubAllEnvs();
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -22,6 +23,19 @@ async function setup(): Promise<void> {
   writeFileSync(join(bin, 'codex'), `#!${process.execPath}
 const { createInterface } = require('node:readline');
 const { appendFileSync } = require('node:fs');
+const fs = require('node:fs');
+const stubborn = fs.existsSync(${JSON.stringify(join(home, 'stubborn-native'))});
+if (stubborn) {
+ const role = process.argv.includes('--remote') ? 'tui' : 'appserver';
+ fs.writeFileSync(${JSON.stringify(home)} + '/' + role + '.pid', String(process.pid));
+ process.on('SIGTERM', () => fs.appendFileSync(${JSON.stringify(home)} + '/' + role + '.signals', 'TERM\\n'));
+ process.on('SIGHUP', () => fs.appendFileSync(${JSON.stringify(home)} + '/' + role + '.signals', 'HUP\\n'));
+ setInterval(() => {
+  if (fs.existsSync(${JSON.stringify(join(home, 'release-native'))})) process.exit();
+  try { fs.appendFileSync(${JSON.stringify(home)} + '/' + role + '.beat', 'x'); }
+  catch { process.exit(); } // A failed test's removed fixture also cleans up a surviving fake.
+ }, 20);
+}
 if (process.argv.includes('--remote')) {
  appendFileSync(${JSON.stringify(join(home, 'rpc.jsonl'))}, JSON.stringify({ method: 'tui/launch', params: { args: process.argv.slice(2) } }) + '\\n');
  const WebSocket = require(${JSON.stringify(fileURLToPath(new URL('../../node_modules/ws/index.js', import.meta.url)))});
@@ -46,7 +60,7 @@ if (process.argv.includes('--remote')) {
  createInterface({ input: process.stdin }).on('line', line => {
   if (line === '/approve approval yes') send({ id: 'approval', result: { decision: 'accept' } });
  });
- process.on('SIGTERM', () => process.exit());
+ if (!stubborn) process.on('SIGTERM', () => process.exit());
 } else {
 const send = p => process.stdout.write(JSON.stringify(p) + '\\n');
 const reply = (p, result) => send({ id: p.id, result });
@@ -103,6 +117,59 @@ const ready = async (id: string) => {
 const packets = () => readFileSync(join(home, 'rpc.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 
 describe('Codex harness', () => {
+  it('keeps the host and lifecycle lock when native child exit remains unproven', async () => {
+    await setup();
+    writeFileSync(join(home, 'stubborn-native'), '');
+    const preload = join(home, 'deny-native-kill.cjs');
+    writeFileSync(preload, `const cp = require('node:child_process');
+const kill = cp.ChildProcess.prototype.kill;
+cp.ChildProcess.prototype.kill = function(signal) { return signal === 'SIGKILL' ? true : kill.call(this, signal); };
+`);
+    vi.stubEnv('NODE_OPTIONS', `--require=${preload}`);
+    writeFileSync(join(home, 'bin', 'pi'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(join(home, 'pi-started'))}, 'started'); setInterval(() => {}, 1000);\n`);
+    chmodSync(join(home, 'bin', 'pi'), 0o755);
+    const m = manager!;
+    const node = await m.spawn({ kind: 'agent', harness: 'codex', title: 'Unproven native stop', cwd: home, byHuman: true });
+    try {
+      await ready(node.id);
+      const old = m.session(node.id);
+      expect(await m.changeHarness(node.id, 'pi', undefined, true)).toMatchObject({ ok: false, error: expect.stringContaining('old process has not exited') });
+      expect(m.session(node.id)).toBe(old);
+      expect(m.view(node.id)).toMatchObject({ harness: 'codex', changingHarness: true });
+      expect(m.restart(node.id)).toMatchObject({ ok: false });
+      await expect(m.close(node.id, true)).rejects.toThrow('changing harness');
+      expect(existsSync(join(home, 'pi-started'))).toBe(false);
+    } finally {
+      // Release only the fixture-owned children, then observe their host exit without PID cleanup.
+      writeFileSync(join(home, 'release-native'), '');
+      await expect.poll(() => m.session(node.id)).toBeUndefined();
+    }
+    expect(m.view(node.id)?.changingHarness).toBeUndefined();
+    expect(m.view(node.id)?.status.exited).toBe(true);
+  });
+
+  it('confirms escalated native TUI and app-server exit before launching a replacement harness', async () => {
+    await setup();
+    writeFileSync(join(home, 'stubborn-native'), '');
+    writeFileSync(join(home, 'bin', 'pi'), `#!${process.execPath}\nsetInterval(() => {}, 1000);\n`);
+    chmodSync(join(home, 'bin', 'pi'), 0o755);
+    const m = manager!;
+    const node = await m.spawn({ kind: 'agent', harness: 'codex', title: 'Stubborn native children', cwd: home, byHuman: true });
+    await ready(node.id);
+    await expect.poll(() => { try { return readFileSync(join(home, 'tui.beat'), 'utf8').length; } catch { return 0; } }).toBeGreaterThan(0);
+    const roles = ['tui', 'appserver'];
+    const pids = roles.map((role) => Number(readFileSync(join(home, `${role}.pid`), 'utf8')));
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    expect(pids.every(alive)).toBe(true);
+    expect(await m.changeHarness(node.id, 'pi', undefined, true)).toEqual({ ok: true });
+    expect(pids.some(alive)).toBe(false);
+    const sizes = roles.map((role) => readFileSync(join(home, `${role}.beat`), 'utf8').length);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(roles.map((role) => readFileSync(join(home, `${role}.beat`), 'utf8').length)).toEqual(sizes);
+    expect(roles.every((role) => readFileSync(join(home, `${role}.signals`), 'utf8').includes('TERM'))).toBe(true);
+    expect(m.view(node.id)?.harness).toBe('pi');
+  });
+
   it('switches a running root across real fake-CLI PTYs without reusing native threads or contaminating history', async () => {
     await setup();
     for (const harness of ['claude', 'pi']) {
