@@ -5,6 +5,7 @@ import { SETTINGS_HARNESSES, SETTINGS_EFFORTS } from '../../src/shared/settings'
 import { send } from '../conn';
 import type { TauriWindow } from '../hooks';
 import { Modal } from '../controls/Modal';
+import { actionsFor } from '../controls/ActionButtons';
 import { ReleaseNotes } from '../release-notes/ReleaseNotes';
 import { expectSpawn, openDialog, useStore, type Dialog } from '../store';
 import { IN_APP } from '../url';
@@ -99,10 +100,10 @@ function SpawnDialog({ d }: { d: Spawn }) {
 }
 
 /** The close choices for a node with a worktree; plain Close sends no worktree option, so the daemon refuses a dirty or unmerged tree. */
-export const worktreeCloses = (id: string): Array<{ label: string; className: string; msg: ClientMessage }> => [
-  { label: 'Close', className: 'btn primary', msg: { t: 'close', id } },
-  { label: 'Keep branch', className: 'btn', msg: { t: 'close', id, worktree: 'keep' } },
-  { label: 'Discard', className: 'btn danger solid', msg: { t: 'close', id, worktree: 'discard' } },
+export const worktreeCloses = (id: string, force = false): Array<{ label: string; className: string; msg: ClientMessage }> => [
+  { label: 'Close', className: 'btn primary', msg: { t: 'close', id, ...(force ? { force } : {}) } },
+  { label: 'Keep branch', className: 'btn', msg: { t: 'close', id, ...(force ? { force } : {}), worktree: 'keep' } },
+  { label: 'Discard', className: 'btn danger solid', msg: { t: 'close', id, ...(force ? { force } : {}), worktree: 'discard' } },
 ];
 
 function KillDialog({ id }: { id: string }) {
@@ -115,7 +116,7 @@ function KillDialog({ id }: { id: string }) {
       <p>Keep branch commits uncommitted work as a WIP commit, removes the directory and keeps the branch. Discard deletes the worktree and the branch, including uncommitted work.</p>
       <div className="btns">
         <button className="btn" autoFocus onClick={close}>Cancel</button>
-        {worktreeCloses(id).map((c) => <button key={c.label} className={c.className} onClick={() => { send(c.msg); close(); }}>{c.label}</button>)}
+        {worktreeCloses(id, node.parentId === null).map((c) => <button key={c.label} className={c.className} onClick={() => { send(c.msg); close(); }}>{c.label}</button>)}
       </div>
     </Modal>
   );
@@ -138,6 +139,7 @@ function RestartDialog({ id }: { id: string }) {
   const node = useStore((s) => s.nodes[id]);
   const [prompt, setPrompt] = useState('');
   if (!node) return null;
+  const remove = actionsFor(node).find((a) => a.key === 'remove');
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     send(restartMsg(id, node.kind, prompt));
@@ -147,14 +149,33 @@ function RestartDialog({ id }: { id: string }) {
     <Modal title={`Restart ${node.title}?`} onClose={close}>
       <form className="form" onSubmit={submit}>
         <p>Its context is cleared; children are kept.</p>
+        {node.status.exited && <p>Close removes this node from the sidebar without restarting it; children are kept.</p>}
         {isAgentKind(node.kind) && <label>First prompt<textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional: by default it is pointed at its handoff.md, if there is one" /></label>}
         <div className="btns">
           <button type="button" className="btn" autoFocus onClick={close}>Cancel</button>
+          {remove && <button type="button" className="btn danger" onClick={() => { close(); remove.run(); }}>Close</button>}
           <button type="submit" className="btn primary">Restart</button>
         </div>
       </form>
     </Modal>
   );
+}
+
+function RenameSessionDialog({ id }: { id: string }) {
+  const node = useStore((s) => s.nodes[id]);
+  const [title, setTitle] = useState(node?.title ?? '');
+  if (!node) return null;
+  return <Modal title="Rename session" onClose={close} restoreFocus blockGlobalShortcuts>
+    <form className="form" onSubmit={(e) => {
+      e.preventDefault();
+      if (!title.trim()) return;
+      if (title.trim() !== node.title) send({ t: 'rename', id, title: title.trim() });
+      close();
+    }}>
+      <label>Session name<input value={title} onChange={(e) => setTitle(e.target.value)} onFocus={(e) => e.currentTarget.select()} required autoFocus /></label>
+      <div className="btns"><button type="button" className="btn" onClick={close}>Cancel</button><button type="submit" className="btn primary" disabled={!title.trim()}>Save</button></div>
+    </form>
+  </Modal>;
 }
 
 function ChangeHarnessDialog({ id }: { id: string }) {
@@ -281,6 +302,7 @@ export function Dialogs() {
   if (d?.kind === 'spawn') return <SpawnDialog d={d} />;
   if (d?.kind === 'kill') return <KillDialog id={d.id} />;
   if (d?.kind === 'restart') return <RestartDialog id={d.id} />;
+  if (d?.kind === 'renameSession') return <RenameSessionDialog key={d.id} id={d.id} />;
   if (d?.kind === 'changeHarness') return <ChangeHarnessDialog key={d.id} id={d.id} />;
   if (d?.kind === 'followup') return <FollowupDialog id={d.id} title={d.title} />;
   if (d?.kind === 'fork') return <ForkDialog d={d} />;

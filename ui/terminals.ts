@@ -1,5 +1,8 @@
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { openExternalUrl } from './controls/externalLink';
+import { toast } from './store';
+import { IN_APP } from './url';
 
 export interface Term { term: Terminal; fit: FitAddon }
 const terms = new Map<string, Term>();
@@ -31,6 +34,16 @@ export function createTerm(id: string, el: HTMLElement): Term {
     cursorBlink: true,
     scrollback: 5000,
     theme: theme(),
+    linkHandler: {
+      activate: (_event, url) => {
+        if (!/^https?:\/\//i.test(url)) return;
+        if (IN_APP) {
+          void openExternalUrl(url).catch(() => toast(`Could not open link: ${url}`, id, 'bad'));
+        } else {
+          window.open(url, '_blank', 'noopener,noreferrer');
+        }
+      },
+    },
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
