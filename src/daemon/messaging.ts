@@ -28,7 +28,7 @@ const SAVE_MS = 50;
 export const HUMAN = 'human';
 export const DAEMON = 'tiller';
 
-export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input' | 'logEvent' | 'projectDir'> & Partial<Pick<NodeManager, 'home' | 'runtimes'>>;
+export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input' | 'logEvent' | 'projectDir'> & Partial<Pick<NodeManager, 'home' | 'runtimes' | 'draining'>>;
 interface DeliverOpts {
   /** "now" interrupts a working target and delivers at once; default "queue". */
   mode?: SendMode;
@@ -38,6 +38,8 @@ interface DeliverOpts {
   replyTo?: string | null;
   /** Called once with the final outcome (anything but queued). */
   onSettle?: (r: SendResult) => void;
+  /** Queue in the target's inbox even before its mod polls, for a node that has just been resumed. */
+  inbox?: boolean;
 }
 
 // ---- scope (PLAN §5): self, ancestors, siblings, descendants ----
@@ -68,15 +70,18 @@ const nativeInbox = (v: NodeView | undefined): boolean => !!v && adapterFor(v).c
 interface Entry { id: string; from: string; to: string; label: string; replyTo: string | null; text: string; steer?: boolean; timer?: NodeJS.Timeout }
 /**
  * A message waiting in a mod-live node's inbox. `from` is the sender's node id; `msg.from` is the display label.
- * `claimed`: the mod is submitting it, so it can no longer be withdrawn.
+ * `claimed`: the mod is submitting it, so it can no longer be withdrawn. `since`: when its TTL started, when that was
+ * not at enqueue (a restart that held it).
  */
-interface InboxItem { to: string; from: string; msg: InboxMessage; claimed?: boolean; claimedAt?: number; timer?: NodeJS.Timeout }
+interface InboxItem { to: string; from: string; msg: InboxMessage; claimed?: boolean; claimedAt?: number; since?: number; timer?: NodeJS.Timeout }
 interface State {
   /** Mod-live nodes' last inbox poll, and the inbox itself (the queue for those nodes). */
   seen: Map<string, number>;
   inbox: Map<string, InboxItem[]>;
   inboxFile?: string;
   saveTimer?: NodeJS.Timeout;
+  /** Deliveries are held for a restart; saved with the inbox so the next daemon gives held messages a fresh TTL. */
+  held?: boolean;
   last: Map<string, number>;
   /** Per sender-target pair: messages accepted in the last LOOP_MS, and when the sender's parent was last told of a loop. */
   sent: Map<string, { at: number; text: string; id: string }[]>;
@@ -166,6 +171,7 @@ function frame(e: Entry): { text: string; nonce: string } {
 async function attempt(m: Mgr, e: Entry): Promise<Attempt> {
   const check = (): Attempt | undefined => {
     const v = m.view(e.to);
+    if (m.draining) return { wait: 'deliveries are held until the daemon restarts' };
     if (m.runtimes?.get(e.to)?.busy === 'changing harness') return { wait: 'target is changing harness' };
     if (!v || v.status.exited) return { result: gone };
     if (!readyFor(v, e)) return { wait: `target is ${v.status.state}${v.status.doneSource ? ` (done via ${v.status.doneSource})` : ''}, not verified idle` };
@@ -239,14 +245,18 @@ function enqueue(m: Mgr, s: State, e: Entry, detail: string): SendResult {
   if (q.length >= QUEUE_CAP) return { outcome: 'queueFull', retryable: true, detail: `${QUEUE_CAP} messages already queued for ${e.to}`, messageId: e.id };
   if (e.steer) q.splice(q.filter((x) => x.steer).length, 0, e); // after earlier steers, ahead of the rest
   else q.push(e);
-  e.timer = setTimeout(() => locked(s, e.to, async () => {
-    const i = q.indexOf(e);
-    if (i < 0) return;
-    q.splice(i, 1);
-    setResult(s, e.id, { outcome: 'expired', retryable: true, detail: 'target never became idle within 5 min', messageId: e.id });
-    scheduleRetry(m, s, e.to);
-  }).catch(logError), QUEUE_TTL_MS);
-  e.timer.unref();
+  const arm = () => {
+    e.timer = setTimeout(() => locked(s, e.to, async () => {
+      const i = q.indexOf(e);
+      if (i < 0) return;
+      if (m.draining) return arm(); // held for a restart: the hold is not the target's delay
+      q.splice(i, 1);
+      setResult(s, e.id, { outcome: 'expired', retryable: true, detail: 'target never became idle within 5 min', messageId: e.id });
+      scheduleRetry(m, s, e.to);
+    }).catch(logError), QUEUE_TTL_MS);
+    e.timer.unref();
+  };
+  arm();
   drain(m, s, e.to).catch(logError); // the target may have gone idle while we were deciding to queue
   return { outcome: 'queued', retryable: false, detail, messageId: e.id };
 }
@@ -283,7 +293,7 @@ function writeInbox(s: State): boolean {
   s.saveTimer = undefined;
   const tmp = `${s.inboxFile}.tmp`;
   try {
-    writeFileSync(tmp, JSON.stringify({ version: 2, items: [...s.inbox.values()].flat().map(({ timer, ...i }) => i),
+    writeFileSync(tmp, JSON.stringify({ version: 2, ...(s.held ? { held: true } : {}), items: [...s.inbox.values()].flat().map(({ timer, ...i }) => i),
       // Preserve ambiguous terminal outcomes after restart; they must never become retryable expiry.
       unconfirmed: [...s.status].filter(([, st]) => st.result.outcome === 'stalled' && st.result.detail === UNCONFIRMED_DETAIL) }));
     renameSync(tmp, s.inboxFile!);
@@ -301,6 +311,36 @@ function saveInbox(s: State): void {
 export function flushInbox(m: Mgr): void {
   const s = states.get(m);
   if (s?.saveTimer) writeInbox(s);
+}
+
+/**
+ * Hold or release every delivery for a restart (see NodeManager.drain): `m.draining` already says which. Released
+ * messages are pasted or picked up as their targets allow.
+ */
+export function holdDeliveries(m: Mgr): void {
+  const s = stateOf(m);
+  s.held = !!m.draining;
+  saveInbox(s);
+  if (!s.held) for (const [id, q] of s.queues) if (q.length) drain(m, s, id).catch(logError);
+}
+
+/**
+ * At shutdown: move the messages waiting to be pasted into their targets' inboxes, where the resumed nodes' mods pick
+ * them up, and write the inbox now.
+ */
+export function saveInboxForRestart(m: Mgr): void {
+  const s = states.get(m);
+  if (!s?.inboxFile) return;
+  for (const [id, q] of s.queues) {
+    for (const entry of q) {
+      clearTimeout(entry.timer);
+      addInbox(m, s, { to: id, from: entry.from, msg: { id: entry.id, from: entry.label, text: frame(entry).text,
+        enqueuedAt: s.status.get(entry.id)?.at ?? Date.now(), ...(entry.steer ? { steer: true } : {}) } });
+    }
+  }
+  s.queues.clear();
+  for (const t of s.retry.values()) clearTimeout(t);
+  writeInbox(s);
 }
 
 /**
@@ -325,17 +365,20 @@ function armInbox(m: Mgr, s: State, i: InboxItem): void {
         unconfirmed(m, i.to, i.msg.id);
         return;
       }
-      if (busy(m.view(i.to)) || (i.claimed && modLive(s, i.to))) return arm(QUEUE_TTL_MS);
+      if (m.draining || busy(m.view(i.to)) || (i.claimed && modLive(s, i.to))) return arm(QUEUE_TTL_MS);
       takeInbox(s, i.to, i.msg.id, { outcome: 'expired', retryable: true, detail: 'not picked up by the target within 5 min' });
     }, ms);
     i.timer.unref();
   };
   arm(Math.max(0, (i.claimed && nativeInbox(m.view(i.to))
     ? (i.claimedAt ?? i.msg.enqueuedAt) + PI_CONFIRM_MS
-    : i.msg.enqueuedAt + QUEUE_TTL_MS) - Date.now()));
+    : (i.since ?? i.msg.enqueuedAt) + QUEUE_TTL_MS) - Date.now()));
 }
 
-/** Restore queued messages after a daemon restart, dropping those past their TTL. */
+/**
+ * Restore queued messages after a daemon restart, dropping those past their TTL. When the old daemon held deliveries
+ * for the restart, the unclaimed messages start a fresh TTL instead: the time held is not the target's delay.
+ */
 function loadInbox(m: Mgr, s: State, file: string): void {
   s.inboxFile = file;
   try {
@@ -345,8 +388,9 @@ function loadInbox(m: Mgr, s: State, file: string): void {
     }
     for (const i of Array.isArray(data?.items) ? (data.items as InboxItem[]) : []) {
       if (!i?.msg?.id) continue;
+      if (data.held && !i.claimed) i.since = Date.now();
       // An old claimed Pi message is ambiguous, not a safe-to-retry expiration.
-      if (Date.now() - i.msg.enqueuedAt >= QUEUE_TTL_MS && !(i.claimed && nativeInbox(m.view(i.to)))) continue;
+      if (Date.now() - (i.since ?? i.msg.enqueuedAt) >= QUEUE_TTL_MS && !(i.claimed && nativeInbox(m.view(i.to)))) continue;
       s.status.set(i.msg.id, { from: i.from, to: i.to, result: { outcome: 'queued', retryable: false, messageId: i.msg.id }, at: i.msg.enqueuedAt });
       addInbox(m, s, i);
     }
@@ -357,11 +401,14 @@ export function markModLive(m: Mgr, nodeId: string): void {
   stateOf(m).seen.set(nodeId, Date.now());
 }
 
-/** GET /inbox: the node's unacked messages, oldest first. Every poll marks the node mod-live. */
+/**
+ * GET /inbox: the node's unacked messages, oldest first; while deliveries are held for a restart, only those its mod
+ * has already claimed. Every poll marks the node mod-live.
+ */
 export function inbox(m: Mgr, nodeId: string): InboxMessage[] {
   if (m.runtimes?.get(nodeId)?.busy === 'changing harness') return [];
   markModLive(m, nodeId);
-  return (stateOf(m).inbox.get(nodeId) ?? []).map((i) => ({ ...i.msg, ...(i.claimed ? { claimed: true } : {}) }));
+  return (stateOf(m).inbox.get(nodeId) ?? []).filter((i) => i.claimed || !m.draining).map((i) => ({ ...i.msg, ...(i.claimed ? { claimed: true } : {}) }));
 }
 
 /** POST /ack: the mod submitted the message, so it is delivered. False if it is not (or no longer) in that node's inbox. */
@@ -371,7 +418,7 @@ export function ack(m: Mgr, nodeId: string, id: string): boolean {
 
 /** POST /claim: the mod is about to submit the message, so it can no longer be withdrawn. False if it is not in that node's inbox. */
 export function claim(m: Mgr, nodeId: string, id: string): boolean {
-  if (m.runtimes?.get(nodeId)?.busy === 'changing harness') return false;
+  if (m.runtimes?.get(nodeId)?.busy === 'changing harness' || m.draining) return false;
   const s = stateOf(m);
   const i = s.inbox.get(nodeId)?.find((x) => x.msg.id === id);
   if (!i) return false;
@@ -508,9 +555,10 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
 
   const label = opts.fromLabel ?? (from ? `${oneLine(from.title)} (${fromId})` : fromId);
   // A steer interrupts only a working target; to an idle (or blocked, or waiting) one, "now" is the same as "queue".
-  const steer = opts.mode === 'now' && busy(target);
+  // While a restart waits for turns to end, it queues too.
+  const steer = opts.mode === 'now' && busy(target) && !m.draining;
   const entry: Entry = { id, from: fromId, to: toId, label: oneLine(label), replyTo: opts.replyTo === undefined ? fromId : opts.replyTo, text, steer };
-  if (modLive(s, toId) || adapterFor(target).capabilities.inbox) return out(queueInbox(m, s, entry)); // the mod aborts the turn itself
+  if (opts.inbox || modLive(s, toId) || adapterFor(target).capabilities.inbox) return out(queueInbox(m, s, entry)); // the mod aborts the turn itself
   if (steer) {
     // No mod to abort the turn: press Esc as the human would. The manager marks the turn interrupted, which wakes the queue.
     const r = enqueue(m, s, entry, '');

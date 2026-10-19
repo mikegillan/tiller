@@ -17,5 +17,6 @@ it('routes detached reload through the restart helper that validates daemon home
   vi.stubEnv('TL_PORT', '7799');
   process.argv = [process.execPath, 'tl', 'reload', '--detached'];
   await import('./cli.js');
-  expect(restartDaemon).toHaveBeenCalledExactlyOnceWith(home, 7799, undefined, expect.any(Function));
+  // The foreground tl reload already waited for agents, so the detached helper restarts at once.
+  expect(restartDaemon).toHaveBeenCalledExactlyOnceWith(home, 7799, undefined, expect.any(Function), { reason: 'tl reload', now: true });
 });

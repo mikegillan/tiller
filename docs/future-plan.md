@@ -8,7 +8,7 @@ Tiller's distinct part is the coordination layer above the terminals: the node t
 
 `tl reload` and `tl update` stop the daemon, which kills every PTY (`Manager.shutdown`); the new daemon resumes the live set (`resumeLive`). A node that was mid-turn comes back idle, and nothing tells it to continue, so a worker can stall halfway through an edit until someone notices. Releases ship several times a day and the updater checks often, so this happens often.
 
-- **Stage A: drain and re-prompt (a day or two).** Before an update or reload restarts the daemon, it waits until no node is working, holding new message deliveries and spawns so nodes settle, with a way to restart at once anyway. After the restart, each node whose turn was cut off gets a message from the daemon saying so and asking it to check its state and continue.
+- **Stage A: drain and re-prompt (done).** Before an update or reload restarts the daemon, it waits until no node is working, holding new message deliveries and spawns so nodes settle, with a way to restart at once anyway. After the restart, each node whose turn was cut off gets a message from the daemon saying so and asking it to check its state and continue. See [waiting for turns to end](sessions.md#waiting-for-turns-to-end).
 - **Stage B: a long-lived PTY holder (one to two weeks).** A small process that rarely changes owns the PTYs and agent processes; the coordination daemon connects to it, so the daemon can restart without killing any agent. Herdr's `update --handoff` and the tmux server and client split are the models. It starts with a design and a feasibility spike (`docs/design/pty-holder.md`).
 
 ## 2. `tl explain <id>`

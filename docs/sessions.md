@@ -58,6 +58,22 @@ The daemon records which nodes are live in `state.json`. When it starts, after a
 
 `tl reload` works from inside a node's terminal too: a detached helper stops the daemon (keeping its live set) and starts a new one, which resumes the nodes itself. Each step is logged to `daemon.log` with a `tl reload:` prefix. If no daemon is running it just starts one.
 
+### Waiting for turns to end
+
+Before it stops the daemon, `tl reload` waits until no agent node is working, so a restart does not cut a worker off halfway through an edit. While it waits, the daemon holds every message delivery, its own notices included, so idle nodes do not start new turns, and it queues new agent spawns as "queued: the daemon is waiting to restart" (see [messaging](messaging.md#held-for-a-restart)). The command prints which nodes it waits for and updates the line as they finish. Nodes that are blocked on a permission prompt, waiting on a question, or idle do not count, and a node that runs `tl reload` itself is left out, since its own command is what waits. There is no time limit. `tl reload --now` restarts at once, and Ctrl-C stops waiting without restarting and releases what was held. The hold also ends by itself 15 seconds after the waiting command stops polling the daemon, so a command that dies cannot leave messages held.
+
+`tl update` and the app's update action wait the same way, but only for the restart: the fast-forward and the builds run while agents keep working. While an update waits, the app's status bar shows "Waiting for N agents to finish their turn" with a **Restart now** button, which ends the wait; `tl update --now` skips it. The update's progress is logged to `update.log`.
+
+### Telling interrupted nodes to continue
+
+Each node record keeps `midTurn` while a turn is in progress (working, waiting on a question, or blocked on a permission prompt), and `state.json` records why the daemon stopped. Because both are saved as they change, a crash or a kill is covered as well as a clean stop. When the new daemon resumes a node whose turn was cut off, it queues one message to it through the inbox, behind any message already queued for it:
+
+```
+The tiller daemon restarted (tl reload) while your turn was running, so that turn was cut off. Your conversation is intact, but the last tool call may not have finished. Check where you were, for example with git status and the commands you last ran, then continue the task.
+```
+
+The reason in parentheses is `tl reload`, `update to vX.Y.Z`, `the daemon was stopped` (a plain SIGTERM, for example from launchd) or `unexpected exit` (a crash or a kill). Only resumed agent nodes get it: not terminals, not nodes that were idle or done, and not nodes the resume skipped. The daemon clears every `midTurn` once it has resumed the live set, so each restart sends the message at most once. Claude, Pi and Codex nodes all receive it, since each one's bridge polls the inbox as soon as it starts.
+
 ## Autostart
 
 `tl autostart on` installs a launchd user agent, `~/Library/LaunchAgents/com.tiller.daemon.plist`, that starts the daemon at login, so the nodes come back after a reboot without opening the app, and starts it again if it crashes; `tl stop` exits cleanly and launchd leaves it stopped. With autostart on, `tl reload` starts the new daemon through launchd. `tl autostart off` removes the agent (stopping the daemon if launchd started it), and `tl autostart status` says whether it is installed and loaded. Turning it on while a daemon is running leaves that daemon alone: the agent's first launch finds the port taken and exits, and the next `tl reload` or login hands the daemon to launchd.

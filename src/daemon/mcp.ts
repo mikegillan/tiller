@@ -458,14 +458,25 @@ const tools = {
 
   update: tool(
     'Update Tiller',
-    'Check published stable GitHub releases and roll-up notes. With apply, install the exact reviewed tag and commit, rebuild and restart the daemon, resuming live nodes. Human only.',
-    { apply: z.boolean().optional(), tag: z.string().optional(), sha: z.string().optional() },
+    'Check published stable GitHub releases and roll-up notes. With apply, install the exact reviewed tag and commit, rebuild and restart the daemon, resuming live nodes. The restart first waits for agent nodes to finish their turns, unless `now`. Human only.',
+    { apply: z.boolean().optional(), tag: z.string().optional(), sha: z.string().optional(), now: z.boolean().optional() },
     async (c, a) => {
       if (!c.updates) throw new Error('updates unavailable');
       if (!a.apply) { const s = await c.updates.check(); return { text: updateLine(s), data: s }; }
       if (!a.tag || !a.sha) throw new Error('check and supply the reviewed tag and sha');
-      const result = await c.updates.apply({ tag: a.tag, sha: a.sha });
+      const result = await c.updates.apply({ tag: a.tag, sha: a.sha, now: a.now });
       return { text: `Updating to ${a.tag}; the daemon will restart and resume live nodes. Log: ${result.log}`, data: result };
+    }, true),
+
+  drain: tool(
+    'Drain before a restart',
+    'Before restarting the daemon for `reason`: hold message deliveries and agent spawns and report the agent nodes still working (leaving out `exclude`). Call it again every few seconds while waiting; the hold ends by itself 15 s after the last call. `cancel` ends it at once and releases what it held. Only the human may call this.',
+    { reason: z.string().min(1).max(200).optional(), exclude: z.string().optional(), cancel: z.boolean().optional() },
+    async (c, a) => {
+      if (a.cancel) { c.manager.endDrain(); return { text: 'drain cancelled', data: null }; }
+      if (!a.reason) throw new Error('reason is required');
+      const d = c.manager.drain(a.reason, a.exclude);
+      return { text: d.waiting.length ? `waiting for ${d.waiting.map((w) => w.id).join(', ')}` : 'no agent is working', data: d };
     }, true),
 
   sessions_clean: tool(

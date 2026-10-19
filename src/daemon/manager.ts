@@ -4,7 +4,7 @@ import { stripVTControlCharacters } from 'node:util';
 import { chmodSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { profileFor, type Profile, harnessFor, isAgentKind, NEEDS_YOU_STATES, type Harness, type ArchivedNode, type Diff, type DigestItem, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
+import { profileFor, type Profile, harnessFor, isAgentKind, NEEDS_YOU_STATES, type Harness, type ArchivedNode, type Diff, type DigestItem, type Drain, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { profileDefaults, loadConfig, type Config, type MergeStyle } from './config.js';
 import { UsageRegistry } from './usage.js';
 import { homeDir } from './home.js';
@@ -15,12 +15,12 @@ import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { isSupportedEffort } from '../shared/harness-policy.js';
-import { arm, scheduleSoon } from './scheduling.js';
+import { arm, scheduleSoon, working } from './scheduling.js';
 import { CompletionGate, gateFor } from './completion-gate.js';
 import type { CompletionWatches } from './completion-watches.js';
 import { NodeTokens } from './node-tokens.js';
 
-import { flushInbox, handoverInbox, HUMAN, inScope, waitForDeliveries } from './messaging.js';
+import { DAEMON, deliver, handoverInbox, holdDeliveries, HUMAN, inScope, saveInboxForRestart, waitForDeliveries } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
 import { buildChildEnv, PtySession } from './pty.js';
 import { count, inside, logError } from './util.js';
@@ -29,7 +29,7 @@ import { addWorktree, closeWorktreeNode, mergeWorktree, readClaudeJson, refreshG
 import { appendEvent, buildDigest, ensureSession, flushEvents, handoffPrompt, listSessions, markClosed, readEvents, sessionDir, sweepSessions } from './sessions.js';
 import { archivedOf, archiveNode, findArchived, type BranchFate } from './archive.js';
 import { adoptSessionHistory, nodeTranscript, recordedSessions } from './transcript.js';
-import { initialState, interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
+import { active, initialState, interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
 
 export { gateFor } from './completion-gate.js';
 
@@ -46,6 +46,11 @@ const DEFAULT_SIZE = { cols: 120, rows: 40 };
 const GIT_EDIT_TOOLS = ['Edit', 'Write', 'Bash'];
 /** At most one cost event per node in this long. */
 const COST_EVENT_MS = 60_000;
+/** A drain ends by itself when whoever restarts the daemon has not polled it for this long (it died or was stopped). */
+const DRAIN_LEASE_MS = 15_000;
+
+/** The daemon's message to a resumed node whose turn the restart cut off. */
+export const cutOffText = (reason: string) => `The tiller daemon restarted (${reason}) while your turn was running, so that turn was cut off. Your conversation is intact, but the last tool call may not have finished. Check where you were, for example with git status and the commands you last ran, then continue the task.`;
 
 /** `cwd`, or the main checkout when it was a worktree since removed; undefined when neither exists. */
 function usableCwd(cwd: string): string | undefined {
@@ -166,6 +171,10 @@ export class NodeManager extends EventEmitter {
   private sweepTimer: NodeJS.Timeout;
   /** Ids that were live when the daemon last went away, until resumeLive has dealt with them. */
   private pendingResume: Set<string>;
+  /** Why the daemon last went away, for the message to the nodes whose turn it cut off. */
+  private lastStop: string;
+  /** Set while a restart waits for turns to end; see drain. */
+  private drainState?: { reason: string; exclude?: string; force?: boolean; lease: NodeJS.Timeout };
   /** projectDir's main checkout of each cwd outside a worktree node. */
   private projectDirs = new Map<string, string>();
 
@@ -182,6 +191,8 @@ export class NodeManager extends EventEmitter {
     this.registry = new NodeRegistry(join(this.home, 'state.json'));
     this.registry.load();
     this.pendingResume = new Set(this.registry.live);
+    this.lastStop = this.registry.stopped ?? 'unexpected exit';
+    if (this.registry.stopped) this.registry.setStopped(undefined); // a later crash must not read it again
     // Nodes from a previous run have no process; they can be resumed.
     for (const n of this.registry.list()) {
       if (n.parentId && !n.rootId) this.registry.update(n.id, { rootId: this.rootIdOf(n.id) }); // records from before rootId
@@ -859,15 +870,20 @@ export class NodeManager extends EventEmitter {
       const cutoff = Date.now() - resumeMaxAgeDays * 86_400_000;
       const skipped = [...ids].filter((id) => !this.registry.get(id)).map((id) => `${id} (no such node)`);
       let resumed = 0;
+      const cutOff: string[] = [];
       for (const { node: n } of treeOrder(this.registry.list())) {
         if (!ids.has(n.id)) continue;
         if ((n.lastActiveAt ?? n.createdAt) < cutoff) { skipped.push(`${n.id} (idle over ${resumeMaxAgeDays} days)`); continue; }
         const r = await this.resume(n.id);
         if (r.ok) resumed++;
         else skipped.push(`${n.id} (${r.error})`);
+        if (r.ok && n.midTurn) cutOff.push(n.id);
       }
-      summary = `resumed ${resumed}, skipped ${skipped.length}${skipped.length ? `: ${skipped.join(', ')}` : ''}`;
+      // Into the inbox at once: the resumed node's mod picks it up behind any message already queued for it.
+      for (const id of cutOff) deliver(this, DAEMON, id, cutOffText(this.lastStop), { fromLabel: 'tiller (daemon restarted)', replyTo: null, inbox: true }).catch(logError);
+      summary = `resumed ${resumed}, skipped ${skipped.length}${skipped.length ? `: ${skipped.join(', ')}` : ''}${cutOff.length ? `; told ${count(cutOff.length, 'node')} their turn was cut off` : ''}`;
     }
+    for (const n of this.registry.list()) if (n.midTurn) this.registry.update(n.id, { midTurn: undefined }); // at most once per restart
     this.pendingResume = new Set();
     this.liveChanged();
     for (const rt of this.runtimes.values()) rt.restored = undefined; // re-arm the nodes the record held back
@@ -876,11 +892,59 @@ export class NodeManager extends EventEmitter {
   }
 
   /**
+   * Hold message deliveries (see holdDeliveries) and agent spawns (they queue) while a restart for `reason` waits for
+   * the agent nodes' turns to end, then return the nodes it still waits for, leaving out `exclude` (the node that
+   * runs tl reload). Each call renews the drain's lease; it ends by itself after DRAIN_LEASE_MS without one.
+   */
+  drain(reason: string, exclude?: string): Drain {
+    const d = this.drainState;
+    if (d) clearTimeout(d.lease);
+    const lease = setTimeout(() => { console.log('drain: no poll from the restart; releasing held messages and spawns'); this.endDrain(); }, DRAIN_LEASE_MS);
+    lease.unref();
+    this.drainState = { reason: d?.reason ?? reason, exclude: d ? d.exclude : exclude, force: d?.force, lease };
+    if (!d) {
+      console.log(`drain: holding messages and spawns for a restart (${reason})`);
+      holdDeliveries(this);
+      this.emit('drain', this.drainView());
+    }
+    return this.drainView()!;
+  }
+
+  /** The drain in progress, if any: why, and the agent nodes still working. */
+  drainView(): Drain | undefined {
+    const d = this.drainState;
+    if (!d) return undefined;
+    const waiting = this.registry.list().filter((n) => isAgentKind(n.kind) && n.id !== d.exclude && working(this.runtimes.get(n.id))).map((n) => ({ id: n.id, title: n.title }));
+    return { reason: d.reason, waiting, ...(d.force ? { force: true } : {}) };
+  }
+
+  /** The human asked to restart without waiting: the restarting helper sees force on its next poll. */
+  forceDrain(): void {
+    if (!this.drainState || this.drainState.force) return;
+    this.drainState.force = true;
+    this.emit('drain', this.drainView());
+  }
+
+  /** End the drain without a restart: release the held messages and spawns. */
+  endDrain(): void {
+    if (!this.drainState) return;
+    clearTimeout(this.drainState.lease);
+    this.drainState = undefined;
+    holdDeliveries(this);
+    scheduleSoon(this);
+    this.emit('drain', undefined);
+  }
+
+  get draining(): boolean { return !!this.drainState; }
+
+  /**
    * Flush the registry and the message inbox, and kill every PTY. The live set is kept for resume on next start, unless
    * `clearLive` (an explicit stop: do not come back). Resolves once the event appends already queued have landed.
    */
   shutdown(opts: { clearLive?: boolean } = {}): Promise<void> {
+    if (!this.shutDown) this.registry.setStopped(this.drainState?.reason ?? 'the daemon was stopped');
     this.shutDown = true;
+    clearTimeout(this.drainState?.lease);
     if (opts.clearLive) this.registry.setLive([]);
     clearInterval(this.sweepTimer);
     for (const rt of this.runtimes.values()) {
@@ -890,7 +954,7 @@ export class NodeManager extends EventEmitter {
       rt.session?.kill();
     }
     this.registry.flush();
-    flushInbox(this);
+    saveInboxForRestart(this);
     return flushEvents();
   }
 
@@ -1103,6 +1167,9 @@ export class NodeManager extends EventEmitter {
     const rt = this.runtimes.get(id), prev = rt?.status;
     if (!rt || !prev || next === prev) return;
     rt.status = next;
+    // Not after shutdown: the PTYs' exits then end turns that the next daemon must still see as cut off.
+    const midTurn = active(next) && next.activity !== TRUST_BLOCKED_ACTIVITY;
+    if (!this.shutDown && midTurn !== !!this.registry.get(id)?.midTurn) this.registry.update(id, { midTurn: midTurn || undefined });
     // The Stop hook's message often lands just after the mod's turn.complete has already moved the node to done.
     const message = next.lastAssistantMessage && next.lastAssistantMessage !== prev.lastAssistantMessage ? next.lastAssistantMessage.slice(0, 300) : undefined;
     if (next.state !== prev.state || !!next.exited !== !!prev.exited || (message && next.state !== 'working')) {

@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { launchArgs } from './launch.js';
 import { findArchived } from './archive.js';
-import { NodeManager } from './manager.js';
+import { cutOffText, NodeManager } from './manager.js';
+import { inbox } from './messaging.js';
 import { PtySession } from './pty.js';
 import type { NodeStatus, NodeView } from '../shared/protocol.js';
 import { setProjectTrust } from './trust.js';
@@ -762,5 +763,95 @@ describe('NodeManager guardrails', () => {
     m = new NodeManager(opts);
     measure(1.0); // the same session, resumed: its cost keeps counting from 0.8
     expect(m.view(id)!.spentUsd).toBeCloseTo(1.0);
+  });
+});
+
+describe('restart drain and the cut-off message', () => {
+  let home = '';
+  let m: NodeManager;
+  const old: NodeManager[] = [];
+  afterEach(async () => { await Promise.all([m, ...old.splice(0)].map((x) => x.shutdown())); rmSync(home, { recursive: true, force: true }); });
+
+  /** Fake claude in a temp home; `claude(title)` spawns one with a resumable transcript. */
+  async function setup() {
+    home = mkdtempSync(join(tmpdir(), 'tl-drain-'));
+    const bin = join(home, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'claude'), '#!/bin/sh\nsleep 30\n');
+    chmodSync(join(bin, 'claude'), 0o755);
+    const opts = { home: join(home, 'tl'), shell: '/bin/sh', path: `${bin}:/usr/bin:/bin` };
+    m = new NodeManager(opts);
+    const claude = async (title: string, extra = {}) => {
+      const { id } = await m.spawn({ kind: 'claude', title, cwd: home, byHuman: true, ...extra });
+      const transcript = join(home, `${id}.jsonl`);
+      writeFileSync(transcript, '');
+      m.applyHook(id, { hook_event_name: 'SessionStart', session_id: m.registry.get(id)!.sessionId, transcript_path: transcript });
+      return id;
+    };
+    const restart = async (o: { crash?: boolean } = {}) => {
+      if (o.crash) { m.registry.flush(); old.push(m); } // the old process dies without its shutdown
+      else {
+        await m.shutdown();
+        // What the PTYs' exits then do (the fake's sleep outlives the hangup), and the save that could follow.
+        for (const v of m.list()) m.setStatus(v.id, { ...v.status, state: 'done', exited: true, changedAt: Date.now() }, false);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      m = new NodeManager(opts);
+      return m.resumeLive();
+    };
+    return { claude, restart };
+  }
+
+  it('waits for working agents but not the excluded one, and holds a spawn until after the restart', async () => {
+    const { claude, restart } = await setup();
+    const a = await claude('a'), b = await claude('b'), idle = await claude('idle');
+    m.applyHook(a, { hook_event_name: 'UserPromptSubmit' });
+    m.applyHook(b, { hook_event_name: 'UserPromptSubmit' });
+    expect(m.drain('tl reload', b).waiting).toEqual([{ id: a, title: 'a' }]); // b runs tl reload; idle is not working
+    const c = (await m.spawn({ kind: 'claude', title: 'c', cwd: home, prompt: 'go', byHuman: true, now: true })).id;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(m.view(c)!.status).toMatchObject({ state: 'queued', activity: 'queued: the daemon is waiting to restart' });
+    expect(m.session(c)).toBeUndefined();
+    m.applyHook(a, { hook_event_name: 'Stop' });
+    expect(m.drain('tl reload').waiting).toEqual([]);
+    expect(m.session(idle)).toBeDefined();
+    await restart();
+    await expect.poll(() => !!m.session(c)).toBe(true); // launched by the new daemon
+  });
+
+  it('a drain that ends without a restart releases the held spawn', async () => {
+    await setup();
+    m.drain('tl reload');
+    const c = (await m.spawn({ kind: 'claude', title: 'c', cwd: home, byHuman: true })).id;
+    expect(m.view(c)!.status.state).toBe('queued');
+    m.endDrain();
+    await expect.poll(() => !!m.session(c)).toBe(true);
+  });
+
+  it('tells resumed working and blocked nodes once that their turn was cut off, and no idle, done or terminal node', async () => {
+    const { claude, restart } = await setup();
+    const working = await claude('working'), blocked = await claude('blocked'), done = await claude('done'), idle = await claude('idle');
+    const term = (await m.spawn({ kind: 'terminal', title: 'term', cwd: home })).id;
+    m.applyHook(working, { hook_event_name: 'UserPromptSubmit' });
+    m.applyHook(blocked, { hook_event_name: 'UserPromptSubmit' });
+    m.applyHook(blocked, { hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
+    m.applyHook(done, { hook_event_name: 'UserPromptSubmit' });
+    m.applyHook(done, { hook_event_name: 'Stop' });
+    m.drain('update to v9.9.9');
+    expect(await restart()).toContain('told 2 nodes their turn was cut off');
+    const texts = (id: string) => inbox(m, id).map((x) => x.text);
+    for (const id of [working, blocked]) expect(texts(id)).toEqual([expect.stringContaining(cutOffText('update to v9.9.9'))]);
+    for (const id of [done, idle, term]) expect(texts(id)).toEqual([]);
+    expect(m.registry.list().some((n) => n.midTurn)).toBe(false);
+    await restart(); // the resumed nodes have not started a turn: nothing new
+    for (const id of [working, blocked]) expect(texts(id)).toHaveLength(1); // the first one, still queued
+  });
+
+  it('covers a crash: the turn in progress is persisted, and the message says the exit was unexpected', async () => {
+    const { claude, restart } = await setup();
+    const working = await claude('working');
+    m.applyHook(working, { hook_event_name: 'UserPromptSubmit' });
+    await restart({ crash: true });
+    expect(inbox(m, working).map((x) => x.text)).toEqual([expect.stringContaining(cutOffText('unexpected exit'))]);
   });
 });

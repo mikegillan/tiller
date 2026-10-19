@@ -3,7 +3,7 @@ import type { UpdateStatus } from '../shared/protocol.js';
 // Thin client for the daemon's POST /api/<tool>. Inside a node it uses TL_NODE_ID / TL_TOKEN_FILE / TL_ENDPOINT;
 // outside it acts as `human` with the admin token in <home>/admin-token.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { configEntries, effectiveProfileEntries } from './config.js';
@@ -19,7 +19,7 @@ import { formatEvent, listSessions, parseSince, readEvents, sessionDir, type Ses
 import { fmtAge } from '../shared/format.js';
 import type { Harness, NodeKind } from '../shared/protocol.js';
 import { mainCheckout, runCommands, WORKTREES_DIR } from './worktree.js';
-import { restartDaemon, findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, upDir, type OrchestratorCandidate } from './up.js';
+import { cancelDrain, drainDaemon, restartDaemon, findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, upDir, type OrchestratorCandidate } from './up.js';
 
 const usage = () => `tl: control tiller. With no arguments, start the daemon if needed and open the app; tl . opens it on this directory.
 
@@ -29,8 +29,11 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
                                                       must start with . / or ~; any of these flags without a PATH means .
   tl status | stop                                    show or stop the daemon (tld runs it in the foreground); stop also means
                                                       the nodes are not resumed on the next start
-  tl update [--check]                                check stable releases or install/build/restart at the latest release
-  tl reload                                           restart the daemon on the current code and resume the nodes that were live
+  tl update [--check] [--now]                         check stable releases or install/build/restart at the latest release; the
+                                                      restart first waits for agents to finish their turns, unless --now
+  tl reload [--now]                                   restart the daemon on the current code and resume the nodes that were live;
+                                                      first waits for agents to finish their turns (holding messages and
+                                                      spawns meanwhile), unless --now; Ctrl-C stops waiting and cancels
   tl autostart on|off|status                          a launchd agent that starts the daemon at login and after a crash
   tl doctor [--no-app] [--harness claude|pi|codex]     check what tiller needs (bin/setup --check) and print the fix for anything missing
   tl new <title> [--cwd P] [--preset NAME] [--model M] [--effort E] [--prompt T] [--role R] [--profile P] [--harness claude|pi|codex] [--worktree [--base B]]
@@ -334,7 +337,9 @@ switch (cmd) {
     if (process.env.TL_NODE_ID) fail('updates are human-only; run outside a Tiller node');
     if (f.detached) {
       const expected = JSON.parse(readFileSync(0, 'utf8')) as UpdateStatus;
-      await applyUpdate({ repo: REPO, log: join(home, UPDATE_LOG), expected, restart: (sha) => restartDaemon(home, daemonPort(), sha) })
+      const say = (s: string) => appendFileSync(join(home, UPDATE_LOG), `${new Date().toISOString()} tl update: ${s}\n`);
+      const restart = (sha: string) => restartDaemon(home, daemonPort(), sha, say, { reason: `update to ${expected.target?.tag}`, now: f.now });
+      await applyUpdate({ repo: REPO, log: join(home, UPDATE_LOG), expected, restart })
         .catch((e: Error) => fail(`tl update: ${e.message}; see ${join(home, UPDATE_LOG)}`));
       break;
     }
@@ -342,22 +347,33 @@ switch (cmd) {
     if (f.check) break;
     const s = result.data;
     if (!s?.eligible || !s.target || (s.sha === s.target.sha && (!s.runtimeSha || s.runtimeSha === s.target.sha))) break;
-    await call('update', { apply: true, tag: s.target.tag, sha: s.target.sha });
+    await call('update', { apply: true, tag: s.target.tag, sha: s.target.sha, now: f.now });
     break;
   }
   case 'reload': {
     if (updateLocked(REPO)) fail('an update holds this checkout; inspect update.log and wait for it before reloading');
+    const self = process.env.TL_NODE_ID; // its own turn waits on this command, so the drain does not wait for it
     process.env = humanEnv(process.env); // run from a node's terminal, still restart as the human
     const port = daemonPort();
     if (!f.detached) {
       const running = await findDaemon(port);
       if (!running) { await startDaemon(home, port).catch((e: Error) => fail(e.message)); console.log('no daemon was running; started it'); break; }
       if (running.home !== home) fail(`daemon pid ${running.pid} uses home ${running.home}, not ${home}; stop it with kill ${running.pid} and run tl reload again`);
+      if (!f.now) {
+        const cancel = () => void cancelDrain(home, port).catch(() => {}).finally(() => {
+          console.log('tl reload: cancelled; the daemon delivers the messages and spawns it held');
+          process.exit(130);
+        });
+        process.once('SIGINT', cancel);
+        await drainDaemon(home, port, { reason: 'tl reload', exclude: self, say: (s) => console.log(`tl reload: ${s}`) }).catch((e: Error) => fail(`tl reload: ${e.message}`));
+        process.off('SIGINT', cancel);
+      }
       console.log(`reloading daemon; the new one resumes the nodes that were live; log in ${spawnReload(home, port)}`);
       break;
     }
-    // The detached helper revalidates daemon and launchd ownership before restarting.
-    await restartDaemon(home, port, undefined, (s) => console.log(`tl reload: ${s}`))
+    // The detached helper revalidates daemon and launchd ownership before restarting. Any wait for agents happened in
+    // the foreground; the hold it set lasts until this restart.
+    await restartDaemon(home, port, undefined, (s) => console.log(`tl reload: ${s}`), { reason: 'tl reload', now: true })
       .catch((e: Error) => fail(`tl reload: ${e.message}`));
     break;
   }

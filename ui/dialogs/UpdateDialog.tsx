@@ -20,6 +20,8 @@ function UpdateIcon({ name }: { name: 'warning' | 'lock' | 'document' | 'spinner
 
 export function UpdateDialog() {
   const upd = useStore((s) => s.update);
+  const drain = useStore((s) => s.drain);
+  const waiting = drain && !drain.force ? drain.waiting.length : 0;
   const runtimeBehindCheckout = !!upd?.runtimeSha && upd.runtimeSha !== upd.sha;
   const available = !!upd?.target && upd.sha !== upd.target.sha;
   const restartOnly = !!upd?.target && runtimeBehindCheckout && upd.sha === upd.target.sha && upd.currentVersion === upd.target.tag;
@@ -64,7 +66,8 @@ export function UpdateDialog() {
     {upd?.reason && !blocked && !upd.checking && <p>{upd.reason}</p>}
     {upd?.fetchError && <p className="update-error" role="alert">{upd.fetchError}</p>}
     {upd?.failed && <p className="update-error" role="alert">{upd.failed}</p>}
-    <p className="update-progress" role="status" aria-live="polite">{busy && <><UpdateIcon name="spinner" />{upd?.applying ? 'Installing update…' : 'Checking for updates…'}</>}</p>
+    <p className="update-progress" role="status" aria-live="polite">{busy && <><UpdateIcon name="spinner" />{waiting ? `Waiting for ${waiting} agent${waiting === 1 ? '' : 's'} to finish their turn…` : upd?.applying ? 'Installing update…' : 'Checking for updates…'}</>}
+      {waiting > 0 && <button className="btn" onClick={() => send({ t: 'restartNow' })}>Restart now</button>}</p>
     {releases.length > 0 && <section className="update-notes" aria-label="Available release notes">
       <h3>{releases.length === 1 ? `What’s new in ${releases[0].tag}` : 'What’s new'}</h3>
       {releases.map((release) => <section key={release.id}>

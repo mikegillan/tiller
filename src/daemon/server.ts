@@ -40,6 +40,7 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('nativeNotifyResult'), requestId: id, ok: z.boolean(), error: z.string().max(1000).optional() }),
   z.object({ t: z.literal('usageRefresh') }),
   z.object({ t: z.literal('updateCheck') }),
+  z.object({ t: z.literal('restartNow') }),
   z.object({ t: z.literal('updateNotesRead'), identity: z.string().min(1).max(128) }),
   z.object({ t: z.literal('update'), tag: z.string(), sha: z.string() }),
   z.object({ t: z.literal('visibility'), focused: z.boolean() }),
@@ -90,7 +91,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   const pendingNotifications = new Map<string, { client: Client; finish(ok: boolean, error?: string): void }>();
   const pendingConfirms = new Map<string, (ok: boolean) => void>();
   const focus = (from: string, id: string) => broadcast({ t: 'focus', from, id });
-  const updates = createUpdater({ repo: REPO, home: manager.home, onChange: (update) => broadcast({ t: 'update', update }), spawnHelper: (expected, onExit) => spawnUpdate(manager.home, daemon.port, expected, onExit) });
+  const updates = createUpdater({ repo: REPO, home: manager.home, onChange: (update) => broadcast({ t: 'update', update }), spawnHelper: (expected, onExit, now) => spawnUpdate(manager.home, daemon.port, expected, onExit, now) });
   const { handler: mcp, publishAdminToken, authenticate, isAdmin } = mountMcp(manager, (text) => daemon.confirm(text), focus, (on, minutes) => setDnd(on, minutes), updates);
   const settings = settingsApi(manager, isAdmin);
   const mod = modApi(manager, authenticate, focus, () => [...new Set([...clients].filter((c) => c.authed && c.kind).map((c) => c.kind!))]);
@@ -128,6 +129,14 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   manager.on('notify', (n: NotifyEvent) => broadcast({ t: 'notify', ...n }));
   manager.on('usageSources', (sources) => broadcast({ t: 'usageSources', sources }));
   manager.on('usage', (usage: Usage) => broadcast({ t: 'usage', usage }));
+  // While a restart drains, every node change may change who it waits for.
+  let lastDrain = '';
+  const syncDrain = () => {
+    const drain = manager.drainView(), json = JSON.stringify(drain ?? null);
+    if (json !== lastDrain) { lastDrain = json; broadcast({ t: 'drain', drain }); }
+  };
+  manager.on('drain', syncDrain);
+  manager.on('node', () => { if (manager.draining) syncDrain(); });
 
   async function handle(c: Client, m: ClientMessage): Promise<void> {
     switch (m.t) {
@@ -146,6 +155,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       case 'updateCheck': await updates.check(); return;
       case 'updateNotesRead': await updates.acknowledgeNotes(m.identity); return;
       case 'update': await updates.apply(m); return;
+      case 'restartNow': manager.forceDrain(); return;
       case 'usageRefresh':
         await manager.usageRegistry.refresh();
         sendTo(c, { t: 'usageSources', sources: manager.usageRegistry.sources });
@@ -244,7 +254,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
           c.kind = msg.client;
           syncUpdateChecks();
           clearTimeout(authTimer);
-          sendTo(c, { t: 'snapshot', update: updates.status(), nodes: manager.list(), usage: manager.usage, usageSources: manager.usageRegistry.sources, dnd });
+          sendTo(c, { t: 'snapshot', update: updates.status(), nodes: manager.list(), usage: manager.usage, usageSources: manager.usageRegistry.sources, dnd, drain: manager.drainView() });
         } else {
           ws.close(4401, 'auth required');
         }
