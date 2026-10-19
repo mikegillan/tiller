@@ -53,6 +53,17 @@ it('offers a single New session action with the current root cwd, even when a ch
   expect(getState().dialog).toEqual({ kind: 'spawn', parentId: null, cwd: '' });
 });
 
+it('renames the current session root even when a child or history is selected', () => {
+  update(() => ({ historyOpen: true }));
+  const rename = find(SessionSwitcher(), (el) => el.props['aria-label'] === 'Rename session');
+  rename.props.onClick();
+  expect(getState().dialog).toEqual({ kind: 'renameSession', id: 'a' });
+  expect(getState().selected).toBe('child');
+  expect(hooks.setOpen).toHaveBeenLastCalledWith(false);
+  update(() => ({ nodes: {}, order: [], session: null }));
+  expect(elements(SessionSwitcher()).some((el) => el.props['aria-label'] === 'Rename session')).toBe(false);
+});
+
 it('opens session navigation from the keyboard, switches roots, and closes the menu', () => {
   const preventDefault = vi.fn();
   find(SessionSwitcher(), (el) => el.props.className === 'current').props.onKeyDown({ key: 'ArrowDown', preventDefault });

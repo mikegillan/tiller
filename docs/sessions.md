@@ -24,7 +24,7 @@ When the app or a browser tab regains focus after more than `daemon.digestAfterM
 
 `tl restart <id>` (also the Restart action in the app) kills a node's process and relaunches it under a new Claude session id, so a Claude node starts with an empty context while keeping its id, title, directory, model, effort, role and children. The previous session ids are kept on the node record as `previousSessions` (the newest 10). `--prompt T` (or the text field in the app's Restart dialog) gives the restarted node a first prompt; without one, a node whose tree has a `handoff.md` is told to read it first. Agents cannot restart nodes.
 
-Orchestrators are protected from being closed by accident. Agents cannot close them, the app offers Restart instead of Kill for them, and `tl kill <id>` on a root refuses with a hint; `tl kill --force <id>` overrides that.
+Live orchestrators are protected from being closed by accident. Agents cannot close them, the app offers Restart instead of Kill for them, and `tl kill <id>` on a root refuses with a hint; `tl kill --force <id>` overrides that. Once the process has exited, the app's exited card and Restart dialog also offer **Close**, which explicitly closes the root without restarting it. Children are kept. Worktree nodes still require the usual safe-close, Keep branch or Discard choice.
 
 `tl resume <id>` relaunches an exited Claude node with its previous conversation (`claude --resume`).
 

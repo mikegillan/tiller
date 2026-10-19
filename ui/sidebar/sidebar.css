@@ -7,7 +7,8 @@
 .session-copy { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 2px; }
 .st { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sc { display: block; min-width: 0; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px/1.4 var(--mono); }
-.switcher .new-session { width: 100%; margin-top: 8px; justify-content: center; }
+.session-controls { display: flex; gap: 6px; margin-top: 8px; }
+.switcher .new-session { flex: 1; justify-content: center; }
 .switcher .menu { position: absolute; z-index: 20; left: 10px; right: 10px; top: calc(100% - 8px); padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); max-height: 60vh; overflow: auto; }
 .sess.cur { background: var(--sel); }
 .count { flex: none; padding: 0 6px; border-radius: 8px; font-size: 11px; background: var(--surface-2); color: var(--dim); }

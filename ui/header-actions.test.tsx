@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import { actionsFor, ActionButtons, actionMenuPosition } from './controls/ActionButtons';
 import { TitleBar } from './TitleBar';
+import { ExitedCard } from './ExitedCard';
 import { mk } from './fixtures';
 import { getState, openDialog, showPane, togglePanel, update } from './store';
 import { send } from './conn';
@@ -53,6 +54,18 @@ describe('node action operations', () => {
     expect(send).toHaveBeenCalledWith({ t: 'close', id: 'child' });
     expect(actionsFor(exited).map((a) => a.key)).toContain('resume');
     expect(actionsFor(exited).map((a) => a.key)).not.toContain('child');
+  });
+
+  it('offers Close on exited roots without exposing it for running orchestrators', () => {
+    const root = mk('root', null, 0, { exited: true });
+    const close = buttons(ExitedCard({ node: root })).find((b) => Array.isArray(b.props.children) && b.props.children.includes('Close'))!;
+    close.props.onClick!();
+    expect(send).toHaveBeenCalledExactlyOnceWith({ t: 'close', id: 'root', force: true });
+    expect(actionsFor(root).map((a) => a.key)).toContain('restart');
+    expect(actionsFor({ ...root, status: { ...root.status, exited: false } }).map((a) => a.key)).not.toContain('remove');
+    run({ ...root, worktree }, 'remove');
+    expect(getState().dialog).toEqual({ kind: 'kill', id: 'root' });
+    expect(send).toHaveBeenCalledOnce();
   });
 
   it('preserves spawn, rename, mute, fork, resume and merge operations', () => {

@@ -1,6 +1,6 @@
 # Front ends and notifications
 
-All front ends are clients of the same daemon, so closing one never stops the agents. A session, in the front ends, is one tree shown at a time, with a switcher between trees.
+All front ends are clients of the same daemon, so closing one never stops the agents. A session, in the front ends, is one tree shown at a time, with a switcher between trees. The **Rename session** pencil beside **New session** changes the current tree's root title, even when a child is selected.
 
 ## The native app (macOS)
 

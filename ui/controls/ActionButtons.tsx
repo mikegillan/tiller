@@ -10,10 +10,13 @@ interface Act { key: string; label: string; icon: IconName; run: () => void; dan
 
 export function actionsFor(node: NodeView): Act[] {
   const exited = !!node.status.exited;
-  const last: Act = node.parentId === null // an orchestrator is restarted, never closed
+  const root = node.parentId === null;
+  const remove: Act = { key: 'remove', label: root ? 'Close' : 'Remove', icon: 'trash', danger: true,
+    run: () => node.worktree ? openDialog({ kind: 'kill', id: node.id }) : send({ t: 'close', id: node.id, ...(root ? { force: true } : {}) }) };
+  const last: Act = root // a live orchestrator is restarted, never killed
     ? { key: 'restart', label: 'Restart', icon: 'restart', run: () => openDialog({ kind: 'restart', id: node.id }) }
     : exited
-      ? { key: 'remove', label: 'Remove', icon: 'trash', danger: true, run: () => node.worktree ? openDialog({ kind: 'kill', id: node.id }) : send({ t: 'close', id: node.id }) }
+      ? remove
       : { key: 'kill', label: 'Kill', icon: 'x', danger: true, run: () => openDialog({ kind: 'kill', id: node.id }) };
   return [
     ...(!exited ? [{ key: 'child', label: 'New child', icon: 'subnode' as const, run: () => openDialog({ kind: 'spawn', parentId: node.id, cwd: node.cwd }) }] : []),
@@ -25,6 +28,7 @@ export function actionsFor(node: NodeView): Act[] {
     ...(isAgentKind(node.kind) && !node.pending && node.gate !== 'running' ? [{ key: 'harness', label: 'Change harness…', icon: 'restart' as const, run: () => openDialog({ kind: 'changeHarness', id: node.id }) }] : []),
     ...(exited && isAgentKind(node.kind) ? [{ key: 'resume', label: 'Resume', icon: 'play' as const, run: () => send({ t: 'resume', id: node.id }) }] : []),
     ...(canMerge(node) ? [{ key: 'merge', label: `Merge into ${node.status.git!.base}`, icon: 'merge' as const, run: () => send({ t: 'merge', id: node.id }) }] : []),
+    ...(root && exited ? [remove] : []),
     last,
   ];
 }

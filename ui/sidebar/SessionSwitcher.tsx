@@ -39,9 +39,12 @@ export function SessionSwitcher() {
         {others > 0 && <span className="count warn" title="needs you in other sessions">+{others}</span>}
         <Icon name="updown" size={14} />
       </button>
-      <button className="btn new-session" onClick={() => { setOpen(false); openDialog({ kind: 'spawn', parentId: null, cwd: cur?.root.cwd ?? '' }); }}>
-        <Icon name="plus" size={14} />New session
-      </button>
+      <div className="session-controls">
+        <button className="btn new-session" onClick={() => { setOpen(false); openDialog({ kind: 'spawn', parentId: null, cwd: cur?.root.cwd ?? '' }); }}>
+          <Icon name="plus" size={14} />New session
+        </button>
+        {cur && <button className="btn icon" title="Rename session" aria-label="Rename session" onClick={() => { setOpen(false); openDialog({ kind: 'renameSession', id: cur.root.id }); }}><Icon name="edit" size={14} /></button>}
+      </div>
       {open && (
         <div className="menu" id="session-menu" role="menu" aria-label="Sessions" ref={menu} onKeyDown={(e) => {
           const buttons = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'));
