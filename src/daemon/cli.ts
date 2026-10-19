@@ -359,16 +359,23 @@ switch (cmd) {
       const running = await findDaemon(port);
       if (!running) { await startDaemon(home, port).catch((e: Error) => fail(e.message)); console.log('no daemon was running; started it'); break; }
       if (running.home !== home) fail(`daemon pid ${running.pid} uses home ${running.home}, not ${home}; stop it with kill ${running.pid} and run tl reload again`);
+      let cancel: (() => void) | undefined;
       if (!f.now) {
-        const cancel = () => void cancelDrain(home, port).catch(() => {}).finally(() => {
-          console.log('tl reload: cancelled; the daemon delivers the messages and spawns it held');
-          process.exit(130);
-        });
+        const abort = new AbortController();
+        // Stop polling first, then cancel: a poll still in flight would otherwise hold again after the cancel.
+        const draining = drainDaemon(home, port, { reason: 'tl reload', exclude: self, say: (s) => console.log(`tl reload: ${s}`), signal: abort.signal });
+        cancel = () => {
+          abort.abort();
+          void draining.catch(() => {}).then(() => cancelDrain(home, port)).catch(() => {}).finally(() => {
+            console.log('tl reload: cancelled; the daemon delivers the messages and spawns it held');
+            process.exit(130);
+          });
+        };
         process.once('SIGINT', cancel);
-        await drainDaemon(home, port, { reason: 'tl reload', exclude: self, say: (s) => console.log(`tl reload: ${s}`) }).catch((e: Error) => fail(`tl reload: ${e.message}`));
-        process.off('SIGINT', cancel);
+        await draining.catch((e: Error) => abort.signal.aborted ? new Promise(() => {}) : fail(`tl reload: ${e.message}`)); // a cancel exits above
       }
       console.log(`reloading daemon; the new one resumes the nodes that were live; log in ${spawnReload(home, port)}`);
+      if (cancel) process.off('SIGINT', cancel); // only once the restart is handed off
       break;
     }
     // The detached helper revalidates daemon and launchd ownership before restarting. Any wait for agents happened in

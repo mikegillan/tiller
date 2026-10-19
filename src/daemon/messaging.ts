@@ -324,6 +324,15 @@ export function holdDeliveries(m: Mgr): void {
   if (!s.held) for (const [id, q] of s.queues) if (q.length) drain(m, s, id).catch(logError);
 }
 
+/** How long a claim counts as a turn about to start; a mod that died after claiming must not hold a restart for ever. */
+const SUBMIT_MS = 30_000;
+
+/** Whether the node's mod has claimed a message in the last SUBMIT_MS and not yet acknowledged it: a turn is about to begin. */
+export function submitting(m: Mgr, id: string): boolean {
+  const now = Date.now();
+  return (states.get(m)?.inbox.get(id) ?? []).some((i) => i.claimed && now - (i.claimedAt ?? 0) < SUBMIT_MS);
+}
+
 /**
  * At shutdown: move the messages waiting to be pasted into their targets' inboxes, where the resumed nodes' mods pick
  * them up, and write the inbox now.
@@ -337,6 +346,8 @@ export function saveInboxForRestart(m: Mgr): void {
       addInbox(m, s, { to: id, from: entry.from, msg: { id: entry.id, from: entry.label, text: frame(entry).text,
         enqueuedAt: s.status.get(entry.id)?.at ?? Date.now(), ...(entry.steer ? { steer: true } : {}) } });
     }
+    // Both lists were in send order; keep that order across them. Together they may pass QUEUE_CAP, which then only refuses new sends.
+    s.inbox.get(id)?.sort((a, b) => a.msg.enqueuedAt - b.msg.enqueuedAt);
   }
   s.queues.clear();
   for (const t of s.retry.values()) clearTimeout(t);

@@ -116,12 +116,14 @@ async function drainCall(home: string, port: number, args: { reason?: string; ex
 /**
  * Before a restart for `reason`: have the daemon hold message deliveries and agent spawns, then, unless `now`, wait
  * until no agent node but `exclude` is working, saying whom it waits for as that changes. Stops waiting when the human
- * asks the app to restart now. The hold lasts until the restart, or 15 s after the last poll.
+ * asks the app to restart now. The hold lasts until the restart, or 15 s after the last poll. Aborting `signal` rejects
+ * without another poll, so a cancel sent once this settles cannot be followed by a poll that holds again.
  */
-export async function drainDaemon(home: string, port: number, o: { reason: string; exclude?: string; now?: boolean; say?: (s: string) => void }): Promise<void> {
+export async function drainDaemon(home: string, port: number, o: { reason: string; exclude?: string; now?: boolean; say?: (s: string) => void; signal?: AbortSignal }): Promise<void> {
   const say = o.say ?? (() => {});
   let last = '';
   for (;;) {
+    o.signal?.throwIfAborted();
     const d = await drainCall(home, port, { reason: o.reason, exclude: o.exclude });
     if (!d) { say('the running daemon cannot wait for agents; restarting at once'); return; }
     if (o.now) return;
@@ -130,7 +132,7 @@ export async function drainDaemon(home: string, port: number, o: { reason: strin
     const line = `waiting for ${count(d.waiting.length, 'agent')} to finish their turn: ${d.waiting.map((w) => `${w.title} (${w.id})`).join(', ')}`;
     if (line !== last) say(line);
     last = line;
-    await sleep(1000);
+    await sleep(1000, undefined, { signal: o.signal });
   }
 }
 

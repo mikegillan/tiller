@@ -74,6 +74,18 @@ describe('drainDaemon before a restart', () => {
     ]);
   });
 
+  it('stops polling once aborted, so no poll lands after a cancel', async () => {
+    const fetch = vi.fn().mockResolvedValue(drain(['a']));
+    vi.stubGlobal('fetch', fetch);
+    const abort = new AbortController();
+    const done = drainDaemon(home, 7799, { reason: 'tl reload', signal: abort.signal });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    abort.abort();
+    await expect(done).rejects.toThrow();
+    await new Promise((r) => setTimeout(r, 1100));
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it('with now, holds deliveries once and does not wait', async () => {
     const fetch = vi.fn().mockResolvedValue(drain(['a']));
     vi.stubGlobal('fetch', fetch);

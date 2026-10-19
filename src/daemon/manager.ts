@@ -20,7 +20,7 @@ import { CompletionGate, gateFor } from './completion-gate.js';
 import type { CompletionWatches } from './completion-watches.js';
 import { NodeTokens } from './node-tokens.js';
 
-import { DAEMON, deliver, handoverInbox, holdDeliveries, HUMAN, inScope, saveInboxForRestart, waitForDeliveries } from './messaging.js';
+import { DAEMON, deliver, handoverInbox, holdDeliveries, HUMAN, inScope, saveInboxForRestart, submitting, waitForDeliveries } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
 import { buildChildEnv, PtySession } from './pty.js';
 import { count, inside, logError } from './util.js';
@@ -865,6 +865,9 @@ export class NodeManager extends EventEmitter {
     const ids = this.pendingResume;
     const { resumeOnStart, resumeMaxAgeDays } = loadConfig(null, this.home).daemon;
     let summary = 'nothing to resume';
+    // Cleared before any resume, so a resumed node that starts a turn on a held message keeps the midTurn that sets.
+    const wasMidTurn = new Set(this.registry.list().filter((n) => n.midTurn).map((n) => n.id));
+    for (const id of wasMidTurn) this.registry.update(id, { midTurn: undefined }); // at most once per restart
     if (ids.size && !resumeOnStart) summary = `daemon.resumeOnStart is off; not resuming ${count(ids.size, 'node')}`;
     else if (ids.size) {
       const cutoff = Date.now() - resumeMaxAgeDays * 86_400_000;
@@ -877,13 +880,12 @@ export class NodeManager extends EventEmitter {
         const r = await this.resume(n.id);
         if (r.ok) resumed++;
         else skipped.push(`${n.id} (${r.error})`);
-        if (r.ok && n.midTurn) cutOff.push(n.id);
+        if (r.ok && wasMidTurn.has(n.id)) cutOff.push(n.id);
       }
       // Into the inbox at once: the resumed node's mod picks it up behind any message already queued for it.
       for (const id of cutOff) deliver(this, DAEMON, id, cutOffText(this.lastStop), { fromLabel: 'tiller (daemon restarted)', replyTo: null, inbox: true }).catch(logError);
       summary = `resumed ${resumed}, skipped ${skipped.length}${skipped.length ? `: ${skipped.join(', ')}` : ''}${cutOff.length ? `; told ${count(cutOff.length, 'node')} their turn was cut off` : ''}`;
     }
-    for (const n of this.registry.list()) if (n.midTurn) this.registry.update(n.id, { midTurn: undefined }); // at most once per restart
     this.pendingResume = new Set();
     this.liveChanged();
     for (const rt of this.runtimes.values()) rt.restored = undefined; // re-arm the nodes the record held back
@@ -914,7 +916,9 @@ export class NodeManager extends EventEmitter {
   drainView(): Drain | undefined {
     const d = this.drainState;
     if (!d) return undefined;
-    const waiting = this.registry.list().filter((n) => isAgentKind(n.kind) && n.id !== d.exclude && working(this.runtimes.get(n.id))).map((n) => ({ id: n.id, title: n.title }));
+    // A message the node's mod claimed just before the drain starts a turn whose hook has not arrived yet.
+    const busy = (id: string) => working(this.runtimes.get(id)) || submitting(this, id);
+    const waiting = this.registry.list().filter((n) => isAgentKind(n.kind) && n.id !== d.exclude && busy(n.id)).map((n) => ({ id: n.id, title: n.title }));
     return { reason: d.reason, waiting, ...(d.force ? { force: true } : {}) };
   }
 

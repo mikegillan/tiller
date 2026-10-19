@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { launchArgs } from './launch.js';
 import { findArchived } from './archive.js';
 import { cutOffText, NodeManager } from './manager.js';
-import { inbox } from './messaging.js';
+import { ack, claim, deliver, inbox } from './messaging.js';
 import { PtySession } from './pty.js';
 import type { NodeStatus, NodeView } from '../shared/protocol.js';
 import { setProjectTrust } from './trust.js';
@@ -819,6 +819,19 @@ describe('restart drain and the cut-off message', () => {
     await expect.poll(() => !!m.session(c)).toBe(true); // launched by the new daemon
   });
 
+  it('waits for a node whose mod claimed a message just before the drain, for at most 30 s', async () => {
+    const { claude } = await setup();
+    const a = await claude('a');
+    const sent = await deliver(m, 'human', a, 'go', { inbox: true });
+    expect(inbox(m, a)).toHaveLength(1);
+    expect(claim(m, a, sent.messageId!)).toBe(true); // the turn it starts has no hook yet
+    expect(m.drain('tl reload').waiting).toEqual([{ id: a, title: 'a' }]);
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 31_000 });
+    try { expect(m.drain('tl reload').waiting).toEqual([]); } finally { vi.useRealTimers(); } // a dead mod does not hold it
+    expect(ack(m, a, sent.messageId!)).toBe(true);
+    expect(m.drain('tl reload').waiting).toEqual([]);
+  });
+
   it('a drain that ends without a restart releases the held spawn', async () => {
     await setup();
     m.drain('tl reload');
@@ -845,6 +858,23 @@ describe('restart drain and the cut-off message', () => {
     expect(m.registry.list().some((n) => n.midTurn)).toBe(false);
     await restart(); // the resumed nodes have not started a turn: nothing new
     for (const id of [working, blocked]) expect(texts(id)).toHaveLength(1); // the first one, still queued
+  });
+
+  it('keeps midTurn on a resumed node that starts a turn while the other nodes resume', async () => {
+    const { claude, restart } = await setup();
+    const first = await claude('first');
+    await claude('second');
+    m.applyHook(first, { hook_event_name: 'UserPromptSubmit' });
+    const proto = NodeManager.prototype, resume = proto.resume;
+    // The first node takes a held message at once, before resumeLive reaches the second.
+    vi.spyOn(proto, 'resume').mockImplementation(async function (this: NodeManager, id: string) {
+      const r = await resume.call(this, id);
+      if (id === first) this.applyHook(id, { hook_event_name: 'UserPromptSubmit' });
+      return r;
+    });
+    try { await restart(); } finally { vi.restoreAllMocks(); }
+    expect(m.registry.get(first)!.midTurn).toBe(true);
+    expect(inbox(m, first)).toHaveLength(1); // still told, once
   });
 
   it('covers a crash: the turn in progress is persisted, and the message says the exit was unexpected', async () => {

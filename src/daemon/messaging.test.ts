@@ -497,6 +497,19 @@ describe('restart drain', () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
+  it('keeps send order when the restart moves waiting pastes into an inbox that already has messages', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tlinbox-order-'));
+    try {
+      const m1 = draining({ home });
+      const pasteFirst = await deliver(m1, 'p', 'a', 'first, waiting to be pasted');
+      await vi.advanceTimersByTimeAsync(1000);
+      const inboxSecond = await deliver(m1, 'b', 'a', 'second, in the inbox', { inbox: true });
+      saveInboxForRestart(m1);
+      const m2 = Object.assign(Object.create(m), { home }) as Mgr;
+      expect(inbox(m2, 'a').map((x) => x.id)).toEqual([pasteFirst.messageId, inboxSecond.messageId]);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   it('delivers what it held once the drain ends without a restart, and never interrupts a turn for a steer', async () => {
     const d = draining();
     const held = await deliver(d, 'p', 'a', 'held');
