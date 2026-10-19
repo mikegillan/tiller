@@ -15,4 +15,4 @@ Use the behavior references for current contracts and configuration:
 
 The [repository guide](../AGENTS.md) maps source directories and verification commands. The [UI guide](../ui/README.md) maps feature modules and explains the mock daemon workflow; adapter and [Claude mod](../mod/README.md) guides live beside their code.
 
-[PLAN.md](../PLAN.md) and [design/](design/) record historical design rationale. Check the current code and behavior references when a plan differs. [spike/](../spike/README.md) contains manual experiments, separate from the automated test suites.
+[future-plan.md](future-plan.md) ranks planned work. [PLAN.md](../PLAN.md) and [design/](design/) record historical design rationale. Check the current code and behavior references when a plan differs. [spike/](../spike/README.md) contains manual experiments, separate from the automated test suites.
