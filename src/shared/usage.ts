@@ -24,3 +24,24 @@ export function selectedUsage(node: NodeView | undefined, sources: UsageSource[]
 export function usageScope(source: UsageSource): string {
   return source.scope === 'model' ? `model quota · ${source.model}` : 'shared account quota';
 }
+
+/** Overview-only groups of observations, never evidence that sessions share an account. */
+export function groupUsageObservations(sources: UsageSource[]): { id: string; unidentified: boolean; reports: UsageSource[] }[] {
+  const groups: { id: string; unidentified: boolean; reports: UsageSource[] }[] = [];
+  const unidentified = new Map<string, typeof groups[number]>();
+  for (const source of sources) {
+    if (source.tool !== 'claude' || source.accountId) {
+      groups.push({ id: JSON.stringify(['source', source.id]), unidentified: false, reports: [source] });
+      continue;
+    }
+    const key = JSON.stringify(['observations', source.tool, source.provider ?? '', source.poolId === undefined ? ['name', source.pool ?? ''] : ['id', source.poolId], source.scope, source.model ?? '']);
+    let group = unidentified.get(key);
+    if (!group) {
+      group = { id: key, unidentified: true, reports: [] };
+      unidentified.set(key, group); groups.push(group);
+    }
+    group.reports.push(source);
+  }
+  for (const group of unidentified.values()) group.reports.sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+  return groups;
+}

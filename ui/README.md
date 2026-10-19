@@ -18,6 +18,10 @@ The mock daemon has three sessions (one with a blocked node and a pending comman
 
 After `npm run ui:build` the mock also serves the built UI: open `http://127.0.0.1:7789/?k=mock`. Set `TL_MOCK_PORT` to change the port.
 
+## Usage readings
+
+Claude session measurements currently provide limits without account identity. The Usage panel shows the newest unidentified session reading and keeps other readings in an expandable list, grouped only within the same provider, pool and model scope. This is a presentation of observations, not a claim that they share an account; windows are never combined across unidentified sessions. Known accounts and pools stay separate, and the selected-node status bar keeps its own session readings. Each retained reading keeps its timestamps and unavailable/stale state. This presentation also works with existing daemons that send unidentified usage sources.
+
 ## URL and keyboard
 
 The mock supports **More actions → Change harness…** in memory, including mixed-harness session
