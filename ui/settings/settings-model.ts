@@ -12,6 +12,7 @@ const fieldHelp: Record<string, string> = {
   'notifications.kinds.done': 'Level for the tree completion summary, or each finished turn when summaries are off.',
   'notifications.kinds.exited': 'An agent process exits.',
   'notifications.treeDoneSummary': 'Notify once all agents, including the root, finish. Terminals do not count; pending work and gates delay the summary.',
+  'claude.inheritMcpServers': 'Load your user and plugin MCP servers alongside Tiller’s. A project’s .mcp.json servers stay off. Off gives Claude nodes only Tiller’s server.',
   'limits.maxDepth': 'Maximum number of nested agent generations.',
   'limits.maxChildren': 'Maximum live children per agent.',
   'limits.stallMinutes': 'Minutes without progress before an agent is considered stalled.',
@@ -47,6 +48,7 @@ export const groups: { title: string; homeOnly?: boolean; help?: string; fields:
     field('worktrees.taskBranch', 'Task branch', { help: 'Must contain {slug}.' }), field('worktrees.mergeStyle', 'Merge style'),
     ...['include', 'protected', 'setup', 'teardown'].map((key) => field(`worktrees.${key}`, key, { help: key === 'include' ? 'One pattern per line. Inherit to use .worktreeinclude; an empty list copies nothing.' : key === 'protected' ? 'One branch per line. An empty list protects no branches.' : 'One shell command per line. Saving does not execute commands.' })),
   ] },
+  { title: 'Claude', help: 'Settings for Claude nodes.', fields: [field('claude.inheritMcpServers', 'Inherit MCP servers')] },
   { title: 'Approvals & checks', help: 'Control when agents need your approval and what must pass before work is complete.', fields: [
     field('approvals.close', 'Close nodes without approval', { help: 'Choose when agents can close nodes without asking you first.' }),
     field('approvals.merge', 'Merge without approval', { help: 'Allow agents to merge their work without asking you first.' }),

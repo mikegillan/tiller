@@ -9,7 +9,7 @@ import { profileDefaults, loadConfig, type Config, type MergeStyle } from './con
 import { UsageRegistry } from './usage.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
-import { roleFor, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
+import { projectMcpServerNames, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
 import { adapterFor, requireHarnessExecutable } from './harness.js';
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
@@ -990,7 +990,11 @@ export class NodeManager extends EventEmitter {
     const dir = this.launchDir(id);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const token = this.tokens.writeFiles(dir, id, this.registry.get(id)?.credentialGeneration);
-    writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token, worktree: !!this.registry.get(id)?.worktree, sessionDir: this.sessionDirOf(id) });
+    const rec = this.registry.get(id);
+    // Inheriting brings in the user's and plugins' MCP servers, not the project's .mcp.json ones, which would stop the node on an approval prompt.
+    const inherit = rec && loadConfig(this.projectDir(rec), this.home).claude.inheritMcpServers;
+    const disabledMcpServers = rec && inherit ? projectMcpServerNames([rec.worktree?.path, rec.worktree?.repo, rec.cwd].filter((d): d is string => !!d)) : undefined;
+    writeNodeFiles(dir, { nodeId: id, endpoint: this.endpoint, token, worktree: !!rec?.worktree, sessionDir: this.sessionDirOf(id), disabledMcpServers });
   }
 
   setOutcome(id: string, o: Outcome): void {
@@ -1063,6 +1067,7 @@ export class NodeManager extends EventEmitter {
       title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, profile: rec.profile, sessionId: rec.sessionId ?? '',
       resume, forkSession, transcriptPath: rec.transcriptPath, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
       preset: rec.preset ? loadPreset(rec.preset, this.projectDir(rec), this.home) : undefined,
+      inheritMcpServers: loadConfig(this.projectDir(rec), this.home).claude.inheritMcpServers,
     };
     const spec = adapter ? adapter.launch(input) : terminalLaunch(input, this.shell);
     const cwd = adapter ? adapter.cwd(rec) : rec.cwd;

@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Role } from '../shared/protocol.js';
-import { launchArgs, promptPath, systemPrompt, terminalBundleFor } from './launch.js';
+import { launchArgs, projectMcpServerNames, promptPath, systemPrompt, terminalBundleFor, writeNodeFiles } from './launch.js';
 
 describe('terminalBundleFor', () => {
   it('maps known TERM_PROGRAM values', () => {
@@ -23,6 +23,12 @@ describe('launchArgs', () => {
     const i = launchArgs({ ...base, permissionMode: 'auto' }).indexOf('--permission-mode');
     expect(launchArgs({ ...base, permissionMode: 'auto' }).slice(i, i + 2)).toEqual(['--permission-mode', 'auto']);
     expect(launchArgs(base)).not.toContain('--permission-mode');
+  });
+  it('passes --strict-mcp-config only when inheritMcpServers is false, and always the node mcp.json', () => {
+    expect(launchArgs({ ...base, inheritMcpServers: false })).toContain('--strict-mcp-config');
+    expect(launchArgs({ ...base, inheritMcpServers: true })).not.toContain('--strict-mcp-config');
+    expect(launchArgs(base)).not.toContain('--strict-mcp-config');
+    expect(launchArgs(base)).toContain('/tmp/n/mcp.json');
   });
 });
 
@@ -109,4 +115,34 @@ it('retains enforced reviewer preset guidance for Claude and uses portable revie
     expect(prompt).toContain(harness === 'claude' ? 'spawn a node with preset "reviewer"' : 'spawn a node with profile "reviewer"');
     expect(prompt).not.toContain(harness === 'claude' ? 'spawn a node with profile "reviewer"' : 'spawn a node with preset "reviewer"');
   }
+});
+
+describe('project MCP servers in a node\'s settings', () => {
+  const dirs: string[] = [];
+  const tmp = () => { const d = mkdtempSync(join(tmpdir(), 'tl-mcp-')); dirs.push(d); return d; };
+  afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+  const settings = (dir: string, disabledMcpServers?: string[]) => {
+    writeNodeFiles(dir, { nodeId: 'n', endpoint: 'http://x', token: 't', disabledMcpServers });
+    return JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'));
+  };
+
+  it('lists the servers of a .mcp.json in the directory or above it, and writes them as disabledMcpjsonServers', () => {
+    const repo = tmp();
+    mkdirSync(join(repo, 'sub'));
+    writeFileSync(join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { echo: {}, other: {} } }));
+    expect(projectMcpServerNames([join(repo, 'sub')])).toEqual(['echo', 'other']);
+    expect(settings(tmp(), ['echo', 'other']).disabledMcpjsonServers).toEqual(['echo', 'other']);
+  });
+  it('writes nothing when there are no servers', () => {
+    expect(settings(tmp(), undefined)).not.toHaveProperty('disabledMcpjsonServers');
+    expect(settings(tmp(), [])).not.toHaveProperty('disabledMcpjsonServers');
+  });
+  it('ignores a missing or malformed .mcp.json', () => {
+    const repo = tmp();
+    expect(projectMcpServerNames([repo])).toEqual([]);
+    writeFileSync(join(repo, '.mcp.json'), '{not json');
+    expect(projectMcpServerNames([repo])).toEqual([]);
+    writeFileSync(join(repo, '.mcp.json'), JSON.stringify({ mcpServers: 'nope' }));
+    expect(projectMcpServerNames([repo])).toEqual([]);
+  });
 });
