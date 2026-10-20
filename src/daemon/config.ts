@@ -32,7 +32,7 @@ export const ConfigFile = z.object({
   profiles: z.object({ claude: ProfileDefaults.optional(), codex: CodexProfileDefaults.optional(), pi: ProfileDefaults.optional() }).strict().optional(),
   /** model and effort for a claude node spawned without them, by role (none counts as worker). */
   roles: z.object({ orchestrator: RoleDefaults.optional(), worker: RoleDefaults.optional() }).strict().optional(),
-  /** inheritMcpServers: a Claude node also loads the MCP servers Claude Code would normally (user, project, plugins); false gives it only tiller's. */
+  /** inheritMcpServers: a Claude node also loads the user's and plugins' MCP servers; the project's .mcp.json servers stay off. False gives it only tiller's. */
   claude: z.object({ inheritMcpServers: z.boolean().optional() }).strict().optional(),
   /**
    * When an agent's action skips the human's approval. close: "always"; "done" when every node in the batch is done, has

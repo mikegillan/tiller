@@ -12,7 +12,7 @@ const fieldHelp: Record<string, string> = {
   'notifications.kinds.done': 'Level for the tree completion summary, or each finished turn when summaries are off.',
   'notifications.kinds.exited': 'An agent process exits.',
   'notifications.treeDoneSummary': 'Notify once all agents, including the root, finish. Terminals do not count; pending work and gates delay the summary.',
-  'claude.inheritMcpServers': 'Load the MCP servers Claude Code normally would (user, project and plugin servers) alongside Tiller’s. Off gives Claude nodes only Tiller’s server.',
+  'claude.inheritMcpServers': 'Load your user and plugin MCP servers alongside Tiller’s. A project’s .mcp.json servers stay off. Off gives Claude nodes only Tiller’s server.',
   'limits.maxDepth': 'Maximum number of nested agent generations.',
   'limits.maxChildren': 'Maximum live children per agent.',
   'limits.stallMinutes': 'Minutes without progress before an agent is considered stalled.',
