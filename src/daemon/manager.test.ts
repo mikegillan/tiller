@@ -108,6 +108,22 @@ describe('NodeManager tokens and files', () => {
     expect(m.list()).toEqual([]);
   });
 
+  it('disables the project .mcp.json servers in a Claude node\'s settings only while inheritMcpServers is true', () => {
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
+    const cwd = mkdtempSync(join(tmpdir(), 'tl-proj-'));
+    writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { echo: {} } }));
+    m = new NodeManager({ home, path: '/usr/bin:/bin' });
+    const id = m.registry.create({ kind: 'claude', parentId: null, title: 't', cwd }).id;
+    const disabled = () => JSON.parse(readFileSync(join(home, 'nodes', id, 'settings.json'), 'utf8')).disabledMcpjsonServers;
+    m.writeFiles(id);
+    expect(disabled()).toEqual(['echo']);
+    mkdirSync(join(cwd, '.tiller'));
+    writeFileSync(join(cwd, '.tiller', 'config.json'), JSON.stringify({ claude: { inheritMcpServers: false } }));
+    m.writeFiles(id);
+    expect(disabled()).toBeUndefined();
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
   it('cleans up when the cwd is bad', async () => {
     home = mkdtempSync(join(tmpdir(), 'tl-'));
     m = new NodeManager({ home, shell: '/bin/sh' });

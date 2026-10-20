@@ -32,6 +32,8 @@ export const ConfigFile = z.object({
   profiles: z.object({ claude: ProfileDefaults.optional(), codex: CodexProfileDefaults.optional(), pi: ProfileDefaults.optional() }).strict().optional(),
   /** model and effort for a claude node spawned without them, by role (none counts as worker). */
   roles: z.object({ orchestrator: RoleDefaults.optional(), worker: RoleDefaults.optional() }).strict().optional(),
+  /** inheritMcpServers: a Claude node also loads the user's and plugins' MCP servers; the project's .mcp.json servers stay off. False gives it only tiller's. */
+  claude: z.object({ inheritMcpServers: z.boolean().optional() }).strict().optional(),
   /**
    * When an agent's action skips the human's approval. close: "always"; "done" when every node in the batch is done, has
    * exited or has reported an outcome; "never". merge: true means an agent's merge never asks.
@@ -127,6 +129,7 @@ export const DEFAULTS = {
   'profiles.pi.mechanical.model': undefined, 'profiles.pi.mechanical.effort': undefined,
   'profiles.pi.reviewer.model': undefined, 'profiles.pi.reviewer.effort': undefined,
   'roles.orchestrator.model': undefined, 'roles.orchestrator.effort': undefined, 'roles.worker.model': undefined, 'roles.worker.effort': undefined,
+  'claude.inheritMcpServers': true,
   'approvals.close': 'never', 'approvals.merge': false,
   'worktrees.isolation': 'none', 'worktrees.branchPrefix': 'tl/', 'worktrees.include': undefined, 'worktrees.mergeStyle': 'merge', 'worktrees.setup': [], 'worktrees.teardown': [],
   'worktrees.protected': ['main', 'master'], 'worktrees.taskBranch': 'tl/{slug}',

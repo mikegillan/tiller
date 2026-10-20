@@ -74,7 +74,7 @@ CLI for humans. Cost: a handful of tool descriptions in each child's context, wh
 
 The command line is built by `launchArgs` in `src/daemon/launch.ts`: `claude --session-id <uuid we
 mint>` (or `--resume`), the title, model, effort and permission mode, `--plugin-dir` for the mod,
-the node's `--settings` and `--mcp-config` files with `--strict-mcp-config`, and the generated
+the node's `--settings` and `--mcp-config` files (with `--strict-mcp-config` only when `claude.inheritMcpServers` is false), and the generated
 `--append-system-prompt`, followed by `-- <prompt>`. Worktree nodes, session directories and presets
 add `--worktree`, `--add-dir` and `--agents`/`--agent`.
 

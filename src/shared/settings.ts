@@ -37,6 +37,7 @@ const field = (key: string, type: SettingsField['type'], extra: Partial<Settings
 export const SETTINGS_FIELDS: SettingsField[] = [
   ...SETTINGS_HARNESSES.flatMap(h => SETTINGS_PROFILES.flatMap(p => [field(`profiles.${h}.${p}.model`, 'text'), field(`profiles.${h}.${p}.effort`, 'select', { options: SETTINGS_EFFORTS[h] })])),
   ...['orchestrator', 'worker'].flatMap(r => [field(`roles.${r}.model`, 'text'), field(`roles.${r}.effort`, 'select', { options: EFFORTS })]),
+  field('claude.inheritMcpServers', 'boolean'),
   field('approvals.close', 'select', { options: ['never', 'done', 'always'] }), field('approvals.merge', 'boolean'),
   field('worktrees.isolation', 'select', { options: ['none', 'worktree'] }),
   field('worktrees.mergeStyle', 'select', { options: ['merge', 'squash', 'ff-only'] }),
