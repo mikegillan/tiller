@@ -5,7 +5,7 @@ import { classify, composerTextOf } from './pty.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ack, claim, deliver, flushInbox, inbox, messageStatus, PI_CONFIRM_MS, QUEUE_TTL_MS, release, startNotices, unconfirmed, withdraw, type Mgr } from './messaging.js';
+import { ack, claim, deliver, flushInbox, holdDeliveries, inbox, messageStatus, PI_CONFIRM_MS, QUEUE_TTL_MS, release, saveInboxForRestart, startNotices, unconfirmed, withdraw, type Mgr } from './messaging.js';
 
 const PROMPT = ['some output', '────────────────── n-b', '❯ ', '──────────────────'];
 
@@ -462,6 +462,67 @@ describe('mod inbox', () => {
       flushInbox(m1); // no timers advanced: the 50 ms debounce has not fired
       expect(JSON.parse(readFileSync(join(home, 'inbox.json'), 'utf8')).items.map((i: { msg: { id: string } }) => i.msg.id)).toEqual([sent.messageId]);
     } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+describe('restart drain', () => {
+  const draining = (extra = {}) => {
+    const d = Object.assign(Object.create(m), { draining: true, ...extra }) as Mgr & { draining: boolean };
+    holdDeliveries(d);
+    return d;
+  };
+
+  it('holds deliveries without expiring them and keeps them across the restart with a fresh TTL', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tlinbox-drain-'));
+    try {
+      const m1 = draining({ home });
+      inbox(m1, 'b'); // b's mod polls; a has none, so its messages wait to be pasted
+      const toMod = await deliver(m1, 'a', 'b', 'for the mod');
+      const toPaste = await deliver(m1, 'p', 'a', 'to paste');
+      expect(toPaste.outcome).toBe('queued');
+      expect(inbox(m1, 'b')).toEqual([]); // the mod has nothing to submit
+      expect(claim(m1, 'b', toMod.messageId!)).toBe(false);
+      await vi.advanceTimersByTimeAsync(2 * QUEUE_TTL_MS);
+      expect(m.sessions.get('a')!.pasted).toEqual([]);
+      expect(messageStatus(m1, 'a', toMod.messageId!)?.outcome).toBe('queued');
+      expect(messageStatus(m1, 'p', toPaste.messageId!)?.outcome).toBe('queued');
+      saveInboxForRestart(m1); // shutdown
+      const m2 = Object.assign(Object.create(m), { home }) as Mgr; // the new daemon
+      expect(inbox(m2, 'b').map((x) => x.id)).toEqual([toMod.messageId]);
+      expect(inbox(m2, 'a').map((x) => x.id)).toEqual([toPaste.messageId]); // moved to the inbox for a's resumed mod
+      await vi.advanceTimersByTimeAsync(QUEUE_TTL_MS - 1000); // the TTL starts at the load
+      expect(inbox(m2, 'b')).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(inbox(m2, 'b')).toEqual([]);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it('keeps send order when the restart moves waiting pastes into an inbox that already has messages', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tlinbox-order-'));
+    try {
+      const m1 = draining({ home });
+      const pasteFirst = await deliver(m1, 'p', 'a', 'first, waiting to be pasted');
+      await vi.advanceTimersByTimeAsync(1000);
+      const inboxSecond = await deliver(m1, 'b', 'a', 'second, in the inbox', { inbox: true });
+      saveInboxForRestart(m1);
+      const m2 = Object.assign(Object.create(m), { home }) as Mgr;
+      expect(inbox(m2, 'a').map((x) => x.id)).toEqual([pasteFirst.messageId, inboxSecond.messageId]);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it('delivers what it held once the drain ends without a restart, and never interrupts a turn for a steer', async () => {
+    const d = draining();
+    const held = await deliver(d, 'p', 'a', 'held');
+    m.set('b', { state: 'working' });
+    const steer = await deliver(d, 'p', 'b', 'urgent', { mode: 'now' });
+    expect(steer).toMatchObject({ outcome: 'queued' });
+    expect(steer.steer).toBeUndefined();
+    expect(m.typed).toEqual([]); // no Esc
+    expect(m.sessions.get('a')!.pasted).toEqual([]);
+    d.draining = false;
+    holdDeliveries(d);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(messageStatus(d, 'p', held.messageId!)?.outcome).toBe('delivered');
   });
 });
 

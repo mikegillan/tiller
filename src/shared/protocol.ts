@@ -163,6 +163,8 @@ export interface NodeRecord {
   createdAt: number;
   /** When the node last launched or changed state on a hook; resume on start skips nodes idle longer than daemon.resumeMaxAgeDays. */
   lastActiveAt?: number;
+  /** Set while a turn is in progress (working, waiting or blocked), so the next daemon can tell the node its turn was cut off. */
+  midTurn?: boolean;
   /** Harness session id: minted at launch, updated from SessionStart. Persisted so a restarted daemon can offer Resume. */
   sessionId?: string;
   /** Harness transcript file, from SessionStart (or found by resume). Persisted so Resume can find it. */
@@ -318,10 +320,21 @@ export interface UpdateStatus {
   checking?: boolean; applying?: boolean; failed?: string;
 }
 
+/** A restart waiting for agents to finish their turns; message deliveries and agent spawns are held meanwhile. */
+export interface Drain {
+  /** Why the daemon restarts, such as "tl reload" or "update to v1.2.3". */
+  reason: string;
+  /** The agent nodes whose turn is still running. */
+  waiting: { id: string; title: string }[];
+  /** The human asked to restart now; the restarting helper stops waiting. */
+  force?: boolean;
+}
+
 // Daemon -> UI (WebSocket, JSON). One message per line.
 export type ServerMessage =
   | { t: 'update'; update: UpdateStatus }
-  | { t: 'snapshot'; nodes: NodeView[]; update?: UpdateStatus; usage?: Usage; usageSources?: UsageSource[]; dnd?: Dnd }
+  | { t: 'snapshot'; nodes: NodeView[]; update?: UpdateStatus; usage?: Usage; usageSources?: UsageSource[]; dnd?: Dnd; drain?: Drain }
+  | { t: 'drain'; drain?: Drain }            // a restart started, progressed or ended waiting for agents
   | ({ t: 'dnd' } & Dnd)                     // do not disturb changed
   | { t: 'usageSources'; sources: UsageSource[] }
   | { t: 'usage'; usage: Usage }             // a node reported new account-level rate limits
@@ -348,6 +361,7 @@ export interface DigestItem { id: string; title: string; kind: 'needsYou' | 'err
 export type ClientMessage =
   | { t: 'update'; tag: string; sha: string }
   | { t: 'updateCheck' }
+  | { t: 'restartNow' }                       // stop waiting for agents and restart the daemon at once
   | { t: 'updateNotesRead'; identity: string }
   | { t: 'auth'; token: string; client?: 'app' | 'browser' } // must be the first message; token comes from the ?k= query param of the served UI URL
   | { t: 'nativeNotifyReady'; ok: boolean; error?: string }
