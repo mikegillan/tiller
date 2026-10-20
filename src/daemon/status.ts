@@ -142,7 +142,8 @@ export function stall(prev: NodeStatus, now: number, ms: number): NodeStatus {
   return prev.state === 'working' && !prev.stalled && now - prev.changedAt > ms ? { ...prev, stalled: true } : prev;
 }
 
-const active = (s: NodeStatus) => s.state === 'working' || s.state === 'waiting' || s.state === 'blocked';
+/** A turn is in progress: working, or waiting on the human mid-turn. */
+export const active = (s: NodeStatus) => s.state === 'working' || s.state === 'waiting' || s.state === 'blocked';
 
 export function ptyExited(prev: NodeStatus, now: number): NodeStatus {
   if (active(prev)) return next(prev, { exited: true, state: 'done', doneSource: 'exit', activity: undefined }, now);

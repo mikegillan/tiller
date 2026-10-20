@@ -26,6 +26,12 @@ Each target holds at most 16 queued messages, and a message expires after 5 minu
 
 `message_status` with the messageId returns the current outcome. The outcomes are `queued`, `delivered`, `stalled`, `expired`, `queueFull`, `withdrawn`, `gone` (the target no longer exists or has exited) and `refused`, each with a detail and whether a retry can help.
 
+## Held for a restart
+
+While `tl reload`, `tl update` or the app's update waits for agents to finish their turns before restarting the daemon (see [sessions](sessions.md#waiting-for-turns-to-end)), the daemon holds every delivery, its own notices included. Sends are still accepted and answered `queued`; the inbox shows a node's mod only the messages it has already claimed, claims are refused, nothing is pasted, and a steer queues without interrupting the target. A held message does not expire: its 5-minute clock starts over while the hold lasts. At the restart, messages waiting to be pasted move into their targets' inboxes, in the order they were sent among the messages already there (together they can exceed the 16-message cap, which then only refuses new sends until the inbox drains), and `inbox.json` records that deliveries were held, so the new daemon gives each held message a fresh 5 minutes from when it loads, rather than dropping messages whose clock ran during the wait. If the wait is cancelled instead, the held messages are delivered as their targets allow.
+
+After a restart, a resumed node whose turn was cut off gets one message from the daemon, from `tiller (daemon restarted)`, asking it to check where it was and continue.
+
 ## Steering
 
 During a human-requested harness change, inbox intake and claims pause. A paste already in flight

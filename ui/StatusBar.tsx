@@ -5,7 +5,7 @@ import { fmtUsd, todaySpend } from '../src/shared/spend';
 import { useNow } from './hooks';
 import { openDialog, useStore } from './store';
 import { selectedUsage, usageScope, usageStale, usageToolName } from '../src/shared/usage';
-import { refreshUsage } from './conn';
+import { refreshUsage, send } from './conn';
 import { UsagePanel, UsageWindows } from './UsagePanel';
 
 export function StatusBar() {
@@ -26,6 +26,8 @@ export function StatusBar() {
   const today = useStore((s) => todaySpend(Object.values(s.nodes), now));
   const update = useStore((s) => s.update);
   const notes = update?.installedNotes;
+  const drain = useStore((s) => s.drain);
+  const waiting = drain?.waiting.length ?? 0;
   const runtimeBehindCheckout = !!update?.runtimeSha && update.runtimeSha !== update.sha;
   const available = update?.target && ((update.sha !== update.target.sha && update.releases.length > 0) || (runtimeBehindCheckout && update.sha === update.target.sha && update.currentVersion === update.target.tag)) && !update.fetchError && !update.applying;
   return (
@@ -49,6 +51,10 @@ export function StatusBar() {
       </div>
       {today > 0 && <span title="spent today, all nodes">{fmtUsd(today)} today</span>}
       <span className="spacer" />
+      {drain && <span className="drain-notice" title={drain.waiting.map((w) => w.title).join(', ')}>
+        {drain.force || !waiting ? 'Restarting Tiller…' : `Waiting for ${waiting} agent${waiting === 1 ? '' : 's'} to finish their turn`}
+        {!drain.force && waiting > 0 && <button className="restart-now" onClick={() => send({ t: 'restartNow' })}>Restart now</button>}
+      </span>}
       {available && <button className="update-available" onClick={() => openDialog({ kind: 'update' })} aria-haspopup="dialog">{runtimeBehindCheckout && update!.sha === update!.target!.sha ? 'Restart to finish update' : 'Update available'}</button>}
       {!!notes?.releases.length && <button className="whats-new" onClick={() => openDialog({ kind: 'whatsNew', notes })} aria-haspopup="dialog">What’s new</button>}
     </footer>

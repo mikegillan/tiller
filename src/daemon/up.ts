@@ -6,7 +6,9 @@ import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { agentMatches, agentStatus, kickstart } from './autostart.js';
-import type { UpdateStatus } from '../shared/protocol.js';
+import { ADMIN_TOKEN_FILE } from './home.js';
+import { count } from './util.js';
+import type { Drain, UpdateStatus } from '../shared/protocol.js';
 import { harnessFor, isAgentKind, type Harness, type NodeKind } from '../shared/protocol.js';
 
 export interface Health { ok: true; pid: number; home: string; version: string; sha?: string }
@@ -81,12 +83,12 @@ export function humanEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 /** Hand `tl reload` to a detached `tl reload --detached`, which outlives the terminal of the node that ran it. */
 export const spawnReload = (home: string, port: number): string => detach('tl', ['reload', '--detached'], home, port, humanEnv(process.env));
 
-/** Detached updater retains the reviewed release across the daemon restart. */
-export function spawnUpdate(home: string, port: number, expected: UpdateStatus, onExit: (code: number | null) => void): string {
+/** Detached updater retains the reviewed release across the daemon restart; `now` restarts without draining. */
+export function spawnUpdate(home: string, port: number, expected: UpdateStatus, onExit: (code: number | null) => void, now?: boolean): string {
   const log = join(home, 'update.log');
   const fd = openSync(log, 'a');
   try {
-    const child = spawn(fileURLToPath(new URL('../../bin/tl', import.meta.url)), ['update', '--detached'], {
+    const child = spawn(fileURLToPath(new URL('../../bin/tl', import.meta.url)), ['update', '--detached', ...(now ? ['--now'] : [])], {
       detached: true, stdio: ['pipe', fd, fd], env: { ...humanEnv(process.env), TL_HOME: home, TL_PORT: String(port) },
     });
     child.stdin!.on('error', () => {}); // Spawn failure is reported by the child's error handler.
@@ -98,11 +100,54 @@ export function spawnUpdate(home: string, port: number, expected: UpdateStatus, 
   return log;
 }
 
-/** SIGTERM preserves live nodes; keep launchd ownership when enabled. */
-export async function restartDaemon(home: string, port: number, expectedSha?: string, say: (s: string) => void = () => {}): Promise<void> {
+/** The daemon's drain tool, as the human; null when the daemon predates it or for a cancel. */
+async function drainCall(home: string, port: number, args: { reason?: string; exclude?: string; cancel?: boolean }): Promise<Drain | null> {
+  const token = readFileSync(join(home, ADMIN_TOKEN_FILE), 'utf8').trim();
+  const res = await fetch(`http://127.0.0.1:${port}/api/drain`, {
+    method: 'POST', body: JSON.stringify(args),
+    headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': 'human', 'Content-Type': 'application/json' },
+  });
+  if (res.status === 404) return null;
+  const body = (await res.json().catch(() => ({}))) as { data?: Drain | null; error?: string };
+  if (!res.ok) throw new Error(body.error ?? `drain: HTTP ${res.status}`);
+  return body.data ?? null;
+}
+
+/**
+ * Before a restart for `reason`: have the daemon hold message deliveries and agent spawns, then, unless `now`, wait
+ * until no agent node but `exclude` is working, saying whom it waits for as that changes. Stops waiting when the human
+ * asks the app to restart now. The hold lasts until the restart, or 15 s after the last poll. Aborting `signal` rejects
+ * without another poll, so a cancel sent once this settles cannot be followed by a poll that holds again.
+ */
+export async function drainDaemon(home: string, port: number, o: { reason: string; exclude?: string; now?: boolean; say?: (s: string) => void; signal?: AbortSignal }): Promise<void> {
+  const say = o.say ?? (() => {});
+  let last = '';
+  for (;;) {
+    o.signal?.throwIfAborted();
+    const d = await drainCall(home, port, { reason: o.reason, exclude: o.exclude });
+    if (!d) { say('the running daemon cannot wait for agents; restarting at once'); return; }
+    if (o.now) return;
+    if (d.force) { say('restart now was asked for; not waiting'); return; }
+    if (!d.waiting.length) { if (last) say('no agent is working'); return; }
+    const line = `waiting for ${count(d.waiting.length, 'agent')} to finish their turn: ${d.waiting.map((w) => `${w.title} (${w.id})`).join(', ')}`;
+    if (line !== last) say(line);
+    last = line;
+    await sleep(1000, undefined, { signal: o.signal });
+  }
+}
+
+/** End a drain without restarting: the daemon releases the messages and spawns it held. */
+export const cancelDrain = (home: string, port: number) => drainCall(home, port, { cancel: true });
+
+/**
+ * SIGTERM preserves live nodes; keep launchd ownership when enabled. First drains (see drainDaemon), which records
+ * `reason` for the nodes whose turn the restart cuts off.
+ */
+export async function restartDaemon(home: string, port: number, expectedSha?: string, say: (s: string) => void = () => {}, o: { reason?: string; now?: boolean } = {}): Promise<void> {
   const old = await findDaemon(port);
   if (old) {
     if (old.home !== home) throw new Error('refusing to stop a daemon from another home');
+    await drainDaemon(home, port, { reason: o.reason ?? 'restart', now: o.now, say });
     say(`stopping daemon pid ${old.pid}`);
     process.kill(old.pid, 'SIGTERM');
     for (const end = Date.now() + 10_000; await findDaemon(port); await sleep(200))
