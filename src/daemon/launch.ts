@@ -141,6 +141,8 @@ export interface LaunchInput {
   sessionDir?: string;
   /** The node's spawn preset; its tool lists and maxTurns go to claude as a session agent (see presetAgentArgs). */
   preset?: Preset;
+  /** Claude also loads its usual MCP servers; false passes `--strict-mcp-config` so the node has only tiller's. Unset means true. */
+  inheritMcpServers?: boolean;
 }
 
 export interface LaunchSpec { file: string; args: string[]; env: Record<string, string> }
@@ -161,11 +163,9 @@ export function launchArgs(i: LaunchInput): string[] {
   if (existsSync(modDir())) args.push('--plugin-dir', modDir());
   if (i.sessionDir) args.push('--add-dir', i.sessionDir);
   if (i.preset) args.push(...presetAgentArgs(i.preset));
-  args.push(
-    '--settings', join(i.nodeDir, 'settings.json'),
-    '--mcp-config', join(i.nodeDir, 'mcp.json'), '--strict-mcp-config',
-    '--append-system-prompt', systemPrompt(i),
-  );
+  args.push('--settings', join(i.nodeDir, 'settings.json'), '--mcp-config', join(i.nodeDir, 'mcp.json'));
+  if (i.inheritMcpServers === false) args.push('--strict-mcp-config');
+  args.push('--append-system-prompt', systemPrompt(i));
   if (i.prompt) args.push('--', i.prompt); // `--`: a prompt starting with `-` is not an option; on --resume it starts the next turn
   return args;
 }

@@ -24,6 +24,12 @@ describe('launchArgs', () => {
     expect(launchArgs({ ...base, permissionMode: 'auto' }).slice(i, i + 2)).toEqual(['--permission-mode', 'auto']);
     expect(launchArgs(base)).not.toContain('--permission-mode');
   });
+  it('passes --strict-mcp-config only when inheritMcpServers is false, and always the node mcp.json', () => {
+    expect(launchArgs({ ...base, inheritMcpServers: false })).toContain('--strict-mcp-config');
+    expect(launchArgs({ ...base, inheritMcpServers: true })).not.toContain('--strict-mcp-config');
+    expect(launchArgs(base)).not.toContain('--strict-mcp-config');
+    expect(launchArgs(base)).toContain('/tmp/n/mcp.json');
+  });
 });
 
 describe('role prompts', () => {
