@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildChildEnv } from './pty.js';
 import { profileFor, type Harness, type Profile, type Role, type Worktree } from '../shared/protocol.js';
@@ -11,16 +11,35 @@ const modDir = () => process.env.TL_MOD_DIR ?? fileURLToPath(new URL('../../mod'
 const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'PermissionRequest', 'Stop', 'StopFailure', 'SessionEnd'];
 
 /**
- * Writes settings.json and mcp.json (0600, it carries the token) into the node's directory. A worktree node gets
- * worktree.baseRef "head" so Claude never resets the worktree it adopts to the default branch.
+ * Names of the servers in the `.mcp.json` files Claude would read from these directories or any above them. Claude stops
+ * a new node on an approval prompt for each, so launch disables them. An absent, unreadable or malformed file has none.
  */
-export function writeNodeFiles(nodeDir: string, o: { nodeId: string; endpoint: string; token: string; worktree?: boolean; sessionDir?: string }): void {
+export function projectMcpServerNames(dirs: string[]): string[] {
+  const names = new Set<string>();
+  for (let d of dirs) {
+    for (let prev = ''; d !== prev; prev = d, d = dirname(d)) {
+      try {
+        const servers = JSON.parse(readFileSync(join(d, '.mcp.json'), 'utf8'))?.mcpServers;
+        if (servers && typeof servers === 'object') Object.keys(servers).forEach((n) => names.add(n));
+      } catch { /* none */ }
+    }
+  }
+  return [...names];
+}
+
+/**
+ * Writes settings.json and mcp.json (0600, it carries the token) into the node's directory. A worktree node gets
+ * worktree.baseRef "head" so Claude never resets the worktree it adopts to the default branch. disabledMcpServers go in as
+ * disabledMcpjsonServers.
+ */
+export function writeNodeFiles(nodeDir: string, o: { nodeId: string; endpoint: string; token: string; worktree?: boolean; sessionDir?: string; disabledMcpServers?: string[] }): void {
   const hook = [{ hooks: [{ type: 'command', command: `sh '${HOOK_SCRIPT}'` }] }];
   writeFileSync(join(nodeDir, 'settings.json'), JSON.stringify({
     hooks: Object.fromEntries(HOOK_EVENTS.map((e) => [e, hook])),
     // `//` marks an absolute path in a permission rule; Edit rules cover Write too.
     permissions: { allow: ['mcp__tiller', ...(o.sessionDir ? [`Edit(/${o.sessionDir}/**)`] : [])] },
     ...(o.worktree ? { worktree: { baseRef: 'head' } } : {}),
+    ...(o.disabledMcpServers?.length ? { disabledMcpjsonServers: o.disabledMcpServers } : {}),
   }, null, 2));
   const mcp = { mcpServers: { tiller: { type: 'http', url: `${o.endpoint}/mcp`, headers: { Authorization: `Bearer ${o.token}`, 'X-TL-Node': o.nodeId } } } };
   writeFileSync(join(nodeDir, 'mcp.json'), JSON.stringify(mcp), { mode: 0o600 });
