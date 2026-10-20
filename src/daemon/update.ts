@@ -292,7 +292,7 @@ async function notesTransaction<T>(path: string, change: () => T): Promise<T> {
   try { return change(); } finally { rmSync(lock); }
 }
 
-export function createUpdater(o: { repo: string; home: string; onChange(s: UpdateStatus): void; spawnHelper: (expected: UpdateStatus, onExit: (code: number | null) => void) => string; source?: ReleaseSource }) {
+export function createUpdater(o: { repo: string; home: string; onChange(s: UpdateStatus): void; spawnHelper: (expected: UpdateStatus, onExit: (code: number | null) => void, now?: boolean) => string; source?: ReleaseSource }) {
   // Keep conditional-response validators and rate-limit cooldown across checks.
   const source = o.source ?? githubReleases();
   const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: o.repo, encoding: 'utf8' }).trim();
@@ -376,7 +376,8 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
     // Called for authenticated app/browser connections; reconnects keep the shared freshness budget.
     start() { if (!active) { active = true; schedule(); } },
     stop() { active = false; if (timer) clearTimeout(timer); timer = undefined; },
-    async apply(expected: { tag: string; sha: string }) {
+    /** `now` restarts without waiting for agents to finish their turns. */
+    async apply(expected: { tag: string; sha: string; now?: boolean }) {
       // Finish discovery before handing Git to the detached install helper.
       if (checking) await checking;
       if (applying) throw new Error('an update is already running');
@@ -391,7 +392,7 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
           applying = false;
           if (code !== 0) set({ ...status, failed: `update helper failed or was interrupted; see ${log}` });
           else void check();
-        });
+        }, expected.now);
         return { log, status };
       } catch (e) { applying = false; set({ ...status, failed: (e as Error).message }); throw e; }
     },

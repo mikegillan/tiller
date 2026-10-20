@@ -30,8 +30,10 @@ Manual and automatic discovery share one in-flight check. The daemon broadcasts
 installation retain the current `applying` status without starting discovery.
 The optional `blocker: 'dirty'` identifies a proven dirty primary `main`
 checkout; other blockers and check failures retain the human-readable reason.
-Installation restarts the daemon after building, interrupting running agents;
-they can resume afterward under the existing [resume policy](sessions.md#resume-on-daemon-start).
+Installation restarts the daemon after building. The restart first waits for
+agents to finish their turns, holding messages and spawns (see
+[waiting for turns to end](sessions.md#waiting-for-turns-to-end)); agents
+resume afterward under the existing [resume policy](sessions.md#resume-on-daemon-start).
 
 The release body starts with GitHub-generated PR notes using an explicit previous
 published stable tag. When GitHub returns only a compare link or no description,

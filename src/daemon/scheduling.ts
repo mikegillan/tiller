@@ -31,20 +31,22 @@ export function checkDeps(m: Mgr, p: Pending, since: number): { met: string[]; u
 
 // ---- arming, the queue and release ----
 
+/** Working now, or launched with a prompt whose first turn has not begun. */
+export const working = (rt?: NodeRuntime) => !!rt && (!!rt.starting || (!!rt.session && rt.status?.state === 'working'));
+
 /** Claude nodes working now, or launched with a prompt whose first turn has not begun. */
 function workingCount(m: NodeManager): number {
-  const working = (rt?: NodeRuntime) => !!rt && (!!rt.starting || (!!rt.session && rt.status?.state === 'working'));
   return m.registry.list().filter((n) => isAgentKind(n.kind) && working(m.runtimes.get(n.id))).length;
 }
 
 /**
- * Hold a new node back, with no process, when it has dependencies or must queue for daemon.maxWorking (a claude node,
- * unless `now`, while the cap is reached or others already queue). Returns whether it was held.
+ * Hold a new node back, with no process, when it has dependencies or must queue: an agent node while a restart drains,
+ * or for daemon.maxWorking (unless `now`) while the cap is reached or others already queue. Returns whether it was held.
  */
 export function arm(m: NodeManager, id: string, req: SpawnRequest, isolation: Isolation): boolean {
   const after = req.after ?? [], afterSuccess = req.afterSuccess ?? [];
   const max = loadConfig(null, m.home).daemon.maxWorking;
-  const queue = isAgentKind(req.kind) && !req.now && max > 0 && (workingCount(m) >= max || m.list().some((v) => v.status.state === 'queued'));
+  const queue = isAgentKind(req.kind) && (m.draining || (!req.now && max > 0 && (workingCount(m) >= max || m.list().some((v) => v.status.state === 'queued'))));
   if (!after.length && !afterSuccess.length && !queue) return false;
   const rec = m.registry.update(id, { pending: { after, afterSuccess, met: [], prompt: req.prompt, isolation, ...(req.base ? { base: req.base } : {}), ...(req.now ? { now: true } : {}) } })!;
   m.runtimes.get(id)!.status = { state: 'armed', changedAt: Date.now() };
@@ -81,7 +83,10 @@ function schedule(m: NodeManager): void {
     const max = loadConfig(null, m.home).daemon.maxWorking;
     let state: AgentState = 'armed', activity: string;
     if (unmet.length) activity = blocked ? `blocked by ${blocked}` : `after ${unmet.join(', ')}`;
-    else if (isAgentKind(rec.kind) && !p.now && max > 0 && working >= max) {
+    else if (isAgentKind(rec.kind) && m.draining) {
+      state = 'queued';
+      activity = 'queued: the daemon is waiting to restart';
+    } else if (isAgentKind(rec.kind) && !p.now && max > 0 && working >= max) {
       state = 'queued';
       activity = `queued: ${working} working, daemon.maxWorking ${max}`;
     } else {
