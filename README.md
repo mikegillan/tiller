@@ -65,7 +65,7 @@ The detached helper logs to `<TL_HOME>/update.log` and holds a checkout-wide `.g
 
 ## Where files live
 
-Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the node registry (`state.json`), per-node files under `nodes/<id>/`, the admin token `tl` uses, `config.json` ([docs/config.md](docs/config.md)), presets under `agents/` and the log `daemon.log`. Each tree of nodes has a session directory, `sessions/<rootId>/`, for notes and the event log ([docs/sessions.md](docs/sessions.md)). The daemon listens on 127.0.0.1, port 7788 unless `TL_PORT` says otherwise.
+Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the node registry (`state.json`), per-node files under `nodes/<id>/`, the admin token `tl` uses, `config.json` ([docs/config.md](docs/config.md)), presets under `agents/` and the log `daemon.log`. Each tree of nodes has a session directory, `sessions/<rootId>/`, for notes and the event log ([docs/sessions.md](docs/sessions.md)). The daemon listens on 127.0.0.1, port 7788 unless `TL_PORT` says otherwise. Inside a node, `tl` talks to the node's own daemon (`TL_ENDPOINT`) and refuses rather than guess when `TL_HOME` or `TL_PORT` names a different one; to address another daemon from a node, run `tl` without `TL_NODE_ID`, `TL_TOKEN_FILE`, `TL_ENDPOINT` and the inherited `TL_PORT`.
 
 ## Configuration
 

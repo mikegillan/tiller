@@ -1,10 +1,10 @@
 import { applyUpdate, updateLocked, REPO, UPDATE_LOG } from './update.js';
 import type { UpdateStatus } from '../shared/protocol.js';
-// Thin client for the daemon's POST /api/<tool>. Inside a node it uses TL_NODE_ID / TL_TOKEN_FILE / TL_ENDPOINT;
-// outside it acts as `human` with the admin token in <home>/admin-token.
+// Thin client for the daemon's POST /api/<tool>. Inside a node it uses TL_NODE_ID / TL_TOKEN_FILE / TL_ENDPOINT, and
+// refuses when TL_HOME / TL_PORT name another daemon; outside it acts as `human` with the admin token in <home>/admin-token.
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { configEntries, effectiveProfileEntries } from './config.js';
 import { gateFor } from './manager.js';
@@ -87,9 +87,25 @@ const home = homeDir();
 const adminToken = () => readFileSync(join(home, ADMIN_TOKEN_FILE), 'utf8').trim();
 const daemonPort = () => portFor(home);
 
+/**
+ * Inside a node, why TL_HOME / TL_PORT name a different daemon from the node's own (whose home holds TL_TOKEN_FILE and
+ * which listens at TL_ENDPOINT), else undefined. A node inherits its daemon's TL_HOME and TL_PORT, so they disagree
+ * only when someone redirected them, and silently using either daemon could act on the wrong one.
+ */
+function daemonConflict(env: NodeJS.ProcessEnv): string | undefined {
+  const local = `http://127.0.0.1:${daemonPort()}`;
+  if (resolve(env.TL_TOKEN_FILE!).startsWith(resolve(home) + sep) && (env.TL_ENDPOINT ?? local) === local) return;
+  return `tl: TL_HOME/TL_PORT name the daemon with home ${home} at ${local}${env.TL_PORT ? ' (port from TL_PORT)' : ''}, but this node `
+    + `(${env.TL_NODE_ID}) belongs to the daemon at ${env.TL_ENDPOINT} with its token at ${env.TL_TOKEN_FILE}; refusing to guess which you mean. `
+    + "Drop the override to address this node's daemon, or run tl without TL_NODE_ID, TL_TOKEN_FILE and TL_ENDPOINT "
+    + '(and the inherited TL_PORT) to act as the human on the other.';
+}
+
 async function call(tool: string, args: Record<string, unknown>, print = true, soft = false): Promise<{ text?: string; data?: any; error?: string }> {
   const env = process.env;
   const node = env.TL_NODE_ID && env.TL_TOKEN_FILE;
+  const conflict = node && daemonConflict(env);
+  if (conflict) return fail(conflict);
   let token: string;
   try { token = node ? readFileSync(env.TL_TOKEN_FILE!, 'utf8').trim() : adminToken(); }
   catch (e) { return fail(`cannot read token (is the daemon running?): ${(e as Error).message}`); }
