@@ -176,7 +176,12 @@ describe('loadConfig', () => {
       expect(configEntries(cwd, homeDir)[key], JSON.stringify([project, home])).toEqual({ value, source });
       expect(loadConfig(cwd, homeDir).approvals[key.split('.')[1] as 'close' | 'merge']).toBe(value);
       if (from === 'project') expect(err).not.toHaveBeenCalled();
-      else expect(err.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining(`${key}: ${JSON.stringify(project[key.split('.')[1] as keyof typeof project])} is looser than`)]);
+      else {
+        const ignored = JSON.stringify(project[key.split('.')[1] as keyof typeof project]), homeFile = join(homeDir, 'config.json');
+        expect(err.mock.calls.map((c) => c[0])).toEqual([`tiller: ignoring in ${join(cwd, '.tiller', 'config.json')}: ${key}: ${ignored} asks the human less often than allowed, `
+          + `so ${JSON.stringify(value)} (${from === 'default' ? 'the default' : `from ${homeFile}`}) applies instead. `
+          + `A project file may only make approvals stricter, because agents can edit it; to allow ${ignored}, set ${key} to ${ignored} in ${homeFile}`]);
+      }
       rmSync(dir, { recursive: true, force: true });
     }
     err.mockRestore();

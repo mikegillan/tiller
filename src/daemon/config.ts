@@ -203,7 +203,9 @@ export function configEntries(cwd: string | null, home = homeDir()): Record<Key,
     if (strictness && set[0] && set[0].source !== homeFile) {
       const limit = set[1] ?? { value: fallback, source: 'default' };
       if (strictness(set[0].value) < strictness(limit.value)) {
-        warn(set[0].source, `${key}: ${JSON.stringify(set[0].value)} is looser than ${limit.source === 'default' ? 'the default' : 'the home file'} (${JSON.stringify(limit.value)}); a project file may only make approvals stricter, so loosen it in ${homeFile}`);
+        const [value, instead] = [JSON.stringify(set[0].value), JSON.stringify(limit.value)];
+        warn(set[0].source, `${key}: ${value} asks the human less often than allowed, so ${instead} (${limit.source === 'default' ? 'the default' : `from ${homeFile}`}) applies instead. `
+          + `A project file may only make approvals stricter, because agents can edit it; to allow ${value}, set ${key} to ${value} in ${homeFile}`);
         set = set.slice(1);
       }
     }

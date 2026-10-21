@@ -212,7 +212,7 @@ describe('mcp api', () => {
     const [h] = await kids(1);
     manager.applyHook(h, { hook_event_name: 'UserPromptSubmit' }); // working
     expect(await close([h])).toBe(1);
-    expect(err.mock.calls[0]?.[0]).toContain('approvals.close: "always" is looser than the home file ("done")');
+    expect(err.mock.calls[0]?.[0]).toContain(`approvals.close: "always" asks the human less often than allowed, so "done" (from ${join(home, 'config.json')}) applies instead`);
     err.mockRestore();
     rmSync(join(home, 'config.json'));
   });
