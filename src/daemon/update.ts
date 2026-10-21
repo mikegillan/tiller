@@ -163,7 +163,9 @@ export async function checkUpdate(repo: string, source: ReleaseSource = githubRe
       }
     } catch { /* Incomplete installed history waits for a later check; future update validation is independent. */ }
     const checkout = await safeCheckout(repo);
+    const holder = lockHolder(repo);
     const reason = checkout?.reason
+      ?? (holder?.stale ? `an interrupted update (pid ${holder.pid}, no longer running) left ${holder.path}; inspect update.log and the checkout, then remove the lock` : undefined)
       ?? (!(await ancestor(repo, sha, target.sha)) ? 'local or unreleased commits; latest release cannot fast-forward this checkout' : undefined)
       ?? (currentVersion && compareVersions(target.tag, currentVersion) < 0 ? 'latest release would downgrade this checkout' : undefined);
     return { ...base, repository, origin, target, currentVersion, releases, installedNotes, eligible: !reason, reason, blocker: checkout?.blocker };
@@ -243,8 +245,26 @@ export async function applyUpdate(o: { repo: string; log: string; expected: Upda
 
 /** Explicit reload must not race an updater changing this checkout. Stale locks require human inspection. */
 export function updateLocked(repo: string): boolean {
+  return !!lockHolder(repo);
+}
+/**
+ * The lock is in this checkout's Git directory, so its holder ran on this host and its pid can be probed here.
+ * Only a holder proven gone is stale. Nothing here removes the lock, so `wx` creation stays the only way to take it.
+ */
+function lockHolder(repo: string): { path: string; pid?: number; stale: boolean } | undefined {
   const common = execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: repo, encoding: 'utf8' }).trim();
-  return existsSync(resolve(repo, common, UPDATE_LOCK));
+  const path = resolve(repo, common, UPDATE_LOCK);
+  let pid: unknown;
+  try { pid = JSON.parse(readFileSync(path, 'utf8')).pid; }
+  catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    // `wx` creates the file before the pid is written, so unreadable contents may belong to a live helper.
+    return { path, stale: false };
+  }
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return { path, stale: false };
+  // EPERM means the process exists under another user.
+  try { process.kill(pid, 0); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ESRCH') return { path, pid, stale: true }; }
+  return { path, pid, stale: false };
 }
 
 export const UPDATE_NOTES = 'update-notes.json';
@@ -320,10 +340,17 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
   };
   const poll = () => {
     timer = undefined;
-    // A helper (possibly another daemon's) owns Git while applying an update.
-    let locked = applying;
-    try { locked ||= updateLocked(o.repo); } catch { /* Let check report an unavailable checkout. */ }
-    if (locked) { nextCheckAt = Date.now() + UPDATE_CHECK_INTERVAL; schedule(); return; }
+    // A helper (possibly another daemon's) owns Git while applying an update. One that exited without
+    // unlocking does not: check anyway, and the check reports the interrupted update.
+    let holder: ReturnType<typeof lockHolder>;
+    try { holder = lockHolder(o.repo); } catch { /* Let check report an unavailable checkout. */ }
+    const live = holder && !holder.stale ? holder : undefined;
+    if (applying || live) {
+      nextCheckAt = Date.now() + UPDATE_CHECK_INTERVAL;
+      // Say why discovery paused rather than keeping "not checked yet" or a result that invites a doomed apply.
+      if (live && !applying) set({ ...status, eligible: false, blocker: undefined, reason: `another update${live.pid ? ` (pid ${live.pid})` : ''} holds ${live.path}; release checks resume after it finishes` });
+      schedule(); return;
+    }
     void check().catch(() => { /* check publishes a recoverable failure and schedules a retry. */ });
   };
   const set = (s: UpdateStatus) => { status = { ...s, installedNotes: unread(), runtimeSha, checking: !!checking, applying }; o.onChange(status); return status; };
