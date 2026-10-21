@@ -315,16 +315,20 @@ async function notesTransaction<T>(path: string, change: () => T): Promise<T> {
 export function createUpdater(o: { repo: string; home: string; onChange(s: UpdateStatus): void; spawnHelper: (expected: UpdateStatus, onExit: (code: number | null) => void, now?: boolean) => string; source?: ReleaseSource }) {
   // Keep conditional-response validators and rate-limit cooldown across checks.
   const source = o.source ?? githubReleases();
-  const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: o.repo, encoding: 'utf8' }).trim();
+  let runtimeSha = '';
+  try { runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: o.repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { /* No checkout: release checks stay unavailable. */ }
+  const unavailable = runtimeSha ? undefined : 'release checks unavailable: Tiller is not running from a git checkout';
   let repository = '';
   try { repository = githubRepo(execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: o.repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) ?? ''; } catch { /* No origin: release discovery remains unavailable. */ }
   const notesPath = join(o.home, UPDATE_NOTES);
   let notes = readNotes(notesPath, repository, runtimeSha);
   // Establish the first-observation baseline before any network request, including offline starts.
-  writeNotes(notesPath, notes, true);
-  notes = readNotes(notesPath, repository, runtimeSha);
+  if (runtimeSha) {
+    writeNotes(notesPath, notes, true);
+    notes = readNotes(notesPath, repository, runtimeSha);
+  }
   const unread = () => notes.unread?.releases[0]?.sha === runtimeSha ? notes.unread : undefined;
-  let status: UpdateStatus = { installedNotes: unread(), runtimeSha, sha: runtimeSha, checkedAt: 0, checking: false, eligible: false, releases: [], reason: 'not checked yet' };
+  let status: UpdateStatus = { installedNotes: unread(), runtimeSha, sha: runtimeSha, checkedAt: 0, checking: false, eligible: false, releases: [], reason: unavailable ?? 'not checked yet' };
   let checking: Promise<UpdateStatus> | undefined;
   let applying = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -356,7 +360,7 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
   const set = (s: UpdateStatus) => { status = { ...s, installedNotes: unread(), runtimeSha, checking: !!checking, applying }; o.onChange(status); return status; };
   const check = () => {
     if (checking) return checking;
-    if (applying) return Promise.resolve(status);
+    if (applying || unavailable) return Promise.resolve(status);
     const perform = async () => {
       notes = readNotes(notesPath, repository, runtimeSha);
       const observed = JSON.stringify(notes);
@@ -408,6 +412,7 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
       // Finish discovery before handing Git to the detached install helper.
       if (checking) await checking;
       if (applying) throw new Error('an update is already running');
+      if (unavailable) throw new Error(`cannot update: ${unavailable}`);
       if (!status.target || expected.tag !== status.target.tag || expected.sha !== status.target.sha) throw new Error('release changed; check and review again');
       if (!status.eligible) throw new Error(`cannot update: ${status.reason}`);
       if (status.sha === status.target.sha && (!status.runtimeSha || status.runtimeSha === status.target.sha)) throw new Error('already at the latest release');
