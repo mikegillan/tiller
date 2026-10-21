@@ -198,6 +198,18 @@ describe('release checkout', () => {
     const linked = join(dir, 'linked'); git(work, 'worktree', 'add', '-q', '--detach', linked);
     expect((await checkUpdate(linked, source)).eligible).toBe(false);
   });
+  it('starts outside a git checkout with release checks unavailable', async () => {
+    const plain = join(dir, 'plain'); mkdirSync(plain);
+    const list = vi.fn(source.list);
+    const u = createUpdater({ repo: plain, home: dir, source: { ...source, list }, onChange: vi.fn(), spawnHelper: vi.fn(() => 'unused') });
+    for (const s of [u.status(), await u.check()]) {
+      expect(s).toMatchObject({ eligible: false, reason: expect.stringContaining('not running from a git checkout') });
+      expect(s.target ?? s.fetchError ?? s.runtimeSha).toBeFalsy();
+    }
+    expect(updateLine(u.status())).toContain('release checks unavailable');
+    expect(list).not.toHaveBeenCalled();
+    await expect(u.apply({ tag: 'v0.1.0', sha: 'x' })).rejects.toThrow('cannot update: release checks unavailable');
+  });
   it('reports dirty main structurally and clears the blocker on refresh, clean, non-main and failed checks', async () => {
     const u = createUpdater({ repo: work, home: dir, source, onChange: vi.fn(), spawnHelper: vi.fn(() => 'unused') });
     const local = join(work, 'local');
