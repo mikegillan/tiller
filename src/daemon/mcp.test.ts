@@ -177,10 +177,12 @@ describe('mcp api', () => {
     for (const id of [kidA, kidB, rootA, rootB]) await manager.close(id, true); // the shared manager's maxLiveNodes
   });
 
-  it('approvals.close in the caller\'s project config skips the confirm only as configured', async () => {
+  it('approvals.close in the caller\'s project config skips the confirm only as configured, never beyond the home file', async () => {
     const proj = join(home, 'proj');
     mkdirSync(join(proj, '.tiller'), { recursive: true });
     const setMode = (mode: string) => writeFileSync(join(proj, '.tiller', 'config.json'), JSON.stringify({ approvals: { close: mode } }));
+    const setHome = (mode: string) => writeFileSync(join(home, 'config.json'), JSON.stringify({ approvals: { close: mode } }));
+    setHome('always');
     const p = (await spawnT('cfg', 'human', admin, { cwd: proj })).body.data.nodeId as string;
     const tok = manager.tokenFor(p);
     const kids = async (n: number) => Promise.all(Array.from({ length: n }, async () => (await spawnT('k', p, tok)).body.data.nodeId as string));
@@ -205,6 +207,14 @@ describe('mcp api', () => {
     setMode('always');
     const [g] = await kids(1);
     expect(await close([g])).toBe(0);
+    setHome('done'); // the project's "always" is now looser than home allows: ignored, with a warning
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const [h] = await kids(1);
+    manager.applyHook(h, { hook_event_name: 'UserPromptSubmit' }); // working
+    expect(await close([h])).toBe(1);
+    expect(err.mock.calls[0]?.[0]).toContain('approvals.close: "always" is looser than the home file ("done")');
+    err.mockRestore();
+    rmSync(join(home, 'config.json'));
   });
 
   it('closeWithoutConfirm comes from the main checkout, not a worktree branch\'s own copy', async () => {

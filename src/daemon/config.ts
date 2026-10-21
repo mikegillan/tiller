@@ -1,5 +1,5 @@
 // Per-project settings: <cwd>/.tiller/config.json, then <home>/config.json, then built-in defaults. Read fresh on every call.
-// The `daemon` group holds daemon-wide settings and comes from the home file only.
+// The `daemon` group holds daemon-wide settings and comes from the home file only. A project file may only make `approvals` stricter.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -183,14 +183,31 @@ function readLayer(path: string, isHome: boolean): ConfigFile | undefined {
   return r.success ? r.data : ConfigFile.safeParse(data).data;
 }
 
+/**
+ * How strict each approvals value is: higher asks the human more often. An agent can edit its project file, so a project
+ * value applies only when it is at least as strict as the home file's value, or the default when home does not set it.
+ */
+const STRICTNESS: Partial<Record<Key, (value: unknown) => number>> = {
+  'approvals.close': (value) => ['always', 'done', 'never'].indexOf(value as string),
+  'approvals.merge': (value) => (value ? 0 : 1),
+};
+
 /** Each key's effective value and where it came from: the first file that sets it, else 'default'. */
 export function configEntries(cwd: string | null, home = homeDir()): Record<Key, { value: unknown; source: string }> {
   const homeFile = join(home, 'config.json');
   const layers = configPaths(cwd, home).flatMap((path) => { const c = readLayer(path, path === homeFile); return c ? [{ path, c }] : []; });
   return Object.fromEntries((Object.entries(DEFAULTS) as [Key, unknown][]).map(([key, fallback]) => {
     const path = key.split('.');
-    const layer = layers.find(({ c }) => get(c, path) !== undefined);
-    return [key, layer ? { value: get(layer.c, path), source: layer.path } : { value: fallback, source: 'default' }];
+    let set = layers.filter(({ c }) => get(c, path) !== undefined).map((layer) => ({ value: get(layer.c, path), source: layer.path }));
+    const strictness = STRICTNESS[key];
+    if (strictness && set[0] && set[0].source !== homeFile) {
+      const limit = set[1] ?? { value: fallback, source: 'default' };
+      if (strictness(set[0].value) < strictness(limit.value)) {
+        warn(set[0].source, `${key}: ${JSON.stringify(set[0].value)} is looser than ${limit.source === 'default' ? 'the default' : 'the home file'} (${JSON.stringify(limit.value)}); a project file may only make approvals stricter, so loosen it in ${homeFile}`);
+        set = set.slice(1);
+      }
+    }
+    return [key, set[0] ?? { value: fallback, source: 'default' }];
   })) as Record<Key, { value: unknown; source: string }>;
 }
 
