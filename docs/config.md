@@ -8,13 +8,15 @@ Each config key resolves independently: project file, then home file, then built
 
 Keys in the `daemon` group are daemon-wide and come from the home file only. A `daemon` group in a project file is ignored with a warning.
 
+Keys in the `approvals` group decide when an agent skips the human's approval, and an agent can edit its project file, so a project file may only make them stricter. The home file's value, or the default when the home file does not set the key, is the loosest an approval can be. A project value at least as strict applies; a looser one is ignored with a warning, and `tl config` then shows the home or default value as the source. For `approvals.close`, `never` is strictest, then `done`, then `always`; for `approvals.merge`, `false` is stricter than `true`. To let agents in a repo close finished nodes without asking, set `"approvals": { "close": "done" }` in the home file; a repo that should still ask can set `never` in its project file.
+
 ## Bad files and bad keys
 
 A file that does not parse as JSON is skipped as a whole, and the daemon logs one line naming it. Inside a file that parses, every group and the top level are strict: an unknown key (for example a misspelling, or a name that has since been renamed) and a key with an invalid value are each logged once and dropped, and the rest of the file still applies. The warning goes to the daemon's log (or to the terminal, for `tl config`) in the form `tiller: ignoring in <path>: <key>: <reason>`.
 
 ## Keys
 
-The layer column says where a key may be set: "project, home" means either file, with the project file winning.
+The layer column says where a key may be set: "project, home" means either file, with the project file winning; "home, project stricter" means the project file wins only when it is stricter.
 
 | Key | Type | Default | Layer | Meaning |
 |---|---|---|---|---|
@@ -25,8 +27,8 @@ The layer column says where a key may be set: "project, home" means either file,
 | `roles.worker.model` | string | Claude's default | project, home | Model for a worker, or a node with role `none`, spawned without one. |
 | `roles.worker.effort` | as above | Claude's default | project, home | Effort for a worker, or a node with role `none`, spawned without one. |
 | `claude.inheritMcpServers` | boolean | `true` | project, home | When true, a Claude node loads the user's and plugins' MCP servers as well as tiller's. A project's `.mcp.json` servers stay off in nodes (tiller lists them as `disabledMcpjsonServers` in the node's settings) because Claude would otherwise stop each new node on an approval prompt. Plugin tools are named `mcp__plugin_<plugin>_<server>__*`. When false the node is launched with `--strict-mcp-config` and gets only tiller's server. Read when the node's files are written for a launch, so a resume uses the current value. |
-| `approvals.close` | `never`, `done`, `always` | `never` | project, home | Whether an agent's `close` skips the human's approval: always, only when every node in the batch is done, exited or has reported an outcome, or never. |
-| `approvals.merge` | boolean | `false` | project, home | When true, an agent's `merge` does not ask the human. |
+| `approvals.close` | `never`, `done`, `always` | `never` | home, project stricter | Whether an agent's `close` skips the human's approval: always, only when every node in the batch is done, exited or has reported an outcome, or never. |
+| `approvals.merge` | boolean | `false` | home, project stricter | When true, an agent's `merge` does not ask the human. |
 | `worktrees.isolation` | `none`, `worktree` | `none` | project, home | What a spawn of a Claude worker gets when it does not say. |
 | `worktrees.branchPrefix` | string | `tl/` | project, home | A worktree's branch is this prefix followed by the node id. |
 | `worktrees.include` | list of gitignore patterns | `.worktreeinclude` | project, home | Gitignored files copied into a new worktree; when absent, the repo's `.worktreeinclude` file is used. |
@@ -62,7 +64,6 @@ For notification levels, `sound` is a banner with a sound and `silent` sends not
 ```json
 {
   "roles": { "orchestrator": { "model": "opus", "effort": "high" }, "worker": { "model": "sonnet", "effort": "medium" } },
-  "approvals": { "close": "done" },
   "worktrees": { "isolation": "worktree", "setup": ["npm ci"] },
   "gate": { "command": "npm test" },
   "limits": { "stallMinutes": 10 }

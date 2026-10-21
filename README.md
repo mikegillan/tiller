@@ -69,18 +69,17 @@ Everything the daemon keeps is under `~/.tiller`, or `TL_HOME` when set: the nod
 
 ## Configuration
 
-Tiller reads two JSON files, both optional: a per-repo file at `<repo>/.tiller/config.json`, which you commit so everyone who runs tiller in that repo gets the same behaviour, and a global file at `~/.tiller/config.json` for your own defaults across repos. Each key resolves on its own: the repo file wins over the global file, which wins over the built-in default. Keys in the `daemon` group (resume, retention, node caps) are daemon-wide and are read from the global file only. Both files are re-read on every use, so an edit applies without restarting the daemon. `tl config` prints the effective value of every key for the current directory and which file it came from.
+Tiller reads two JSON files, both optional: a per-repo file at `<repo>/.tiller/config.json`, which you commit so everyone who runs tiller in that repo gets the same behaviour, and a global file at `~/.tiller/config.json` for your own defaults across repos. Each key resolves on its own: the repo file wins over the global file, which wins over the built-in default. Keys in the `daemon` group (resume, retention, node caps) are daemon-wide and are read from the global file only. Keys in the `approvals` group decide when an agent skips your approval, so the repo file may only make them stricter than the global file: set `"approvals": { "close": "done" }` globally to let orchestrators close finished workers without asking. Both files are re-read on every use, so an edit applies without restarting the daemon. `tl config` prints the effective value of every key for the current directory and which file it came from.
 
 Task profiles (`orchestrator`, `implementation`, `explorer`, `mechanical`, `reviewer`) select portable task guidance independently of coordination roles (`orchestrator`, `worker`, `none`). Default profiles follow the effective role: orchestrator maps to orchestrator, worker/none to implementation (normally root and child respectively). Use `--profile` with `tl new` / `tl spawn`, or the spawn dialog. Built-in [task defaults](docs/config.md#task-defaults-on-installation) apply when model/effort overrides under `profiles.<harness>.<profile>` are unset. Existing Claude `roles` settings remain compatible and take precedence over built-in defaults.
 
-A typical legacy Claude repo file sets the models for each role, gives workers their own worktrees with task branches named in the repo's convention, defines the check that must pass before a worker may report success, and lets the orchestrator close finished workers without asking:
+A typical legacy Claude repo file sets the models for each role, gives workers their own worktrees with task branches named in the repo's convention and defines the check that must pass before a worker may report success:
 
 ```json
 {
   "roles": { "orchestrator": { "model": "opus", "effort": "high" }, "worker": { "model": "sonnet", "effort": "medium" } },
   "worktrees": { "isolation": "worktree", "taskBranch": "feature/{slug}", "setup": ["npm ci"] },
-  "gate": { "command": "npm test" },
-  "approvals": { "close": "done" }
+  "gate": { "command": "npm test" }
 }
 ```
 
