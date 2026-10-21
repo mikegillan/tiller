@@ -30,6 +30,12 @@ Manual and automatic discovery share one in-flight check. The daemon broadcasts
 installation retain the current `applying` status without starting discovery.
 The optional `blocker: 'dirty'` identifies a proven dirty primary `main`
 checkout; other blockers and check failures retain the human-readable reason.
+Automatic discovery skips while a live update helper holds the checkout's
+`update.lock` and reports that in the reason. A lock whose recorded process has
+exited no longer pauses discovery: checks continue and report the interrupted
+update as the reason updates are blocked. The lock is never removed
+automatically, including at daemon start; inspect `update.log` and the checkout,
+then remove it. A lock without a readable pid is treated as live.
 Installation restarts the daemon after building. The restart first waits for
 agents to finish their turns, holding messages and spawns (see
 [waiting for turns to end](sessions.md#waiting-for-turns-to-end)); agents
