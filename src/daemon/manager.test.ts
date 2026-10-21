@@ -705,7 +705,7 @@ describe('NodeManager live set and resume on start', () => {
     const order: string[] = [];
     const resume = m.resume.bind(m);
     m.resume = (id) => { order.push(id); return resume(id); };
-    expect(await m.resumeLive()).toBe('resume on start: resumed 2, skipped 3: deleted (no such node), idle (idle over 3 days), nowt (worktree missing)');
+    expect(await m.resumeLive()).toBe('resume on start: resumed 2, skipped 3: deleted (no such node), idle (idle over 3 days), nowt (worktree missing); told 1 root to check their tree');
     expect(order).toEqual(['root', 'kid', 'nowt']);
     expect(m.view('root')!.status.exited).toBeFalsy();
     expect(m.view('kid')).toMatchObject({ sessionId: 's-kid' });
@@ -899,5 +899,80 @@ describe('restart drain and the cut-off message', () => {
     m.applyHook(working, { hook_event_name: 'UserPromptSubmit' });
     await restart({ crash: true });
     expect(inbox(m, working).map((x) => x.text)).toEqual([expect.stringContaining(cutOffText('unexpected exit'))]);
+  });
+
+  describe('the message to the root of a resumed tree', () => {
+    const texts = (id: string) => inbox(m, id).map((x) => x.text);
+    const turn = (id: string) => m.applyHook(id, { hook_event_name: 'UserPromptSubmit' });
+    const stop = (id: string) => m.applyHook(id, { hook_event_name: 'Stop' });
+    const report = (id: string, summary: string) => m.setOutcome(id, { outcome: 'succeeded', summary, at: Date.now() });
+    const tick = () => new Promise((r) => setTimeout(r, 5)); // so a later turn starts after the report
+
+    it('tells the root of a tree with an unfinished worker which nodes came back and what each reported', async () => {
+      const { claude, restart } = await setup();
+      const root = await claude('root');
+      const done = await claude('done', { parentId: root }), open = await claude('open', { parentId: root }), again = await claude('again', { parentId: root });
+      const sub = await claude('sub', { parentId: open });
+      turn(done); report(done, 'fixed the parser'); stop(done);
+      turn(open); stop(open); // ended its turn without reporting
+      turn(again); report(again, 'first pass'); stop(again); await tick(); turn(again); stop(again); // re-tasked since
+      m.drain('update to v9.9.9');
+      expect(await restart()).toContain('; told 1 root to check their tree');
+      const [text, ...more] = texts(root);
+      expect(more).toEqual([]);
+      expect(text).toContain('The tiller daemon restarted (update to v9.9.9). Your conversation is intact.');
+      expect(text).toContain(`- ${done} "done": reported succeeded: fixed the parser\n`);
+      expect(text).toContain(`- ${open} "open": has not reported an outcome\n`);
+      expect(text).toContain(`- ${again} "again": reported succeeded earlier, then started another turn and has not reported since\n`);
+      expect(text).toContain(`- ${sub} "sub" (under ${open}): has not reported an outcome\n`);
+      expect(text).toContain('do not give it its work again');
+      for (const id of [done, open, again, sub]) expect(texts(id)).toEqual([]);
+    });
+
+    it('sends nothing to a tree whose live workers all reported, or to a root with no live worker', async () => {
+      const { claude, restart } = await setup();
+      const root = await claude('root'), lone = await claude('lone');
+      const w = await claude('w', { parentId: root });
+      turn(w); report(w, 'all done'); stop(w);
+      turn(lone); stop(lone);
+      expect(await restart()).not.toContain('to check their tree');
+      for (const id of [root, lone, w]) expect(texts(id)).toEqual([]);
+    });
+
+    it('is off with daemon.resumeNudge false; the cut-off message still goes out', async () => {
+      const { claude, restart } = await setup();
+      const root = await claude('root');
+      const w = await claude('w', { parentId: root });
+      turn(w);
+      writeFileSync(join(home, 'tl', 'config.json'), JSON.stringify({ daemon: { resumeNudge: false } }));
+      await restart({ crash: true });
+      expect(texts(root)).toEqual([]);
+      expect(texts(w)).toEqual([expect.stringContaining(cutOffText('unexpected exit'))]);
+    });
+
+    it('gives a root whose own turn was cut off one message that says so, and tells its cut-off worker separately', async () => {
+      const { claude, restart } = await setup();
+      const root = await claude('root');
+      const w = await claude('w', { parentId: root });
+      turn(root); turn(w);
+      expect(await restart({ crash: true })).toContain('told 2 nodes their turn was cut off; told 1 root to check their tree');
+      const [text, ...more] = texts(root);
+      expect(more).toEqual([]);
+      expect(text).toContain('\nThe tiller daemon restarted (unexpected exit) while your turn was running, so that turn was cut off.');
+      expect(text).toContain(`- ${w} "w": has not reported an outcome; its turn was cut off, and it was told to check where it was and continue\n`);
+      expect(text).toContain('check where you were');
+      expect(texts(w)).toEqual([expect.stringContaining(cutOffText('unexpected exit'))]);
+    });
+
+    it('skips, and names, a root that is not running or is a terminal', async () => {
+      const { claude, restart } = await setup();
+      const gone = await claude('gone'), term = (await m.spawn({ kind: 'terminal', title: 'term', cwd: home })).id;
+      const w1 = await claude('w1', { parentId: gone }), w2 = await claude('w2', { parentId: term });
+      process.kill(m.session(gone)!.pid, 'SIGKILL');
+      await expect.poll(() => m.view(gone)!.status.exited).toBe(true); // so it is not live at the restart
+      const summary = await restart();
+      expect(summary).toContain(`could not tell root ${gone} (not running), root ${term} (a terminal)`);
+      for (const id of [gone, term, w1, w2]) expect(texts(id)).toEqual([]);
+    });
   });
 });

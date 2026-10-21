@@ -68,14 +68,16 @@ export const ConfigFile = z.object({
   }).strict().optional(),
   /**
    * Home file only. resumeOnStart: on start, resume the nodes that were live when the daemon last went away, unless idle for
-   * more than resumeMaxAgeDays. sessionsKeepDays: a session directory is deleted this long after its root closed (or, with
-   * the root gone, after its last write). digestAfterMinutes: a client regaining focus after this long with no focused
-   * client gets an away digest. maxLiveNodes: an agent's spawn is refused once this many nodes are live. maxWorking: Claude
+   * more than resumeMaxAgeDays. resumeNudge: then tell the root of each tree with a live worker that had not reported an
+   * outcome to check its tree and continue. sessionsKeepDays: a session directory is deleted this long after its root
+   * closed (or, with the root gone, after its last write). digestAfterMinutes: a client regaining focus after this long
+   * with no focused client gets an away digest. maxLiveNodes: an agent's spawn is refused once this many nodes are live. maxWorking: Claude
    * nodes working at once; past it a spawn is queued and launched in creation order as nodes stop; 0 is unlimited.
    */
   daemon: z.object({
     resumeOnStart: z.boolean().optional(),
     resumeMaxAgeDays: z.number().nonnegative().optional(),
+    resumeNudge: z.boolean().optional(),
     sessionsKeepDays: z.number().nonnegative().optional(),
     digestAfterMinutes: z.number().nonnegative().optional(),
     maxLiveNodes: z.number().int().nonnegative().optional(),
@@ -134,7 +136,7 @@ export const DEFAULTS = {
   'worktrees.isolation': 'none', 'worktrees.branchPrefix': 'tl/', 'worktrees.include': undefined, 'worktrees.mergeStyle': 'merge', 'worktrees.setup': [], 'worktrees.teardown': [],
   'worktrees.protected': ['main', 'master'], 'worktrees.taskBranch': 'tl/{slug}',
   'gate.command': undefined, 'gate.retries': 2, 'gate.timeoutMinutes': 10,
-  'daemon.resumeOnStart': true, 'daemon.resumeMaxAgeDays': 3, 'daemon.sessionsKeepDays': 14, 'daemon.digestAfterMinutes': 10, 'daemon.maxLiveNodes': 20, 'daemon.maxWorking': 0,
+  'daemon.resumeOnStart': true, 'daemon.resumeMaxAgeDays': 3, 'daemon.resumeNudge': true, 'daemon.sessionsKeepDays': 14, 'daemon.digestAfterMinutes': 10, 'daemon.maxLiveNodes': 20, 'daemon.maxWorking': 0,
   'notifications.kinds.needsYou': 'sound', 'notifications.kinds.errored': 'silent', 'notifications.kinds.done': 'banner', 'notifications.kinds.exited': 'silent',
   'notifications.treeDoneSummary': true, 'notifications.quietHours': undefined,
   'limits.maxDepth': 3, 'limits.maxChildren': 8, 'limits.stallMinutes': 5, 'limits.maxMessagesPer10Min': 20,

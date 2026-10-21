@@ -14,6 +14,7 @@ import { adapterFor, requireHarnessExecutable } from './harness.js';
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
+import { outcomeLine } from '../shared/format.js';
 import { isSupportedEffort } from '../shared/harness-policy.js';
 import { arm, scheduleSoon, working } from './scheduling.js';
 import { CompletionGate, gateFor } from './completion-gate.js';
@@ -26,7 +27,7 @@ import { buildChildEnv, PtySession } from './pty.js';
 import { count, inside, logError } from './util.js';
 import * as wt from './worktree.js';
 import { addWorktree, closeWorktreeNode, mergeWorktree, readClaudeJson, refreshGit, refreshGitSoon, setMissing, setupThenLaunch, trustedForWorktree, trustPolicy, worktreeCheck, worktreeCommands, worktreeEnv, worktrees, type WorktreeCheck, type WorktreeReport } from './worktree-lifecycle.js';
-import { appendEvent, buildDigest, ensureSession, flushEvents, handoffPrompt, listSessions, markClosed, readEvents, sessionDir, sweepSessions } from './sessions.js';
+import { appendEvent, buildDigest, ensureSession, flushEvents, handoffPrompt, listSessions, markClosed, readEvents, sessionDir, sweepSessions, type SessionEvent } from './sessions.js';
 import { archivedOf, archiveNode, findArchived, type BranchFate } from './archive.js';
 import { adoptSessionHistory, nodeTranscript, recordedSessions } from './transcript.js';
 import { active, initialState, interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
@@ -51,6 +52,20 @@ const DRAIN_LEASE_MS = 15_000;
 
 /** The daemon's message to a resumed node whose turn the restart cut off. */
 export const cutOffText = (reason: string) => `The tiller daemon restarted (${reason}) while your turn was running, so that turn was cut off. Your conversation is intact, but the last tool call may not have finished. Check where you were, for example with git status and the commands you last ran, then continue the task.`;
+
+/**
+ * The daemon's message to the root of a resumed tree with unfinished work. `nodes` has one line per node of the tree that
+ * was live when the daemon went away. `cutOff` when the root's own turn was cut off too: it then replaces cutOffText.
+ */
+export const resumedTreeText = (reason: string, nodes: string[], cutOff: boolean) => [
+  cutOff
+    ? `The tiller daemon restarted (${reason}) while your turn was running, so that turn was cut off. Your conversation is intact, but the last tool call may not have finished.`
+    : `The tiller daemon restarted (${reason}). Your conversation is intact.`,
+  'These nodes of your tree were live when it went away. Each one that came back has its conversation intact, but nothing has told it to continue unless noted:',
+  ...nodes.map((l) => `- ${l}`),
+  'A node that reported an outcome has finished: do not give it its work again, and do not redo what is done. One that has not reported may still have work to do, so check it before you act: read its recent output, and for a worktree its git status and commits. It may be waiting for a reply, have lost a background command to the restart, or have finished without reporting. Then send each one only what it needs to finish, or nothing if it is already on its way.',
+  `Outcomes reported before the restart appear only in this message, not in list_nodes, and any notify_when you registered is gone, so register again for the nodes you still wait on. Then ${cutOff ? 'check where you were, for example with git status and the commands you last ran, and continue' : 'continue'} your own part of the task.`,
+].join('\n');
 
 /** `cwd`, or the main checkout when it was a worktree since removed; undefined when neither exists. */
 function usableCwd(cwd: string): string | undefined {
@@ -859,11 +874,13 @@ export class NodeManager extends EventEmitter {
   /**
    * Resume the nodes that were live when the daemon last went away, parents first. Skips nodes that no longer exist, have
    * lost their worktree or have been idle longer than resumeMaxAgeDays; then forgets the set, so it holds only nodes that
-   * come up again. Returns a one-line summary.
+   * come up again. Tells the nodes whose turn was cut off (cutOffText) and, unless daemon.resumeNudge is off, the roots of
+   * trees with unfinished work (resumedTreeText). Returns a one-line summary.
    */
   async resumeLive(): Promise<string> {
     const ids = this.pendingResume;
-    const { resumeOnStart, resumeMaxAgeDays } = loadConfig(null, this.home).daemon;
+    const { resumeOnStart, resumeMaxAgeDays, resumeNudge } = loadConfig(null, this.home).daemon;
+    const started = Date.now();
     let summary = 'nothing to resume';
     // Cleared before any resume, so a resumed node that starts a turn on a held message keeps the midTurn that sets.
     const wasMidTurn = new Set(this.registry.list().filter((n) => n.midTurn).map((n) => n.id));
@@ -871,26 +888,68 @@ export class NodeManager extends EventEmitter {
     if (ids.size && !resumeOnStart) summary = `daemon.resumeOnStart is off; not resuming ${count(ids.size, 'node')}`;
     else if (ids.size) {
       const cutoff = Date.now() - resumeMaxAgeDays * 86_400_000;
-      const skipped = [...ids].filter((id) => !this.registry.get(id)).map((id) => `${id} (no such node)`);
+      const missing = [...ids].filter((id) => !this.registry.get(id)).map((id) => `${id} (no such node)`);
+      const failed = new Map<string, string>(); // live node -> why it did not come back
       let resumed = 0;
-      const cutOff: string[] = [];
+      const cutOff = new Set<string>();
       for (const { node: n } of treeOrder(this.registry.list())) {
         if (!ids.has(n.id)) continue;
-        if ((n.lastActiveAt ?? n.createdAt) < cutoff) { skipped.push(`${n.id} (idle over ${resumeMaxAgeDays} days)`); continue; }
+        if ((n.lastActiveAt ?? n.createdAt) < cutoff) { failed.set(n.id, `idle over ${resumeMaxAgeDays} days`); continue; }
         const r = await this.resume(n.id);
         if (r.ok) resumed++;
-        else skipped.push(`${n.id} (${r.error})`);
-        if (r.ok && wasMidTurn.has(n.id)) cutOff.push(n.id);
+        else failed.set(n.id, r.error);
+        if (r.ok && wasMidTurn.has(n.id)) cutOff.add(n.id);
       }
+      const skipped = [...missing, ...[...failed].map(([id, why]) => `${id} (${why})`)];
+      const { nudges, unreachable } = resumeNudge ? this.resumeNudges(ids, failed, cutOff, started) : { nudges: [], unreachable: [] };
+      const nudged = new Set(nudges.map((x) => x.root));
       // Into the inbox at once: the resumed node's mod picks it up behind any message already queued for it.
-      for (const id of cutOff) deliver(this, DAEMON, id, cutOffText(this.lastStop), { fromLabel: 'tiller (daemon restarted)', replyTo: null, inbox: true }).catch(logError);
-      summary = `resumed ${resumed}, skipped ${skipped.length}${skipped.length ? `: ${skipped.join(', ')}` : ''}${cutOff.length ? `; told ${count(cutOff.length, 'node')} their turn was cut off` : ''}`;
+      const send = (id: string, text: string) => deliver(this, DAEMON, id, text, { fromLabel: 'tiller (daemon restarted)', replyTo: null, inbox: true }).catch(logError);
+      for (const id of cutOff) if (!nudged.has(id)) send(id, cutOffText(this.lastStop)); // a nudged root's message says it too
+      for (const { root, text } of nudges) send(root, text);
+      summary = `resumed ${resumed}, skipped ${skipped.length}${skipped.length ? `: ${skipped.join(', ')}` : ''}${cutOff.size ? `; told ${count(cutOff.size, 'node')} their turn was cut off` : ''}`
+        + `${nudges.length ? `; told ${count(nudges.length, 'root')} to check their tree` : ''}${unreachable.length ? `; could not tell ${unreachable.join(', ')}` : ''}`;
     }
     this.pendingResume = new Set();
     this.liveChanged();
     for (const rt of this.runtimes.values()) rt.restored = undefined; // re-arm the nodes the record held back
     scheduleSoon(this);
     return `resume on start: ${summary}`;
+  }
+
+  /**
+   * The resumedTreeText for the root of each tree in which a live agent node other than the root had not reported an
+   * outcome since its last turn began, read from the tree's events before `before` (this daemon's start); `unreachable`
+   * names the roots of such trees that cannot act on it. `failed` holds the live nodes that did not come back, and why.
+   */
+  private resumeNudges(ids: Set<string>, failed: Map<string, string>, cutOff: Set<string>, before: number) {
+    const trees = new Map<string, NodeRecord[]>();
+    for (const { node: n } of treeOrder(this.registry.list())) {
+      const root = this.rootIdOf(n.id);
+      if (ids.has(n.id) && isAgentKind(n.kind) && n.id !== root) trees.set(root, [...(trees.get(root) ?? []), n]);
+    }
+    const nudges: { root: string; text: string }[] = [], unreachable: string[] = [];
+    for (const [root, nodes] of trees) {
+      const events = readEvents(sessionDir(this.home, root)).filter((e) => e.ts < before);
+      const last = (id: string, match: (e: SessionEvent) => boolean) => events.findLast((e) => e.id === id && match(e));
+      let unfinished = false;
+      const lines = nodes.map((n) => {
+        const o = last(n.id, (e) => e.type === 'outcome'), turn = last(n.id, (e) => e.type === 'state' && e.to === 'working');
+        const finished = !!o && o.ts >= (turn?.ts ?? -Infinity); // a report comes within the turn it ends
+        unfinished ||= !finished;
+        const said = finished ? `reported ${outcomeLine(o as unknown as Outcome)}`
+          : o ? `reported ${String(o.outcome)} earlier, then started another turn and has not reported since` : 'has not reported an outcome';
+        const why = failed.get(n.id);
+        const now = why ? `; it did not come back (${why})` : cutOff.has(n.id) ? '; its turn was cut off, and it was told to check where it was and continue' : '';
+        return `${n.id} "${n.title}"${n.parentId !== root ? ` (under ${n.parentId})` : ''}: ${said}${now}`;
+      });
+      if (!unfinished) continue; // nothing to carry on: no turn spent
+      const rec = this.registry.get(root);
+      const cannot = !rec ? 'closed' : !isAgentKind(rec.kind) ? 'a terminal' : !this.session(root) ? 'not running' : undefined;
+      if (cannot) unreachable.push(`root ${root} (${cannot})`);
+      else nudges.push({ root, text: resumedTreeText(this.lastStop, lines, cutOff.has(root)) });
+    }
+    return { nudges, unreachable };
   }
 
   /**
