@@ -253,8 +253,7 @@ describe('worktree nodes', () => {
 
   it('an agent close of an unmerged worktree is refused even under approvals.close "done"; discard always asks', async () => {
     setup();
-    mkdirSync(join(repo, '.tiller'));
-    writeFileSync(join(repo, '.tiller', 'config.json'), JSON.stringify({ approvals: { close: 'done' } }));
+    writeFileSync(join(m.home, 'config.json'), JSON.stringify({ approvals: { close: 'done' } }));
     const confirms: string[] = [];
     const { handler } = mountMcp(m, async (t) => { confirms.push(t); return true; }, () => {});
     const server = http.createServer((req, res) => void handler(req, res));

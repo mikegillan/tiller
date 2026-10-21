@@ -114,14 +114,15 @@ describe('websocket', () => {
     const { id } = await manager.spawn({ kind: 'terminal', title: 'raw input', cwd: home });
     send({ t: 'attach', id, cols: 100, rows: 24 });
     const output = () => seen.flatMap((m) => m.t === 'data' && m.id === id ? [m.data] : []).join('');
-    send({ t: 'input', id, data: "stty raw -echo; printf '\\nBYTE_READY\\n'; dd bs=1 count=19 2>/dev/null | od -An -tx1\r" });
-    await until(() => output().includes('\nBYTE_READY\n') || undefined);
+    send({ t: 'input', id, data: "stty raw -echo; printf '\\nBYTE_READY\\n'; dd bs=1 count=19 2>/dev/null | od -An -tx1; printf 'BYTE_DONE\\n'\r" });
+    await until(() => output().includes('\nBYTE_READY\n') || undefined, 30_000);
     // Legacy wheel up/down at column 100, row 3, followed by ordinary UTF-8 text.
     send({ t: 'input', id, data: '\x1b[M`\x84#\x1b[Ma\x84#', binary: true });
     send({ t: 'input', id, data: 'hé🌍' });
-    await until(() => output().includes('8d') || undefined);
-    const hex = output().split('\nBYTE_READY\n')[1].trim().replace(/\s+/g, ' ');
-    expect(hex).toContain('1b 5b 4d 60 84 23 1b 5b 4d 61 84 23 68 c3 a9 f0 9f 8c 8d');
+    // Read only between the markers: the prompt before them shows the hostname and cwd, which can contain any hex.
+    const dumped = await until(() => /\nBYTE_READY\n([\s\S]*)\nBYTE_DONE\n/.exec(output())?.[1], 30_000)
+      .catch(() => { throw new Error(`od output never completed; terminal showed ${JSON.stringify(output())}`); });
+    expect(dumped.trim().replace(/\s+/g, ' ')).toBe('1b 5b 4d 60 84 23 1b 5b 4d 61 84 23 68 c3 a9 f0 9f 8c 8d');
   });
 
   it('validates binary byte strings without restricting ordinary Unicode input', async () => {

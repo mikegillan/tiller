@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -197,6 +197,18 @@ describe('release checkout', () => {
     git(work, 'checkout', '-q', 'main');
     const linked = join(dir, 'linked'); git(work, 'worktree', 'add', '-q', '--detach', linked);
     expect((await checkUpdate(linked, source)).eligible).toBe(false);
+  });
+  it('starts outside a git checkout with release checks unavailable', async () => {
+    const plain = join(dir, 'plain'); mkdirSync(plain);
+    const list = vi.fn(source.list);
+    const u = createUpdater({ repo: plain, home: dir, source: { ...source, list }, onChange: vi.fn(), spawnHelper: vi.fn(() => 'unused') });
+    for (const s of [u.status(), await u.check()]) {
+      expect(s).toMatchObject({ eligible: false, reason: expect.stringContaining('not running from a git checkout') });
+      expect(s.target ?? s.fetchError ?? s.runtimeSha).toBeFalsy();
+    }
+    expect(updateLine(u.status())).toContain('release checks unavailable');
+    expect(list).not.toHaveBeenCalled();
+    await expect(u.apply({ tag: 'v0.1.0', sha: 'x' })).rejects.toThrow('cannot update: release checks unavailable');
   });
   it('reports dirty main structurally and clears the blocker on refresh, clean, non-main and failed checks', async () => {
     const u = createUpdater({ repo: work, home: dir, source, onChange: vi.fn(), spawnHelper: vi.fn(() => 'unused') });
@@ -653,15 +665,37 @@ describe('automatic discovery while a UI is connected', () => {
     expect(updater.status().applying).toBe(false);
     updater.stop();
   });
-  it('does not check while another update holds the checkout lock', async () => {
+  it.each([
+    ['a live helper', () => JSON.stringify({ pid: process.pid, sha: 'fixture' }), `another update (pid ${process.pid}) holds`],
+    ['unreadable contents', () => 'fixture', 'another update holds'],
+  ])('does not check, and says so, while %s holds the checkout lock', async (_, contents, reason) => {
     fakeClock();
     const { updater, list, tick } = setup();
-    writeFileSync(join(work, '.git/update.lock'), 'fixture');
+    writeFileSync(join(work, '.git/update.lock'), contents());
     updater.start(); await vi.advanceTimersByTimeAsync(0);
     expect(list).not.toHaveBeenCalled();
+    expect(updater.status()).toMatchObject({ eligible: false, reason: expect.stringContaining(reason) });
     rmSync(join(work, '.git/update.lock'));
     await tick(UPDATE_CHECK_INTERVAL);
     expect(list).toHaveBeenCalledTimes(1);
+    updater.stop();
+  });
+  it('checks past a lock whose holder exited and reports the interrupted update without removing the lock', async () => {
+    fakeClock();
+    commit('two'); release('v0.1.1');
+    const { updater, list, spawnHelper } = setup();
+    const lock = join(work, '.git/update.lock');
+    writeFileSync(lock, JSON.stringify({ pid: spawnSync('true').pid, sha: 'fixture' }));
+    updater.start(); await vi.advanceTimersByTimeAsync(0);
+    // The automatic poll started this check; joining it must not start another.
+    expect(updater.status().checking).toBe(true);
+    await updater.check();
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(updater.status()).toMatchObject({ eligible: false, target: { tag: 'v0.1.1' }, reason: expect.stringContaining('interrupted update') });
+    const target = updater.status().target!;
+    await expect(updater.apply({ tag: target.tag, sha: target.sha })).rejects.toThrow('cannot update: an interrupted update');
+    expect(spawnHelper).not.toHaveBeenCalled();
+    expect(existsSync(lock)).toBe(true);
     updater.stop();
   });
 });

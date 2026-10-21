@@ -153,6 +153,40 @@ describe('loadConfig', () => {
     err.mockRestore();
   });
 
+  it('lets a project file make approvals stricter than home or the default, never looser', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // [project approvals, home approvals, expected key, expected value, expected source]
+    const cases: [object, object | undefined, 'approvals.close' | 'approvals.merge', unknown, 'project' | 'home' | 'default'][] = [
+      [{ close: 'always' }, { close: 'done' }, 'approvals.close', 'done', 'home'],
+      [{ close: 'done' }, { close: 'never' }, 'approvals.close', 'never', 'home'],
+      [{ close: 'done' }, undefined, 'approvals.close', 'never', 'default'], // the default is the limit when home is silent
+      [{ close: 'done' }, { merge: true }, 'approvals.close', 'never', 'default'],
+      [{ merge: true }, undefined, 'approvals.merge', false, 'default'],
+      [{ merge: true }, { merge: false }, 'approvals.merge', false, 'home'],
+      [{ close: 'never' }, { close: 'always' }, 'approvals.close', 'never', 'project'],
+      [{ close: 'done' }, { close: 'always' }, 'approvals.close', 'done', 'project'],
+      [{ close: 'done' }, { close: 'done' }, 'approvals.close', 'done', 'project'],
+      [{ merge: false }, { merge: true }, 'approvals.merge', false, 'project'],
+      [{ merge: true }, { merge: true }, 'approvals.merge', true, 'project'],
+    ];
+    for (const [project, home, key, value, from] of cases) {
+      const { cwd, homeDir } = setup(JSON.stringify({ approvals: project }), home && JSON.stringify({ approvals: home }));
+      err.mockClear();
+      const source = { project: join(cwd, '.tiller', 'config.json'), home: join(homeDir, 'config.json'), default: 'default' }[from];
+      expect(configEntries(cwd, homeDir)[key], JSON.stringify([project, home])).toEqual({ value, source });
+      expect(loadConfig(cwd, homeDir).approvals[key.split('.')[1] as 'close' | 'merge']).toBe(value);
+      if (from === 'project') expect(err).not.toHaveBeenCalled();
+      else {
+        const ignored = JSON.stringify(project[key.split('.')[1] as keyof typeof project]), homeFile = join(homeDir, 'config.json');
+        expect(err.mock.calls.map((c) => c[0])).toEqual([`tiller: ignoring in ${join(cwd, '.tiller', 'config.json')}: ${key}: ${ignored} asks the human less often than allowed, `
+          + `so ${JSON.stringify(value)} (${from === 'default' ? 'the default' : `from ${homeFile}`}) applies instead. `
+          + `A project file may only make approvals stricter, because agents can edit it; to allow ${ignored}, set ${key} to ${ignored} in ${homeFile}`]);
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+    err.mockRestore();
+  });
+
   it('skips a file that is not JSON with one log line', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { cwd, homeDir } = setup('{not json', JSON.stringify({ approvals: { close: 'always' } }));
