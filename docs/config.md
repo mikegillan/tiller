@@ -42,6 +42,7 @@ The layer column says where a key may be set: "project, home" means either file,
 | `gate.timeoutMinutes` | positive number | `10` | project, home | Each gate run is stopped after this long. |
 | `daemon.resumeOnStart` | boolean | `true` | home | Resume the nodes that were live when the daemon last went away. |
 | `daemon.resumeMaxAgeDays` | number | `3` | home | Nodes idle longer than this are not resumed on start. |
+| `daemon.resumeNudge` | boolean | `true` | home | After resuming, tell the root of each tree with an unfinished live worker to check its tree and continue. |
 | `daemon.sessionsKeepDays` | number | `14` | home | A session directory is deleted this long after its root closed. |
 | `daemon.digestAfterMinutes` | number | `10` | home | A window regaining focus after this long with no focused window gets the away digest. |
 | `daemon.maxLiveNodes` | integer | `20` | home | An agent's spawn is refused once this many nodes are live. |

@@ -33,7 +33,7 @@ describe('loadConfig', () => {
       roles: { orchestrator: { model: 'opus' }, worker: { model: 'haiku', effort: 'high' } }, claude: { inheritMcpServers: false }, approvals: { close: 'done', merge: false },
       worktrees: { isolation: 'worktree', branchPrefix: 'tl/', include: ['.env'], mergeStyle: 'squash', setup: ['npm ci'], teardown: [], protected: ['main', 'master'], taskBranch: 'feat/{slug}' }, // include replaces the home list whole
       gate: { command: 'npm test', retries: 5, timeoutMinutes: 10 }, // each gate key resolves on its own
-      daemon: { resumeOnStart: true, resumeMaxAgeDays: 7, sessionsKeepDays: 14, digestAfterMinutes: 30, maxLiveNodes: 20, maxWorking: 4 },
+      daemon: { resumeOnStart: true, resumeMaxAgeDays: 7, resumeNudge: true, sessionsKeepDays: 14, digestAfterMinutes: 30, maxLiveNodes: 20, maxWorking: 4 },
       limits: { maxDepth: 3, maxChildren: 2, stallMinutes: 2, maxMessagesPer10Min: 20 },
       notifications: { kinds: { needsYou: 'sound', errored: 'silent', done: 'silent', exited: 'silent' }, treeDoneSummary: true, quietHours: '22:00-07:00' },
     });
@@ -45,7 +45,7 @@ describe('loadConfig', () => {
       'approvals.close': home, 'approvals.merge': 'default',
       'worktrees.isolation': home, 'worktrees.branchPrefix': 'default', 'worktrees.include': proj, 'worktrees.mergeStyle': proj, 'worktrees.setup': home, 'worktrees.teardown': 'default', 'worktrees.protected': 'default', 'worktrees.taskBranch': proj,
       'gate.command': proj, 'gate.retries': home, 'gate.timeoutMinutes': 'default',
-      'daemon.resumeOnStart': 'default', 'daemon.resumeMaxAgeDays': home, 'daemon.sessionsKeepDays': 'default', 'daemon.digestAfterMinutes': home, 'daemon.maxLiveNodes': 'default', 'daemon.maxWorking': home,
+      'daemon.resumeOnStart': 'default', 'daemon.resumeMaxAgeDays': home, 'daemon.resumeNudge': 'default', 'daemon.sessionsKeepDays': 'default', 'daemon.digestAfterMinutes': home, 'daemon.maxLiveNodes': 'default', 'daemon.maxWorking': home,
       'notifications.kinds.needsYou': 'default', 'notifications.kinds.done': proj, 'notifications.kinds.errored': 'default', 'notifications.kinds.exited': home,
       'notifications.treeDoneSummary': 'default', 'notifications.quietHours': home,
       'limits.maxDepth': 'default', 'limits.maxChildren': proj, 'limits.stallMinutes': home, 'limits.maxMessagesPer10Min': 'default',
