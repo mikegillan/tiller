@@ -176,4 +176,5 @@ it('observes the session body and viewport without overwriting the preferred hei
 it('shows the Claude account only when the node has one', () => {
   expect(html({ ...mk('a', null, 0), account: 'work' })).toContain('<dt>Account</dt><dd>work</dd>');
   expect(html(mk('a', null, 0))).not.toContain('<dt>Account</dt>');
+  expect(html({ ...mk('shell', null, 0, { state: 'none' }), kind: 'terminal', account: 'work' })).not.toContain('<dt>Account</dt>');
 });

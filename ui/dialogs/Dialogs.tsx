@@ -72,12 +72,13 @@ function SpawnDialog({ d }: { d: Spawn }) {
   const accounts = useStore((s) => s.claudeAccounts);
   const [account, setAccount] = useState('');
   useEffect(() => { if (!d.parentId) send({ t: 'claudeAccounts' }); }, [d.parentId]);
+  // A selection the latest reply no longer lists falls back to Automatic, so a stale name is never sent.
   const chosen = accounts?.find((a) => a.name === account);
   const kind = choiceKind(choice);
   const agent = isAgentKind(kind);
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    send(spawnMsg(d, { choice, title, cwd, prompt, model, role, profile, effort: effort || undefined, defaultRole: byPosition, isolate, account }));
+    send(spawnMsg(d, { choice, title, cwd, prompt, model, role, profile, effort: effort || undefined, defaultRole: byPosition, isolate, account: chosen?.name }));
     expectSpawn();
     close();
   };
@@ -95,7 +96,7 @@ function SpawnDialog({ d }: { d: Spawn }) {
           {IN_APP && <button type="button" className="btn" onClick={() => void pickFolder(cwd).then((p) => p && setCwd(p)).catch(() => {})}>Choose…</button>}
         </div></label>
         {choice === 'claude' && !d.parentId && !!accounts?.length && <>
-          <label>Account<Select value={account} onChange={(e) => setAccount(e.target.value)} aria-describedby={chosen?.loggedIn === false || chosen?.error ? 'account-login' : undefined}>
+          <label>Account<Select value={chosen?.name ?? ''} onChange={(e) => setAccount(e.target.value)} aria-describedby={chosen?.loggedIn === false || chosen?.error ? 'account-login' : undefined}>
             <option value="">Automatic (by project)</option>
             {accounts.map((a) => <option key={a.name} value={a.name}>{accountLabel(a)}</option>)}
           </Select></label>

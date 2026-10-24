@@ -56,6 +56,7 @@ export function UsagePanel({ onClose }: { onClose: () => void }) {
       const discovery = sources?.find((source) => source.id === `discovery:${tool}`);
       const reports = sources?.filter((source) => source.tool === tool && source.at !== undefined && source.rateLimits.length > 0) ?? [];
       const groups = groupUsageObservations(reports);
+      const numbered = groups.filter((group) => !group.unidentified && !group.reports[0].account);
       const renderReport = (source: UsageSource, title?: string, showAge = false) => {
         const unavailable = source.availability === 'unavailable';
         const stale = usageStale(source, now) || source.nodeIds.every((id) => !nodes[id] || nodes[id].status.exited);
@@ -70,14 +71,14 @@ export function UsagePanel({ onClose }: { onClose: () => void }) {
         <div className="usage-brand" aria-hidden="true">{tool !== 'pi' && <img className={tool === 'codex' ? 'usage-openai-logo' : undefined} src={tool === 'codex' ? openaiLogo : claudeLogo} alt="" width="24" height="24" />}</div>
         <div className="usage-cli-content">
           <h3 className={groups.length === 1 ? 'usage-sr-only' : ''}>{name}</h3>
-          {groups.map((group, index) => {
+          {groups.map((group) => {
             const [latest, ...others] = group.reports;
             return <div className="usage-observation-group" key={group.id}>
               {group.unidentified ? <>
                 <p className="usage-report-label">Latest session reading</p>
                 <p className="usage-caption">Account identity is not reported.</p>
               </> : latest.account ? <p className="usage-report-label">Account: {latest.account}</p>
-                : groups.length > 1 && <p className="usage-report-label">Separate quota {index + 1}</p>}
+                : groups.length > 1 && <p className="usage-report-label">Separate quota {numbered.indexOf(group) + 1}</p>}
               {renderReport(latest, groups.length === 1 ? name : undefined, group.unidentified)}
               {others.length > 0 && <details className="usage-observations">
                 <summary>{others.length === 1 ? '1 other session reading' : `${others.length} other session readings`}</summary>

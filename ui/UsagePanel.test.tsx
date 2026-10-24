@@ -148,3 +148,13 @@ it('labels Claude quota by Tiller account and leaves unidentified readings uncha
   expect(html).toContain('Latest session reading'); expect(html).toContain('7% used');
   expect(html).not.toContain('Separate quota');
 });
+
+it('numbers separate quotas without counting unidentified or account groups', () => {
+  fixture.state.usageSources = [source({ id: 'discovery:claude', tool: 'claude' }),
+    report({ id: 'session', tool: 'claude', accountId: undefined }),
+    report({ id: 'account:work', tool: 'claude', accountId: undefined, account: 'work' }),
+    report({ id: 'pool', tool: 'claude', accountId: 'pool' })];
+  const html = render();
+  expect(html).toContain('Account: work'); expect(html).toContain('Separate quota 1');
+  expect(html).not.toContain('Separate quota 2'); expect(html).not.toContain('Separate quota 3');
+});

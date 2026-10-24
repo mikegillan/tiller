@@ -93,3 +93,14 @@ it('hides the select for other harnesses and shows a child\'s inherited account 
   expect(accountSelect(tree)).toBeUndefined();
   expect(text(tree)).toContain('"Account: ","work"," (inherited)"');
 });
+
+it('falls back to Automatic when a fresh reply no longer lists the selected account', () => {
+  update(() => ({ claudeAccounts }));
+  accountSelect(render())!.props.onChange({ target: { value: 'work' } });
+  expect(accountSelect(render())!.props.value).toBe('work');
+  update(() => ({ claudeAccounts: claudeAccounts.filter((a) => a.name !== 'work') }));
+  const tree = render();
+  expect(accountSelect(tree)!.props.value).toBe('');
+  elements(tree).find((el) => el.type === 'form')!.props.onSubmit({ preventDefault() {} });
+  expect(send).toHaveBeenLastCalledWith(expect.not.objectContaining({ account: expect.anything() }));
+});

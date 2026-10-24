@@ -145,7 +145,7 @@ setInterval(() => {
 }, 8000);
 
 // Children inherit their parent's Claude account, as the daemon does (parents are added first).
-for (const n of nodes.values()) if (n.parentId && nodes.get(n.parentId)?.account) n.account = nodes.get(n.parentId).account;
+for (const n of nodes.values()) if (n.kind !== 'terminal' && n.parentId && nodes.get(n.parentId)?.account) n.account = nodes.get(n.parentId).account;
 
 const http = createServer(async (req, res) => {
   const path = normalize(new URL(req.url, 'http://x').pathname).replace(/^(\.\.[/\\])+/, '');
@@ -216,7 +216,7 @@ wss.on('connection', (ws) => {
         const id = `n${nodes.size + 1}${Date.now() % 1000}`;
         const worktree = m.isolation === 'worktree' && { repo: m.cwd, path: `${m.cwd}/.claude/worktrees/${id}`, branch: `tl/${id}`, base: 'main', baseSha: '6977f01' };
         const git = worktree && { git: { branch: worktree.branch, base: 'main', ahead: 0, behind: 0, dirty: 0, additions: 0, deletions: 0 } };
-        const account = m.parentId ? nodes.get(m.parentId)?.account : m.kind === 'claude' ? m.account ?? accountFor(m.cwd) : undefined;
+        const account = m.kind === 'terminal' ? undefined : m.parentId ? nodes.get(m.parentId)?.account : m.kind === 'claude' ? m.account ?? accountFor(m.cwd) : undefined;
         add(id, m.parentId ?? null, m.title, worktree ? worktree.path : m.cwd, m.kind, { model: m.model ?? 'claude-sonnet-5-5', ...git }, { ...(m.role && { role: m.role }), ...(worktree && { worktree }), ...(account && { account }) });
         broadcast({ t: 'node', node: nodes.get(id) });
         break;
