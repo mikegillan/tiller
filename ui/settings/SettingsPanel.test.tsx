@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { ReactElement, ReactNode } from 'react';
-import { refreshUsage } from '../conn';
+import { refreshUsage, send } from '../conn';
 import { SettingsPanel } from './SettingsPanel';
 import { Modal } from '../controls/Modal';
 import { Select } from '../controls/Select';
@@ -200,13 +200,46 @@ it('edits the Claude account in both scopes, with login state, and sends the hom
   expect(text(tree)).toContain('Custom setting');
   expect(text(tree)).toContain('Root nodes outside listed projects run in personal.');
   changeScope('project'); await settle();
-  expect(options()).toEqual(['Use global default (personal)', 'personal · me@example.com', 'work · not logged in']);
+  // A parent folder in work's projects decides, so the empty choice is not the global default.
+  expect(options()).toEqual(['No repository-specific account (work via /)', 'personal · me@example.com', 'work · not logged in']);
   expect(text(tree)).toContain('Currently from work via /.');
   expect(text(tree)).toContain('CLAUDE_CONFIG_DIR=/c/w claude auth login');
+  const described = String(select().props['aria-describedby']).split(' ');
+  expect(described).toEqual(['setting-claude.account-help', 'setting-claude.account-status', 'setting-claude.account-login']);
+  for (const id of described) expect(elements(tree).some((e) => e.props.id === id)).toBe(true);
   select().props.onChange({ target: { value: 'personal' } }); render();
+  vi.mocked(send).mockClear();
   await submit();
   const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
   expect(body).toEqual({ scope: 'project', nodeId: 'n1', revision: 'r1', homeRevision: 'h1', changes: { 'claude.account': 'personal' } });
+  expect(send).toHaveBeenCalledWith({ t: 'claudeAccounts' }); // login state and default follow the save
+});
+
+it('offers the global default when no projects entry covers the repository', async () => {
+  hooks.store = { ...hooks.store, claudeAccounts: [{ name: 'personal', projects: [], isDefault: true, loggedIn: true, loginCommand: 'claude auth login' }] } as typeof hooks.store;
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', values: {} }) }));
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, claudeAccount: { effective: 'personal' }, inherited: { 'claude.account': { value: 'personal', source: '/home/config.json' } } }) }));
+  changeScope('home'); await settle(); changeScope('project'); await settle();
+  expect(text(elements(input('claude.account')).find((e) => e.type === 'option')!.props.children)).toBe('Use global default (personal)');
+});
+
+it('lets the user reset an unknown claude.account from the error state', async () => {
+  const error = 'claude.account in /home/config.json names "gone", which is not an account in claude.accounts; fix it before starting Claude nodes';
+  hooks.store = { ...hooks.store, claudeAccounts: [{ name: 'claude.accounts', projects: [], isDefault: false, loggedIn: null, loginCommand: '', error }] } as typeof hooks.store;
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', values: { 'claude.account': 'gone' } }) }));
+  changeScope('home'); await settle();
+  expect(text(tree)).toContain(error);
+  click('Reset to default');
+  await submit();
+  const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
+  expect(body.changes).toEqual({ 'claude.account': null });
+});
+
+it('offers no reset when the account list itself is invalid', async () => {
+  hooks.store = { ...hooks.store, claudeAccounts: [{ name: 'claude.accounts', projects: [], isDefault: false, loggedIn: null, loginCommand: '', error: 'claude.accounts in /h is invalid: x' }] } as typeof hooks.store;
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', values: { 'claude.account': 'work' } }) }));
+  changeScope('home'); await settle();
+  expect(() => button('Reset to default')).toThrow();
 });
 
 it('points to claude.accounts instead of an empty account select', async () => {

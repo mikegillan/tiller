@@ -4,8 +4,8 @@ import type http from 'node:http';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { SETTINGS_FIELDS, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
-import { canonicalProject, claudeAccounts, projectAccount } from './claude-accounts.js';
-import { ConfigFile, DEFAULTS, configEntries, effectiveProfileEntries } from './config.js';
+import { canonicalProject, projectAccount } from './claude-accounts.js';
+import { ConfigFile, DEFAULTS, claudeAccountListError, configEntries, effectiveProfileEntries, loadConfig } from './config.js';
 import type { NodeManager } from './manager.js';
 import { readBody } from './util.js';
 
@@ -107,11 +107,15 @@ export function settingsSnapshot(manager: NodeManager, scope: SettingsScope, nod
   return { scope, path, projectPath, revision: revision(layer.raw), values, entries, inherited, homeRevision: revision(read(homePath).raw), claudeAccount };
 }
 
-/** Refuse a claude.account value that is not a configured account, or any while the accounts config is invalid. */
+/**
+ * Refuse a claude.account value that is not a configured account, or any while the account list is invalid. A claude.account
+ * naming a deleted account does not block this, so Settings can replace or remove it.
+ */
 function checkAccount(home: string, value: unknown): void {
   if (value === null) return;
-  let names: string[];
-  try { names = claudeAccounts(home).map((a) => a.name); } catch (e) { throw new SettingsError(422, (e as Error).message); }
+  const listError = claudeAccountListError(home);
+  if (listError) throw new SettingsError(422, listError);
+  const names = loadConfig(null, home).claude.accounts.map((a) => a.name);
   if (typeof value !== 'string' || !names.includes(value)) throw new SettingsError(400, `claude.account: ${JSON.stringify(value)} is not an account in claude.accounts (${join(home, 'config.json')})`);
 }
 

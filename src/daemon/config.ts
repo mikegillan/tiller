@@ -276,18 +276,26 @@ export function effectiveProfileEntries(entries: Record<string, SettingsEntry>):
  * a project mapped to one account would silently run in Claude's default home, so callers that pick an account fail closed on this instead.
  */
 export function claudeAccountsError(home = homeDir()): string | undefined {
-  const path = join(home, 'config.json');
-  let claude: { accounts?: unknown; account?: unknown } | undefined;
-  try { claude = JSON.parse(readFileSync(path, 'utf8'))?.claude; } catch { return undefined; } // absent or not JSON: readLayer warns
-  if (claude?.accounts !== undefined) {
-    const r = ClaudeAccounts.safeParse(claude.accounts);
-    if (!r.success) return `claude.accounts in ${path} is invalid: ${r.error.issues.map((i) => `${['claude', 'accounts', ...i.path].join('.')}: ${i.message}`).join('; ')}`;
-  }
+  const path = join(home, 'config.json'), claude = homeClaude(path), listError = claudeAccountListError(home);
+  if (listError) return listError;
   const account = claude?.account;
   if (account !== undefined && !(Array.isArray(claude?.accounts) && claude.accounts.some((a: { name?: unknown }) => a?.name === account))) {
     return `claude.account in ${path} names ${JSON.stringify(account)}, which is not an account in claude.accounts`;
   }
   return undefined;
+}
+
+/** Why the home file's claude.accounts list itself is invalid, or undefined (claude.account aside). */
+export function claudeAccountListError(home = homeDir()): string | undefined {
+  const path = join(home, 'config.json'), accounts = homeClaude(path)?.accounts;
+  if (accounts === undefined) return undefined;
+  const r = ClaudeAccounts.safeParse(accounts);
+  return r.success ? undefined : `claude.accounts in ${path} is invalid: ${r.error.issues.map((i) => `${['claude', 'accounts', ...i.path].join('.')}: ${i.message}`).join('; ')}`;
+}
+
+/** The home file's claude group; none when absent or not JSON (readLayer warns about that). */
+function homeClaude(path: string): { accounts?: unknown; account?: unknown } | undefined {
+  try { return JSON.parse(readFileSync(path, 'utf8'))?.claude; } catch { return undefined; }
 }
 
 export function loadConfig(cwd: string | null, home = homeDir()): Config {

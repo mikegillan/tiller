@@ -81,6 +81,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     try {
       setSnapshot(await request(scope, scope === 'project' ? nodeId : undefined, { scope, ...(scope === 'project' ? { nodeId } : {}), revision: snapshot.revision, homeRevision: snapshot.homeRevision, changes }));
       setDrafts({}); setSuccess('Settings saved. New defaults apply on their next use.'); setConflict(false);
+      send({ t: 'claudeAccounts' }); // the account views (default, login state) follow the saved config
     } catch (err) { setError((err as Error).message); setConflict(!!(err as { conflict?: boolean }).conflict); }
     finally { setBusy(false); }
   }
@@ -93,21 +94,35 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     const value = drafted ? drafts[key] ?? '' : custom ? String(snapshot.values[key]) : '';
     const error = accountsError(claudeAccounts), globalDefault = snapshot.inherited[key]?.value;
     const shown = claudeAccounts?.find((a) => a.name === (value || snapshot.claudeAccount?.effective));
+    const { effective, project } = snapshot.claudeAccount ?? {};
+    // A parent folder in some account's projects decides when this repository lists none itself.
+    const none = scope === 'home' ? 'None' : project && project !== snapshot.projectPath ? `No repository-specific account (${effective} via ${project})`
+      : `Use global default (${typeof globalDefault === 'string' ? globalDefault : 'none'})`;
+    const loggedOut = shown?.loggedIn === false, probeError = shown?.error;
+    const described = [`${id}-help`, `${id}-status`, ...(loggedOut ? [`${id}-login`] : []), ...(probeError ? [`${id}-error`] : [])].join(' ');
+    // Only an unknown claude.account (say, an account since deleted) can be fixed from here: by removing it.
+    const resettable = scope === 'home' && !!error?.startsWith('claude.account in ') && Object.hasOwn(snapshot.values, key);
     return <div className="settings-field" key={key}>
       <div className="settings-label"><label id={`${id}-label`} htmlFor={id}>{label}</label><p id={`${id}-help`}>{field.help}</p></div>
       <div className="settings-control">
-        {error ? <p className="settings-account-note" role="alert">{error}</p>
+        {error ? <>
+          <p className="settings-account-note" role="alert">{error}</p>
+          {resettable && <div className="settings-detail">
+            <button type="button" className="settings-reset" disabled={busy || drafted} aria-label={`Reset to default: ${label}`} onClick={() => edit(key, null)}>Reset to default</button>
+            {drafted && <span className="settings-pending">Unsaved</span>}
+          </div>}
+        </>
         : !claudeAccounts ? <p className="settings-account-note">Loading Claude accounts…</p>
         : !claudeAccounts.length ? <p className="settings-account-note">No Claude accounts are defined. Add them as claude.accounts in ~/.tiller/config.json; see Claude accounts in docs/harnesses.md.</p>
         : <>
-          <Select id={id} disabled={busy} value={value} aria-describedby={`${id}-help`} onChange={(e) => edit(key, e.target.value || null)}>
-            <option value="">{scope === 'project' ? `Use global default (${typeof globalDefault === 'string' ? globalDefault : 'none'})` : 'None'}</option>
+          <Select id={id} disabled={busy} value={value} aria-describedby={described} onChange={(e) => edit(key, e.target.value || null)}>
+            <option value="">{none}</option>
             {value && !claudeAccounts.some((a) => a.name === value) && <option value={value}>{value} (not configured)</option>}
             {claudeAccounts.map((a) => <option key={a.name} value={a.name}>{accountOptionLabel(a)}</option>)}
           </Select>
-          <p className="settings-account-note">{accountStatus(snapshot)}</p>
-          {shown?.loggedIn === false && <p className="settings-account-note">{shown.name} is not logged in. Log in with <code className="mono">{shown.loginCommand}</code>, or /login in a node’s terminal.</p>}
-          {shown?.error && <p className="settings-account-note">{shown.error}</p>}
+          <p className="settings-account-note" id={`${id}-status`}>{accountStatus(snapshot)}</p>
+          {loggedOut && <p className="settings-account-note" id={`${id}-login`}>{shown.name} is not logged in. Log in with <code className="mono">{shown.loginCommand}</code>, or /login in a node’s terminal.</p>}
+          {probeError && <p className="settings-account-note" id={`${id}-error`}>{probeError}</p>}
           {(custom || drafted) && <div className="settings-detail">
             {custom && <><span>Custom setting</span><span aria-hidden="true">·</span><button type="button" className="settings-reset" disabled={busy} aria-label={`Reset to default: ${label}`} onClick={() => edit(key, null)}>Reset to default</button></>}
             {drafted && <span className="settings-pending">Unsaved</span>}

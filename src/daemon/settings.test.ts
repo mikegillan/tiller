@@ -292,6 +292,16 @@ describe('Claude account setting', () => {
     expect(fs.existsSync(file())).toBe(false);
   });
 
+  it('can remove a claude.account that names an account since deleted', () => {
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: accounts(), account: 'gone' } }));
+    expect(() => saveAccount('home', 'work')).not.toThrow();
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: accounts(), account: 'gone' } }));
+    expect(() => saveAccount('home', 'side', snapshot('home'))).not.toThrow(); // a valid name replaces it
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: accounts(), account: 'gone' } }));
+    expect(saveAccount('home', null).values).not.toHaveProperty('claude.account');
+    expect(homeJson().claude).not.toHaveProperty('account');
+  });
+
   it('refuses any account change while the accounts config is invalid', () => {
     fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: [{ name: 'a' }, { name: 'a', configDir: '/x' }] } }));
     expect(() => saveAccount('project', 'a')).toThrow(/claude.accounts in .* is invalid/);
