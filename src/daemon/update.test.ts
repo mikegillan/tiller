@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReleaseUpdate, UpdateStatus } from '../shared/protocol.js';
-import { applyUpdate, checkUpdate, compareVersions, createUpdater, githubReleases, githubRepo, lockFileHolder, updateLine, UPDATE_CHECK_INTERVAL, type PublishedRelease, type ReleaseSource, type Updater } from './update.js';
+import { applyUpdate, checkUpdate, compareVersions, createUpdater, gitCheckout, githubReleases, githubRepo, lockFileHolder, updateLine, UPDATE_CHECK_INTERVAL, type PublishedRelease, type ReleaseSource, type Updater } from './update.js';
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
   cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.com' },
 }).trim();
@@ -689,16 +689,20 @@ describe('automatic discovery while a UI is connected', () => {
   it('backs off offline failures, recovers automatically, and allows an explicit retry sooner', async () => {
     fakeClock();
     const { updater, list, tick } = setup();
-    list.mockRejectedValueOnce(new Error('offline'));
+    list.mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline'));
     updater.start(); await tick(0);
     expect(updater.status()).toMatchObject({ checking: false, eligible: false, fetchError: 'offline' });
     await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL);
     expect(list).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL); await updater.check();
+    // An explicit retry runs inside the backoff; failing again doubles it to 40 minutes.
+    expect(await updater.check()).toMatchObject({ fetchError: 'offline' });
     expect(list).toHaveBeenCalledTimes(2);
-    expect(updater.status().fetchError).toBeUndefined();
-    await updater.check();
+    await vi.advanceTimersByTimeAsync(40 * 60_000 - 1);
+    expect(list).toHaveBeenCalledTimes(2);
+    await tick(1);
     expect(list).toHaveBeenCalledTimes(3);
+    expect(updater.status()).toMatchObject({ checking: false, eligible: true });
+    expect(updater.status().fetchError).toBeUndefined();
     updater.stop();
   });
   it('pauses discovery during an explicitly approved install and resumes after helper failure', async () => {
@@ -739,6 +743,12 @@ describe('automatic discovery while a UI is connected', () => {
 describe('automatic discovery of a Git checkout', () => {
   beforeEach(setupCheckout);
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  it('finds the lock holder in the Git common directory', () => {
+    expect(gitCheckout(work).lockHolder()).toBeUndefined();
+    const lock = join(work, '.git/update.lock');
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, sha: 'fixture' }));
+    expect(gitCheckout(work).lockHolder()).toEqual({ path: lock, pid: process.pid, stale: false });
+  });
   it('checks past a lock whose holder exited and reports the interrupted update without removing the lock', async () => {
     fakeClock();
     commit('two'); release('v0.1.1');
