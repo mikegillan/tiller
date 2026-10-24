@@ -10,6 +10,7 @@ import { ReleaseNotes } from '../release-notes/ReleaseNotes';
 import { expectSpawn, openDialog, toast, useStore, type Dialog } from '../store';
 import { IN_APP } from '../url';
 import { UpdateDialog } from './UpdateDialog';
+import { accountsError } from '../settings/settings-model';
 import './dialogs.css';
 
 type Spawn = Extract<Dialog, { kind: 'spawn' }>;
@@ -69,7 +70,9 @@ function SpawnDialog({ d }: { d: Spawn }) {
   const [role, setRole] = useState<Role>(byPosition);
   const profile = profileFor(chosenProfile, d.parentId, role);
   const [isolate, setIsolate] = useState(false);
-  const accounts = useStore((s) => s.claudeAccounts);
+  const reply = useStore((s) => s.claudeAccounts);
+  // An invalid accounts config arrives as one error view: show the error, never offer it as an account.
+  const accountsErr = accountsError(reply), accounts = accountsErr ? undefined : reply;
   const [account, setAccount] = useState('');
   useEffect(() => { if (!d.parentId) send({ t: 'claudeAccounts' }); }, [d.parentId]);
   // A selection the latest reply no longer lists falls back to Automatic, so a stale name is never sent.
@@ -95,6 +98,7 @@ function SpawnDialog({ d }: { d: Spawn }) {
           <input className="mono" value={cwd} onChange={(e) => setCwd(e.target.value)} required placeholder="/path/to/project" />
           {IN_APP && <button type="button" className="btn" onClick={() => void pickFolder(cwd).then((p) => p && setCwd(p)).catch(() => {})}>Choose…</button>}
         </div></label>
+        {choice === 'claude' && !d.parentId && accountsErr && <p className="account-login" role="alert">{accountsErr}</p>}
         {choice === 'claude' && !d.parentId && !!accounts?.length && <>
           <label>Account<Select value={chosen?.name ?? ''} onChange={(e) => setAccount(e.target.value)} aria-describedby={chosen?.loggedIn === false || chosen?.error ? 'account-login' : undefined}>
             <option value="">Automatic (by project)</option>
