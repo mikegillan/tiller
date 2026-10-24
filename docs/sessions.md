@@ -26,7 +26,7 @@ When the app or a browser tab regains focus after more than `daemon.digestAfterM
 
 Live orchestrators are protected from being closed by accident. Agents cannot close them, the app offers Restart instead of Kill for them, and `tl kill <id>` on a root refuses with a hint; `tl kill --force <id>` overrides that. Once the process has exited, the app's exited card and Restart dialog also offer **Close**, which explicitly closes the root without restarting it. Children are kept. Worktree nodes still require the usual safe-close, Keep branch or Discard choice.
 
-`tl resume <id>` relaunches an exited Claude node with its previous conversation (`claude --resume`).
+`tl resume <id>` relaunches an exited Claude node with its previous conversation (`claude --resume`). It refuses an armed or queued node, which launches by itself; close it to drop it.
 
 ## History, follow-up and fork
 
@@ -54,7 +54,7 @@ Closing a Claude node (close, kill, prune, or closing its root) appends one line
 
 ## Resume on daemon start
 
-The daemon records which nodes are live in `state.json`. When it starts, after a crash, a kill, a reboot or `tl reload`, it resumes them, parents first. It skips nodes that no longer exist, nodes whose worktree is missing and nodes idle for more than `daemon.resumeMaxAgeDays` (default 3), and logs one summary line. Setting `daemon.resumeOnStart` to false turns this off. `tl stop` is the "do not come back" switch: it clears the live set, so the next start resumes nothing.
+The daemon records which nodes are live in `state.json`. When it starts, after a crash, a kill, a reboot or `tl reload`, it resumes them, parents first. Armed and queued nodes are not resumed; they stay held and launch by themselves. It skips nodes that no longer exist, nodes whose worktree is missing and nodes idle for more than `daemon.resumeMaxAgeDays` (default 3), and logs one summary line. Setting `daemon.resumeOnStart` to false turns this off. `tl stop` is the "do not come back" switch: it clears the live set, so the next start resumes nothing.
 
 `tl reload` works from inside a node's terminal too: a detached helper stops the daemon (keeping its live set) and starts a new one, which resumes the nodes itself. Each step is logged to `daemon.log` with a `tl reload:` prefix. If no daemon is running it just starts one.
 
