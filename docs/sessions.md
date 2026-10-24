@@ -12,9 +12,11 @@ Each tree gets a directory, `~/.tiller/sessions/<rootId>/`, created when the roo
 
 When a root is closed, its `meta.json` gets `closedAt`. On daemon start and once a day, the daemon deletes the directories whose root closed more than `daemon.sessionsKeepDays` (default 14) ago, and those whose root is gone and that nothing has written to for that long. `tl sessions clean` runs that sweep now.
 
+Memory is not swept with the session directories. When [memory](memory.md) is on, the daemon keeps it in `~/.tiller/memory/<account>.db`, one file per Claude account (`_default.db` for no account), bounded by `memory.maxMB` instead of by age. It records no message text and does not read `events.jsonl` or `archive.jsonl`.
+
 ## The event log
 
-The daemon appends one JSON line per event to `events.jsonl` in the tree's directory: spawn, close, state changes, report_outcome, each send (the human's, nodes' and the daemon's own notices) with its outcome and text, the final outcome (`settle`) of a send that was queued, withdraw, restart, resume, merge, the arming, queueing, release and launch of held spawns, and a cost snapshot at most once a minute per node. `tl log [id] [--since 2h] [--follow]` prints it; a non-root id shows only that node's events. Message text is kept here, on this machine, so the Transcript tab can show a node's conversations with its parent, its children and its peers, for closed nodes too. Agents in the tree can write this file, so the daemon checks each event's shape when it reads them and shows their text only as plain text.
+The daemon appends one JSON line per event to `events.jsonl` in the tree's directory: spawn, close, state changes, report_outcome, each send (the human's, nodes' and the daemon's own notices) with its outcome and text, each completion-gate run (`gate`: whether it passed, the command and the attempt number, never its output, and logged whether or not memory is on), the final outcome (`settle`) of a send that was queued, withdraw, restart, resume, merge, the arming, queueing, release and launch of held spawns, and a cost snapshot at most once a minute per node. `tl log [id] [--since 2h] [--follow]` prints it; a non-root id shows only that node's events. Message text is kept here, on this machine, so the Transcript tab can show a node's conversations with its parent, its children and its peers, for closed nodes too. Agents in the tree can write this file, so the daemon checks each event's shape when it reads them and shows their text only as plain text.
 
 ## The away digest
 
