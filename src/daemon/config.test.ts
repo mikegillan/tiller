@@ -41,7 +41,7 @@ describe('loadConfig', () => {
     expect(sources).toEqual({
       ...Object.fromEntries(Object.keys(sources).filter((k) => k.startsWith('profiles.')).map((k) => [k, 'default'])),
       'roles.orchestrator.model': home, 'roles.orchestrator.effort': 'default', 'roles.worker.model': proj, 'roles.worker.effort': home,
-      'claude.inheritMcpServers': proj, 'claude.accounts': 'default', 'pi.extensions': proj,
+      'claude.inheritMcpServers': proj, 'claude.accounts': 'default', 'claude.account': 'default', 'pi.extensions': proj,
       'approvals.close': home, 'approvals.merge': 'default',
       'worktrees.isolation': home, 'worktrees.branchPrefix': 'default', 'worktrees.include': proj, 'worktrees.mergeStyle': proj, 'worktrees.setup': home, 'worktrees.teardown': 'default', 'worktrees.protected': 'default', 'worktrees.taskBranch': proj,
       'gate.command': proj, 'gate.retries': home, 'gate.timeoutMinutes': 'default',
@@ -223,8 +223,9 @@ describe('claude.accounts', () => {
   it('drops accounts from a project file with a warning', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { cwd, homeDir } = setup([work], [{ name: 'evil', configDir: '/tmp/evil', projects: ['/'] }]);
-    expect(loadConfig(cwd, homeDir).claude.accounts).toEqual([work]);
-    expect(err.mock.calls[0]![0]).toContain('claude.accounts: read from the home file only');
+    writeFileSync(join(cwd, '.tiller', 'config.json'), JSON.stringify({ claude: { accounts: [], account: 'work' } }));
+    expect(loadConfig(cwd, homeDir).claude).toMatchObject({ accounts: [work], account: undefined });
+    expect(err.mock.calls[0]![0]).toContain('claude.accounts: read from the home file only; claude.account: read from the home file only');
   });
 
   it.each([

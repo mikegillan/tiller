@@ -218,7 +218,7 @@ skills, prompt templates and themes from packages still load.
 Claude nodes can run under different Claude accounts, for example a personal and a work
 subscription. Each account is a Claude config directory, which Tiller passes to Claude as
 `CLAUDE_CONFIG_DIR`. List them in the home file `~/.tiller/config.json` only; a project file's
-`claude.accounts` is ignored with a warning, so an agent cannot add or pick one:
+`claude.accounts` and `claude.account` are ignored with a warning, so an agent cannot add or pick one:
 
 ```json
 {
@@ -226,16 +226,27 @@ subscription. Each account is a Claude config directory, which Tiller passes to 
     "accounts": [
       { "name": "personal" },
       { "name": "work", "configDir": "~/.claude-work", "projects": ["~/workspace/acme"] }
-    ]
+    ],
+    "account": "personal"
   }
 }
 ```
 
-An entry without `configDir` is Claude's default home (`~/.claude`) and the default account.
-If the list is invalid, Claude nodes fail closed: root spawns, and restarts or resumes of nodes
-with an account, are refused with an error naming the problem until it is fixed.
+An entry without `configDir` is Claude's default home (`~/.claude`); at most one may omit it.
+`claude.account` names the default account, for root nodes in projects no account lists;
+unset means no account. If the list is invalid, or `claude.account` names no listed account,
+Claude nodes fail closed: root spawns, and restarts or resumes of nodes with an account, are
+refused with an error naming the problem until it is fixed.
 Do not give `~/.claude` as a `configDir`: Claude keys its keychain login by the exact
 `CLAUDE_CONFIG_DIR` string, so that would be a different, logged-out login.
+
+**In Settings**, the Claude section has a **Claude account** field. For all repositories it sets
+`claude.account`. For a repository it lists the repository's path under the chosen account's
+`projects`, and **Use global default** removes it from every account; only entries for exactly
+that path change, and a broader entry that covers the repository (such as a parent folder) stays
+and is shown as the source. Both write the home file, never the repository's
+`.tiller/config.json`. The field shows each account's login state and the login command for one
+that is logged out. Accounts themselves (name and `configDir`) are defined in the JSON only.
 
 **Log in** each account yourself, once, from a terminal, then run `claude` once in each project
 under it to finish onboarding and accept its workspace trust:
@@ -253,7 +264,7 @@ a directory that does not exist yet is shown logged out without running Claude.
 
 - A root node: the account the human chose (spawn dialog, or `tl new` / `tl spawn --account
   NAME`), else the account whose `projects` contains the node's project (the longest match
-  wins, then config order), else the default account, else Claude's default home with no account.
+  wins, then config order), else `claude.account`, else Claude's default home with no account.
 - A child: always its parent's. Agents cannot choose or change an account; a spawn with
   `account` from an agent, or a human child spawn naming another account, is refused.
 - Restart, resume and a harness change keep the account; it is never re-resolved from the

@@ -1,5 +1,5 @@
 // Per-project settings: <cwd>/.tiller/config.json, then <home>/config.json, then built-in defaults. Read fresh on every call.
-// The `daemon` group and `claude.accounts` come from the home file only. A project file may only make `approvals` stricter.
+// The `daemon` group, `claude.accounts` and `claude.account` come from the home file only. A project file may only make `approvals` stricter.
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
@@ -30,11 +30,12 @@ const CodexProfileDefaults = ProfileDefaults.superRefine((profiles, ctx) => {
 });
 const Level = z.enum(NOTIFY_LEVELS).optional();
 const AccountPath = z.string().refine((p) => isAbsolute(p) || p.startsWith('~/'), 'must be absolute or start with ~/');
-/** Home file only: Claude accounts, each a CLAUDE_CONFIG_DIR. No configDir means Claude's default home (at most one: the default account). */
+const AccountName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/, 'a name is 1-32 letters, digits, _ or -, starting with a letter or digit');
+/** Home file only: Claude accounts, each a CLAUDE_CONFIG_DIR. No configDir means Claude's default home (at most one). */
 const ClaudeAccounts = z.array(z.object({
-  name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/, 'a name is 1-32 letters, digits, _ or -, starting with a letter or digit'),
+  name: AccountName,
   configDir: AccountPath.optional(),
-  /** Root nodes whose project is inside one of these run in this account (the longest match wins). */
+  /** Root nodes whose project is inside one of these run in this account (the longest match wins; Settings writes a repo's exact path). */
   projects: z.array(AccountPath).optional(),
 }).strict()).superRefine((accounts, ctx) => {
   const names = new Set<string>(), dirs = new Set<string>();
@@ -58,9 +59,10 @@ export const ConfigFile = z.object({
   roles: z.object({ orchestrator: RoleDefaults.optional(), worker: RoleDefaults.optional() }).strict().optional(),
   /**
    * inheritMcpServers: a Claude node also loads the user's and plugins' MCP servers; the project's .mcp.json servers stay off. False gives it only tiller's.
-   * accounts (home file only): see ClaudeAccounts and docs/harnesses.md.
+   * accounts (home file only): see ClaudeAccounts and docs/harnesses.md. account (home file only): the default account, by
+   * name, for a root node whose project no account lists; unset means none (Claude's default home, no account).
    */
-  claude: z.object({ inheritMcpServers: z.boolean().optional(), accounts: ClaudeAccounts.optional() }).strict().optional(),
+  claude: z.object({ inheritMcpServers: z.boolean().optional(), accounts: ClaudeAccounts.optional(), account: AccountName.optional() }).strict().optional(),
   /**
    * extensions: which of the user's Pi extensions a Pi node loads besides tiller's adapter. "all" is what Pi's settings
    * configure; "none" is no others; a list loads only those package sources, as written in Pi's settings.
@@ -163,7 +165,7 @@ export const DEFAULTS = {
   'profiles.pi.mechanical.model': undefined, 'profiles.pi.mechanical.effort': undefined,
   'profiles.pi.reviewer.model': undefined, 'profiles.pi.reviewer.effort': undefined,
   'roles.orchestrator.model': undefined, 'roles.orchestrator.effort': undefined, 'roles.worker.model': undefined, 'roles.worker.effort': undefined,
-  'claude.inheritMcpServers': true, 'claude.accounts': [],
+  'claude.inheritMcpServers': true, 'claude.accounts': [], 'claude.account': undefined,
   'pi.extensions': 'all',
   'approvals.close': 'never', 'approvals.merge': false,
   'worktrees.isolation': 'none', 'worktrees.branchPrefix': 'tl/', 'worktrees.include': undefined, 'worktrees.mergeStyle': 'merge', 'worktrees.setup': [], 'worktrees.teardown': [],
@@ -204,7 +206,9 @@ function readLayer(path: string, isHome: boolean): ConfigFile | undefined {
   try { data = JSON.parse(raw); } catch (err) { warn(path, (err as Error).message); return undefined; }
   const bad: string[] = [];
   if (!isHome && data?.daemon !== undefined) { delete data.daemon; bad.push('daemon: read from the home file only'); }
-  if (!isHome && data?.claude?.accounts !== undefined) { delete data.claude.accounts; bad.push('claude.accounts: read from the home file only'); }
+  for (const key of ['accounts', 'account'] as const) {
+    if (!isHome && data?.claude?.[key] !== undefined) { delete data.claude[key]; bad.push(`claude.${key}: read from the home file only`); }
+  }
   const r = ConfigFile.safeParse(data);
   if (!r.success) {
     for (const i of r.error.issues) {
@@ -268,16 +272,22 @@ export function effectiveProfileEntries(entries: Record<string, SettingsEntry>):
 }
 
 /**
- * Why the home file's claude.accounts is invalid, or undefined. loadConfig drops an invalid list, but then a project mapped
- * to one account would silently run in Claude's default home, so callers that pick an account fail closed on this instead.
+ * Why the home file's claude.accounts or claude.account is invalid, or undefined. loadConfig drops an invalid value, but then
+ * a project mapped to one account would silently run in Claude's default home, so callers that pick an account fail closed on this instead.
  */
 export function claudeAccountsError(home = homeDir()): string | undefined {
   const path = join(home, 'config.json');
-  let accounts: unknown;
-  try { accounts = JSON.parse(readFileSync(path, 'utf8'))?.claude?.accounts; } catch { return undefined; } // absent or not JSON: readLayer warns
-  if (accounts === undefined) return undefined;
-  const r = ClaudeAccounts.safeParse(accounts);
-  return r.success ? undefined : `claude.accounts in ${path} is invalid: ${r.error.issues.map((i) => `${['claude', 'accounts', ...i.path].join('.')}: ${i.message}`).join('; ')}`;
+  let claude: { accounts?: unknown; account?: unknown } | undefined;
+  try { claude = JSON.parse(readFileSync(path, 'utf8'))?.claude; } catch { return undefined; } // absent or not JSON: readLayer warns
+  if (claude?.accounts !== undefined) {
+    const r = ClaudeAccounts.safeParse(claude.accounts);
+    if (!r.success) return `claude.accounts in ${path} is invalid: ${r.error.issues.map((i) => `${['claude', 'accounts', ...i.path].join('.')}: ${i.message}`).join('; ')}`;
+  }
+  const account = claude?.account;
+  if (account !== undefined && !(Array.isArray(claude?.accounts) && claude.accounts.some((a: { name?: unknown }) => a?.name === account))) {
+    return `claude.account in ${path} names ${JSON.stringify(account)}, which is not an account in claude.accounts`;
+  }
+  return undefined;
 }
 
 export function loadConfig(cwd: string | null, home = homeDir()): Config {

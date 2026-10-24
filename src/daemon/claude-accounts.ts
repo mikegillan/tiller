@@ -1,7 +1,7 @@
 // Claude accounts (home config claude.accounts): each is a CLAUDE_CONFIG_DIR, or Claude's default home when it has none.
 // A node records the account's name; its directory is looked up in the config at every launch.
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ClaudeAccountView } from '../shared/protocol.js';
@@ -23,15 +23,26 @@ export function claudeAccounts(home: string): ClaudeAccount[] {
   }));
 }
 
-/** The account a root node in `dir` runs in: the one whose project contains it (longest wins, then config order), else the default. */
-export function accountForProject(home: string, dir: string): string | undefined {
-  const accounts = claudeAccounts(home), at = expandHome(dir);
-  let best: { name: string; length: number } | undefined;
+/** A project path for comparison: expanded and, when it exists, its real path (Settings writes real paths). */
+export const canonicalProject = (path: string) => { const p = expandHome(path); try { return realpathSync(p); } catch { return p; } };
+
+/**
+ * The account a root node in `dir` runs in and why: the account whose `projects` entry contains it (longest wins, then
+ * config order; `project` is that entry), else the default account (claude.account), else none.
+ */
+export function projectAccount(home: string, dir: string): { account?: string; project?: string } {
+  const accounts = claudeAccounts(home), at = canonicalProject(dir);
+  let best: { account: string; project: string } | undefined;
   for (const a of accounts) {
-    for (const p of a.projects) if (inside(at, p) && p.length > (best?.length ?? -1)) best = { name: a.name, length: p.length };
+    for (const p of a.projects.map(canonicalProject)) if (inside(at, p) && p.length > (best?.project.length ?? -1)) best = { account: a.name, project: p };
   }
-  return best?.name ?? accounts.find((a) => !a.configDir)?.name;
+  return best ?? { account: defaultAccount(home) };
 }
+
+export const accountForProject = (home: string, dir: string): string | undefined => projectAccount(home, dir).account;
+
+/** claude.account, the default account for root nodes no `projects` entry covers. */
+const defaultAccount = (home: string): string | undefined => loadConfig(null, home).claude.account;
 
 /** CLAUDE_CONFIG_DIR for a named account (undefined: Claude's default home). Throws for an account no longer configured. */
 export function claudeConfigDir(home: string, name: string): string | undefined {
@@ -69,7 +80,7 @@ export function accountViews(home: string, path: string): Promise<ClaudeAccountV
   } catch (err) { // one view carrying the error, so the spawn dialog shows it
     return Promise.resolve([{ name: 'claude.accounts', projects: [], isDefault: false, loggedIn: null, loginCommand: '', error: (err as Error).message }]);
   }
-  const defaultName = accounts.find((a) => !a.configDir)?.name;
+  const defaultName = defaultAccount(home);
   return Promise.all(accounts.map((a) => {
     const view: ClaudeAccountView = { ...a, isDefault: a.name === defaultName, loggedIn: null, loginCommand: loginCommand(a.configDir) };
     if (a.configDir && !existsSync(a.configDir)) return { ...view, loggedIn: false, error: `${a.configDir} does not exist yet; log in to create it` };

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { token } from '../url';
-import { refreshUsage } from '../conn';
+import { refreshUsage, send } from '../conn';
 import { useStore } from '../store';
-import { buildChanges, cliStatus, efforts, fieldPreview, groups, inputValue, optionLabel, profileFields, profiles, type Field, type Scope, type SettingsSnapshot } from './settings-model';
+import { accountOptionLabel, accountStatus, accountsError, buildChanges, cliStatus, efforts, fieldPreview, groups, inputValue, optionLabel, profileFields, profiles, type Field, type Scope, type SettingsSnapshot } from './settings-model';
 import { Modal } from '../controls/Modal';
 import { Select } from '../controls/Select';
 import './settings.css';
@@ -24,6 +24,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   const usageSources = useStore((s) => s.usageSources);
   const usageScanning = useStore((s) => s.usageScanning);
   const connected = useStore((s) => s.connected);
+  const claudeAccounts = useStore((s) => s.claudeAccounts);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('Claude');
   const [scope, setScope] = useState<Scope>(nodeId ? 'project' : 'home');
@@ -49,6 +50,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   const active = sections.find((section) => section.title === category) ?? sections[0];
   const visibleFields = active.fields.filter((field) => matches(field, active.title));
   const fields = sections.flatMap((group) => group.fields);
+  useEffect(() => { send({ t: 'claudeAccounts' }); }, []);
   useEffect(() => {
     const roots = [document.documentElement, document.body].filter(Boolean);
     const overflow = roots.map((root) => root.style.overflow);
@@ -77,13 +79,46 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     if (!Object.keys(changes).length) { setDrafts({}); setSuccess('No changes to save.'); return; }
     setBusy(true); setError(''); setSuccess('');
     try {
-      setSnapshot(await request(scope, scope === 'project' ? nodeId : undefined, { scope, ...(scope === 'project' ? { nodeId } : {}), revision: snapshot.revision, changes }));
+      setSnapshot(await request(scope, scope === 'project' ? nodeId : undefined, { scope, ...(scope === 'project' ? { nodeId } : {}), revision: snapshot.revision, homeRevision: snapshot.homeRevision, changes }));
       setDrafts({}); setSuccess('Settings saved. New defaults apply on their next use.'); setConflict(false);
     } catch (err) { setError((err as Error).message); setConflict(!!(err as { conflict?: boolean }).conflict); }
     finally { setBusy(false); }
   }
+  // The account options come from the configured accounts, so this field has its own control.
+  function renderAccount(field: Field) {
+    if (!snapshot) return null;
+    const { key, label } = field, id = `setting-${key}`;
+    const drafted = Object.hasOwn(drafts, key);
+    const custom = drafted ? drafts[key] !== null : Object.hasOwn(snapshot.values, key);
+    const value = drafted ? drafts[key] ?? '' : custom ? String(snapshot.values[key]) : '';
+    const error = accountsError(claudeAccounts), globalDefault = snapshot.inherited[key]?.value;
+    const shown = claudeAccounts?.find((a) => a.name === (value || snapshot.claudeAccount?.effective));
+    return <div className="settings-field" key={key}>
+      <div className="settings-label"><label id={`${id}-label`} htmlFor={id}>{label}</label><p id={`${id}-help`}>{field.help}</p></div>
+      <div className="settings-control">
+        {error ? <p className="settings-account-note" role="alert">{error}</p>
+        : !claudeAccounts ? <p className="settings-account-note">Loading Claude accounts…</p>
+        : !claudeAccounts.length ? <p className="settings-account-note">No Claude accounts are defined. Add them as claude.accounts in ~/.tiller/config.json; see Claude accounts in docs/harnesses.md.</p>
+        : <>
+          <Select id={id} disabled={busy} value={value} aria-describedby={`${id}-help`} onChange={(e) => edit(key, e.target.value || null)}>
+            <option value="">{scope === 'project' ? `Use global default (${typeof globalDefault === 'string' ? globalDefault : 'none'})` : 'None'}</option>
+            {value && !claudeAccounts.some((a) => a.name === value) && <option value={value}>{value} (not configured)</option>}
+            {claudeAccounts.map((a) => <option key={a.name} value={a.name}>{accountOptionLabel(a)}</option>)}
+          </Select>
+          <p className="settings-account-note">{accountStatus(snapshot)}</p>
+          {shown?.loggedIn === false && <p className="settings-account-note">{shown.name} is not logged in. Log in with <code className="mono">{shown.loginCommand}</code>, or /login in a node’s terminal.</p>}
+          {shown?.error && <p className="settings-account-note">{shown.error}</p>}
+          {(custom || drafted) && <div className="settings-detail">
+            {custom && <><span>Custom setting</span><span aria-hidden="true">·</span><button type="button" className="settings-reset" disabled={busy} aria-label={`Reset to default: ${label}`} onClick={() => edit(key, null)}>Reset to default</button></>}
+            {drafted && <span className="settings-pending">Unsaved</span>}
+          </div>}
+        </>}
+      </div>
+    </div>;
+  }
   function renderField(field: Field) {
     if (!snapshot) return null;
+    if (field.key === 'claude.account') return renderAccount(field);
     const { key, label } = field;
     const { drafted, explicit, entry, raw, previewUnavailable } = fieldPreview(snapshot, drafts, field);
     const action = explicit ? scope === 'project' ? 'Remove repository override' : 'Use inherited default' : scope === 'project' ? 'Customize for this repository' : 'Customize globally';

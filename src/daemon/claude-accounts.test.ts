@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { accountForProject, accountViews, claudeAccounts, claudeConfigDir, claudeHomes, loginCommand } from './claude-accounts.js';
+import { accountForProject, accountViews, claudeAccounts, claudeConfigDir, claudeHomes, loginCommand, projectAccount } from './claude-accounts.js';
 
 let dir: string, home: string;
 beforeEach(() => {
@@ -12,7 +12,7 @@ beforeEach(() => {
   mkdirSync(home);
 });
 afterEach(() => { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); });
-const configure = (accounts: unknown) => writeFileSync(join(home, 'config.json'), JSON.stringify({ claude: { accounts } }));
+const configure = (accounts: unknown, account?: string) => writeFileSync(join(home, 'config.json'), JSON.stringify({ claude: { accounts, account } }));
 
 describe('account lookup', () => {
   it('canonicalizes configDir and projects: ~/ expanded, no trailing slash', () => {
@@ -22,18 +22,24 @@ describe('account lookup', () => {
     expect(claudeHomes(home)).toEqual([undefined, join(dir, 'x')]);
   });
 
-  it('maps a project to the longest matching entry, then config order, then the named default', () => {
-    configure([
+  it('maps a project to the longest matching entry, then config order, then claude.account', () => {
+    const accounts = [
       { name: 'personal' },
       { name: 'broad', configDir: '/c/broad', projects: ['/ws'] },
       { name: 'first', configDir: '/c/first', projects: ['/ws/repo'] },
       { name: 'second', configDir: '/c/second', projects: ['/ws/repo'] },
-    ]);
-    expect(accountForProject(home, '/ws/repo/sub')).toBe('first');
-    expect(accountForProject(home, '/ws/other')).toBe('broad');
-    expect(accountForProject(home, '/ws-not-inside')).toBe('personal');
-    configure([{ name: 'work', configDir: '/c/w', projects: ['/ws'] }]);
+    ];
+    configure(accounts, 'second');
+    expect(projectAccount(home, '/ws/repo/sub')).toEqual({ account: 'first', project: '/ws/repo' });
+    expect(projectAccount(home, '/ws/other')).toEqual({ account: 'broad', project: '/ws' });
+    expect(projectAccount(home, '/ws-not-inside')).toEqual({ account: 'second' });
+    configure(accounts); // an entry without configDir is only Claude's default home, not the default account
     expect(accountForProject(home, '/elsewhere')).toBeUndefined();
+  });
+
+  it('fails closed when claude.account names no configured account', () => {
+    configure([{ name: 'work', configDir: '/c/w' }], 'gone');
+    expect(() => accountForProject(home, '/elsewhere')).toThrow(`claude.account in ${join(home, 'config.json')} names "gone", which is not an account in claude.accounts`);
   });
 
   it('names an unconfigured account in its error', () => {
@@ -74,7 +80,7 @@ esac
     chmodSync(join(bin, 'claude'), 0o755);
     mkdirSync(join(dir, 'in'));
     mkdirSync(join(dir, 'out'));
-    configure([{ name: 'personal' }, { name: 'work', configDir: '~/in' }, { name: 'side', configDir: '~/out' }, { name: 'new', configDir: '~/missing' }]);
+    configure([{ name: 'personal' }, { name: 'work', configDir: '~/in' }, { name: 'side', configDir: '~/out' }, { name: 'new', configDir: '~/missing' }], 'personal');
     const views = await accountViews(home, `${bin}:/usr/bin:/bin`);
     expect(views).toEqual([
       { name: 'personal', projects: [], isDefault: true, loggedIn: false, loginCommand: 'claude auth login' },

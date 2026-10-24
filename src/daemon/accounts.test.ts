@@ -71,11 +71,18 @@ describe('which account a node runs in', () => {
     expect(env()).not.toHaveProperty('CLAUDE_CONFIG_DIR');
   });
 
-  it('the named default (no configDir) runs in Claude\'s default home', async () => {
-    configure([{ name: 'personal' }, { name: 'work', configDir: '~/.claude-work', projects: ['~/work'] }]);
+  it('claude.account is the default for unmapped projects; a mapping wins over it', async () => {
+    const accounts = [{ name: 'personal' }, { name: 'work', configDir: '~/.claude-work', projects: ['~/work'] }];
+    configure(accounts, { claude: { accounts, account: 'personal' } });
     const { id } = await spawn({ cwd: plain });
     expect(m.registry.get(id)!.account).toBe('personal');
     expect(env()).not.toHaveProperty('CLAUDE_CONFIG_DIR');
+    expect(m.registry.get((await spawn()).id)!.account).toBe('work');
+    configure(accounts, { claude: { accounts, account: 'work' } });
+    expect(m.registry.get((await spawn({ cwd: plain })).id)!.account).toBe('work');
+    expect(env().CLAUDE_CONFIG_DIR).toBe(workDir);
+    configure(accounts, { claude: { accounts, account: 'gone' } });
+    await expect(spawn({ cwd: plain })).rejects.toThrow(/claude\.account .* names "gone"/);
   });
 
   it('the human\'s explicit account wins over the mapping; an unknown one is refused', async () => {

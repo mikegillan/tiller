@@ -23,7 +23,7 @@ vi.mock('react', async (original) => ({
   },
 }));
 vi.mock('../store', () => ({ useStore: (select: (s: unknown) => unknown) => select(hooks.store) }));
-vi.mock('../conn', () => ({ refreshUsage: vi.fn() }));
+vi.mock('../conn', () => ({ refreshUsage: vi.fn(), send: vi.fn() }));
 vi.mock('../url', () => ({ token: () => 'test' }));
 const snapshot: SettingsSnapshot = { scope: 'project', path: '/repo/.tiller/config.json', projectPath: '/repo', revision: 'r1', values: { 'profiles.claude.implementation.model': 'custom' }, entries: { 'profiles.claude.implementation.model': { value: 'custom', source: '/repo/.tiller/config.json' } }, inherited: { 'profiles.claude.implementation.model': { value: 'legacy-worker', source: '/home/config.json' } } };
 let tree: ReactElement<Record<string, any>>;
@@ -182,6 +182,38 @@ it('discards custom edits, and global saves omit the repository node', async () 
   await submit();
   const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
   expect(body).toEqual({ scope: 'home', revision: 'r1', changes: { 'profiles.claude.implementation.model': 'sonnet' } });
+});
+
+it('edits the Claude account in both scopes, with login state, and sends the home revision', async () => {
+  const accounts = [
+    { name: 'personal', projects: [], isDefault: true, loggedIn: true, email: 'me@example.com', loginCommand: 'claude auth login' },
+    { name: 'work', configDir: '/c/w', projects: [], isDefault: false, loggedIn: false, loginCommand: 'CLAUDE_CONFIG_DIR=/c/w claude auth login' },
+  ];
+  hooks.store = { ...hooks.store, claudeAccounts: accounts } as typeof hooks.store;
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', values: { 'claude.account': 'personal' }, claudeAccount: { effective: 'personal' } }) }));
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, homeRevision: 'h1', claudeAccount: { effective: 'work', project: '/' }, inherited: { ...snapshot.inherited, 'claude.account': { value: 'personal', source: '/home/config.json' } } }) }));
+  const select = () => input('claude.account');
+  const options = () => elements(select()).filter((e) => e.type === 'option').map((e) => text(e.props.children));
+  changeScope('home'); await settle();
+  expect(options()[0]).toBe('None');
+  expect(select().props.value).toBe('personal');
+  expect(text(tree)).toContain('Custom setting');
+  expect(text(tree)).toContain('Root nodes outside listed projects run in personal.');
+  changeScope('project'); await settle();
+  expect(options()).toEqual(['Use global default (personal)', 'personal · me@example.com', 'work · not logged in']);
+  expect(text(tree)).toContain('Currently from work via /.');
+  expect(text(tree)).toContain('CLAUDE_CONFIG_DIR=/c/w claude auth login');
+  select().props.onChange({ target: { value: 'personal' } }); render();
+  await submit();
+  const body = JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')?.[1]?.body));
+  expect(body).toEqual({ scope: 'project', nodeId: 'n1', revision: 'r1', homeRevision: 'h1', changes: { 'claude.account': 'personal' } });
+});
+
+it('points to claude.accounts instead of an empty account select', async () => {
+  hooks.store = { ...hooks.store, claudeAccounts: [] } as typeof hooks.store;
+  render();
+  expect(elements(tree).some((e) => e.props.id === 'setting-claude.account')).toBe(false);
+  expect(text(tree)).toContain('No Claude accounts are defined. Add them as claude.accounts in ~/.tiller/config.json');
 });
 
 it('retains drafts and disables saving on a revision conflict until reload', async () => {
