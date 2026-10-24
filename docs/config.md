@@ -99,8 +99,9 @@ these are effective defaults, not overrides stored in your global file.
 
 Existing `roles` settings apply only to Claude; they never supply Claude model IDs
 to Codex or Pi. Model IDs in explicit spawn arguments and presets pass through
-unchanged. Resolved profile, model and effort are retained through resume, restart
-and follow-up; config edits affect new spawns. Live harness reports take precedence
+unchanged. Resolved profile, model and effort are retained through resume and
+follow-up; config edits affect new spawns and, for a model or effort that came from
+config rather than a spawn argument or preset, the node's next restart. Live harness reports take precedence
 for model/effort display.
 
 To customize Codex task defaults, add the desired fields to either config file:
