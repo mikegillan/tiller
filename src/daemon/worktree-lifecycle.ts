@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import type { GitState, NodeStatus, Worktree } from '../shared/protocol.js';
+import { claudeHomes } from './claude-accounts.js';
 import { loadConfig, type MergeStyle } from './config.js';
 import type { NodeManager } from './manager.js';
 import { buildChildEnv } from './pty.js';
@@ -47,7 +48,7 @@ export interface WorktreeReport {
 }
 
 /**
- * Whether we may answer Claude's folder-trust dialog for `cwd`. Only when ~/.claude.json already
+ * Whether we may answer Claude's folder-trust dialog for `cwd`. Only when the node's .claude.json already
  * records trust for the cwd or one of its ancestors; otherwise the human has to decide.
  */
 export function trustPolicy(cwd: string, claudeJson: unknown): 'auto' | 'manual' {
@@ -65,14 +66,18 @@ export function trustedForWorktree(repo: string, claudeJson: unknown): boolean {
   return trusted(claudeJson, repo);
 }
 
-/** Whether ~/.claude.json records trust for exactly `dir`. */
+/** Whether a .claude.json records trust for exactly `dir`. */
 function trusted(claudeJson: unknown, dir: string): boolean {
   return (claudeJson as { projects?: Record<string, { hasTrustDialogAccepted?: unknown }> } | null)?.projects?.[dir]?.hasTrustDialogAccepted === true;
 }
 
-export function readClaudeJson(): unknown {
-  try { return JSON.parse(readFileSync(join(homedir(), '.claude.json'), 'utf8')); } catch { return null; }
+/** A Claude home's .claude.json (trust lives there): `<configDir>/.claude.json`, or ~/.claude.json for the default home. */
+export function readClaudeJson(configDir?: string): unknown {
+  try { return JSON.parse(readFileSync(configDir ? join(configDir, '.claude.json') : join(homedir(), '.claude.json'), 'utf8')); } catch { return null; }
 }
+
+/** Whether any Claude home Tiller knows trusts `dir`: commands Tiller runs itself are not tied to one account. */
+export const claudeTrustsAny = (home: string, dir: string): boolean => claudeHomes(home).some((d) => trustPolicy(dir, readClaudeJson(d)) === 'auto');
 
 /**
  * Give a node its worktree, branched from the tip of branch `baseBranch` (absent: the HEAD of the checkout its cwd is in),
@@ -320,10 +325,10 @@ async function mergedAt(w: Worktree): Promise<number | undefined> {
   return w.merged && (await branchTip(w)) === w.merged.tip ? w.merged.at : undefined;
 }
 
-/** The configured setup or teardown commands for a repo, or none when Claude does not trust it (trustPolicy is not auto). */
+/** The configured setup or teardown commands for a repo, or none unless `tl trust` or some Claude home trusts it. */
 export function worktreeCommands(m: NodeManager, repo: string, kind: 'setup' | 'teardown'): string[] {
   const cmds = loadConfig(repo, m.home).worktrees[kind];
-  return cmds.length && (tillerTrusts(m.home, repo) || trustPolicy(repo, readClaudeJson()) === 'auto') ? cmds : [];
+  return cmds.length && (tillerTrusts(m.home, repo) || claudeTrustsAny(m.home, repo)) ? cmds : [];
 }
 
 export function worktreeEnv(m: NodeManager, id: string, w: Pick<Worktree, 'repo' | 'path' | 'base'>): Record<string, string> {

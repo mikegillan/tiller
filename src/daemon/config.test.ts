@@ -30,7 +30,7 @@ describe('loadConfig', () => {
         codex: { orchestrator: {}, implementation: {}, explorer: {}, mechanical: {}, reviewer: {} },
         pi: { orchestrator: {}, implementation: {}, explorer: {}, mechanical: {}, reviewer: {} },
       },
-      roles: { orchestrator: { model: 'opus' }, worker: { model: 'haiku', effort: 'high' } }, claude: { inheritMcpServers: false }, pi: { extensions: ['npm:pi-web-access'] }, approvals: { close: 'done', merge: false },
+      roles: { orchestrator: { model: 'opus' }, worker: { model: 'haiku', effort: 'high' } }, claude: { inheritMcpServers: false, accounts: [] }, pi: { extensions: ['npm:pi-web-access'] }, approvals: { close: 'done', merge: false },
       worktrees: { isolation: 'worktree', branchPrefix: 'tl/', include: ['.env'], mergeStyle: 'squash', setup: ['npm ci'], teardown: [], protected: ['main', 'master'], taskBranch: 'feat/{slug}' }, // include replaces the home list whole
       gate: { command: 'npm test', retries: 5, timeoutMinutes: 10 }, // each gate key resolves on its own
       daemon: { resumeOnStart: true, resumeMaxAgeDays: 7, sessionsKeepDays: 14, digestAfterMinutes: 30, maxLiveNodes: 20, maxWorking: 4 },
@@ -41,7 +41,7 @@ describe('loadConfig', () => {
     expect(sources).toEqual({
       ...Object.fromEntries(Object.keys(sources).filter((k) => k.startsWith('profiles.')).map((k) => [k, 'default'])),
       'roles.orchestrator.model': home, 'roles.orchestrator.effort': 'default', 'roles.worker.model': proj, 'roles.worker.effort': home,
-      'claude.inheritMcpServers': proj, 'pi.extensions': proj,
+      'claude.inheritMcpServers': proj, 'claude.accounts': 'default', 'claude.account': 'default', 'pi.extensions': proj,
       'approvals.close': home, 'approvals.merge': 'default',
       'worktrees.isolation': home, 'worktrees.branchPrefix': 'default', 'worktrees.include': proj, 'worktrees.mergeStyle': proj, 'worktrees.setup': home, 'worktrees.teardown': 'default', 'worktrees.protected': 'default', 'worktrees.taskBranch': proj,
       'gate.command': proj, 'gate.retries': home, 'gate.timeoutMinutes': 'default',
@@ -197,5 +197,50 @@ describe('loadConfig', () => {
     loadConfig(cwd, homeDir);
     expect(err).toHaveBeenCalledTimes(1);
     err.mockRestore();
+  });
+});
+
+describe('claude.accounts', () => {
+  let dir = '';
+  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); rmSync(dir, { recursive: true, force: true }); });
+  const setup = (home: unknown, project?: unknown) => {
+    dir = mkdtempSync(join(tmpdir(), 'tl-acct-cfg-'));
+    vi.stubEnv('HOME', dir);
+    const cwd = join(dir, 'repo'), homeDir = join(dir, 'tl');
+    mkdirSync(join(cwd, '.tiller'), { recursive: true });
+    mkdirSync(homeDir);
+    writeFileSync(join(homeDir, 'config.json'), JSON.stringify({ claude: { accounts: home } }));
+    if (project !== undefined) writeFileSync(join(cwd, '.tiller', 'config.json'), JSON.stringify({ claude: { accounts: project } }));
+    return { cwd, homeDir };
+  };
+  const work = { name: 'work', configDir: '~/.claude-work', projects: ['~/workspace/bloksec', '/abs/x'] };
+
+  it('reads the list from the home file', () => {
+    const { homeDir } = setup([{ name: 'personal' }, work]);
+    expect(loadConfig(null, homeDir).claude.accounts).toEqual([{ name: 'personal' }, work]);
+  });
+
+  it('drops accounts from a project file with a warning', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { cwd, homeDir } = setup([work], [{ name: 'evil', configDir: '/tmp/evil', projects: ['/'] }]);
+    writeFileSync(join(cwd, '.tiller', 'config.json'), JSON.stringify({ claude: { accounts: [], account: 'work' } }));
+    expect(loadConfig(cwd, homeDir).claude).toMatchObject({ accounts: [work], account: undefined });
+    expect(err.mock.calls[0]![0]).toContain('claude.accounts: read from the home file only; claude.account: read from the home file only');
+  });
+
+  it.each([
+    ['a bad name', [{ name: 'has space' }]],
+    ['a duplicate name', [{ name: 'a', configDir: '/x' }, { name: 'a', configDir: '/y' }]],
+    ['two entries without configDir', [{ name: 'a' }, { name: 'b' }]],
+    ['a relative configDir', [{ name: 'a', configDir: 'rel/dir' }]],
+    ['a relative project', [{ name: 'a', configDir: '/x', projects: ['rel'] }]],
+    ['configDir naming the default home', [{ name: 'a', configDir: '~/.claude/' }]],
+    ['two accounts with one configDir', [{ name: 'a', configDir: '~/w' }, { name: 'b', configDir: '~/w/' }]],
+  ])('drops the whole list for %s', (_, accounts) => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { homeDir } = setup(accounts);
+    expect(loadConfig(null, homeDir).claude.accounts).toEqual([]);
+    expect(err).toHaveBeenCalledTimes(1);
+    expect(err.mock.calls[0]![0]).toContain('claude.accounts');
   });
 });

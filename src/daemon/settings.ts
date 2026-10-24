@@ -4,7 +4,8 @@ import type http from 'node:http';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { SETTINGS_FIELDS, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
-import { ConfigFile, DEFAULTS, configEntries, effectiveProfileEntries } from './config.js';
+import { canonicalProject, projectAccount } from './claude-accounts.js';
+import { ConfigFile, DEFAULTS, claudeAccountListError, configEntries, effectiveProfileEntries, loadConfig } from './config.js';
 import type { NodeManager } from './manager.js';
 import { readBody } from './util.js';
 
@@ -91,14 +92,57 @@ export function settingsSnapshot(manager: NodeManager, scope: SettingsScope, nod
   for (const [key, entry] of Object.entries(effective)) if (key.startsWith('roles.')) resetEntries[key] = entry;
   Object.assign(entries, effectiveProfileEntries(effective));
   for (const [key, entry] of Object.entries(effectiveProfileEntries(resetEntries))) if (key.startsWith('profiles.')) inherited[key] = entry;
-  return { scope, path, projectPath, revision: revision(layer.raw), values: flatten(layer.data), entries, inherited };
+  const values = flatten(layer.data);
+  let claudeAccount: SettingsSnapshot['claudeAccount'] = { effective: entries['claude.account']?.value as string | undefined };
+  if (scope === 'project') {
+    // The repo's choice is the account listing its exact path in the home file; a repo file's own claude.account is never read.
+    delete values['claude.account'];
+    let resolved: { account?: string; project?: string } = {};
+    try { resolved = projectAccount(home, projectPath!); } catch { /* an invalid list: the account views report it */ }
+    const { account, project } = resolved;
+    claudeAccount = { effective: account, ...(project ? { project } : {}) };
+    if (project === projectPath) values['claude.account'] = account;
+    entries['claude.account'] = { value: account, source: project || inherited['claude.account']?.value !== undefined ? homePath : 'default' };
+  }
+  return { scope, path, projectPath, revision: revision(layer.raw), values, entries, inherited, homeRevision: revision(read(homePath).raw), claudeAccount };
+}
+
+/**
+ * Refuse a claude.account value that is not a configured account, or any while the account list is invalid. A claude.account
+ * naming a deleted account does not block this, so Settings can replace or remove it.
+ */
+function checkAccount(home: string, value: unknown): void {
+  if (value === null) return;
+  const listError = claudeAccountListError(home);
+  if (listError) throw new SettingsError(422, listError);
+  const names = loadConfig(null, home).claude.accounts.map((a) => a.name);
+  if (typeof value !== 'string' || !names.includes(value)) throw new SettingsError(400, `claude.account: ${JSON.stringify(value)} is not an account in claude.accounts (${join(home, 'config.json')})`);
+}
+
+/** List `project` (a real path) under `account`'s projects in home file data, and remove its exact entries from every other account. */
+function moveProject(data: Record<string, unknown>, project: string, account: string | null): void {
+  const accounts = ((data.claude as Record<string, unknown> | undefined)?.accounts ?? []) as { name: string; projects?: string[] }[];
+  for (const a of accounts) if (a.projects) a.projects = a.projects.filter((p) => canonicalProject(p) !== project);
+  if (account) (accounts.find((a) => a.name === account)!.projects ??= []).push(project);
 }
 export function updateSettings(manager: NodeManager, update: SettingsUpdate): SettingsSnapshot {
-  const { scope, nodeId, changes } = update;
-  const { path } = target(manager, scope, nodeId);
+  const { scope, nodeId } = update, changes = { ...update.changes };
+  const { path, projectPath, homePath } = target(manager, scope, nodeId);
   settingsSnapshot(manager, scope, nodeId); // Refuse unreadable inherited layers before writing.
   const before = read(path);
   if (revision(before.raw) !== update.revision) throw new SettingsError(409, 'Settings changed; reload before saving');
+  // A repo's account is chosen in the home file (agents can edit the repo's), so it is checked against the home revision.
+  let home: { data: Record<string, unknown>; revision: string } | undefined;
+  if (Object.hasOwn(changes, 'claude.account')) {
+    checkAccount(dirname(homePath), changes['claude.account']);
+    if (scope === 'project') {
+      const layer = read(homePath);
+      if (update.homeRevision === undefined || revision(layer.raw) !== update.homeRevision) throw new SettingsError(409, 'Settings changed; reload before saving');
+      moveProject(layer.data, projectPath!, changes['claude.account'] as string | null);
+      home = { data: layer.data, revision: update.homeRevision };
+      delete changes['claude.account'];
+    }
+  }
   for (const [key, value] of Object.entries(changes)) {
     if (scope === 'project' && key.startsWith('daemon.')) throw new SettingsError(400, 'daemon settings are home-only');
     validate(key, value);
@@ -113,6 +157,13 @@ export function updateSettings(manager: NodeManager, update: SettingsUpdate): Se
     if (value === null) delete parent[parts.at(-1)!];
     else parent[parts.at(-1)!] = value;
   }
+  if (home) writeConfig(homePath, home.data, home.revision);
+  if (!home || Object.keys(changes).length) writeConfig(path, before.data, update.revision);
+  return settingsSnapshot(manager, scope, nodeId);
+}
+
+/** Atomically replace `path` with `data`, unless the file no longer has `expected` revision. */
+function writeConfig(path: string, data: Record<string, unknown>, expected: string): void {
   // Synchronous read/check/rename serializes this daemon's writers, including different HTTP requests.
   // External editors are detected up to the final check; portable rename has no cross-process CAS.
   fs.mkdirSync(dirname(path), { recursive: true });
@@ -120,21 +171,20 @@ export function updateSettings(manager: NodeManager, update: SettingsUpdate): Se
   const temp = join(dirname(path), `.config-${randomUUID()}.tmp`);
   let fd: number | undefined;
   try {
-    fd = fs.openSync(temp, 'wx', before.raw === null ? 0o600 : fs.statSync(path).mode & 0o777);
-    fs.writeFileSync(fd, JSON.stringify(before.data, null, 2) + '\n');
+    fd = fs.openSync(temp, 'wx', fs.existsSync(path) ? fs.statSync(path).mode & 0o777 : 0o600);
+    fs.writeFileSync(fd, JSON.stringify(data, null, 2) + '\n');
     fs.fsyncSync(fd);
     fs.closeSync(fd); fd = undefined;
-    if (revision(read(path).raw) !== update.revision) throw new SettingsError(409, 'Settings changed; reload before saving');
+    if (revision(read(path).raw) !== expected) throw new SettingsError(409, 'Settings changed; reload before saving');
     fs.renameSync(temp, path);
   } finally {
     try { if (fd !== undefined) fs.closeSync(fd); }
     finally { try { fs.unlinkSync(temp); } catch (e) { if (!missing(e)) throw e; } }
   }
-  return settingsSnapshot(manager, scope, nodeId);
 }
 const selection = { scope: z.enum(['project', 'home']), nodeId: z.string().min(1).optional() };
 const querySchema = z.object(selection).strict();
-const updateSchema = z.object({ ...selection, revision: z.string().min(1), changes: z.record(z.string(), z.unknown()) }).strict();
+const updateSchema = z.object({ ...selection, revision: z.string().min(1), homeRevision: z.string().min(1).optional(), changes: z.record(z.string(), z.unknown()) }).strict();
 /** This route deliberately uses the admin bearer token alone, never node authentication or MCP. */
 export function settingsApi(manager: NodeManager, isAdmin: (token: string) => boolean) {
   return async (req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> => {
