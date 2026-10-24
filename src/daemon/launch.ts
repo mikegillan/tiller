@@ -6,8 +6,12 @@ import { profileFor, type Harness, type Profile, type Role, type Worktree } from
 import type { Preset } from './presets.js';
 
 const HOOK_SCRIPT = fileURLToPath(new URL('./hook.sh', import.meta.url));
-/** The tiller mod, loaded as a plugin dir. TL_MOD_DIR overrides it; absent directories are skipped. */
+/**
+ * The tiller mod and, beside it, mod-rows (the tiller-rows plugin, which draws received messages: Claude skips a plugin's
+ * own hooks on the rows its submit made), each loaded as a plugin dir. TL_MOD_DIR overrides the mod's; absent directories are skipped.
+ */
 const modDir = () => process.env.TL_MOD_DIR ?? fileURLToPath(new URL('../../mod', import.meta.url));
+const modDirs = () => [modDir(), join(dirname(modDir()), 'mod-rows')];
 const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'PermissionRequest', 'Stop', 'StopFailure', 'SessionEnd'];
 
 /**
@@ -184,7 +188,7 @@ export function launchArgs(i: LaunchInput): string[] {
   if (i.effort) args.push('--effort', i.effort);
   if (i.permissionMode) args.push('--permission-mode', i.permissionMode);
   if (i.worktree && !i.resume) args.push('--worktree', i.nodeId); // adopts <repo>/.claude/worktrees/<id>; --resume re-enters it by itself
-  if (existsSync(modDir())) args.push('--plugin-dir', modDir());
+  for (const dir of modDirs()) if (existsSync(dir)) args.push('--plugin-dir', dir);
   if (i.sessionDir) args.push('--add-dir', i.sessionDir);
   if (i.preset) args.push(...presetAgentArgs(i.preset));
   args.push('--settings', join(i.nodeDir, 'settings.json'), '--mcp-config', join(i.nodeDir, 'mcp.json'));

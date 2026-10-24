@@ -5,7 +5,7 @@ import { parse, request, type Ctx } from './api'
 import { Band } from './band'
 import { COMMANDS, parseSend, parseSpawn } from './commands'
 import { changes } from './notify'
-import { parseEnvelope, receivedLine, sendResult, sentLine } from './rows'
+import { sendResult, sentLine } from './rows'
 
 // tiller per-node mod. Inert unless TL_NODE_ID is set. Contract: src/shared/protocol.ts "Mod-facing HTTP API".
 const kids = atom({ plugin: 'tiller', key: 'children' } as const, [] as Child[])
@@ -122,13 +122,7 @@ export const register: Register = on => {
     return Band($.ui.resolve(e), id, await read($, kids), await read($, pend), parent, (to, label) => focus($, to, label))
   })
 
-  // Messages take one dim line in the chat; ctrl+o (isExpanded) draws them in full. Display only: what the model read is unchanged.
-  on('ui.render', { component: 'UserMessage', props: { origin: { kind: 'plugin', name: 'tiller' } } }, async ($, e, next) => {
-    const env = e.props.isExpanded ? undefined : parseEnvelope(e.props.text)
-    if (!env) return next(e)
-    const { Text } = $.ui.resolve(e)
-    return <Text dimColor wrap="truncate-end">{receivedLine(env)}</Text>
-  })
+  // Received messages are drawn by the tiller-rows plugin (mod-rows/): the engine skips this plugin's hooks on rows its own submit made.
   on('ui.render', { component: 'ToolUse', props: { tool: 'mcp__tiller__send' } }, async ($, e, next) => {
     // isExpanded is optional here: a surface that does not say (an export) draws in full.
     if (e.props.isExpanded !== false || e.props.isErrored || e.props.isInterrupted) return next(e)

@@ -31,6 +31,12 @@ describe('launchArgs', () => {
     expect(launchArgs(base)).not.toContain('--strict-mcp-config');
     expect(launchArgs(base)).toContain('/tmp/n/mcp.json');
   });
+  it('loads the mod and its tiller-rows plugin as separate plugin dirs', () => {
+    const args = launchArgs(base);
+    const dirs = args.flatMap((a, i) => a === '--plugin-dir' ? [args[i + 1]] : []);
+    expect(dirs).toHaveLength(2);
+    expect(dirs[1]).toBe(join(dirs[0], '../mod-rows'));
+  });
 });
 
 describe('Claude account environment', () => {

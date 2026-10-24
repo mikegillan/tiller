@@ -7,7 +7,7 @@ Tiller runs Claude Code, Pi and Codex sessions as child processes of a local Nod
 - `src/daemon/`: node lifecycle (`manager.ts`, `nodes.ts`, `pty.ts`), HTTP/WebSocket server (`server.ts`), CLI (`cli.ts`), agent tools (`mcp.ts`), messaging, worktrees, sessions and updates.
 - `src/shared/`: daemon/UI contracts in `protocol.ts` and shared pure helpers.
 - `adapters/pi/` and `adapters/codex/`: harness bridges; `src/daemon/harness.ts` defines the adapter boundary and launch policy. Each adapter has its own README.
-- `mod/`: Claude Code plugin. See `mod/README.md` for hook restrictions and its separate test runner.
+- `mod/`: Claude Code plugin; `mod-rows/` is its companion plugin that draws received messages. See `mod/README.md` for hook restrictions and its separate test runner.
 - `ui/`: React + xterm.js. `App.tsx` composes the shell; `sidebar/`, `settings/`, `dialogs/`, `release-notes/` and `transcript/` group features, and `controls/` holds reusable components and icons. `store.ts` holds shared UI state; component state stays with its owner. See `ui/README.md` for the module map, styles and mock daemon workflow.
 - `src-tauri/`: native Rust app shell and Tauri configuration.
 - `docs/`: behavior and configuration references, indexed in [docs/README.md](docs/README.md). `PLAN.md` and `docs/design/` contain historical design rationale; check current code and behavior docs when plans differ.
@@ -42,11 +42,11 @@ Run checks appropriate to the changed area from the repository root:
 | UI and its shared imports | `npx --no-install tsc --noEmit -p ui/tsconfig.json` |
 | Vitest suite (daemon, shared, adapters, UI) | `npm test` |
 | Focused Vitest run, for example messaging | `npm test -- src/daemon/messaging.test.ts` |
-| Claude mod | `claude plugin validate mod/` and `claude plugin test mod/` |
+| Claude mod | `claude plugin validate mod/` and `claude plugin test mod/`; the same for `mod-rows/` |
 | Release helpers | `node --test scripts/release-test.mjs` |
 | Native Rust app | `cargo test --locked --all-targets --manifest-path src-tauri/Cargo.toml` |
 
-Tests generally live beside their source as `*.test.ts` or `*.test.tsx`. Keep daemon integration tests isolated with temporary homes and ephemeral ports, as in `src/daemon/server.test.ts`. Vitest runs up to two test files at once to bound resource use for tests that create real git repositories and child processes. `mod/` tests run only through the Claude plugin runner.
+Tests generally live beside their source as `*.test.ts` or `*.test.tsx`. Keep daemon integration tests isolated with temporary homes and ephemeral ports, as in `src/daemon/server.test.ts`. Vitest runs up to two test files at once to bound resource use for tests that create real git repositories and child processes. `mod/` and `mod-rows/` tests run only through the Claude plugin runner.
 
 Implementation workers must run relevant focused tests for their changes and report the commands and results. Reviewers run targeted checks as needed to assess the diff; read-only analyses do not need broad testing. The orchestrator runs the full Vitest suite (`npm test`) once on the final integrated tree before publication.
 
