@@ -13,5 +13,5 @@ export function parseEnvelope(text: string): Envelope | undefined {
 }
 
 export function receivedLine(e: Envelope): string {
-  return `↘ message from ${e.from}${e.steer ? ' · steer' : ''} · reply-to ${e.replyTo}`
+  return `↘ message from ${e.from}${e.steer ? ' · steer' : ''}${e.replyTo === 'none' ? '' : ` · reply-to ${e.replyTo}`}`
 }
