@@ -1015,8 +1015,8 @@ export class NodeManager extends EventEmitter {
    * Flush the registry and the message inbox, and kill every PTY. The live set is kept for resume on next start, unless
    * `clearLive` (an explicit stop: do not come back). Resolves once nothing more writes into the home or a worktree: the
    * PTYs have exited, worktree setups and git refreshes in flight have settled (or SHUTDOWN_WAIT_MS has passed, safely
-   * inside the restart's wait for the old daemon), and the event appends already queued have landed. No git refresh
-   * starts once it is called.
+   * inside the restart's wait for the old daemon), the registry and inbox are written again, and the event appends
+   * already queued have landed. No git refresh starts once it is called, and no registry save after it resolves.
    */
   async shutdown(opts: { clearLive?: boolean } = {}): Promise<void> {
     if (!this.shutDown) this.registry.setStopped(this.drainState?.reason ?? 'the daemon was stopped');
@@ -1034,9 +1034,12 @@ export class NodeManager extends EventEmitter {
       if (rt.session) work.push(rt.session.terminate(wait).catch(() => false));
       work.push(gitSettled(rt));
     }
-    this.registry.flush();
+    this.registry.flush(); // now, in case the process is killed during the wait
     saveInboxForRestart(this);
     await Promise.race([Promise.all(work), sleep(wait, undefined, { ref: false })]);
+    // Again: exiting processes' last hooks and messages land during the wait. The registry then stops saving.
+    this.registry.close();
+    saveInboxForRestart(this);
     await flushEvents();
   }
 
