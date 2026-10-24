@@ -31,6 +31,13 @@ describe('spawnMsg', () => {
       .toEqual({ t: 'spawn', kind: 'terminal', title: 'terminal', cwd: '/repo', parentId: null, model: 'm' });
   });
 
+  it('sends a chosen Claude account only for a root Claude node', () => {
+    expect(spawnMsg({ parentId: null }, form('claude', { account: 'work' }))).toMatchObject({ account: 'work' });
+    expect(spawnMsg({ parentId: null }, form('claude', { account: '' }))).not.toHaveProperty('account');
+    expect(spawnMsg({ parentId: 'p' }, form('claude', { account: 'work' }))).not.toHaveProperty('account');
+    for (const choice of ['pi', 'codex', 'terminal'] as const) expect(spawnMsg({ parentId: null }, form(choice, { account: 'work' }))).not.toHaveProperty('account');
+  });
+
   it('sends a Codex agent with its selected model', () => {
     expect(spawnMsg({ parentId: null }, form('codex', { prompt: 'go', model: 'model-id' })))
       .toEqual({ t: 'spawn', kind: 'agent', harness: 'codex', title: 'codex', cwd: '/repo', parentId: null, prompt: 'go', model: 'model-id' });

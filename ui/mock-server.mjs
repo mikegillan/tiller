@@ -3,6 +3,7 @@
 // Mutations (spawn, close, restart, rename, resume, prune, select, merge, mute, dnd) work in memory; a confirm request arrives
 // 15 s after connecting. diff on a worktree node returns a made-up diff; send logs the text and replies queued.
 // history, transcript, followup and spawn with fork answer from the fake archive below; tl-d and the archived "auth refactor" have two sessions.
+// claudeAccounts answers with three accounts (one logged out); a root claude spawn takes its chosen or project-mapped account, children inherit it.
 // spawn with isolation "worktree" fakes a worktree; a plain close of a worktree node whose title contains "dirty" is refused, as the daemon would.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -30,6 +31,12 @@ let updateStatus = updateScenario ? {
 } : undefined;
 
 const now = Date.now();
+const accounts = [
+  { name: 'personal', projects: [], isDefault: true, loggedIn: true, email: 'scott@example.com', loginCommand: 'claude auth login' },
+  { name: 'work', configDir: '/Users/scott/.claude-work', projects: ['/Users/scott/code'], isDefault: false, loggedIn: true, email: 'scott@work.example', orgName: 'Work Inc', loginCommand: 'CLAUDE_CONFIG_DIR=/Users/scott/.claude-work claude auth login' },
+  { name: 'client', configDir: '/Users/scott/.claude-client', projects: [], isDefault: false, loggedIn: false, loginCommand: 'CLAUDE_CONFIG_DIR=/Users/scott/.claude-client claude auth login' },
+];
+const accountFor = (cwd) => accounts.find((a) => a.projects.some((p) => cwd === p || cwd.startsWith(`${p}/`)))?.name ?? accounts.find((a) => a.isDefault)?.name;
 const MIN = 60_000;
 const nodes = new Map();
 let dnd = { on: false };
@@ -56,7 +63,7 @@ add('tl-feat', 'tl', 'diff view', '/Users/scott/workspace/tiller/.claude/worktre
 add('tl-spike', 'tl', 'spike: tauri', '/Users/scott/workspace/tiller', 'claude', { ...SONNET, state: 'done', exited: true, ago: 5 * 3600_000, contextPct: 55, contextTokens: 110_000, contextWindow: 200_000, costUsd: 2.05, lastAssistantMessage: 'Tauri wraps the same ui/dist; WKWebView needs the DOM renderer.' });
 
 // Session 2: another project.
-add('dc', null, 'dotcms-core', '/Users/scott/code/dotcms-core', 'claude', { ...SONNET, ago: 2 * MIN, activity: 'Bash: ./mvnw -pl dotCMS test', contextPct: 88, contextTokens: 176_000, contextWindow: 200_000, costUsd: 4.4 });
+add('dc', null, 'dotcms-core', '/Users/scott/code/dotcms-core', 'claude', { ...SONNET, ago: 2 * MIN, activity: 'Bash: ./mvnw -pl dotCMS test', contextPct: 88, contextTokens: 176_000, contextWindow: 200_000, costUsd: 4.4 }, { account: 'work' });
 add('dc-mig', 'dc', 'migration', '/Users/scott/code/dotcms-core', 'claude', { ...OPUS, state: 'done', errored: true, ago: 8 * MIN, contextPct: 61, contextTokens: 122_000, contextWindow: 200_000, costUsd: 2.6, lastAssistantMessage: 'StopFailure: the turn ended with an API error (overloaded). Retry or resume.' });
 add('dc-b', 'dc', 'build', '/Users/scott/code/dotcms-core', 'terminal', { ago: 3 * MIN });
 
@@ -137,6 +144,9 @@ setInterval(() => {
   if (n && !n.status.exited && n.status.contextPct < 95) touch(n, { contextPct: n.status.contextPct + 1, costUsd: +(n.status.costUsd + 0.02).toFixed(2) });
 }, 8000);
 
+// Children inherit their parent's Claude account, as the daemon does (parents are added first).
+for (const n of nodes.values()) if (n.parentId && nodes.get(n.parentId)?.account) n.account = nodes.get(n.parentId).account;
+
 const http = createServer(async (req, res) => {
   const path = normalize(new URL(req.url, 'http://x').pathname).replace(/^(\.\.[/\\])+/, '');
   try {
@@ -200,12 +210,14 @@ wss.on('connection', (ws) => {
       case 'close': if (n?.worktree && !m.worktree && n.title.includes('dirty')) send({ t: 'error', id: m.id, message: 'worktree has 2 uncommitted files and 1 unmerged commit; close with keep or discard' });
         else if (n) { nodes.delete(m.id); broadcast({ t: 'removed', id: m.id }); } break;
       case 'prune': for (const x of [...nodes.values()]) if (x.status.exited && ![...nodes.values()].some((c) => c.parentId === x.id)) { nodes.delete(x.id); broadcast({ t: 'removed', id: x.id }); } break;
+      case 'claudeAccounts': send({ t: 'claudeAccounts', accounts }); break;
       case 'spawn': {
         if (m.fork) console.log(`spawn ${m.title} forked from ${m.fork}`);
         const id = `n${nodes.size + 1}${Date.now() % 1000}`;
         const worktree = m.isolation === 'worktree' && { repo: m.cwd, path: `${m.cwd}/.claude/worktrees/${id}`, branch: `tl/${id}`, base: 'main', baseSha: '6977f01' };
         const git = worktree && { git: { branch: worktree.branch, base: 'main', ahead: 0, behind: 0, dirty: 0, additions: 0, deletions: 0 } };
-        add(id, m.parentId ?? null, m.title, worktree ? worktree.path : m.cwd, m.kind, { model: m.model ?? 'claude-sonnet-5-5', ...git }, { ...(m.role && { role: m.role }), ...(worktree && { worktree }) });
+        const account = m.parentId ? nodes.get(m.parentId)?.account : m.kind === 'claude' ? m.account ?? accountFor(m.cwd) : undefined;
+        add(id, m.parentId ?? null, m.title, worktree ? worktree.path : m.cwd, m.kind, { model: m.model ?? 'claude-sonnet-5-5', ...git }, { ...(m.role && { role: m.role }), ...(worktree && { worktree }), ...(account && { account }) });
         broadcast({ t: 'node', node: nodes.get(id) });
         break;
       }
