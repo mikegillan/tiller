@@ -98,3 +98,55 @@ esac
     expect(view).toMatchObject({ name: 'personal', loggedIn: null, error: expect.any(String) });
   });
 });
+
+describe('accountViews refreshes', () => {
+  // Fake claude: logs "+dir" on start and "-dir" on exit, after a short pause so runs overlap.
+  const fakeClaude = () => {
+    const bin = join(dir, 'bin'), log = join(dir, 'log');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'claude'), `#!/bin/sh
+echo "+\${CLAUDE_CONFIG_DIR:-default}" >> '${log}'
+sleep 0.2
+echo "-\${CLAUDE_CONFIG_DIR:-default}" >> '${log}'
+echo '{"loggedIn":false}'; exit 1
+`);
+    chmodSync(join(bin, 'claude'), 0o755);
+    const starts = () => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter((l) => l.startsWith('+')).length : 0);
+    return { path: `${bin}:/usr/bin:/bin`, log, starts };
+  };
+
+  it('shares one probe per account between concurrent calls and reuses it briefly', async () => {
+    const { path, starts } = fakeClaude();
+    configure([{ name: 'personal' }, { name: 'work', configDir: dir }]);
+    const [a, b] = await Promise.all([accountViews(home, path), accountViews(home, path)]);
+    expect(b).toBe(a);
+    expect(starts()).toBe(2);
+    await accountViews(home, path);
+    expect(starts()).toBe(2);
+    await accountViews(home, path, Date.now() + 10_000); // stale
+    expect(starts()).toBe(4);
+  });
+
+  it('probes again when the accounts change or a configDir appears', async () => {
+    const { path, starts } = fakeClaude();
+    configure([{ name: 'personal' }]);
+    await accountViews(home, path);
+    configure([{ name: 'personal' }, { name: 'work', configDir: '~/work' }]);
+    expect((await accountViews(home, path))[1]).toMatchObject({ name: 'work', error: expect.stringContaining('does not exist') });
+    expect(starts()).toBe(2);
+    mkdirSync(join(dir, 'work')); // claude auth login created it
+    expect((await accountViews(home, path)).map((v) => v.name)).toEqual(['personal', 'work']);
+    expect(starts()).toBe(4);
+  });
+
+  it('runs at most four probes at once', async () => {
+    const { path, log } = fakeClaude();
+    const names = ['a', 'b', 'c', 'd', 'e', 'f'];
+    for (const n of names) mkdirSync(join(dir, n));
+    configure(names.map((n) => ({ name: n, configDir: `~/${n}` })));
+    expect(await accountViews(home, path)).toHaveLength(6);
+    let running = 0, peak = 0;
+    for (const line of readFileSync(log, 'utf8').split('\n').filter(Boolean)) { running += line.startsWith('+') ? 1 : -1; peak = Math.max(peak, running); }
+    expect(peak).toBe(4);
+  });
+});
