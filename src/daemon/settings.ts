@@ -30,7 +30,7 @@ function checkPath(path: string): void {
     } catch (e) { if (!missing(e)) throw e; }
   }
 }
-function read(path: string): { raw: string | null; data: Record<string, unknown> } {
+export function read(path: string): { raw: string | null; data: Record<string, unknown> } {
   checkPath(path);
   let raw: string;
   let fd: number | undefined;
@@ -55,7 +55,7 @@ function read(path: string): { raw: string | null; data: Record<string, unknown>
   }
   return { raw, data };
 }
-const revision = (raw: string | null) => createHash('sha256').update(raw === null ? 'missing' : `file:${raw}`).digest('hex');
+export const revision = (raw: string | null) => createHash('sha256').update(raw === null ? 'missing' : `file:${raw}`).digest('hex');
 function flatten(data: Record<string, unknown>, prefix = ''): Record<string, unknown> {
   return Object.fromEntries(Object.entries(data).flatMap(([k, v]) => {
     const key = prefix + k;
@@ -163,7 +163,7 @@ export function updateSettings(manager: NodeManager, update: SettingsUpdate): Se
 }
 
 /** Atomically replace `path` with `data`, unless the file no longer has `expected` revision. */
-function writeConfig(path: string, data: Record<string, unknown>, expected: string): void {
+export function writeConfig(path: string, data: Record<string, unknown>, expected: string): void {
   // Synchronous read/check/rename serializes this daemon's writers, including different HTTP requests.
   // External editors are detected up to the final check; portable rename has no cross-process CAS.
   fs.mkdirSync(dirname(path), { recursive: true });

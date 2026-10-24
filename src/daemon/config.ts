@@ -1,5 +1,6 @@
 // Per-project settings: <cwd>/.tiller/config.json, then <home>/config.json, then built-in defaults. Read fresh on every call.
-// The `daemon` group, `claude.accounts` and `claude.account` come from the home file only. A project file may only make `approvals` stricter.
+// The `daemon` group, `claude.accounts`, `claude.account`, `memory.projects` and `memory.maxMB` come from the home file only. A project file
+// may only make `approvals` and `memory.digest` stricter, and may set `memory.enabled` only to false.
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
@@ -225,6 +226,11 @@ function readLayer(path: string, isHome: boolean): ConfigFile | undefined {
   for (const key of ['accounts', 'account'] as const) {
     if (!isHome && data?.claude?.[key] !== undefined) { delete data.claude[key]; bad.push(`claude.${key}: read from the home file only`); }
   }
+  for (const key of ['projects', 'maxMB'] as const) {
+    if (!isHome && data?.memory?.[key] !== undefined) { delete data.memory[key]; bad.push(`memory.${key}: read from the home file only`); }
+  }
+  // Agents can edit a project file, so it may turn memory off but never on.
+  if (!isHome && data?.memory?.enabled === true) { delete data.memory.enabled; bad.push('memory.enabled: a project file may only set false; opt in from the home file'); }
   const r = ConfigFile.safeParse(data);
   if (!r.success) {
     for (const i of r.error.issues) {
@@ -242,12 +248,13 @@ function readLayer(path: string, isHome: boolean): ConfigFile | undefined {
 }
 
 /**
- * How strict each approvals value is: higher asks the human more often. An agent can edit its project file, so a project
- * value applies only when it is at least as strict as the home file's value, or the default when home does not set it.
+ * How strict each approvals value is: higher asks the human more often; for memory.digest, higher injects less. An agent can edit its
+ * project file, so a project value applies only when it is at least as strict as the home file's value, or the default when home does not set it.
  */
 const STRICTNESS: Partial<Record<Key, (value: unknown) => number>> = {
   'approvals.close': (value) => ['always', 'done', 'never'].indexOf(value as string),
   'approvals.merge': (value) => (value ? 0 : 1),
+  'memory.digest': (value) => ['on', 'ab', 'off'].indexOf(value as string),
 };
 
 /** Each key's effective value and where it came from: the first file that sets it, else 'default'. */
@@ -262,8 +269,9 @@ export function configEntries(cwd: string | null, home = homeDir()): Record<Key,
       const limit = set[1] ?? { value: fallback, source: 'default' };
       if (strictness(set[0].value) < strictness(limit.value)) {
         const [value, instead] = [JSON.stringify(set[0].value), JSON.stringify(limit.value)];
-        warn(set[0].source, `${key}: ${value} asks the human less often than allowed, so ${instead} (${limit.source === 'default' ? 'the default' : `from ${homeFile}`}) applies instead. `
-          + `A project file may only make approvals stricter, because agents can edit it; to allow ${value}, set ${key} to ${value} in ${homeFile}`);
+        const [looser, group] = key.startsWith('approvals.') ? ['asks the human less often', 'approvals'] : ['injects memory more often', key];
+        warn(set[0].source, `${key}: ${value} ${looser} than allowed, so ${instead} (${limit.source === 'default' ? 'the default' : `from ${homeFile}`}) applies instead. `
+          + `A project file may only make ${group} stricter, because agents can edit it; to allow ${value}, set ${key} to ${value} in ${homeFile}`);
         set = set.slice(1);
       }
     }
