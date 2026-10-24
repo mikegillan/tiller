@@ -11,6 +11,7 @@ import { NodeManager, type SpawnRequest } from './manager.js';
 import { mountMcp } from './mcp.js';
 import { transcriptFor } from './transcript.js';
 import * as wt from './worktree.js';
+import { refreshGit } from './worktree-lifecycle.js';
 
 const g = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 const commit = (dir: string, file: string) => { writeFileSync(join(dir, file), `${file}\n`); g(dir, 'add', file); g(dir, 'commit', '-qm', `add ${file}`); };
@@ -315,6 +316,18 @@ describe('git state and merge', () => {
     });
     expect(d.files[2]!.patch).toMatch(/^diff --git a\/new.txt b\/new.txt\n[^]*@@ -0,0 \+1,2 @@\n\+one\n\+two\n$/);
     expect(g(v.cwd, 'status', '--porcelain')).toBe('D  gone.txt\n?? new.txt');
+  });
+
+  it('shutdown waits for the git refresh in flight and the PTY exits, so the home can go', async () => {
+    setup();
+    const v = await spawnW();
+    writeFileSync(join(v.cwd, 'c.txt'), `${'y'.repeat(99)}\n`.repeat(Math.ceil(wt.MAX_PATCH_BYTES / 100))); // a slow diff
+    const session = m.session(v.id)!;
+    let refreshed = false;
+    refreshGit(m, v.id).then(() => { refreshed = true; }, () => { refreshed = true; });
+    await m.shutdown();
+    expect(refreshed).toBe(true);
+    expect(session.exited).toBe(true);
   });
 
   it('lists binary files and files past the patch cap without a patch', async () => {
