@@ -18,7 +18,7 @@ afterEach(async () => {
 });
 
 // The real bridge talks to a fake native app-server and the real authenticated daemon.
-async function setup(): Promise<void> {
+async function setup(opts: { terminateTimeoutMs?: number } = {}): Promise<void> {
   const bin = join(home, 'bin'); mkdirSync(bin);
   writeFileSync(join(bin, 'codex'), `#!${process.execPath}
 const { createInterface } = require('node:readline');
@@ -108,7 +108,7 @@ createInterface({ input: process.stdin }).on('line', line => {
 }
 `);
   chmodSync(join(bin, 'codex'), 0o755);
-  manager = new NodeManager({ home: join(home, 'tl'), path: `${bin}:/usr/bin:/bin` });
+  manager = new NodeManager({ home: join(home, 'tl'), path: `${bin}:/usr/bin:/bin`, ...opts });
   server = await startServer(manager, { port: 0 });
 }
 const ready = async (id: string) => {
@@ -118,7 +118,7 @@ const packets = () => readFileSync(join(home, 'rpc.jsonl'), 'utf8').trim().split
 
 describe('Codex harness', () => {
   it('keeps the host and lifecycle lock when native child exit remains unproven', async () => {
-    await setup();
+    await setup({ terminateTimeoutMs: 300 });
     writeFileSync(join(home, 'stubborn-native'), '');
     const preload = join(home, 'deny-native-kill.cjs');
     writeFileSync(preload, `const cp = require('node:child_process');
