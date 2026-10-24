@@ -27,7 +27,8 @@ function setup(): void {
   if (!template) {
     template = mkdtempSync(join(tmpdir(), 'tl-wt-template-'));
     g(template, 'init', '-q', '-b', 'dev');
-    for (const [k, v] of [['user.email', 't@example.com'], ['user.name', 'T'], ['commit.gpgsign', 'false']]) g(template, 'config', k!, v!);
+    // No detached `git maintenance run --auto` after commit: its objects/maintenance.lock can vanish mid-cpSync (ENOENT).
+    for (const [k, v] of [['user.email', 't@example.com'], ['user.name', 'T'], ['commit.gpgsign', 'false'], ['maintenance.auto', 'false']]) g(template, 'config', k!, v!);
     commit(template, 'README');
   }
   // Copy before creating any linked worktrees: each test owns its .git and all absolute worktree metadata.

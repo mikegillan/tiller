@@ -23,10 +23,14 @@ function setupCheckout() {
   if (!template) {
     dir = mkdtempSync(join(tmpdir(), 'tiller-release-test-'));
     git(dir, 'init', '-q', '--bare', '--initial-branch=main', 'origin.git');
-    git(dir, 'clone', '-q', 'origin.git', 'seed'); seed = join(dir, 'seed');
+    // No detached `git maintenance run --auto` after commit, push or fetch: its objects/maintenance.lock can vanish
+    // mid-cpSync (ENOENT). Set in each repo's own config so receive-pack, the code under test and every copy inherit it.
+    const noMaintenance = (repo: string) => git(repo, 'config', 'maintenance.auto', 'false');
+    noMaintenance(join(dir, 'origin.git'));
+    git(dir, 'clone', '-q', 'origin.git', 'seed'); seed = join(dir, 'seed'); noMaintenance(seed);
     rows = [];
     commit('README', 'first'); release('v0.1.0');
-    git(dir, 'clone', '-q', 'origin.git', 'work'); work = join(dir, 'work');
+    git(dir, 'clone', '-q', 'origin.git', 'work'); work = join(dir, 'work'); noMaintenance(work);
     git(work, 'remote', 'set-url', 'origin', 'https://github.com/example/tiller.git');
     // Keep the seed's pushes inside each copy. The template has ordinary .git directories, no linked worktrees.
     git(seed, 'remote', 'set-url', 'origin', '../origin.git');
