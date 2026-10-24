@@ -102,7 +102,7 @@ Use Node.js 24+ and run `npm ci` from the repository root. `npm run ui:dev` star
 | UI types | `npx --no-install tsc --noEmit -p ui/tsconfig.json` |
 | Full Vitest suite | `npm test` |
 | Focused tests | `npm test -- src/daemon/messaging.test.ts` |
-| Claude mod | `claude plugin validate mod/` and `claude plugin test mod/` |
+| Claude mod | `claude plugin validate mod/` and `claude plugin test mod/`; the same for `mod-rows/` |
 | Release helpers | `node --test scripts/release-test.mjs` |
 | Production UI build | `npm run ui:build` |
 | Native app tests | `cargo test --locked --all-targets --manifest-path src-tauri/Cargo.toml` |
