@@ -70,7 +70,7 @@ export function scheduleSoon(m: NodeManager): void {
  */
 function schedule(m: NodeManager): void {
   if (m.stopped) return;
-  let working = workingCount(m);
+  let working = workingCount(m), maxWorking: number | undefined; // loaded once a pass, and only for a pending node
   for (const rec of m.registry.list()) {
     const p = rec.pending, rt = m.runtimes.get(rec.id)!;
     if (!p || rt.restored) continue;
@@ -80,7 +80,7 @@ function schedule(m: NodeManager): void {
       if (!unmet.length) m.logEvent(rec.id, 'release', { after: p.after, afterSuccess: p.afterSuccess });
       if (blocked) blockedNotice(m, rec.id, blocked);
     }
-    const max = loadConfig(null, m.home).daemon.maxWorking;
+    const max = (maxWorking ??= loadConfig(null, m.home).daemon.maxWorking);
     let state: AgentState = 'armed', activity: string;
     if (unmet.length) activity = blocked ? `blocked by ${blocked}` : `after ${unmet.join(', ')}`;
     else if (isAgentKind(rec.kind) && m.draining) {
