@@ -237,7 +237,7 @@ describe('NodeManager.spawn refusal precedence', () => {
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'tl-spawn-policy-'));
     m = new NodeManager({ home, shell: '/bin/sh' });
-    vi.spyOn(PtySession, 'spawn').mockImplementation(() => ({ exited: true, kill() {}, onData() {}, onExit() {} } as unknown as PtySession));
+    vi.spyOn(PtySession, 'spawn').mockImplementation(() => ({ exited: true, kill() {}, terminate: async () => true, onData() {}, onExit() {} } as unknown as PtySession));
   });
   afterEach(async () => { await m.shutdown(); vi.restoreAllMocks(); rmSync(home, { recursive: true, force: true }); });
 
