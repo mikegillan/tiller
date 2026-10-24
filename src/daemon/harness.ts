@@ -71,14 +71,34 @@ const piRestricted = (p: Partial<Preset> | undefined) => p?.tools !== undefined 
 /** Built-ins tiller needs once --no-extensions drops them: MCP for tiller's server, codemode and tool search for its exposures. */
 const PI_BUILTINS = ['builtin:mcp', 'builtin:codemode', 'builtin:tool-search'];
 
+type PiPackage = { source: string; filtered: boolean; path?: string };
+
+/** How long a `pi list` result is reused, so one spawn's validate and launch, and the resumes at start, share one run. */
+const PI_LIST_TTL_MS = 10_000;
+const piLists = new Map<string, { at: number; packages: PiPackage[] }>();
+
+/**
+ * piPackages, reused for PI_LIST_TTL_MS per (cwd, PATH). A failed run is not cached. pi list runs synchronously, so this
+ * bounds how often it blocks the daemon.
+ */
+function piPackagesCached(cwd: string, path: string): PiPackage[] {
+  // prune: a package installed within the window is refused until it expires; key on Pi's settings files if that bites.
+  const now = Date.now(), key = `${cwd}\0${path}`, hit = piLists.get(key);
+  if (hit && now - hit.at < PI_LIST_TTL_MS) return hit.packages;
+  for (const [k, v] of piLists) if (now - v.at >= PI_LIST_TTL_MS) piLists.delete(k);
+  const packages = piPackages(cwd, path);
+  piLists.set(key, { at: now, packages });
+  return packages;
+}
+
 /**
  * The packages in the user's and the project's Pi settings, from `pi list`: each source line is followed by its install path
  * when it is installed, and a source with filters is marked "(filtered)".
  */
-export function piPackages(cwd: string, path: string): { source: string; filtered: boolean; path?: string }[] {
+export function piPackages(cwd: string, path: string): PiPackage[] {
   // prune: parses pi list's human-readable output, as Pi has no machine-readable listing; revisit if Pi adds one.
   const out = execFileSync('pi', ['list'], { cwd, env: { ...process.env, PATH: path, NO_COLOR: '1', FORCE_COLOR: '0' }, encoding: 'utf8', timeout: 10_000 });
-  const packages: { source: string; filtered: boolean; path?: string }[] = [];
+  const packages: PiPackage[] = [];
   for (const line of stripVTControlCharacters(out).split('\n')) { // in case colour is forced some other way
     const installed = /^ {4}(\S.*)$/.exec(line), source = /^ {2}(\S.*?)( \(filtered\))?$/.exec(line);
     if (installed && packages.length) packages[packages.length - 1].path = installed[1];
@@ -97,7 +117,7 @@ export function piExtensionArgs(setting: LaunchInput['piExtensions'], cwd: strin
   if (setting === undefined || setting === 'all') return [];
   const args = ['--no-extensions', ...PI_BUILTINS.flatMap((b) => ['--extension', b])];
   if (setting === 'none' || !setting.length) return args;
-  const packages = piPackages(cwd, path);
+  const packages = piPackagesCached(cwd, path);
   for (const source of setting) {
     const pkg = packages.findLast((p) => p.source === source);
     if (!pkg?.path) throw new Error(`pi.extensions lists ${source}, which is not an installed Pi package (see pi list); install it with pi install ${source} or remove it from pi.extensions`);
