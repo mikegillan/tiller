@@ -45,7 +45,7 @@ Workers that edit code in parallel get their own git worktrees, each on a branch
 
 ## Working in the app
 
-The sidebar shows your agent tree and lets you switch between sessions. Select a node to use its live terminal; the resizable **Details** drawer shows its model, effort, context usage and branch. Use **Transcript** to read current or earlier conversations, or **Diff** to review a worker's worktree changes and send line comments back to it.
+The sidebar shows your agent tree and lets you switch between sessions. Select a node to use its live terminal; the resizable **Details** drawer shows its model, effort, context usage and branch. Use **Transcript** to read a node's conversations with its parent, children and peers (tool calls are hidden unless you check **Show tool calls**) or its full transcript, including earlier sessions, or **Diff** to review a worker's worktree changes and send line comments back to it.
 
 To switch an existing agent between Claude Code, Codex and Pi, open **More actions → Change harness…**. This stops the current process and starts a fresh conversation while keeping the node, its children and worktree. Earlier transcripts remain readable. Model, effort, preset and Claude permission overrides reset to the selected harness's defaults; review the confirmation before switching. See [harness switching](docs/harnesses.md#change-an-existing-agents-harness).
 

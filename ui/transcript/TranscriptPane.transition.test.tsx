@@ -5,7 +5,7 @@ import type { Harness, Transcript } from '../../src/shared/protocol';
 import { applyServer, getState, update } from '../store';
 import { mk } from '../fixtures';
 import { send } from '../conn';
-import { TranscriptPane, TranscriptView } from './TranscriptPane';
+import { FullTranscript, TranscriptView } from './TranscriptPane';
 
 // Keep one pane's hook state and effect dependencies across renders, using the existing
 // dependency-free component-test pattern. Re-mounting would conceal the reported regression.
@@ -45,7 +45,7 @@ function elements(node: ReactNode): Element[] {
 function render() {
   hooks.cursor = 0;
   const node = getState().nodes.root;
-  const tree = TranscriptPane({ id: node.id, harness: node.harness, currentSessionId: node.sessionId, refresh: 'running' });
+  const tree = FullTranscript({ id: node.id, harness: node.harness, currentSessionId: node.sessionId, refresh: 'running' });
   const pending = hooks.pending.splice(0);
   for (const effect of pending) effect();
   return tree;

@@ -16,7 +16,7 @@ const data: Transcript = {
   ],
   sessions: [{ sessionId: 'abcdef0123456789', current: true }],
 };
-const render = (d: Transcript) => renderToStaticMarkup(<TranscriptView data={d} onSession={() => {}} />);
+const render = (d: Transcript, showTools = true) => renderToStaticMarkup(<TranscriptView data={d} onSession={() => {}} showTools={showTools} />);
 
 describe('transcript', () => {
   it('renders user and assistant turns apart, tool chips, a time where there is one, and clamps long text', () => {
@@ -26,6 +26,16 @@ describe('transcript', () => {
     expect(html.match(/<time /g)).toHaveLength(1);
     expect(html.match(/class="text clamped"/g)).toHaveLength(1);
     expect(html).toContain('Show more');
+  });
+
+  it('hides tool chips and entries that only called tools unless showTools', () => {
+    const withToolOnly: Transcript = { ...data, entries: [...data.entries, { role: 'assistant', text: '', tools: ['Bash'] }] };
+    const hidden = render(withToolOnly, false);
+    expect(hidden).not.toContain('class="tools"');
+    expect(hidden.match(/<article /g)).toHaveLength(3);
+    const shown = render(withToolOnly);
+    expect(shown).toContain('<div class="tools"><span class="chip">Bash</span></div>');
+    expect(shown.match(/<article /g)).toHaveLength(4);
   });
 
   it('labels the assistant by harness, Claude by default and Pi for a pi node', () => {

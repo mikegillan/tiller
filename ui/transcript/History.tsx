@@ -1,18 +1,15 @@
 import { useEffect, useState } from 'react';
 import { fmtAge } from '../../src/shared/format';
-import type { ArchivedNode, Outcome } from '../../src/shared/protocol';
+import type { ArchivedNode } from '../../src/shared/protocol';
 import { fmtUsd } from '../../src/shared/spend';
 import { OutcomeDetails } from '../controls/Bits';
 import { send } from '../conn';
 import { useNow } from '../hooks';
 import { Icon } from '../controls/icons';
 import { getState, openDialog, useStore, viewArchived } from '../store';
+import { OutcomeGlyph } from './parts';
 import { TranscriptPane } from './TranscriptPane';
 
-const GLYPH = { succeeded: '✓', failed: '✗' } as const; // slop-ok: outcome marks, not emoji
-const OutcomeGlyph = ({ o }: { o?: Outcome }) => (
-  <span className={`glyph ${o?.outcome ?? 'none'}`} title={o ? o.outcome : 'no outcome reported'}>{o ? GLYPH[o.outcome] : '·'}</span>
-);
 
 /** "tl/n-123 merged into main", "tl/n-123 kept", "tl/n-123 discarded", or the bare branch when its fate is unknown. */
 export const branchLine = (a: ArchivedNode) =>
@@ -53,7 +50,7 @@ export function HistoryPanel() {
           return (
             <button key={a.id} className={`arch${shown === a.id ? ' sel' : ''}`} aria-current={shown === a.id} onClick={() => viewArchived(a)}>
               <span className="l1">
-                <OutcomeGlyph o={a.outcome} />
+                <OutcomeGlyph o={a.outcome?.outcome} />
                 <span className="title">{a.title}</span>
                 <span className="age" title={`closed ${new Date(a.closedAt).toLocaleString()}`}>{fmtAge(now - a.closedAt)} ago</span>
               </span>

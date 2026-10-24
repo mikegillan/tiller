@@ -3,6 +3,7 @@
 // Mutations (spawn, close, restart, rename, resume, prune, select, merge, mute, dnd) work in memory; a confirm request arrives
 // 15 s after connecting. diff on a worktree node returns a made-up diff; send logs the text and replies queued.
 // history, transcript, followup and spawn with fork answer from the fake archive below; tl-d and the archived "auth refactor" have two sessions.
+// conversations and conversation answer from the same tree (see conversationFor); tl-test and tl-ui exchange peer messages.
 // spawn with isolation "worktree" fakes a worktree; a plain close of a worktree node whose title contains "dirty" is refused, as the daemon would.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -85,7 +86,7 @@ const FAKE_DIFF = [
 
 // Closed nodes, newest first, as the daemon's archive.jsonl would hold them.
 const archive = [
-  { id: 'a-css', rootId: 'tl', parentId: 'tl-ui', title: 'css tokens', cwd: '/Users/scott/workspace/tiller/ui', ...HAIKU, role: 'worker', sessionId: '3b1f9c20-aa11-4c55-9d0e-1f2e3d4c5b6a',
+  { id: 'a-css', rootId: 'tl', parentId: 'tl-ui', title: 'css tokens', cwd: '/Users/scott/workspace/tiller/ui', ...HAIKU, role: 'worker', sessionId: '3b1f9c20-aa11-4c55-9d0e-1f2e3d4c5b6a', branch: 'tl/a-css', branchFate: 'merged', base: 'tl/tl-ui',
     prompt: 'Move every hard-coded colour in ui/*.css into theme.css variables.', brief: 'Moved 14 colours into theme.css variables; light theme checked. Succeeded.',
     lastAssistantMessage: 'All colours now come from theme.css.', outcome: { outcome: 'succeeded', summary: 'Moved 14 colours into theme.css variables.', changedFiles: ['ui/theme.css', 'ui/layout.css'], at: now - 30 * MIN },
     spentUsd: 0.12, createdAt: now - 2 * 3600_000, closedAt: now - 30 * MIN },
@@ -125,6 +126,60 @@ function transcriptFor(id, sessionId) {
     { role: 'assistant', at: t0 + 20 * MIN, text: '', tools: ['mcp__tiller__report_outcome'] },
     { role: 'assistant', at: t0 + 21 * MIN, text: arch?.lastAssistantMessage ?? live?.status.lastAssistantMessage ?? 'Done for now.' },
   ] };
+}
+
+// Conversations: each node's upward one (with its parent, or the human for a root) and one sibling exchange. A child thread
+// has a brief, tool-only and tool-call turns, a queued-then-delivered message, a legacy message without text, an outcome,
+// and for closed or exited children a daemon notice; merged ones get a merge event. A working child has a message still queued.
+const PEERS = [['tl-test', 'tl-ui']];
+const known = (id) => nodes.get(id) ?? archive.find((a) => a.id === id);
+const titleOf = (id) => id === 'human' ? 'you' : known(id)?.title ?? id;
+const msg = (at, from, to, text, extra = {}) =>
+  ({ kind: 'message', at, sentAt: at, from, to, ...(text !== undefined && { text }), messageId: `m-${from}-${at}`, delivery: 'delivered', ...extra });
+function conversationFor(id, peer) {
+  const n = known(id);
+  if (!n || n.kind === 'terminal') return { error: `no live or archived agent node ${id}` };
+  if (peer) {
+    const [a, b] = [id, peer].sort(), t = now - 30 * MIN;
+    const items = PEERS.some((p) => p.includes(id) && p.includes(peer))
+      ? [msg(t, 'tl-test', 'tl-ui', 'Do the reconnect tests need your NodeRow change?'), msg(t + 3 * MIN, 'tl-ui', 'tl-test', 'No: the store change they use is already on main.')] : [];
+    return { a, b, relation: 'peer', titles: { [a]: titleOf(a), [b]: titleOf(b) }, items };
+  }
+  const arch = archive.find((a) => a.id === id), st = n.status ?? {};
+  const parent = n.parentId && known(n.parentId) ? n.parentId : 'human', child = parent !== 'human';
+  const t0 = (arch?.closedAt ?? now) - 40 * MIN;
+  const items = [
+    child ? { kind: 'brief', at: t0, from: parent, text: arch?.prompt ?? `Work on ${n.title}.` } : { kind: 'turn', at: t0, from: 'human', role: 'user', text: `Work on ${n.title}.` },
+    { kind: 'turn', at: t0 + MIN, from: id, role: 'assistant', text: 'I will look at the current code first.', tools: ['Read', 'Read', 'Grep'] },
+    { kind: 'turn', at: t0 + 2 * MIN, from: id, role: 'assistant', text: '', tools: ['Bash'] },
+  ];
+  if (child) items.push(
+    msg(t0 + 9 * MIN, id, parent, 'Implementation done; adding tests.'),
+    msg(t0 + 14 * MIN, parent, id, 'Also cover the reconnect path.', { sentAt: t0 + 11 * MIN }),
+    msg(t0 + 15 * MIN, id, parent, undefined), // sent before message text was recorded
+  );
+  items.push({ kind: 'turn', at: t0 + 16 * MIN, from: id, role: 'assistant', text: arch?.lastAssistantMessage ?? st.lastAssistantMessage ?? 'Done for now.', tools: ['Edit', 'Bash'] });
+  const outcome = arch?.outcome ?? (child && st.state === 'done' ? { outcome: st.errored ? 'failed' : 'succeeded', summary: st.lastAssistantMessage, at: t0 + 19 * MIN } : undefined);
+  if (outcome) items.push({ kind: 'outcome', at: t0 + 19 * MIN, from: id, outcome });
+  if (child && (arch || st.exited)) items.push(msg(t0 + 20 * MIN, 'tiller', parent, `${id} stopped: exited`, { label: `tiller (child ${id} "${n.title}" stopped: exited)` }));
+  if (arch?.branchFate === 'merged') items.push({ kind: 'event', at: t0 + 21 * MIN, id, text: `merged ${arch.branch} into ${arch.base}` });
+  if (arch) items.push({ kind: 'event', at: arch.closedAt, id, text: 'closed' });
+  if (child && !arch && st.state === 'working') items.push(msg(now - MIN, parent, id, 'When you are done, report your outcome.', { delivery: 'queued' }));
+  return { a: parent, b: id, relation: 'parent', titles: { [parent]: titleOf(parent), [id]: titleOf(id) }, items: items.sort((x, y) => x.at - y.at) };
+}
+function conversationsFor(id) {
+  const n = known(id);
+  if (!n || n.kind === 'terminal') return { error: `no live or archived agent node ${id}` };
+  const row = (subject, peer, relation, counterpart) => {
+    const c = conversationFor(subject, peer), arch = archive.find((a) => a.id === counterpart);
+    const outcome = relation === 'child' ? c.items.findLast((i) => i.kind === 'outcome')?.outcome.outcome : undefined;
+    return { id: subject, ...(peer && { with: peer }), relation, counterpart, title: titleOf(counterpart), live: counterpart === 'human' || nodes.has(counterpart),
+      ...(arch && { archived: arch }), messages: c.items.filter((i) => i.kind === 'message').length, lastAt: c.items.at(-1)?.at, ...(outcome && { outcome }) };
+  };
+  const children = [...[...nodes.values()].filter((c) => c.parentId === id && c.kind !== 'terminal'), ...archive.filter((a) => a.parentId === id)]
+    .map((c) => row(c.id, undefined, 'child', c.id)).sort((x, y) => (y.lastAt ?? 0) - (x.lastAt ?? 0));
+  const peers = PEERS.filter((p) => p.includes(id)).map((p) => p.find((x) => x !== id)).map((other) => row(id, other, 'peer', other));
+  return { items: [row(id, undefined, 'parent', n.parentId && known(n.parentId) ? n.parentId : 'human'), ...children, ...peers] };
 }
 
 const clients = new Set();
@@ -215,6 +270,8 @@ wss.on('connection', (ws) => {
         break;
       }
       case 'transcript': send({ t: 'transcript', id: m.id, ...(m.sessionId && { sessionId: m.sessionId }), ...transcriptFor(m.id, m.sessionId) }); break;
+      case 'conversations': send({ t: 'conversations', id: m.id, ...conversationsFor(m.id) }); break;
+      case 'conversation': send({ t: 'conversation', id: m.id, ...(m.with && { with: m.with }), ...conversationFor(m.id, m.with) }); break;
       case 'followup': {
         const a = archive.find((x) => x.id === m.id);
         if (!a) { send({ t: 'error', id: m.id, message: `no archived node ${m.id}` }); break; }

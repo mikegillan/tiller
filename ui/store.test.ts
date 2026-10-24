@@ -1,6 +1,6 @@
-import { expect, it } from 'vitest';
-import { mk } from './fixtures';
-import { applyServer, diffRequested, expectSpawn, getState, update, transcriptRequested } from './store';
+import { expect, it, vi } from 'vitest';
+import { conversation, mk } from './fixtures';
+import { applyServer, conversationRequested, conversationsRequested, diffRequested, expectSpawn, getState, toggleShowTools, update, transcriptRequested } from './store';
 
 it('the diff panel shows the diff reply\'s own failure, not another error for the same node', () => {
   diffRequested('a');
@@ -27,6 +27,43 @@ it('a transcript reply lands in the slot asked for and is ignored for another no
   expect(getState().transcript).toEqual({ id: 'a', sessionId: 's1' });
   applyServer({ t: 'transcript', id: 'a', sessionId: 's1', error: 'session file is gone' });
   expect(getState().transcript).toEqual({ id: 'a', sessionId: 's1', error: 'session file is gone' });
+});
+
+it('toggleShowTools persists tl.showTools per viewer and still toggles when localStorage throws', () => {
+  const saved = new Map<string, string>();
+  vi.stubGlobal('localStorage', { setItem: (k: string, v: string) => saved.set(k, v) });
+  expect(getState().showTools).toBe(false);
+  toggleShowTools();
+  expect(getState().showTools).toBe(true);
+  expect(saved.get('tl.showTools')).toBe('1');
+  vi.stubGlobal('localStorage', { setItem: () => { throw new Error('denied'); } });
+  toggleShowTools();
+  expect(getState().showTools).toBe(false);
+  vi.unstubAllGlobals();
+});
+
+it('a conversation reply lands only in the slot asked for; a stale one is ignored', () => {
+  conversationRequested('w');
+  applyServer({ t: 'conversation', id: 'w', with: 'p', ...conversation }); // the peer conversation, not the upward one
+  applyServer({ t: 'conversation', id: 'x', ...conversation });
+  expect(getState().conversation).toEqual({ id: 'w' });
+  applyServer({ t: 'conversation', id: 'w', ...conversation });
+  expect(getState().conversation?.data).toEqual(conversation);
+
+  conversationRequested('w'); // a refresh keeps the data until the reply
+  expect(getState().conversation?.data).toEqual(conversation);
+  conversationRequested('w', 'p');
+  applyServer({ t: 'conversation', id: 'w', ...conversation }); // late reply for the previous choice
+  expect(getState().conversation).toEqual({ id: 'w', with: 'p' });
+  applyServer({ t: 'conversation', id: 'w', with: 'p', error: 'no such node: p' });
+  expect(getState().conversation).toEqual({ id: 'w', with: 'p', error: 'no such node: p' });
+
+  const items = [{ id: 'w', relation: 'parent' as const, counterpart: 'root', title: 'tiller', live: true, messages: 3 }];
+  conversationsRequested('w');
+  applyServer({ t: 'conversations', id: 'other', items });
+  expect(getState().conversations).toEqual({ id: 'w' });
+  applyServer({ t: 'conversations', id: 'w', items });
+  expect(getState().conversations).toEqual({ id: 'w', items });
 });
 
 it('a history reply replaces the items', () => {
