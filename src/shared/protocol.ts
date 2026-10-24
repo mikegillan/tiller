@@ -353,6 +353,8 @@ export type ServerMessage =
   | { t: 'digest'; since: number; items: DigestItem[] } // what happened while no client was focused; sent to the client that regained focus
   | ({ t: 'diff'; id: string } & (Diff | { error: string })) // reply to a diff request: the diff, or why there is none
   | ({ t: 'transcript'; id: string; sessionId?: string } & (Transcript | { error: string })) // reply to a transcript request
+  | ({ t: 'conversations'; id: string } & ({ items: ConversationSummary[] } | { error: string })) // reply to a conversations request
+  | ({ t: 'conversation'; id: string; with?: string } & (Conversation | { error: string })) // reply to a conversation request
   | { t: 'history'; items: ArchivedNode[] }   // reply to a history request, newest closed first
   | { t: 'sent'; id: string; result: SendResult } // reply to a send request
   ;
@@ -387,6 +389,8 @@ export type ClientMessage =
   | { t: 'confirm'; confirmId: string; ok: boolean }
   | { t: 'diff'; id: string }                  // a worktree node's diff; replies diff, with error for a node without a worktree
   | { t: 'transcript'; id: string; sessionId?: string } // a live or archived Claude node's conversation (default: its current session); replies transcript
+  | { t: 'conversations'; id: string }             // a live or archived node's conversation list; replies conversations
+  | { t: 'conversation'; id: string; with?: string } // the upward conversation of id, or its peer conversation with `with`; replies conversation
   | { t: 'history'; rootId?: string; query?: string } // archived nodes, of one tree or all, optionally filtered by text in title, prompt or last message; replies history
   | { t: 'followup'; id: string; prompt: string; title?: string } // continue an archived node's session as a new live node (claude --resume <session>) that starts on `prompt`; replies node (or error)
   | { t: 'send'; id: string; text: string; mode?: SendMode } // a message from the human, as `tl send` delivers it; replies sent
@@ -396,6 +400,28 @@ export type ClientMessage =
 
 // Outcome of delivering a message into an agent node (PLAN.md §6).
 export type SendOutcome = 'delivered' | 'queued' | 'stalled' | 'expired' | 'queueFull' | 'gone' | 'refused' | 'withdrawn';
+
+/** One row of a node's conversation list. Participants are node ids, 'human' or 'tiller' (the daemon). */
+export interface ConversationSummary {
+  /** Request params that open it: `id` is the subject (upward conversation) or this node (peer); `with` is the peer. */
+  id: string; with?: string;
+  /** As seen from the node the list is for; a root's parent row has counterpart 'human'. */
+  relation: 'parent' | 'child' | 'peer';
+  counterpart: string; title: string; live: boolean;
+  /** A closed counterpart, so the UI can open its pane. */
+  archived?: ArchivedNode;
+  messages: number; lastAt?: number; outcome?: Outcome['outcome'];
+}
+export type ConversationItem =
+  | { kind: 'brief'; at: number; from: string; text: string }
+  /** text absent: sent before message text was recorded. at is the delivery time when known, sentAt when it was sent. */
+  | { kind: 'message'; at: number; sentAt: number; from: string; to: string; text?: string; label?: string; messageId: string; delivery: SendOutcome; steer?: true }
+  /** The subject's own transcript entry; a prompt typed directly into it has from 'human'. */
+  | { kind: 'turn'; at?: number; from: string; role: 'user' | 'assistant'; text: string; tools?: string[] }
+  | { kind: 'outcome'; at: number; from: string; outcome: Outcome }
+  /** A lifecycle marker such as merged, closed or restarted. */
+  | { kind: 'event'; at: number; id: string; text: string };
+export interface Conversation { a: string; b: string; relation: 'parent' | 'peer'; titles: Record<string, string>; items: ConversationItem[]; truncated?: boolean }
 /** "queue" waits for the target to be idle; "now" interrupts a working target first (a steer). */
 export type SendMode = 'queue' | 'now';
 /** `steer` is set when the message interrupts (or interrupted) the target's running turn. */
