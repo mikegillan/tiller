@@ -247,13 +247,16 @@ export async function applyUpdate(o: { repo: string; log: string; expected: Upda
 export function updateLocked(repo: string): boolean {
   return !!lockHolder(repo);
 }
+export interface LockHolder { path: string; pid?: number; stale: boolean }
 /**
  * The lock is in this checkout's Git directory, so its holder ran on this host and its pid can be probed here.
  * Only a holder proven gone is stale. Nothing here removes the lock, so `wx` creation stays the only way to take it.
  */
-function lockHolder(repo: string): { path: string; pid?: number; stale: boolean } | undefined {
+function lockHolder(repo: string): LockHolder | undefined {
   const common = execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: repo, encoding: 'utf8' }).trim();
-  const path = resolve(repo, common, UPDATE_LOCK);
+  return lockFileHolder(resolve(repo, common, UPDATE_LOCK));
+}
+export function lockFileHolder(path: string): LockHolder | undefined {
   let pid: unknown;
   try { pid = JSON.parse(readFileSync(path, 'utf8')).pid; }
   catch (e) {
@@ -312,14 +315,35 @@ async function notesTransaction<T>(path: string, change: () => T): Promise<T> {
   try { return change(); } finally { rmSync(lock); }
 }
 
-export function createUpdater(o: { repo: string; home: string; onChange(s: UpdateStatus): void; spawnHelper: (expected: UpdateStatus, onExit: (code: number | null) => void, now?: boolean) => string; source?: ReleaseSource }) {
+/** The Git operations the updater needs; tests substitute an in-memory release history. */
+export interface UpdaterCheckout {
+  /** HEAD when the updater started, or '' outside a Git checkout. */
+  head: string;
+  /** The GitHub repository named by origin, or '' without one. */
+  repository: string;
+  check(source: ReleaseSource, notesSince?: string): Promise<UpdateStatus>;
+  isAncestor(a: string, b: string): Promise<boolean>;
+  lockHolder(): LockHolder | undefined;
+}
+export function gitCheckout(repo: string): UpdaterCheckout {
+  let head = '';
+  try { head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { /* No checkout: release checks stay unavailable. */ }
+  let repository = '';
+  try { repository = githubRepo(execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) ?? ''; } catch { /* No origin: release discovery remains unavailable. */ }
+  return {
+    head, repository,
+    check: (source, notesSince) => checkUpdate(repo, source, notesSince),
+    isAncestor: (a, b) => ancestor(repo, a, b),
+    lockHolder: () => lockHolder(repo),
+  };
+}
+
+export function createUpdater(o: { repo: string; home: string; onChange(s: UpdateStatus): void; spawnHelper: (expected: UpdateStatus, onExit: (code: number | null) => void, now?: boolean) => string; source?: ReleaseSource; checkout?: UpdaterCheckout }) {
   // Keep conditional-response validators and rate-limit cooldown across checks.
   const source = o.source ?? githubReleases();
-  let runtimeSha = '';
-  try { runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: o.repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { /* No checkout: release checks stay unavailable. */ }
+  const checkout = o.checkout ?? gitCheckout(o.repo);
+  const { head: runtimeSha, repository } = checkout;
   const unavailable = runtimeSha ? undefined : 'release checks unavailable: Tiller is not running from a git checkout';
-  let repository = '';
-  try { repository = githubRepo(execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: o.repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) ?? ''; } catch { /* No origin: release discovery remains unavailable. */ }
   const notesPath = join(o.home, UPDATE_NOTES);
   let notes = readNotes(notesPath, repository, runtimeSha);
   // Establish the first-observation baseline before any network request, including offline starts.
@@ -346,8 +370,8 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
     timer = undefined;
     // A helper (possibly another daemon's) owns Git while applying an update. One that exited without
     // unlocking does not: check anyway, and the check reports the interrupted update.
-    let holder: ReturnType<typeof lockHolder>;
-    try { holder = lockHolder(o.repo); } catch { /* Let check report an unavailable checkout. */ }
+    let holder: LockHolder | undefined;
+    try { holder = checkout.lockHolder(); } catch { /* Let check report an unavailable checkout. */ }
     const live = holder && !holder.stale ? holder : undefined;
     if (applying || live) {
       nextCheckAt = Date.now() + UPDATE_CHECK_INTERVAL;
@@ -365,8 +389,8 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
       notes = readNotes(notesPath, repository, runtimeSha);
       const observed = JSON.stringify(notes);
       const previousInstalled = notes.unread?.releases[0].sha;
-      const s = await checkUpdate(o.repo, source, notes.baselineSha);
-      const canAdvance = !previousInstalled || await ancestor(o.repo, previousInstalled, runtimeSha);
+      const s = await checkout.check(source, notes.baselineSha);
+      const canAdvance = !previousInstalled || await checkout.isAncestor(previousInstalled, runtimeSha);
       notes = await notesTransaction(notesPath, () => {
         const current = readNotes(notesPath, repository, runtimeSha);
         // Another daemon may have acknowledged or discovered newer notes during this check.

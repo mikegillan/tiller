@@ -110,6 +110,16 @@ describe('PtySession', () => {
     s.kill();
   });
 
+  it('clamps screenTail to the visible rows plus the scrollback', async () => {
+    const s = PtySession.spawn({ ...base, file: '/bin/sh', args: ['-c', 'i=0; while [ $i -lt 1500 ]; do echo line-$i; i=$((i+1)); done; cat'], env: env(), rows: 10 });
+    try {
+      await until(() => { void s.flush(); return s.screenTail(5000).some((l) => l.includes('line-1499')); });
+      const tail = s.screenTail(5000);
+      expect(tail).toHaveLength(10 + 1000);
+      expect(tail).not.toContain('line-0');
+    } finally { s.kill(); }
+  });
+
   it('classifies a live screen through the headless buffer', async () => {
     const s = PtySession.spawn({ ...base, file: '/bin/sh', args: ['-c', 'printf "──────\\n❯ draft"; cat'], env: env(), rows: 10 });
     await until(() => { void s.flush(); return s.classifyScreen() === 'prompt'; });
