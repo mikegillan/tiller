@@ -19,6 +19,8 @@ let parent: string | undefined, busy = false
 let turn: string | undefined, endedTurn: string | undefined
 let prev: Child[] | null = null
 const inflight = new Set<string>()
+// Submitted but not yet acked: only the ack is retried (each poll), never the submit; the daemon would accept a second claim.
+const unacked = new Set<string>()
 const lastToast = new Map<string, number>()
 
 async function call($: any, method: string, path: string, body?: unknown) {
@@ -32,6 +34,17 @@ async function tool($: any, name: string, args: unknown): Promise<string> {
 
 async function focus($: any, id: string, label: string) {
   try { await call($, 'POST', '/focus', { id }); $.ui.toast(`→ ${label}`) } catch (err) { $.ui.toast(`tiller: focus failed: ${err}`) }
+}
+
+async function ack($: any, id: string) {
+  try {
+    await call($, 'POST', '/ack', { id })
+    unacked.delete(id)
+    inflight.delete(id)
+  } catch (err) {
+    if (!unacked.has(id) && !quiet) $.ui.log(`tiller: ack ${id} failed, retrying: ${err}`)
+    unacked.add(id)
+  }
 }
 
 function forward($: any, event: string, payload: unknown) {
@@ -67,7 +80,13 @@ async function poll($: any) {
     endedTurn = ended ? turn : undefined
     if (prev) for (const c of changes(prev, list)) await notify($, c.key, c.text)
     prev = list
-    const msgs = (await call($, 'GET', '/inbox')).filter((m: any) => !inflight.has(m.id))
+    const all: any[] = await call($, 'GET', '/inbox')
+    const msgs = all.filter(m => !inflight.has(m.id)) // before the retries below take acked ids out of inflight
+    for (const id of unacked) {
+      // Gone from the inbox: acked by the UserPromptSubmit hook, or retired. Otherwise retry the ack.
+      if (all.some(m => m.id === id)) await ack($, id)
+      else { unacked.delete(id); inflight.delete(id) }
+    }
     await update($, pend, () => inflight.size + msgs.length)
     for (const m of msgs) {
       // While a turn runs, hold a message in the daemon so its sender can still withdraw it; a steer goes now.
@@ -77,10 +96,9 @@ async function poll($: any) {
       if (m.steer && turn) await $.turn.abort({ turnId: turn }).catch(() => {}) // the turn may have just ended
       await notify($, `msg:${m.from}`, `message from ${m.from}`)
       // submit resolves once the prompt is accepted (session idle); ack after that.
-      $.prompt.submit({ text: m.text, asUser: true }).then(async () => {
-        await call($, 'POST', '/ack', { id: m.id })
-        inflight.delete(m.id)
-      }).catch((err: unknown) => { inflight.delete(m.id); if (!quiet) $.ui.log(`tiller: deliver ${m.id} failed: ${err}`) })
+      $.prompt.submit({ text: m.text, asUser: true }).then(
+        () => ack($, m.id),
+        (err: unknown) => { inflight.delete(m.id); if (!quiet) $.ui.log(`tiller: deliver ${m.id} failed: ${err}`) })
     }
   } catch (err) { if (!quiet) $.ui.log(`tiller: poll error ${err}`) } finally { busy = false }
 }
