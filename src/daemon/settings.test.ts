@@ -75,7 +75,8 @@ describe('settings persistence', () => {
     write({ limits: { maxDepth: -1, maxChildren: 4 }, roles: { worker: { effort: 'invalid' } }, custom: 'kept' });
     const s = snapshot();
     const runtime = configEntries(project, home), homeRuntime = configEntries(null, home);
-    for (const key of Object.keys(runtime).filter(key => !key.startsWith('profiles.')) as (keyof typeof runtime)[]) {
+    // claude.accounts is home-file JSON only, never a Settings field.
+    for (const key of Object.keys(runtime).filter(key => !key.startsWith('profiles.') && key !== 'claude.accounts') as (keyof typeof runtime)[]) {
       expect(s.entries[key]).toEqual(runtime[key]);
       expect(s.inherited[key]).toEqual(homeRuntime[key]);
     }
@@ -228,5 +229,81 @@ describe('admin HTTP API', () => {
     fs.writeFileSync(join(home, 'config.json'), '{broken');
     const res = await request(); expect(res.status).toBe(422); expect((await res.json()).error).toMatch(/Malformed JSON/);
     expect((await request('DELETE', '')).status).toBe(405);
+  });
+});
+
+describe('Claude account setting', () => {
+  const homeFile = () => join(home, 'config.json');
+  const homeJson = () => JSON.parse(fs.readFileSync(homeFile(), 'utf8'));
+  const accounts = (workProjects: string[] = []) => [{ name: 'personal' }, { name: 'work', configDir: join(root, 'cw'), projects: workProjects }, { name: 'side', configDir: join(root, 'cs') }];
+  const saveAccount = (scope: 'project' | 'home', value: string | null, s = snapshot(scope)) =>
+    updateSettings(manager, { scope, ...(scope === 'project' ? { nodeId } : {}), revision: s.revision, homeRevision: s.homeRevision, changes: { 'claude.account': value } });
+
+  it('home scope sets claude.account in the home file, validated against claude.accounts', () => {
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: accounts() } }));
+    const s = saveAccount('home', 'work');
+    expect(homeJson().claude.account).toBe('work');
+    expect(s.values['claude.account']).toBe('work');
+    expect(s.claudeAccount).toEqual({ effective: 'work' });
+    expect(() => saveAccount('home', 'nope')).toThrow(/"nope" is not an account in claude.accounts/);
+    expect(saveAccount('home', null).values).not.toHaveProperty('claude.account');
+    expect(homeJson().claude).not.toHaveProperty('account');
+  });
+
+  it('project scope moves the repo between accounts in the home file and never touches the repo file', () => {
+    write({ limits: { maxDepth: 2 } });
+    const repoBefore = fs.readFileSync(file(), 'utf8');
+    const prefix = join(root, 'elsewhere');
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: accounts([prefix]), account: 'personal' } }));
+    let s = snapshot();
+    expect(s.values).not.toHaveProperty('claude.account');
+    expect(s.entries['claude.account']).toEqual({ value: 'personal', source: homeFile() });
+    expect(s.inherited['claude.account']).toEqual({ value: 'personal', source: homeFile() });
+
+    s = saveAccount('project', 'side');
+    expect(homeJson().claude.accounts.map((a: { projects?: string[] }) => a.projects)).toEqual([undefined, [prefix], [project]]);
+    expect(s.values['claude.account']).toBe('side');
+    expect(s.claudeAccount).toEqual({ effective: 'side', project });
+    s = saveAccount('project', 'work', s);
+    expect(homeJson().claude.accounts.map((a: { projects?: string[] }) => a.projects)).toEqual([undefined, [prefix, project], []]);
+    expect(s.entries['claude.account']).toEqual({ value: 'work', source: homeFile() });
+    s = saveAccount('project', null, s);
+    expect(homeJson().claude.accounts[1].projects).toEqual([prefix]); // only the exact entry goes; a broader one stays
+    expect(s.values).not.toHaveProperty('claude.account');
+    expect(s.claudeAccount).toEqual({ effective: 'personal' });
+    expect(fs.readFileSync(file(), 'utf8')).toBe(repoBefore);
+  });
+
+  it('shows a broader projects entry as the source, and ignores a claude.account in the repo file', () => {
+    write({ claude: { account: 'side' } });
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: accounts([root]) } }));
+    const s = snapshot();
+    expect(s.values).not.toHaveProperty('claude.account');
+    expect(s.claudeAccount).toEqual({ effective: 'work', project: root });
+  });
+
+  it('checks a project-scope account change against the home file revision', () => {
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: accounts() } }));
+    const s = snapshot();
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: accounts(), account: 'side' } })); // edited meanwhile
+    expect(() => saveAccount('project', 'work', s)).toThrow(/Settings changed/);
+    expect(() => updateSettings(manager, { scope: 'project', nodeId, revision: s.revision, changes: { 'claude.account': 'work' } })).toThrow(/Settings changed/);
+    expect(homeJson().claude.accounts[1].projects).toEqual([]);
+    expect(fs.existsSync(file())).toBe(false);
+  });
+
+  it('can remove a claude.account that names an account since deleted', () => {
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: accounts(), account: 'gone' } }));
+    expect(() => saveAccount('home', 'work')).not.toThrow();
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: accounts(), account: 'gone' } }));
+    expect(() => saveAccount('home', 'side', snapshot('home'))).not.toThrow(); // a valid name replaces it
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: accounts(), account: 'gone' } }));
+    expect(saveAccount('home', null).values).not.toHaveProperty('claude.account');
+    expect(homeJson().claude).not.toHaveProperty('account');
+  });
+
+  it('refuses any account change while the accounts config is invalid', () => {
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: [{ name: 'a' }, { name: 'a', configDir: '/x' }] } }));
+    expect(() => saveAccount('project', 'a')).toThrow(/claude.accounts in .* is invalid/);
   });
 });

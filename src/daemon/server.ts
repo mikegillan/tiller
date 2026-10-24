@@ -16,6 +16,7 @@ import { mountMcp } from './mcp.js';
 import { modApi } from './modapi.js';
 import { settingsApi } from './settings.js';
 import { SPAWN_FIELDS } from './spawnfields.js';
+import { accountViews } from './claude-accounts.js';
 import type { HookEvent } from './status.js';
 import { deliver, HUMAN } from './messaging.js';
 import { spawnUpdate } from './up.js';
@@ -39,6 +40,7 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('nativeNotifyReady'), ok: z.boolean(), error: z.string().max(1000).optional() }),
   z.object({ t: z.literal('nativeNotifyResult'), requestId: id, ok: z.boolean(), error: z.string().max(1000).optional() }),
   z.object({ t: z.literal('usageRefresh') }),
+  z.object({ t: z.literal('claudeAccounts') }),
   z.object({ t: z.literal('updateCheck') }),
   z.object({ t: z.literal('restartNow') }),
   z.object({ t: z.literal('updateNotesRead'), identity: z.string().min(1).max(128) }),
@@ -160,6 +162,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
         await manager.usageRegistry.refresh();
         sendTo(c, { t: 'usageSources', sources: manager.usageRegistry.sources });
         return;
+      case 'claudeAccounts': sendTo(c, { t: 'claudeAccounts', accounts: await accountViews(manager.home, manager.path) }); return;
       case 'attach': {
         // Snapshot first, then subscribe, so live output is not also part of the snapshot. attach() resolves
         // and we add the client in the same tick, so no chunk can fall between the two.

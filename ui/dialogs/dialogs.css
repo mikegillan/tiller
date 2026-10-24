@@ -1,3 +1,6 @@
 .change-harness-dialog { box-sizing: border-box; max-height: calc(100dvh - 32px); overflow-y: auto; }
 .change-harness-dialog h2 { overflow-wrap: anywhere; }
 .change-harness-dialog .btns { flex-wrap: wrap; }
+.account-login { display: grid; gap: 4px; font-size: 12px; color: var(--dim); }
+.account-login p, .account-inherited { margin: 0; }
+.account-inherited { font-size: 12px; color: var(--dim); }
