@@ -1,9 +1,10 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Role } from '../shared/protocol.js';
-import { launchArgs, projectMcpServerNames, promptPath, systemPrompt, terminalBundleFor, writeNodeFiles } from './launch.js';
+import { codexAdapter, piAdapter } from './harness.js';
+import { claudeLaunch, launchArgs, projectMcpServerNames, promptPath, systemPrompt, terminalBundleFor, terminalLaunch, writeNodeFiles } from './launch.js';
 
 describe('terminalBundleFor', () => {
   it('maps known TERM_PROGRAM values', () => {
@@ -29,6 +30,22 @@ describe('launchArgs', () => {
     expect(launchArgs({ ...base, inheritMcpServers: true })).not.toContain('--strict-mcp-config');
     expect(launchArgs(base)).not.toContain('--strict-mcp-config');
     expect(launchArgs(base)).toContain('/tmp/n/mcp.json');
+  });
+});
+
+describe('Claude account environment', () => {
+  let dir = '';
+  afterEach(() => { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); });
+  it('sets CLAUDE_CONFIG_DIR only for a Claude launch with an account dir, never from the daemon or for other harnesses', () => {
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/daemon/own');
+    dir = mkdtempSync(join(tmpdir(), 'tl-acct-env-'));
+    const i = { nodeId: 'n', nodeDir: join(dir, 'n'), endpoint: 'http://x', path: '', title: 't', parentId: null, home: dir, cwd: dir, sessionId: 's', sessionDir: join(dir, 's') };
+    expect(claudeLaunch({ ...i, claudeConfigDir: '/acct/work' }).env.CLAUDE_CONFIG_DIR).toBe('/acct/work');
+    expect(claudeLaunch(i).env).not.toHaveProperty('CLAUDE_CONFIG_DIR');
+    const withDir = { ...i, claudeConfigDir: '/acct/work' };
+    expect(terminalLaunch(withDir, '/bin/sh').env).not.toHaveProperty('CLAUDE_CONFIG_DIR');
+    expect(piAdapter.launch(withDir).env).not.toHaveProperty('CLAUDE_CONFIG_DIR');
+    expect(codexAdapter.launch(withDir).env).not.toHaveProperty('CLAUDE_CONFIG_DIR');
   });
 });
 

@@ -142,8 +142,8 @@ tl untrust --cwd /path/to/repo
 Trust authorizes the commands in the repository's `.tiller/config.json`, including future
 changes, so inspect it before opting in. Trust also covers every directory below the trusted
 one: trusting a parent folder trusts every repository under it, including ones cloned there
-later. Trust is stored in `~/.tiller/trusted-projects.json`. Existing Claude trust is still
-honored; `untrust` removes only Tiller's opt-in, not Claude's record. This trust controls
+later. Trust is stored in `~/.tiller/trusted-projects.json`. Existing Claude trust, in the
+default home or any configured [Claude account](#claude-accounts), is still honored; `untrust` removes only Tiller's opt-in, not Claude's record. This trust controls
 Tiller's repository commands, not Pi's own project-resource trust or permission policy.
 
 The check that stops `tl trust` and `tl untrust` from running inside a node looks at
@@ -212,6 +212,84 @@ A listed package that is not in Pi's settings, not installed, or configured with
 the launch fail with a message naming it, so the spawn is refused rather than starting a node
 with fewer or more tools than the setting says. `--no-extensions` affects extensions only:
 skills, prompt templates and themes from packages still load.
+
+## Claude accounts
+
+Claude nodes can run under different Claude accounts, for example a personal and a work
+subscription. Each account is a Claude config directory, which Tiller passes to Claude as
+`CLAUDE_CONFIG_DIR`. List them in the home file `~/.tiller/config.json` only; a project file's
+`claude.accounts` and `claude.account` are ignored with a warning, so an agent cannot add or pick one:
+
+```json
+{
+  "claude": {
+    "accounts": [
+      { "name": "personal" },
+      { "name": "work", "configDir": "~/.claude-work", "projects": ["~/workspace/acme"] }
+    ],
+    "account": "personal"
+  }
+}
+```
+
+An entry without `configDir` is Claude's default home (`~/.claude`); at most one may omit it.
+`claude.account` names the default account, for root nodes in projects no account lists;
+unset means no account. If the list is invalid, or `claude.account` names no listed account,
+Claude nodes fail closed: root spawns, and restarts or resumes of nodes with an account, are
+refused with an error naming the problem until it is fixed.
+Do not give `~/.claude` as a `configDir`: Claude keys its keychain login by the exact
+`CLAUDE_CONFIG_DIR` string, so that would be a different, logged-out login.
+
+**In Settings**, the Claude section has a **Claude account** field. For all repositories it sets
+`claude.account`. For a repository it lists the repository's path under the chosen account's
+`projects`, and **Use global default** removes it from every account; only entries for exactly
+that path change, and a broader entry that covers the repository (such as a parent folder) stays
+and is shown as the source. Both write the home file, never the repository's
+`.tiller/config.json`. The field shows each account's login state and the login command for one
+that is logged out. Accounts themselves (name and `configDir`) are defined in the JSON only.
+
+**Log in** each account yourself, once, from a terminal, then run `claude` once in each project
+under it to finish onboarding and accept its workspace trust:
+
+```sh
+CLAUDE_CONFIG_DIR=~/.claude-work claude auth login
+CLAUDE_CONFIG_DIR=~/.claude-work claude   # in each project, once
+```
+
+`/login` in a node's own terminal works too. Tiller never logs in or out. The spawn dialog lists
+the accounts with their login state, from `claude auth status --json` run under each directory;
+a directory that does not exist yet is shown logged out without running Claude.
+
+**Which account a node runs in:**
+
+- A root node: the account the human chose (spawn dialog, or `tl new` / `tl spawn --account
+  NAME`), else the account whose `projects` contains the node's project (the longest match
+  wins, then config order), else `claude.account`, else Claude's default home with no account.
+- A child: always its parent's. Agents cannot choose or change an account; a spawn with
+  `account` from an agent, or a human child spawn naming another account, is refused.
+- Restart, resume and a harness change keep the account; it is never re-resolved from the
+  config. If the account is removed from the config, they fail with an error naming it until it
+  is restored.
+- Fork and follow-up stay in the source's account; a cross-account fork is refused (see
+  [sessions.md](sessions.md#history-follow-up-and-fork)).
+
+The node's record keeps the account's name, shown as `account` in `list_nodes` and the
+inspector. Only Claude launches get `CLAUDE_CONFIG_DIR`. Pi and Codex nodes keep the account so
+their Claude children inherit it, and terminal nodes do not get the variable.
+
+**Per account:** Claude's own settings, memory (`CLAUDE.md`), plugins, MCP servers, workspace
+trust (`.claude.json`) and transcripts (`projects/`) live in each config directory and do not
+carry over; symlink files between directories to share them. Tiller's plugin, MCP server and
+settings are passed on the command line, so they work in every account. Claude's worktree trust
+check uses the node's account. Tiller's own repository commands (setup, teardown, completion
+gate) run when any configured account, or `tl trust`, trusts the repo.
+
+**Usage:** nodes in one account share one quota source in the usage panel. Nodes without an
+account each report separately, as before. In `list_nodes`, an agent sees its own account's
+usage line; the human's line is the newest report, labelled with its account.
+
+**Not a sandbox.** Accounts prevent accidental cross-account use; they do not stop an agent
+with a shell from running `CLAUDE_CONFIG_DIR=… claude` itself.
 
 ## Adapter boundary
 
