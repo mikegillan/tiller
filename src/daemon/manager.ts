@@ -430,10 +430,12 @@ export class NodeManager extends EventEmitter {
   private spawnAccount(req: SpawnRequest, parent: NodeRecord | undefined, from: { account?: string } | undefined): string | undefined {
     if (req.account !== undefined && !req.byHuman) throw new Error('refused: only the human may choose a Claude account; a node you spawn runs in yours');
     const name = (a?: string) => a ?? 'default';
+    // Compared by Claude home, so no account and the named default (no configDir) are the same; throws for an unconfigured name.
+    const dirOf = (a?: string) => (a === undefined ? undefined : claudeConfigDir(this.home, a));
     const account = parent ? parent.account : req.account ?? (req.followup ? req.followup.account : from ? from.account : accountForProject(this.home, this.projectDir(req)));
-    if (parent && req.account !== undefined && req.account !== account) throw new Error(`refused: a child runs in its parent's Claude account (${name(account)}), not ${req.account}`);
-    if (req.followup && req.followup.account !== account) throw new Error(`refused: cannot follow up across Claude accounts (archived: ${name(req.followup.account)}, new node: ${name(account)})`);
-    if (from && from.account !== account) throw new Error(`refused: cannot fork across Claude accounts (source: ${name(from.account)}, new node: ${name(account)})`);
+    if (parent && req.account !== undefined && dirOf(req.account) !== dirOf(account)) throw new Error(`refused: a child runs in its parent's Claude account (${name(account)}), not ${req.account}`);
+    if (req.followup && dirOf(req.followup.account) !== dirOf(account)) throw new Error(`refused: cannot follow up across Claude accounts (archived: ${name(req.followup.account)}, new node: ${name(account)})`);
+    if (from && dirOf(from.account) !== dirOf(account)) throw new Error(`refused: cannot fork across Claude accounts (source: ${name(from.account)}, new node: ${name(account)})`);
     if (account) claudeConfigDir(this.home, account); // throws for one no longer configured
     return account;
   }

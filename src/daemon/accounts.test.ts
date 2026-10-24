@@ -97,6 +97,34 @@ describe('which account a node runs in', () => {
   });
 });
 
+describe('accounts are compared by Claude home', () => {
+  it('no account and the named default are one home; a different dir is still refused', async () => {
+    configure([]);
+    const old = await spawn({ cwd: plain }); // from before accounts were configured
+    started(old.id, join(dir, '.claude'));
+    configure([{ name: 'personal' }, { name: 'work', configDir: '~/.claude-work' }]);
+    const fork = await spawn({ cwd: plain, fork: old.id, account: 'personal' });
+    expect(m.registry.get(fork.id)!.account).toBe('personal');
+    expect(env()).not.toHaveProperty('CLAUDE_CONFIG_DIR');
+    const child = await spawn({ cwd: plain, parentId: old.id, account: 'personal' });
+    expect(m.registry.get(child.id)!.account).toBeUndefined(); // inherits the parent's (none)
+    await expect(spawn({ cwd: plain, fork: old.id, account: 'work' })).rejects.toThrow(/cannot fork across Claude accounts \(source: default, new node: work\)/);
+    await expect(spawn({ cwd: plain, parentId: old.id, account: 'work' })).rejects.toThrow(/parent's Claude account/);
+  });
+});
+
+describe('an invalid claude.accounts list fails closed', () => {
+  it('refuses root spawns and restarts of accounted nodes, naming the file and the problem', async () => {
+    const { id } = await spawn({ kind: 'agent', harness: 'claude' });
+    configure([{ name: 'work', configDir: '~/.claude-work', projects: ['~/work'] }, { name: 'work', configDir: '~/.claude-other' }]);
+    const error = `claude.accounts in ${join(m.home, 'config.json')} is invalid: claude.accounts: duplicate account name work`;
+    await expect(spawn()).rejects.toThrow(error);
+    await expect(spawn({ cwd: plain })).rejects.toThrow(error);
+    expect(m.restart(id)).toEqual({ ok: false, error: expect.stringContaining(error) });
+    expect(m.registry.list().map((n) => n.id)).toEqual([id]);
+  });
+});
+
 describe('the account is kept', () => {
   it('by restart and resume, which fail once the account is no longer configured', async () => {
     const { id } = await spawn({ kind: 'agent', harness: 'claude' });

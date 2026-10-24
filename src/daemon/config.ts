@@ -267,6 +267,19 @@ export function effectiveProfileEntries(entries: Record<string, SettingsEntry>):
   return resolved;
 }
 
+/**
+ * Why the home file's claude.accounts is invalid, or undefined. loadConfig drops an invalid list, but then a project mapped
+ * to one account would silently run in Claude's default home, so callers that pick an account fail closed on this instead.
+ */
+export function claudeAccountsError(home = homeDir()): string | undefined {
+  const path = join(home, 'config.json');
+  let accounts: unknown;
+  try { accounts = JSON.parse(readFileSync(path, 'utf8'))?.claude?.accounts; } catch { return undefined; } // absent or not JSON: readLayer warns
+  if (accounts === undefined) return undefined;
+  const r = ClaudeAccounts.safeParse(accounts);
+  return r.success ? undefined : `claude.accounts in ${path} is invalid: ${r.error.issues.map((i) => `${['claude', 'accounts', ...i.path].join('.')}: ${i.message}`).join('; ')}`;
+}
+
 export function loadConfig(cwd: string | null, home = homeDir()): Config {
   const config: any = {};
   for (const [key, { value }] of Object.entries(configEntries(cwd, home))) {

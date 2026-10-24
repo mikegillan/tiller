@@ -232,6 +232,8 @@ subscription. Each account is a Claude config directory, which Tiller passes to 
 ```
 
 An entry without `configDir` is Claude's default home (`~/.claude`) and the default account.
+If the list is invalid, Claude nodes fail closed: root spawns, and restarts or resumes of nodes
+with an account, are refused with an error naming the problem until it is fixed.
 Do not give `~/.claude` as a `configDir`: Claude keys its keychain login by the exact
 `CLAUDE_CONFIG_DIR` string, so that would be a different, logged-out login.
 

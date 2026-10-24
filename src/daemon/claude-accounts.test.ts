@@ -48,6 +48,17 @@ describe('account lookup', () => {
   });
 });
 
+describe('an invalid claude.accounts list', () => {
+  it('fails closed with the file and the problem; trust and transcript lookups fall back to the default home', async () => {
+    configure([{ name: 'work', configDir: '~/w', project: ['~/ws'] }]); // a typo: projects
+    const error = `claude.accounts in ${join(home, 'config.json')} is invalid`;
+    expect(() => accountForProject(home, join(dir, 'ws'))).toThrow(error);
+    expect(() => claudeConfigDir(home, 'work')).toThrow(/claude\.accounts\.0: .*project/);
+    expect(claudeHomes(home)).toEqual([undefined]);
+    expect(await accountViews(home, '')).toEqual([expect.objectContaining({ name: 'claude.accounts', loggedIn: null, error: expect.stringContaining(error) })]);
+  });
+});
+
 describe('accountViews', () => {
   it('reports login state from claude auth status --json, and never runs it on a missing dir', async () => {
     const bin = join(dir, 'bin'), marker = join(dir, 'ran');
