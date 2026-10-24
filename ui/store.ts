@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { ArchivedNode, Conversation, ConversationSummary, InstalledReleaseNotes, Diff, DigestItem, Dnd, Drain, ServerMessage, Transcript, UpdateStatus, Usage, UsageSource } from '../src/shared/protocol';
+import type { ArchivedNode, ClaudeAccountView, Conversation, ConversationSummary, InstalledReleaseNotes, Diff, DigestItem, Dnd, Drain, ServerMessage, Transcript, UpdateStatus, Usage, UsageSource } from '../src/shared/protocol';
 import type { ReviewComment } from './diff';
 import { pickInitial, rootOf } from './sidebar/sessions';
 import { insertSorted, type Nodes } from './sidebar/tree';
@@ -57,6 +57,8 @@ export interface State {
   drain?: Drain;
   usageSources?: UsageSource[];
   usageScanning?: boolean;
+  /** Configured Claude accounts with their login state, as the last claudeAccounts reply gave them; absent until one arrives. */
+  claudeAccounts?: ClaudeAccountView[];
   /** What happened while no client was focused, until dismissed. */
   digest?: { since: number; items: DigestItem[] };
   /** The Diff tab is showing instead of the terminal (for worktree nodes). */
@@ -199,6 +201,8 @@ export function applyServer(m: ServerMessage) {
       return update(() => ({ usageSources: m.sources, usageScanning: false }));
     case 'usage':
       return update(() => ({ usage: m.usage }));
+    case 'claudeAccounts':
+      return update(() => ({ claudeAccounts: m.accounts }));
     case 'node':
       return update((s) => {
         const isNew = !s.order.includes(m.node.id);

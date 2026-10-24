@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { conversation, mk } from './fixtures';
+import { claudeAccounts, conversation, mk } from './fixtures';
 import { applyServer, conversationRequested, conversationsRequested, diffRequested, expectSpawn, getState, toggleShowTools, update, transcriptRequested } from './store';
 
 it('the diff panel shows the diff reply\'s own failure, not another error for the same node', () => {
@@ -135,4 +135,11 @@ it('accepts release snapshots and update progress while preserving settings-era 
   applyServer({ t: 'update', update: { ...releases, failed: 'build failed; see update.log' } });
   applyServer({ t: 'update', update: { ...releases, failed: 'build failed; see update.log' } });
   expect(getState().toasts.length).toBe(count + 1);
+});
+
+it('keeps the latest claudeAccounts reply', () => {
+  applyServer({ t: 'claudeAccounts', accounts: claudeAccounts });
+  expect(getState().claudeAccounts).toEqual(claudeAccounts);
+  applyServer({ t: 'claudeAccounts', accounts: [] });
+  expect(getState().claudeAccounts).toEqual([]);
 });

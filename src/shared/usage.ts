@@ -3,13 +3,13 @@ import { harnessFor, isAgentKind, type NodeView, type Usage, type UsageSource } 
 export const usageToolName = (tool: string) => ({ claude: 'Claude Code', codex: 'Codex', pi: 'Pi' })[tool] ?? tool;
 export const usageStale = (source: UsageSource, now: number) => source.at !== undefined && (source.availability === 'unavailable' || source.rateLimits.some((l) => (l.resetsAt && Date.parse(l.resetsAt) <= now) || (l.observedAt !== undefined && now - l.observedAt > 300_000)) || now - source.at > 5 * 60_000);
 
-/** Only reports tied to this node; an unidentified account is never borrowed from another agent. */
+/** Only reports tied to this node or its Tiller Claude account; an unidentified account is never borrowed from another agent. */
 export function selectedUsage(node: NodeView | undefined, sources: UsageSource[] | undefined, legacy?: Usage): UsageSource[] {
   if (!node || !isAgentKind(node.kind)) return [];
   const tool = harnessFor(node);
   const modelFamily = /^(?:claude-)?(opus|sonnet)(?:$|-|\[|\s)/i.exec(node.status.model ?? '')?.[1]?.toLowerCase();
   const reporterUnavailable = sources?.some((s) => s.id.startsWith('unavailable:') && s.tool === tool && s.nodeIds.includes(node.id));
-  if (sources !== undefined) return sources.filter((s) => s.tool === tool && s.rateLimits.length > 0 && s.nodeIds.includes(node.id) &&
+  if (sources !== undefined) return sources.filter((s) => s.tool === tool && s.rateLimits.length > 0 && (s.nodeIds.includes(node.id) || (!!node.account && s.account === node.account)) &&
     (s.scope === 'account' || s.model === node.status.model)).map((source) => ({ ...source, availability: reporterUnavailable ? 'unavailable' : source.availability, rateLimits: source.rateLimits.filter((limit) => {
       const family = /^seven_day_(opus|sonnet)$/.exec(limit.kind)?.[1];
       return !family || modelFamily === family;
@@ -30,7 +30,7 @@ export function groupUsageObservations(sources: UsageSource[]): { id: string; un
   const groups: { id: string; unidentified: boolean; reports: UsageSource[] }[] = [];
   const unidentified = new Map<string, typeof groups[number]>();
   for (const source of sources) {
-    if (source.tool !== 'claude' || source.accountId) {
+    if (source.tool !== 'claude' || source.accountId || source.account) {
       groups.push({ id: JSON.stringify(['source', source.id]), unidentified: false, reports: [source] });
       continue;
     }

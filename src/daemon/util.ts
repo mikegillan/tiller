@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import type http from 'node:http';
-import { sep } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve, sep } from 'node:path';
 
 /** Constant-time string comparison for tokens. */
 export function safeEqual(a: string, b: string): boolean {
@@ -16,6 +17,9 @@ export const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 
 
 /** Whether `path` is `dir` or inside it. */
 export const inside = (path: string, dir: string) => path === dir || path.startsWith(dir + sep);
+
+/** `~/x` under the user's home, then path.resolve: no trailing slash, no realpath. */
+export const expandHome = (path: string) => resolve(path.startsWith('~/') ? join(homedir(), path.slice(2)) : path);
 
 /** For `.catch(logError)` on fire-and-forget promises. */
 export const logError = (err: unknown): void => console.error('tiller:', err);

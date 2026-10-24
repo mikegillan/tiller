@@ -158,3 +158,23 @@ it('keeps a healthy shared-account snapshot available when one reporter fails', 
   expect(registry.sources.find((s) => s.id === 'unavailable:codex:failed')?.nodeIds).toEqual(['failed']);
   expect(registry.sources.some((s) => s.id === 'unavailable:codex:healthy')).toBe(false);
 });
+
+it('keys Claude reports by the daemon-stamped Tiller account, so nodes of one account share a source', () => {
+  const registry = new UsageRegistry('');
+  const report = (percentUsed: number, account?: string) => ({ scope: 'account' as const, ...(account ? { account } : {}), rateLimits: [{ kind: 'five_hour', percentUsed }] });
+  registry.record('claude', 'a', [report(10, 'work')], 100);
+  registry.record('claude', 'b', [report(20, 'work')], 200);
+  registry.record('claude', 'c', [report(30)], 300);
+  registry.record('claude', 'd', [report(40)], 400);
+  expect(registry.sources.filter((s) => s.at).map((s) => [s.account, s.nodeIds, s.rateLimits[0]!.percentUsed])).toEqual([
+    ['work', ['a', 'b'], 20], [undefined, ['c'], 30], [undefined, ['d'], 40],
+  ]);
+  registry.record('claude', 'a', [report(5, 'personal')], 500); // a node now in another account leaves the old source
+  expect(registry.sources.find((s) => s.account === 'work')!.nodeIds).toEqual(['b']);
+  const acct = mkdtempSync(join(tmpdir(), 'tl-usage-acct-'));
+  try {
+    writeFileSync(join(acct, '.claude.json'), '{}');
+    const configured = (dirs: string[]) => discoverUsage('', join(acct, 'no-home'), {}, 0, dirs).find((s) => s.tool === 'claude')!.configured;
+    expect([configured([]), configured([acct])]).toEqual([null, true]);
+  } finally { rmSync(acct, { recursive: true, force: true }); }
+});

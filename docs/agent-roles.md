@@ -14,7 +14,7 @@ The built-in orchestrator prompt tells the orchestrator to coordinate rather tha
 
 ## Model, effort and permission mode
 
-Model and effort resolve independently: explicit spawn argument, preset, selected harness/profile config, then legacy `roles` config for Claude only (`none` counts as worker). No built-in model or effort is forced. See [configuration](config.md) for the exact per-field project/home precedence and opt-in Codex example. Resolved selections persist across resume, restart and follow-up.
+Model and effort resolve independently: explicit spawn argument, preset, selected harness/profile config, then legacy `roles` config for Claude only (`none` counts as worker). No built-in model or effort is forced. See [configuration](config.md) for the exact per-field project/home precedence and opt-in Codex example. Resolved selections persist across resume and follow-up. A restart keeps an explicit or preset model and effort and re-resolves the config-supplied ones from the current config.
 
 A Claude spawn without a permission mode inherits its same-harness parent's mode, except that `bypassPermissions` is never inherited, and only the human may spawn a node with `bypassPermissions`. Other harnesses retain their own permission policy.
 
@@ -76,7 +76,7 @@ A worker ends its task by calling `report_outcome` with `succeeded` or `failed`,
 
 ## The completion gate
 
-The `gate` config key makes a `succeeded` report wait for a check, for example `{"gate": {"command": "npm test"}}`. The daemon runs the command with `sh -c` in the worker's directory, with the daemon's login PATH and `TL_NODE_ID` in the environment (plus the worktree variables of [worktrees.md](worktrees.md) for a worktree node), and appends its output to `~/.tiller/nodes/<id>/gate.log`; the node shows "gate: <command>" meanwhile and its row carries a gate marker. The gate runs only when Claude already trusts the directory. A worktree node reads the key from the main checkout's project file.
+The `gate` config key makes a `succeeded` report wait for a check, for example `{"gate": {"command": "npm test"}}`. The daemon runs the command with `sh -c` in the worker's directory, with the daemon's login PATH and `TL_NODE_ID` in the environment (plus the worktree variables of [worktrees.md](worktrees.md) for a worktree node), and appends its output to `~/.tiller/nodes/<id>/gate.log`; the node shows "gate: <command>" meanwhile and its row carries a gate marker. The gate runs only when Claude already trusts the directory (in any configured Claude account) or `tl trust` approved it. A worktree node reads the key from the main checkout's project file.
 
 If the command passes, the outcome is recorded with `gate: "passed"`. If it fails, nothing is recorded and the worker is told, with the last 60 lines of output, to fix the problem and report again. The reply to `report_outcome` carries the result when the gate finishes within 30 seconds; otherwise the reply says the gate is pending and a failure arrives later as a message. Any report made while the gate is still running is refused. After `gate.retries` further failures the outcome is recorded as failed with `gate: "failed"`. Each run is stopped after `gate.timeoutMinutes`. `tl gate [--cwd P]` runs the configured command once in a directory and prints the result, so you can try it.
 

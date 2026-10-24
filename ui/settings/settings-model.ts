@@ -1,4 +1,4 @@
-import type { UsageSource } from '../../src/shared/protocol';
+import type { ClaudeAccountView, UsageSource } from '../../src/shared/protocol';
 import { SETTINGS_FIELDS, SETTINGS_EFFORTS, SETTINGS_PROFILES, type SettingsField } from '../../src/shared/settings';
 export type { SettingsSnapshot } from '../../src/shared/settings';
 import type { SettingsSnapshot } from '../../src/shared/settings';
@@ -12,6 +12,7 @@ const fieldHelp: Record<string, string> = {
   'notifications.kinds.done': 'Level for the tree completion summary, or each finished turn when summaries are off.',
   'notifications.kinds.exited': 'An agent process exits.',
   'notifications.treeDoneSummary': 'Notify once all agents, including the root, finish. Terminals do not count; pending work and gates delay the summary.',
+  'claude.account': 'Which Claude account root nodes run in; a choice in the new-node dialog wins, and children inherit their parent’s. Stored in ~/.tiller/config.json, never in the repository.',
   'claude.inheritMcpServers': 'Load your user and plugin MCP servers alongside Tiller’s. A project’s .mcp.json servers stay off. Off gives Claude nodes only Tiller’s server.',
   'pi.extensions': 'Which of your Pi extensions Pi nodes load besides Tiller’s: all, none, or one package source per line as written in your Pi settings, such as npm:pi-web-access. A listed package must be installed.',
   'limits.maxDepth': 'Maximum number of nested agent generations.',
@@ -49,7 +50,7 @@ export const groups: { title: string; homeOnly?: boolean; help?: string; fields:
     field('worktrees.taskBranch', 'Task branch', { help: 'Must contain {slug}.' }), field('worktrees.mergeStyle', 'Merge style'),
     ...['include', 'protected', 'setup', 'teardown'].map((key) => field(`worktrees.${key}`, key, { help: key === 'include' ? 'One pattern per line. Inherit to use .worktreeinclude; an empty list copies nothing.' : key === 'protected' ? 'One branch per line. An empty list protects no branches.' : 'One shell command per line. Saving does not execute commands.' })),
   ] },
-  { title: 'Claude', help: 'Settings for Claude nodes.', fields: [field('claude.inheritMcpServers', 'Inherit MCP servers')] },
+  { title: 'Claude', help: 'Settings for Claude nodes.', fields: [field('claude.account', 'Claude account'), field('claude.inheritMcpServers', 'Inherit MCP servers')] },
   { title: 'Pi', help: 'Settings for Pi nodes.', fields: [field('pi.extensions', 'Extensions')] },
   { title: 'Approvals & checks', help: 'Control when agents need your approval and what must pass before work is complete.', fields: [
     field('approvals.close', 'Close nodes without approval', { help: 'Choose when agents can close nodes without asking you first.' }),
@@ -85,6 +86,20 @@ export function buildChanges(snapshot: SettingsSnapshot, drafts: Record<string, 
     if (value === null ? Object.hasOwn(snapshot.values, key) : JSON.stringify(value) !== JSON.stringify(snapshot.values[key])) changes[key] = value;
   }
   return changes;
+}
+
+/** The error of a claudeAccounts reply for an invalid accounts config: the daemon sends it as one view with no login command. */
+export const accountsError = (accounts?: ClaudeAccountView[]) => (accounts?.length === 1 && accounts[0].error && !accounts[0].loginCommand ? accounts[0].error : undefined);
+
+export const accountOptionLabel = (a: ClaudeAccountView) => `${a.name} · ${a.loggedIn ? [a.email, a.orgName].filter(Boolean).join(', ') || 'logged in' : a.loggedIn === false ? 'not logged in' : 'login unknown'}`;
+
+/** Where the saved Claude account of root nodes comes from, at this scope. */
+export function accountStatus(snapshot: SettingsSnapshot): string {
+  const { effective, project } = snapshot.claudeAccount ?? {};
+  if (snapshot.scope === 'home') return effective ? `Root nodes outside listed projects run in ${effective}.` : 'No default: root nodes outside listed projects use Claude’s default home.';
+  if (project && project === snapshot.projectPath) return `This repository runs in ${effective}.`;
+  if (project) return `Currently from ${effective} via ${project}.`;
+  return effective ? `Currently from the global default (${effective}).` : 'Currently no account: Claude’s default home.';
 }
 
 export function cliStatus(source?: Pick<UsageSource, 'installed' | 'executableStatus'>): string {
