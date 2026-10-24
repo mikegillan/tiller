@@ -70,10 +70,21 @@ const shellQuote = (s: string) => (/^[\w/.,:@%+=-]+$/.test(s) ? s : `'${s.replac
 export const loginCommand = (configDir?: string) => `${configDir ? `CLAUDE_CONFIG_DIR=${shellQuote(configDir)} ` : ''}claude auth login`;
 
 /**
- * Each account with its login state from `claude auth status --json`, run under its CLAUDE_CONFIG_DIR. The probe writes
- * into the directory, so a missing one is reported logged out without running claude.
+ * Reuse a refresh this briefly: concurrent and rapid opens of Settings and the spawn dialog share one, yet a fresh
+ * `claude auth login` shows on the next open seconds later (usage.ts's 60 s window would hide it that long).
  */
-export function accountViews(home: string, path: string): Promise<ClaudeAccountView[]> {
+const FRESH_MS = 5_000;
+/** At most this many `claude auth status` children at once per refresh; the rest wait. */
+const PROBE_LIMIT = 4;
+let last: { key: string; done: boolean; at: number; views: Promise<ClaudeAccountView[]> } | undefined;
+
+/**
+ * Each account with its login state from `claude auth status --json`, run under its CLAUDE_CONFIG_DIR. The probe writes
+ * into the directory, so a missing one is reported logged out without running claude. As in UsageRegistry.refresh,
+ * concurrent callers share one refresh, reused for FRESH_MS after it ends. It is keyed by the account set, the default
+ * account and which configDirs exist, so a config change, or a login that creates a directory, probes again at once.
+ */
+export function accountViews(home: string, path: string, now = Date.now()): Promise<ClaudeAccountView[]> {
   let accounts: ClaudeAccount[];
   try {
     accounts = claudeAccounts(home);
@@ -81,9 +92,19 @@ export function accountViews(home: string, path: string): Promise<ClaudeAccountV
     return Promise.resolve([{ name: 'claude.accounts', projects: [], isDefault: false, loggedIn: null, loginCommand: '', error: (err as Error).message }]);
   }
   const defaultName = defaultAccount(home);
-  return Promise.all(accounts.map((a) => {
+  const exists = accounts.map((a) => !a.configDir || existsSync(a.configDir));
+  const key = JSON.stringify([home, path, defaultName, accounts, exists]);
+  if (last?.key === key && (!last.done || now - last.at < FRESH_MS)) return last.views;
+  const entry = { key, done: false, at: now, views: probeAccounts(accounts, exists, defaultName, path) };
+  void entry.views.then(() => { entry.done = true; entry.at = Date.now(); });
+  last = entry;
+  return entry.views;
+}
+
+async function probeAccounts(accounts: ClaudeAccount[], exists: boolean[], defaultName: string | undefined, path: string): Promise<ClaudeAccountView[]> {
+  const probe = (a: ClaudeAccount, exists: boolean): Promise<ClaudeAccountView> => {
     const view: ClaudeAccountView = { ...a, isDefault: a.name === defaultName, loggedIn: null, loginCommand: loginCommand(a.configDir) };
-    if (a.configDir && !existsSync(a.configDir)) return { ...view, loggedIn: false, error: `${a.configDir} does not exist yet; log in to create it` };
+    if (!exists) return Promise.resolve({ ...view, loggedIn: false, error: `${a.configDir} does not exist yet; log in to create it` });
     return new Promise<ClaudeAccountView>((resolve) => {
       const env = buildChildEnv({ PATH: path, ...(a.configDir ? { CLAUDE_CONFIG_DIR: a.configDir } : {}) });
       execFile('claude', ['auth', 'status', '--json'], { env, timeout: 5000, maxBuffer: 65_536 }, (err, stdout) => {
@@ -96,5 +117,11 @@ export function accountViews(home: string, path: string): Promise<ClaudeAccountV
         }
       });
     });
+  };
+  const views: ClaudeAccountView[] = [];
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(PROBE_LIMIT, accounts.length) }, async () => {
+    while (next < accounts.length) { const i = next++; views[i] = await probe(accounts[i], exists[i]); }
   }));
+  return views;
 }
