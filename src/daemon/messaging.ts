@@ -24,6 +24,8 @@ const STATUS_TTL_MS = 3600_000;
 /** A node is mod-live while its mod's last GET /inbox is this recent. */
 const MOD_LIVE_MS = 5000;
 const SAVE_MS = 50;
+/** Message text kept in a `send` event; longer text is cut and the event marked `textCut`. */
+const LOG_TEXT_CHARS = 32_000;
 /** Caller ids that are not nodes. Both have full scope. */
 export const HUMAN = 'human';
 export const DAEMON = 'tiller';
@@ -40,6 +42,8 @@ interface DeliverOpts {
   onSettle?: (r: SendResult) => void;
   /** Queue in the target's inbox even before its mod polls, for a node that has just been resumed. */
   inbox?: boolean;
+  /** The nodes a daemon notice concerns, recorded on its `send` event so each child's conversation can show it. */
+  about?: string[];
 }
 
 // ---- scope (PLAN §5): self, ancestors, siblings, descendants ----
@@ -92,6 +96,8 @@ interface State {
   status: Map<string, { from: string; to: string; result: SendResult; at: number; onSettle?: (r: SendResult) => void }>;
   /** Per-target timer that re-checks a verified-idle target whose screen was not ready yet. */
   retry: Map<string, NodeJS.Timeout>;
+  /** Log a `settle` event when a queued message reaches its final outcome. */
+  logSettle: (messageId: string, from: string, to: string, r: SendResult) => void;
 }
 type Attempt = { result: SendResult } | { wait: string };
 
@@ -100,7 +106,12 @@ const states = new WeakMap<object, State>();
 function stateOf(m: Mgr): State {
   let s = states.get(m);
   if (s) return s;
-  const st: State = { seen: new Map(), inbox: new Map(), last: new Map(), sent: new Map(), loopNoticed: new Map(), queues: new Map(), locks: new Map(), status: new Map(), retry: new Map() };
+  // On the target's tree, or the sender's once the target is closed (a removed node no longer maps to its tree).
+  const logSettle = (messageId: string, from: string, to: string, r: SendResult) => {
+    const on = [to, from].find((id) => m.view(id));
+    if (on) m.logEvent(on, 'settle', { messageId, from, outcome: r.outcome, ...(r.detail ? { detail: r.detail } : {}) });
+  };
+  const st: State = { seen: new Map(), inbox: new Map(), last: new Map(), sent: new Map(), loopNoticed: new Map(), queues: new Map(), locks: new Map(), status: new Map(), retry: new Map(), logSettle };
   states.set(m, st);
   const kick = (id: string) => { if (st.queues.get(id)?.length) drain(m, st, id).catch(logError); };
   if (m.home) loadInbox(m, st, join(m.home, 'inbox.json'));
@@ -161,10 +172,13 @@ const busy = (v: NodeView | undefined) => v?.status.state === 'working';
 const gone: SendResult = { outcome: 'gone', retryable: false, detail: 'target does not exist or has exited' };
 const oneLine = (s: string) => s.replace(/[\r\n]+/g, ' ');
 
+/** The envelope line that marks a steer (see conversation.ts, which parses envelopes). */
+export const STEER_LINE = 'steer: the sender interrupted your turn on purpose to deliver this now';
+
 function frame(e: Entry): { text: string; nonce: string } {
   const nonce = randomBytes(6).toString('base64url');
   // paste() strips ESC bytes, so the body cannot close the paste frame.
-  const steer = e.steer ? 'steer: the sender interrupted your turn on purpose to deliver this now\n' : '';
+  const steer = e.steer ? `${STEER_LINE}\n` : '';
   return { nonce, text: `--- TL MESSAGE ${nonce} ---\nfrom: ${e.label}\nreply-to: ${e.replyTo ?? 'none'}\n${steer}${e.text}\n--- END TL MESSAGE ${nonce} ---` };
 }
 
@@ -269,6 +283,7 @@ const modLive = (s: State, id: string) => Date.now() - (s.seen.get(id) ?? -Infin
 function setResult(s: State, messageId: string, result: SendResult): void {
   const st = s.status.get(messageId);
   if (!st) return;
+  if (st.result.outcome === 'queued' && result.outcome !== 'queued') s.logSettle(messageId, st.from, st.to, result);
   st.result = result;
   // A message that never reached the target does not count toward loop detection, so the retry it invites is accepted.
   const key = `${st.from}\0${st.to}`;
@@ -533,7 +548,11 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
     const result = { ...r, messageId: id };
     s.status.set(id, { from: fromId, to: toId, result, at: now, onSettle: opts.onSettle });
     setResult(s, id, result);
-    if (fromId !== DAEMON && m.view(toId)) m.logEvent(toId, 'send', { from: fromId, outcome: result.outcome, messageId: id, ...(result.steer ? { steer: true } : {}) });
+    if (m.view(toId)) {
+      m.logEvent(toId, 'send', { from: fromId, outcome: result.outcome, messageId: id, ...(result.steer ? { steer: true } : {}),
+        text: text.slice(0, LOG_TEXT_CHARS), ...(text.length > LOG_TEXT_CHARS ? { textCut: true } : {}),
+        ...(opts.fromLabel ? { label: oneLine(opts.fromLabel) } : {}), ...(opts.about?.length ? { about: opts.about } : {}) });
+    }
     return result;
   };
   const refuse = (detail: string, retryable = false) => out({ outcome: 'refused', retryable, detail });
@@ -589,7 +608,7 @@ function loopNotice(m: Mgr, s: State, from: NodeView | undefined, key: string, w
   if (!from?.parentId || now - (s.loopNoticed.get(key) ?? -Infinity) < LOOP_MS) return;
   s.loopNoticed.set(key, now);
   deliver(m, DAEMON, from.parentId, `Refused a send: ${why}. It was told to escalate to the human or change approach.`,
-    { fromLabel: `tiller (child ${from.id} "${from.title}" may be looping)`, replyTo: null }).catch(logError);
+    { fromLabel: `tiller (child ${from.id} "${from.title}" may be looping)`, replyTo: null, about: [from.id] }).catch(logError);
 }
 
 // ---- station notices (PLAN §7) ----
@@ -609,7 +628,7 @@ export function startNotices(m: Mgr): () => void {
     if (!v.parentId || notified.has(v.id)) return;
     notified.add(v.id);
     const body = v.status.lastAssistantMessage?.slice(0, 300) ?? 'No further details.';
-    deliver(m, DAEMON, v.parentId, body, { fromLabel: `tiller (child ${v.id} "${v.title}" stopped: ${reason})`, replyTo: null }).catch(logError);
+    deliver(m, DAEMON, v.parentId, body, { fromLabel: `tiller (child ${v.id} "${v.title}" stopped: ${reason})`, replyTo: null, about: [v.id] }).catch(logError);
   };
   const onNode = (v: NodeView) => {
     if (!v.parentId) return;
@@ -630,14 +649,14 @@ export function startNotices(m: Mgr): () => void {
     else if (!stallNoticed.has(v.id)) {
       stallNoticed.add(v.id);
       const body = `No hook event for ${fmtAge(Date.now() - v.status.changedAt)} while working${v.status.activity ? `; last activity: ${v.status.activity}` : ''}.`;
-      deliver(m, DAEMON, v.parentId, body, { fromLabel: `tiller (child ${v.id} "${v.title}" no activity)`, replyTo: null }).catch(logError);
+      deliver(m, DAEMON, v.parentId, body, { fromLabel: `tiller (child ${v.id} "${v.title}" no activity)`, replyTo: null, about: [v.id] }).catch(logError);
     }
     if (exited) notice(v, 'exited');
     else if (state === 'done' && errored) {
       const at = retried.get(v.id);
       if (at === undefined) {
         retried.set(v.id, v.status.changedAt);
-        deliver(m, DAEMON, v.id, RETRY_TEXT, { fromLabel: 'tiller (your turn errored)', replyTo: null,
+        deliver(m, DAEMON, v.id, RETRY_TEXT, { fromLabel: 'tiller (your turn errored)', replyTo: null, about: [v.id],
           onSettle: (r) => { if (r.outcome !== 'delivered') notice(v, 'turn-errored'); } }).catch(logError);
       } else if (at !== v.status.changedAt) notice(v, 'turn-errored');
     } else if (state === 'done' && v.status.doneSource === 'stop') { notified.delete(v.id); retried.delete(v.id); } // only a clean Stop re-arms
@@ -645,7 +664,7 @@ export function startNotices(m: Mgr): () => void {
   const onOutcome = (id: string) => {
     const v = m.view(id);
     if (!v?.parentId || !v.outcome || watching(m, v.parentId, id)) return;
-    deliver(m, DAEMON, v.parentId, `${id} reported ${outcomeLine(v.outcome)}`, { fromLabel: `tiller (child ${id} "${v.title}" reported ${v.outcome.outcome})`, replyTo: null }).catch(logError);
+    deliver(m, DAEMON, v.parentId, `${id} reported ${outcomeLine(v.outcome)}`, { fromLabel: `tiller (child ${id} "${v.title}" reported ${v.outcome.outcome})`, replyTo: null, about: [id] }).catch(logError);
   };
   m.on('node', onNode);
   m.on('outcome', onOutcome);
@@ -678,6 +697,6 @@ export function notifyWhen(m: NodeManager, caller: string, req: NotifyWhen): { r
   }
   const rt = m.runtimes.get(caller)!;
   rt.watches ??= new CompletionWatches({ view: (id) => m.view(id), turnStartedAt: (id) => m.turnStartedAt(id) },
-    (text, fromLabel) => { deliver(m, DAEMON, caller, text, { fromLabel, replyTo: null }).catch(logError); });
+    (text, fromLabel, about) => { deliver(m, DAEMON, caller, text, { fromLabel, replyTo: null, about }).catch(logError); });
   return rt.watches.register(req);
 }

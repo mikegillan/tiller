@@ -613,15 +613,52 @@ describe('withdraw', () => {
 });
 
 describe('event log', () => {
-  it('logs sends and withdrawals on the target, the human\'s included, but not the daemon\'s own sends', async () => {
+  it('logs every send with its text on the target, the daemon\'s notices included, and withdrawals', async () => {
     m.set('b', { state: 'working' });
     const r = await deliver(m.mgr, 'human', 'b', 'hi');
-    await deliver(m.mgr, 'tiller', 'b', 'notice');
+    const n = await deliver(m.mgr, 'tiller', 'b', 'notice', { fromLabel: 'tiller (your\nturn errored)', about: ['b'] });
     await withdraw(m.mgr, 'human', r.messageId!);
     expect(m.events).toEqual([
-      ['b', 'send', { from: 'human', outcome: 'queued', messageId: r.messageId }],
+      ['b', 'send', { from: 'human', outcome: 'queued', messageId: r.messageId, text: 'hi' }],
+      ['b', 'send', { from: 'tiller', outcome: 'queued', messageId: n.messageId, text: 'notice', label: 'tiller (your turn errored)', about: ['b'] }],
+      ['b', 'settle', { messageId: r.messageId, from: 'human', outcome: 'withdrawn', detail: 'withdrawn by the sender before delivery' }],
       ['b', 'withdraw', { from: 'human', messageId: r.messageId }],
     ]);
+  });
+
+  it('caps the logged text at 32,000 characters and marks it cut', async () => {
+    await deliver(m.mgr, 'a', 'b', 'x'.repeat(32_001));
+    const [, , data] = m.events.find(([, type]) => type === 'send')!;
+    expect(data).toMatchObject({ text: 'x'.repeat(32_000), textCut: true });
+  });
+
+  it('logs settle once when a queued message delivers or expires, never for an immediate delivery', async () => {
+    await deliver(m.mgr, 'a', 'b', 'at once');
+    expect(m.events.map(([, type]) => type)).toEqual(['send']);
+    m.set('p', { state: 'working' });
+    const q = await deliver(m.mgr, 'a', 'p', 'later');
+    const e = await deliver(m.mgr, 'b', 'p', 'never');
+    m.set('p', { state: 'done', doneSource: 'stop' }); // delivers the first; the turn it starts holds the second until it expires
+    await vi.advanceTimersByTimeAsync(QUEUE_TTL_MS);
+    expect(m.events.filter(([, type]) => type === 'settle')).toEqual([
+      ['p', 'settle', { messageId: q.messageId, from: 'a', outcome: 'delivered' }],
+      ['p', 'settle', { messageId: e.messageId, from: 'b', outcome: 'expired', detail: 'target never became idle within 5 min' }],
+    ]);
+  });
+
+  it('logs the settle on the sender\'s tree once the target is closed', async () => {
+    inbox(m.mgr, 'b');
+    const r = await deliver(m.mgr, 'a', 'b', 'hi');
+    m.nodes.delete('b');
+    m.emit('removed', 'b');
+    expect(m.events.at(-1)).toEqual(['a', 'settle', { messageId: r.messageId, from: 'a', outcome: 'gone', detail: 'target was closed' }]);
+  });
+
+  it('station notices name the child they concern', async () => {
+    startNotices(m.mgr);
+    m.set('a', { exited: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(m.events.find(([, type]) => type === 'send')).toEqual(['p', 'send', expect.objectContaining({ from: 'tiller', label: 'tiller (child a "T-a" stopped: exited)', about: ['a'] })]);
   });
 });
 

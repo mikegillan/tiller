@@ -12,6 +12,7 @@ import { loadConfig } from './config.js';
 import { DEFAULT_PORT } from './home.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
 import { history } from './archive.js';
+import { conversation, conversations } from './conversation.js';
 import { mountMcp } from './mcp.js';
 import { modApi } from './modapi.js';
 import { settingsApi } from './settings.js';
@@ -61,6 +62,8 @@ const clientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('confirm'), confirmId: z.string(), ok: z.boolean() }),
   z.object({ t: z.literal('diff'), id }),
   z.object({ t: z.literal('transcript'), id, sessionId: id.optional() }),
+  z.object({ t: z.literal('conversations'), id }),
+  z.object({ t: z.literal('conversation'), id, with: id.optional() }),
   z.object({ t: z.literal('history'), rootId: id.optional(), query: z.string().optional() }),
   z.object({ t: z.literal('followup'), id, prompt: z.string().min(1), title: z.string().min(1).optional() }),
   z.object({ t: z.literal('send'), id, text: z.string().min(1), mode: z.enum(['queue', 'now']).optional() }),
@@ -214,6 +217,16 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
       case 'transcript': {
         const r = await manager.transcript(m.id, m.sessionId).catch((err: Error) => ({ error: err.message }));
         sendTo(c, { t: 'transcript', id: m.id, ...(m.sessionId ? { sessionId: m.sessionId } : {}), ...r });
+        return;
+      }
+      case 'conversations': {
+        const r = await conversations(manager, m.id).then((items) => ({ items }), (err: Error) => ({ error: err.message }));
+        sendTo(c, { t: 'conversations', id: m.id, ...r });
+        return;
+      }
+      case 'conversation': {
+        const r = await conversation(manager, m.id, m.with).catch((err: Error) => ({ error: err.message }));
+        sendTo(c, { t: 'conversation', id: m.id, ...(m.with ? { with: m.with } : {}), ...r });
         return;
       }
       case 'history': sendTo(c, { t: 'history', items: await history(manager.home, { rootId: m.rootId, query: m.query }) }); return;
