@@ -11,7 +11,7 @@ React + xterm.js front-end for the tiller daemon. It speaks the WebSocket protoc
 
 ## Developing without the daemon
 
-The mock daemon has three sessions (one with a blocked node and a pending command, one with an errored node, one idle), an exited node, and mixed models and context usage. Spawn, rename, resume, close and prune work in memory, and a confirm request arrives 15 seconds after connecting. History has four closed nodes across two trees; every Claude node has a fake transcript ("daemon" and the closed "auth refactor" have two sessions), and follow-up and fork make new nodes.
+The mock daemon has three sessions (one with a blocked node and a pending command, one with an errored node, one idle), an exited node, and mixed models and context usage. Spawn, rename, resume, close and prune work in memory, and a confirm request arrives 15 seconds after connecting. History has four closed nodes across two trees; every Claude node has a fake transcript ("daemon" and the closed "auth refactor" have two sessions), and follow-up and fork make new nodes. The new-session dialog lists three Claude accounts (one logged out, to show its login command); the dotcms-core session runs in the "work" account and its children inherit it.
 
     node ui/mock-server.mjs                                  # ws on :7789, token "mock"
     TL_WS=http://127.0.0.1:7789 npm run ui:dev               # then open the printed URL with ?k=mock
@@ -20,7 +20,7 @@ After `npm run ui:build` the mock also serves the built UI: open `http://127.0.0
 
 ## Usage readings
 
-Claude session measurements currently provide limits without account identity. The Usage panel shows the newest unidentified session reading and keeps other readings in an expandable list, grouped only within the same provider, pool and model scope. This is a presentation of observations, not a claim that they share an account; windows are never combined across unidentified sessions. Known accounts and pools stay separate, and the selected-node status bar keeps its own session readings. Each retained reading keeps its timestamps and unavailable/stale state. This presentation also works with existing daemons that send unidentified usage sources.
+Claude session measurements currently provide limits without account identity. The Usage panel shows the newest unidentified session reading and keeps other readings in an expandable list, grouped only within the same provider, pool and model scope. This is a presentation of observations, not a claim that they share an account; windows are never combined across unidentified sessions. Readings the daemon stamps with a Tiller Claude account (home config `claude.accounts`) form one group headed "Account: <name>", and a node in that account shows it in the status bar before its own first report. Known accounts and pools stay separate, and the selected-node status bar keeps its own session readings. Each retained reading keeps its timestamps and unavailable/stale state. This presentation also works with existing daemons that send unidentified usage sources.
 
 ## URL and keyboard
 
