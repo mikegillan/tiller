@@ -424,7 +424,7 @@ describe('mcp api', () => {
     };
     const human = await connect('human', admin);
     const humanTools = (await human.listTools()).tools;
-    expect(humanTools.map((t) => t.name).sort()).toEqual(['change_harness', 'close', 'diff', 'dnd', 'drain', 'followup', 'history', 'list_nodes', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'transcript', 'update', 'withdraw', 'worktrees', 'write']);
+    expect(humanTools.map((t) => t.name).sort()).toEqual(['change_harness', 'close', 'diff', 'dnd', 'drain', 'followup', 'history', 'list_nodes', 'memory_add', 'memory_forget', 'memory_get', 'memory_pin', 'memory_search', 'memory_status', 'memory_switch', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'transcript', 'update', 'withdraw', 'worktrees', 'write']);
     expect(Object.fromEntries(humanTools.map((t) => [t.name, t.title]))).toMatchObject({
       send: 'Send message', spawn: 'Start node', notify_when: 'Watch node completion', read: 'Read node output',
       history: 'List past agents', followup: 'Continue past agent', merge: 'Merge node changes',
@@ -432,7 +432,7 @@ describe('mcp api', () => {
     await human.close();
     const client = await connect(id, manager.tokenFor(id));
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'history', 'list_nodes', 'merge', 'message_status', 'notify_when', 'read', 'rename', 'report_outcome', 'send', 'spawn', 'withdraw', 'write']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['close', 'diff', 'history', 'list_nodes', 'memory_add', 'memory_forget', 'memory_get', 'memory_search', 'merge', 'message_status', 'notify_when', 'read', 'rename', 'report_outcome', 'send', 'spawn', 'withdraw', 'write']);
     expect(tools.find((t) => t.name === 'spawn')!.inputSchema.required).toEqual(['kind', 'title']); // cwd defaults to a fork source's
     expect(Object.fromEntries(tools.map((t) => [t.name, t.title]))).toMatchObject({
       notify_when: 'Watch node completion', read: 'Read node output', history: 'List past agents',
