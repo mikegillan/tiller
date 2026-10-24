@@ -253,7 +253,7 @@ const tools = {
 
   read: tool(
     'Read node output',
-    'Read another node (yourself, your ancestors, siblings or descendants). what "summary" returns the last `lines` (default 30) user and assistant messages of an agent node\'s conversation, with tool calls reduced to a "[tool: name]" marker; "transcript" returns the whole conversation (capped at the most recent 200 KB); "terminal" returns the last `lines` (default 60) rows of the node\'s screen and works for terminal nodes too. Summary and transcript also take a closed node of your tree (see history).',
+    'Read another node (yourself, your ancestors, siblings or descendants). what "summary" returns the last `lines` (default 30) user and assistant messages of an agent node\'s conversation, with tool calls reduced to a "[tool: name]" marker; "transcript" returns the whole conversation (capped at the most recent 200 KB); "terminal" returns the last `lines` (default 60) rows of the node\'s screen, which are the visible rows plus up to 1000 lines of scrollback, and works for terminal nodes too. Summary and transcript also take a closed node of your tree (see history).',
     { nodeId: z.string().min(1), what: z.enum(['summary', 'transcript', 'terminal']), lines: z.number().int().min(1).max(5000).optional() },
     async (c, a) => {
       const v = c.manager.registry.get(a.nodeId) || a.what === 'terminal' ? requireScope(c, a.nodeId) : await requireArchived(c, a.nodeId);
