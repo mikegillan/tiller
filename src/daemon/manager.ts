@@ -25,6 +25,8 @@ import { nodeDefaults, resolveSpawn, restartSelection, spawnTarget } from './spa
 
 import { DAEMON, deliver, handoverInbox, holdDeliveries, HUMAN, inScope, saveInboxForRestart, submitting, waitForDeliveries } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
+import { MemoryStore } from './memory-store.js';
+import type { MemoryScope } from './memory-schema.js';
 import { buildChildEnv, PtySession } from './pty.js';
 import { count, inside, logError } from './util.js';
 import * as wt from './worktree.js';
@@ -205,10 +207,15 @@ export class NodeManager extends EventEmitter {
   private drainState?: { reason: string; exclude?: string; force?: boolean; lease: NodeJS.Timeout };
   /** projectDir's main checkout of each cwd outside a worktree node. */
   private projectDirs = new Map<string, string>();
+  /** Memory's repo key of each project dir (repoKeySync), computed on first use. */
+  private repoKeys = new Map<string, string>();
+  /** Memory's store. It opens nothing until memory is used, and memory is off unless the human opts in. */
+  readonly memory: MemoryStore;
 
   constructor(opts: ManagerOptions = {}) {
     super();
     this.home = opts.home ?? homeDir();
+    this.memory = new MemoryStore(this.home, { log: logError });
     this.shell = opts.shell ?? process.env.SHELL ?? '/bin/sh';
     this.path = opts.path ?? process.env.PATH ?? '';
     this.terminateTimeoutMs = opts.terminateTimeoutMs;
@@ -331,6 +338,16 @@ export class NodeManager extends EventEmitter {
     // prune: cached for the daemon's life, so a later `git init` above a cwd is missed until restart; clear it if that matters.
     if (dir === undefined) this.projectDirs.set(n.cwd, dir = wt.mainCheckoutSync(n.cwd) ?? n.cwd);
     return dir;
+  }
+
+  /** Memory's scope for agent node `id`: its account, its project's repo, and the provenance its items and episodes carry. */
+  memoryScope(id: string): MemoryScope | undefined {
+    const rec = this.registry.get(id);
+    if (!rec || !isAgentKind(rec.kind)) return undefined;
+    const repoPath = this.projectDir(rec);
+    let repoKey = this.repoKeys.get(repoPath);
+    if (repoKey === undefined) this.repoKeys.set(repoPath, repoKey = wt.repoKeySync(repoPath));
+    return { account: rec.account, repoKey, repoPath, nodeId: id, rootId: this.rootIdOf(id), harness: harnessFor(rec), model: rec.model, role: rec.role, profile: rec.profile };
   }
 
   /** Throw when an agent's spawn would pass limits.maxDepth or maxChildren (from the node's project config) or daemon.maxLiveNodes (home config). */

@@ -662,3 +662,19 @@ describe('copyIncluded', () => {
     expect(await wt.copyIncluded(repo, mkdtempSync(join(home, 'dest-')), ['secret.txt'])).toEqual(['secret.txt']); // config replaces .worktreeinclude
   });
 });
+
+describe('repoKeySync', () => {
+  it('keys a repo by its normalized origin, a local-path remote by its resolved path, and no origin by real path', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'tl-repokey-')));
+    try {
+      const repo = join(dir, 'repo');
+      mkdirSync(repo);
+      g(repo, 'init', '-q');
+      expect(wt.repoKeySync(repo)).toBe(`path:${repo}`);
+      g(repo, 'remote', 'add', 'origin', 'git@GitHub.com:Swicken/Tiller.git');
+      expect(wt.repoKeySync(repo)).toBe('git:github.com/swicken/tiller');
+      g(repo, 'remote', 'set-url', 'origin', '../origin.git');
+      expect(wt.repoKeySync(repo)).toBe(`git:${join(dir, 'origin.git')}`); // a local path is kept as is
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
