@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyUpdate, checkUpdate, compareVersions, createUpdater, githubReleases, githubRepo, updateLine, UPDATE_CHECK_INTERVAL, type PublishedRelease, type ReleaseSource } from './update.js';
-const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
+// No detached `git maintenance run --auto` after commit: its objects/maintenance.lock can vanish mid-cpSync (ENOENT).
+const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'maintenance.auto=false', ...args], {
   cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.com' },
 }).trim();
 let dir: string, seed: string, work: string, rows: PublishedRelease[], source: ReleaseSource;
@@ -18,6 +19,7 @@ function setupCheckout() {
   if (!template) {
     dir = mkdtempSync(join(tmpdir(), 'tiller-release-test-'));
     git(dir, 'init', '-q', '--bare', '--initial-branch=main', 'origin.git');
+    git(join(dir, 'origin.git'), 'config', 'maintenance.auto', 'false'); // local receive-pack does not see the -c above
     git(dir, 'clone', '-q', 'origin.git', 'seed'); seed = join(dir, 'seed');
     rows = [];
     commit('README', 'first'); release('v0.1.0');
