@@ -298,11 +298,11 @@ const gitRuns = new WeakMap<object, GitRun>();
 /**
  * Recompute a worktree node's git state and re-emit the node when it changed. Calls coalesce per node: one made while a
  * refresh runs queues a single rerun, shared by every later call, so each call settles after a refresh that started
- * after it. A node closed or a daemon stopped meanwhile skips the rerun.
+ * after it. A node closed or a daemon stopped meanwhile skips the rerun; none starts after shutdown.
  */
 export function refreshGit(m: NodeManager, id: string): Promise<void> {
   const rt = m.runtimes.get(id);
-  if (!rt) return Promise.resolve();
+  if (!rt || m.stopped) return Promise.resolve();
   const run = gitRuns.get(rt);
   if (!run) return startGit(m, id, rt);
   const next = () => {
@@ -310,6 +310,12 @@ export function refreshGit(m: NodeManager, id: string): Promise<void> {
     gitRuns.delete(rt);
   };
   return (run.again ??= run.done.then(next, next));
+}
+
+/** Settles once the node's git refresh in flight, and the rerun queued behind it, have finished. */
+export function gitSettled(rt: object): Promise<void> {
+  const run = gitRuns.get(rt);
+  return (run?.again ?? run?.done ?? Promise.resolve()).catch(() => {});
 }
 
 function startGit(m: NodeManager, id: string, rt: object): Promise<void> {

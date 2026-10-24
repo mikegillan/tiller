@@ -9,6 +9,7 @@ export class NodeRegistry {
   private liveIds: string[] = [];
   /** Why the daemon stopped cleanly; absent after a crash or kill. The next start reads it and clears it. */
   private stopReason: string | undefined;
+  private closed = false;
 
   constructor(private file: string) {}
 
@@ -94,7 +95,13 @@ export class NodeRegistry {
     renameSync(tmp, this.file);
   }
 
+  /** Shutdown's final write: flush, then schedule no more saves, since the process exits and the home may go. */
+  close(): void {
+    this.flush();
+    this.closed = true;
+  }
+
   private save(): void {
-    this.timer ??= setTimeout(() => this.flush(), 50);
+    if (!this.closed) this.timer ??= setTimeout(() => this.flush(), 50);
   }
 }

@@ -26,7 +26,7 @@ import { NodeRegistry } from './nodes.js';
 import { buildChildEnv, PtySession } from './pty.js';
 import { count, inside, logError } from './util.js';
 import * as wt from './worktree.js';
-import { addWorktree, closeWorktreeNode, mergeWorktree, readClaudeJson, refreshGit, refreshGitSoon, setMissing, setupThenLaunch, trustedForWorktree, trustPolicy, worktreeCheck, worktreeCommands, worktreeEnv, worktrees, type WorktreeCheck, type WorktreeReport } from './worktree-lifecycle.js';
+import { addWorktree, closeWorktreeNode, gitSettled, mergeWorktree, readClaudeJson, refreshGit, refreshGitSoon, setMissing, setupThenLaunch, trustedForWorktree, trustPolicy, worktreeCheck, worktreeCommands, worktreeEnv, worktrees, type WorktreeCheck, type WorktreeReport } from './worktree-lifecycle.js';
 import { appendEvent, buildDigest, ensureSession, flushEvents, handoffPrompt, listSessions, markClosed, readEvents, sessionDir, sweepSessions } from './sessions.js';
 import { archivedOf, archiveNode, findArchived, type BranchFate } from './archive.js';
 import { adoptSessionHistory, nodeTranscript, recordedSessions } from './transcript.js';
@@ -49,6 +49,8 @@ const GIT_EDIT_TOOLS = ['Edit', 'Write', 'Bash'];
 const COST_EVENT_MS = 60_000;
 /** A drain ends by itself when whoever restarts the daemon has not polled it for this long (it died or was stopped). */
 const DRAIN_LEASE_MS = 15_000;
+/** Shutdown waits at most this long for processes and background work; restartDaemon allows the old daemon 10s. */
+const SHUTDOWN_WAIT_MS = 7000;
 
 /** The daemon's message to a resumed node whose turn the restart cut off. */
 export const cutOffText = (reason: string) => `The tiller daemon restarted (${reason}) while your turn was running, so that turn was cut off. Your conversation is intact, but the last tool call may not have finished. Check where you were, for example with git status and the commands you last ran, then continue the task.`;
@@ -100,7 +102,7 @@ export interface ManagerOptions {
   shell?: string;
   /** PATH handed to children (from loginShellPath()). Defaults to this process's PATH. */
   path?: string;
-  /** How long changeHarness waits for the old process to exit. Defaults to PtySession.terminate's. */
+  /** How long changeHarness waits for the old process to exit, and shutdown for its background work. Defaults to PtySession.terminate's. */
   terminateTimeoutMs?: number;
 }
 
@@ -1011,23 +1013,34 @@ export class NodeManager extends EventEmitter {
 
   /**
    * Flush the registry and the message inbox, and kill every PTY. The live set is kept for resume on next start, unless
-   * `clearLive` (an explicit stop: do not come back). Resolves once the event appends already queued have landed.
+   * `clearLive` (an explicit stop: do not come back). Resolves once nothing more writes into the home or a worktree: the
+   * PTYs have exited, worktree setups and git refreshes in flight have settled (or SHUTDOWN_WAIT_MS has passed, safely
+   * inside the restart's wait for the old daemon), the registry and inbox are written again, and the event appends
+   * already queued have landed. No git refresh starts once it is called, and no registry save after it resolves.
    */
-  shutdown(opts: { clearLive?: boolean } = {}): Promise<void> {
+  async shutdown(opts: { clearLive?: boolean } = {}): Promise<void> {
     if (!this.shutDown) this.registry.setStopped(this.drainState?.reason ?? 'the daemon was stopped');
     this.shutDown = true;
     clearTimeout(this.drainState?.lease);
     if (opts.clearLive) this.registry.setLive([]);
     clearInterval(this.sweepTimer);
+    const wait = this.terminateTimeoutMs ?? SHUTDOWN_WAIT_MS;
+    const work: Promise<unknown>[] = [];
     for (const rt of this.runtimes.values()) {
       clearTimeout(rt.interruptTimer);
       clearTimeout(rt.gitTimer);
       rt.setup?.abort.abort();
-      rt.session?.kill();
+      if (rt.setup) work.push(rt.setup.done);
+      if (rt.session) work.push(rt.session.terminate(wait).catch(() => false));
+      work.push(gitSettled(rt));
     }
-    this.registry.flush();
+    this.registry.flush(); // now, in case the process is killed during the wait
     saveInboxForRestart(this);
-    return flushEvents();
+    await Promise.race([Promise.all(work), sleep(wait, undefined, { ref: false })]);
+    // Again: exiting processes' last hooks and messages land during the wait. The registry then stops saving.
+    this.registry.close();
+    saveInboxForRestart(this);
+    await flushEvents();
   }
 
   // ---- internals; worktree-lifecycle.ts and scheduling.ts call the ones not marked private ----
