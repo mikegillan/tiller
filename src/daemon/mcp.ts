@@ -375,7 +375,7 @@ const tools = {
 
   restart: tool(
     'Restart node',
-    'Restart a node: kill its process and relaunch it with a fresh session, which clears its context. Its title, directory, model, effort and children are kept. `prompt` is its first prompt; without one, a node whose tree has a handoff.md in its session directory is told to read it first. Only the human may call this.',
+    'Restart a node: kill its process and relaunch it with a fresh session, which clears its context. Its title, directory and children are kept, and so are a model and effort chosen at spawn (argument or preset); ones that came from config are re-resolved from the current config. `prompt` is its first prompt; without one, a node whose tree has a handoff.md in its session directory is told to read it first. Only the human may call this.',
     { nodeId: z.string().min(1), prompt: z.string().optional() },
     async (c, a) => {
       const r = c.manager.restart(a.nodeId, a.prompt);

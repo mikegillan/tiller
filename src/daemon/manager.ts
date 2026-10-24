@@ -347,6 +347,8 @@ export class NodeManager extends EventEmitter {
     const profile = adapter ? profileFor(req.profile ?? p.profile, parentId, role) : undefined;
     const defaults: Pick<NodeRecord, 'model' | 'effort'> = adapter ? profileDefaults(config, adapter.id, profile!, roleFor(role, parentId)) : {};
     const model = req.model ?? p.model ?? defaults.model, effort = req.effort ?? p.effort ?? defaults.effort;
+    // A follow-up's model and effort come from the archived node, so its own record says which were chosen.
+    const explicit = req.followup ? req.followup.explicit : (['model', 'effort'] as const).filter((k) => (req[k] ?? p[k]) !== undefined);
     if (adapter?.id === 'codex' && effort && !isSupportedEffort('codex', effort)) throw new Error(`unsupported Codex effort: ${effort}`);
     const parent = parentId ? this.registry.get(parentId) : undefined;
     // Other harnesses cannot carry Claude restrictions. Only the human, a same-harness parent,
@@ -385,7 +387,7 @@ export class NodeManager extends EventEmitter {
     }
     const rec = this.registry.create({ // the resolved fields, so restart keeps them
       parentId, kind: req.kind, ...(req.harness ? { harness: req.harness } : {}), title: req.title, cwd: req.cwd,
-      model, effort, permissionMode, role, profile, preset: req.preset,
+      model, effort, ...(adapter ? { explicit } : {}), permissionMode, role, profile, preset: req.preset,
       sessionId: adapter ? req.followup?.sessionId ?? randomUUID() : undefined,
       ...(adapter && adapter.id !== 'claude' && req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
       ...(adapter && adapter.id !== 'claude' && req.followup?.previousSessions ? { previousSessions: req.followup.previousSessions } : {}),
@@ -534,7 +536,8 @@ export class NodeManager extends EventEmitter {
   /**
    * Kill the node's process and relaunch it with the same record under a fresh session id, so a Claude node starts with
    * an empty context. Children and parentId are untouched; the old session ids are kept in previousSessions. `prompt` is
-   * the first prompt; without one, a node whose tree has a handoff.md is pointed at it.
+   * the first prompt; without one, a node whose tree has a handoff.md is pointed at it. A model or effort the spawn did
+   * not choose (see NodeRecord.explicit) is re-resolved from the current config.
    */
   restart(id: string, prompt?: string): { ok: true } | { ok: false; error: string } {
     const rec = this.registry.get(id);
@@ -544,6 +547,20 @@ export class NodeManager extends EventEmitter {
     const rt = this.runtimes.get(id)!;
     if (rt.setup) return { ok: false, error: 'worktree setup is running' };
     if (rt.busy) return { ok: false, error: `${id} is ${rt.busy}` };
+    let fresh: Pick<NodeRecord, 'model' | 'effort'> = {};
+    if (isAgentKind(rec.kind)) {
+      const harness = harnessFor(rec);
+      const d = profileDefaults(loadConfig(this.projectDir(rec), this.home), harness, profileFor(rec.profile, rec.parentId, rec.role), roleFor(rec.role, rec.parentId));
+      let explicit = rec.explicit;
+      if (!explicit && rec.preset) { // a legacy record: what its preset sets counts as chosen; an unloadable preset keeps both
+        try {
+          const p = loadPreset(rec.preset, this.projectDir(rec), this.home);
+          explicit = (['model', 'effort'] as const).filter((k) => p[k] !== undefined);
+        } catch { explicit = ['model', 'effort']; }
+      }
+      fresh = { ...(explicit?.includes('model') ? {} : { model: d.model }), ...(explicit?.includes('effort') ? {} : { effort: d.effort }) };
+      if (fresh.effort && !isSupportedEffort(harness, fresh.effort)) return { ok: false, error: `unsupported ${harness} effort: ${fresh.effort}` };
+    }
     const old = rec.sessionId;
     const sessionHistory = this.priorSessions(id);
     this.kill(id);
@@ -551,7 +568,7 @@ export class NodeManager extends EventEmitter {
     const sessionId = isAgentKind(rec.kind) ? randomUUID() : undefined;
     const transcriptPath = isAgentKind(rec.kind) && adapterFor(rec).id !== 'claude' && rec.transcriptPath && sessionId
       ? join(dirname(rec.transcriptPath), `${sessionId}.jsonl`) : undefined;
-    this.registry.update(id, { sessionId, transcriptPath, previousSessions: [...(rec.previousSessions ?? []), ...(old ? [old] : [])].slice(-MAX_PREVIOUS_SESSIONS), ...(rec.sessionHistory ? { sessionHistory } : {}) });
+    this.registry.update(id, { ...fresh, sessionId, transcriptPath, previousSessions: [...(rec.previousSessions ?? []), ...(old ? [old] : [])].slice(-MAX_PREVIOUS_SESSIONS), ...(rec.sessionHistory ? { sessionHistory } : {}) });
     rt.status = { state: initialState(rec.kind), activity: 'restarting', changedAt: Date.now() };
     try {
       this.writeFiles(id);
@@ -624,7 +641,7 @@ export class NodeManager extends EventEmitter {
       const sessionHistory = this.priorSessions(id), from = harnessFor(rec), sessionId = randomUUID();
       this.registry.update(id, { kind: 'agent', harness, sessionId, transcriptPath: undefined,
         previousSessions: [...(rec.previousSessions ?? []), ...(rec.sessionId ? [rec.sessionId] : [])].slice(-MAX_PREVIOUS_SESSIONS), sessionHistory,
-        credentialGeneration: randomUUID(), model: defaults.model, effort: defaults.effort, permissionMode: undefined, preset: undefined,
+        credentialGeneration: randomUUID(), model: defaults.model, effort: defaults.effort, explicit: [], permissionMode: undefined, preset: undefined,
         forkSession: undefined, lastCost: undefined });
       clearTimeout(rt.interruptTimer);
       rt.lastHookAt = rt.turnStart = rt.lastCostEvent = undefined;
