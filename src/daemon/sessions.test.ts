@@ -1,9 +1,9 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { NodeManager } from './manager.js';
-import { buildDigest, flushEvents, parseSince, readEvents, sessionDir, sweepSessions, type SessionEvent } from './sessions.js';
+import { buildDigest, flushEvents, parseSince, readEvents, readNewEvents, sessionDir, sweepSessions, type SessionEvent } from './sessions.js';
 
 const DAY = 86_400_000;
 const read = (f: string) => { try { return readFileSync(f, 'utf8'); } catch { return ''; } };
@@ -130,6 +130,49 @@ describe('event log reading', () => {
     expect(parseSince('2 hours')).toBeUndefined();
     expect(readEvents(dir, now - parseSince('2h')!).map((e) => e.type)).toEqual(['state', 'close']);
     expect(readEvents(dir).length).toBe(3); // the bad line is skipped
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reads the same events from the tail as a whole-file read, across chunks, bad lines and a partial last line', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tl-log-'));
+    const lines: string[] = [];
+    for (let i = 0; i < 4000; i++) {
+      if (i % 97 === 0) lines.push('not json', '', '{"ts":');
+      else if (i === 1500) lines.push(JSON.stringify({ ts: 1000 + i, type: 'note', id: 'a', text: 'x'.repeat(150_000) })); // longer than a chunk
+      else lines.push(JSON.stringify({ ts: 1000 + i, type: 'state', id: `n-${i % 7}`, activity: `é✓ ${'ü'.repeat(i % 40)}` }));
+    }
+    writeFileSync(join(dir, 'events.jsonl'), `${lines.join('\n')}\n{"ts":9999,"type":"cut`);
+    // The whole-file read this replaced.
+    const whole = (since: number) => readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').flatMap((l) => {
+      try { const e = JSON.parse(l) as SessionEvent; return e.ts >= since ? [e] : []; } catch { return []; }
+    });
+    for (const since of [0, 1000, 1001, 2500, 2501, 4990, 4999, 5000, 1e13]) expect(readEvents(dir, since)).toEqual(whole(since));
+    expect(readEvents(dir).length).toBe(4000 - 42); // every 97th line is replaced by bad ones
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('follows appended whole lines and starts over when the log shrinks or is replaced', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tl-log-'));
+    const file = join(dir, 'events.jsonl');
+    const ev = (ts: number) => `${JSON.stringify({ ts, type: 'state', id: 'a' })}\n`;
+    const ts = (r: { events: SessionEvent[] }) => r.events.map((e) => e.ts);
+    let r = readNewEvents(dir);
+    expect(ts(r)).toEqual([]); // no file yet
+    writeFileSync(file, ev(1) + ev(2) + 'not json\n');
+    expect(ts(r = readNewEvents(dir, r.cursor))).toEqual([1, 2]);
+    expect(ts(r = readNewEvents(dir, r.cursor))).toEqual([]);
+    appendFileSync(file, ev(3) + ev(4).slice(0, 5)); // a partial line waits
+    expect(ts(r = readNewEvents(dir, r.cursor))).toEqual([3]);
+    appendFileSync(file, ev(4).slice(5) + ev(5));
+    expect(ts(r = readNewEvents(dir, r.cursor))).toEqual([4, 5]);
+    writeFileSync(file, ev(6)); // truncated
+    expect(ts(r = readNewEvents(dir, r.cursor))).toEqual([6]);
+    writeFileSync(join(dir, 'next'), ev(7) + ev(8) + ev(9) + ev(10) + ev(11) + ev(12));
+    renameSync(join(dir, 'next'), file); // replaced by a longer file
+    expect(ts(r = readNewEvents(dir, r.cursor))).toEqual([7, 8, 9, 10, 11, 12]);
+    appendFileSync(file, ev(13));
+    expect(ts(readNewEvents(dir, r.cursor, 13))).toEqual([13]);
+    expect(ts(readNewEvents(dir, undefined, 12))).toEqual([12, 13]);
     rmSync(dir, { recursive: true, force: true });
   });
 });

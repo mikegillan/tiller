@@ -1,6 +1,6 @@
 // Per-tree session directories, <home>/sessions/<rootId>: notes that outlive a node's context (handoff.md and the like),
 // meta.json, and events.jsonl, the daemon's log of what happened in the tree. Keyed by rootId, so restart keeps them.
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { outcomeLine } from '../shared/format.js';
@@ -11,6 +11,7 @@ export const SESSIONS_DIR = 'sessions';
 export const HANDOFF = 'handoff.md';
 const EVENTS = 'events.jsonl';
 const DAY_MS = 86_400_000;
+const CHUNK = 64 * 1024;
 
 export interface SessionMeta { rootId: string; title: string; cwd: string; createdAt: number; closedAt?: number }
 
@@ -89,13 +90,68 @@ export const appendEvent = (dir: string, ev: SessionEvent): void => appendLine(e
 /** Resolves once every pending append has landed (for tests and shutdown). */
 export const flushEvents = async (): Promise<void> => { await Promise.all(writes.values()); };
 
-/** Events at or after `since`, oldest first; unreadable lines are skipped. */
+/** One log line as an event at or after `since`; undefined when unreadable or older. */
+function eventAt(line: string, since: number): SessionEvent | undefined {
+  try { const e = JSON.parse(line) as SessionEvent; return e.ts >= since ? e : undefined; } catch { return undefined; }
+}
+
+/**
+ * Events at or after `since`, oldest first; unreadable lines are skipped. Reads backwards from the end in chunks and
+ * stops at the first readable event older than `since`.
+ */
+// prune: assumes the log is in ts order (appendLine keeps call order, ts is Date.now() at the call); a backwards clock
+// step can hide earlier events newer than `since`. Read the whole file if that ever matters.
 export function readEvents(dir: string, since = 0): SessionEvent[] {
-  let raw: string;
-  try { raw = readFileSync(eventsFile(dir), 'utf8'); } catch { return []; }
-  return raw.split('\n').flatMap((l) => {
-    try { const e = JSON.parse(l) as SessionEvent; return e.ts >= since ? [e] : []; } catch { return []; }
-  });
+  let fd: number;
+  try { fd = openSync(eventsFile(dir), 'r'); } catch { return []; }
+  try {
+    const out: SessionEvent[] = [];
+    let pos = fstatSync(fd).size;
+    let carry = Buffer.alloc(0); // the end of a line whose start lies further back
+    while (pos > 0) {
+      const n = Math.min(CHUNK, pos);
+      pos -= n;
+      const buf = Buffer.alloc(n + carry.length);
+      readSync(fd, buf, 0, n, pos);
+      carry.copy(buf, n);
+      // The bytes before the first '\n' may start mid-line (and mid-character), so they wait for the next chunk.
+      const nl = pos > 0 ? buf.indexOf(0x0a) : -1;
+      if (pos > 0 && nl < 0) { carry = buf; continue; }
+      carry = buf.subarray(0, Math.max(nl, 0));
+      for (const l of buf.subarray(nl + 1).toString('utf8').split('\n').reverse()) {
+        const e = eventAt(l, -Infinity);
+        if (!e) continue;
+        if (e.ts >= since) out.push(e);
+        else if (typeof e.ts === 'number') return out.reverse();
+      }
+    }
+    return out.reverse();
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Where `tl log --follow` has read up to: the file (by inode) and the byte after the last whole line read. */
+export interface EventCursor { ino: number; offset: number }
+
+/**
+ * Events at or after `since` in the whole lines appended after `cursor`, and the cursor past them. Starts over from the
+ * beginning when the file shrank or was replaced; a partial last line waits for the next call.
+ */
+export function readNewEvents(dir: string, cursor: EventCursor = { ino: 0, offset: 0 }, since = 0): { events: SessionEvent[]; cursor: EventCursor } {
+  let fd: number;
+  try { fd = openSync(eventsFile(dir), 'r'); } catch { return { events: [], cursor }; }
+  try {
+    const { ino, size } = fstatSync(fd);
+    const start = ino === cursor.ino && size >= cursor.offset ? cursor.offset : 0;
+    const buf = Buffer.alloc(size - start);
+    readSync(fd, buf, 0, buf.length, start);
+    const end = buf.lastIndexOf(0x0a) + 1;
+    const events = buf.subarray(0, end).toString('utf8').split('\n').flatMap((l) => eventAt(l, since) ?? []);
+    return { events, cursor: { ino, offset: start + end } };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** "90s", "15m", "2h" or "3d" as milliseconds; undefined when malformed. */
