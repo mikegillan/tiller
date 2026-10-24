@@ -1,32 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { parseEnvelope, receivedLine, sendResult, sentLine } from '../hooks/rows'
-
-const msg = '--- TL MESSAGE Ab3_x-9Q ---\nfrom: Builder (n-3f2a)\nreply-to: n-3f2a\nplease rebase\nthen merge\n--- END TL MESSAGE Ab3_x-9Q ---'
-const steered = msg.replace('reply-to: n-3f2a\n', 'reply-to: n-3f2a\nsteer: the sender interrupted your turn on purpose to deliver this now\n')
-
-describe('envelope parsing', () => {
-  test('a framed message parses', async () => {
-    expect(parseEnvelope(msg)).toEqual({ from: 'Builder (n-3f2a)', replyTo: 'n-3f2a', steer: false })
-    expect(receivedLine(parseEnvelope(msg)!)).toBe('↘ message from Builder (n-3f2a) · reply-to n-3f2a')
-  })
-  test('the daemon\'s steer line marks a steer; a body starting "steer: " does not', async () => {
-    expect(parseEnvelope(steered)?.steer).toBe(true)
-    expect(parseEnvelope(msg.replace('please rebase', 'steer: left'))?.steer).toBe(false)
-    expect(receivedLine(parseEnvelope(steered)!)).toBe('↘ message from Builder (n-3f2a) · steer · reply-to n-3f2a')
-  })
-  test('CRLF and a trailing newline still parse; a daemon notice has reply-to none', async () => {
-    expect(parseEnvelope(msg.replace(/\n/g, '\r\n') + '\r\n')).toEqual({ from: 'Builder (n-3f2a)', replyTo: 'n-3f2a', steer: false })
-    expect(parseEnvelope(msg + '\n')?.from).toBe('Builder (n-3f2a)')
-    const notice = parseEnvelope(msg.replace('from: Builder (n-3f2a)', 'from: tiller (daemon restarted)').replace('reply-to: n-3f2a', 'reply-to: none'))!
-    expect(receivedLine(notice)).toBe('↘ message from tiller (daemon restarted) · reply-to none')
-  })
-  test('anything else is not an envelope', async () => {
-    expect(parseEnvelope('hello')).toBeUndefined()
-    expect(parseEnvelope(msg.replace('END TL MESSAGE Ab3_x-9Q', 'END TL MESSAGE other'))).toBeUndefined()
-    expect(parseEnvelope(msg.replace('from: ', 'by: '))).toBeUndefined()
-    expect(parseEnvelope(`note\n${msg}`)).toBeUndefined()
-  })
-})
+import { sendResult, sentLine } from '../hooks/rows'
 
 describe('send rows', () => {
   const kids = [{ id: 'n-1', title: 'Worker' }]
@@ -52,19 +25,12 @@ async function row($: any, component: string, props: any) {
 }
 
 describe('render hooks', () => {
-  const tiller = { kind: 'plugin', name: 'tiller', asUser: true }
-  test('a tiller envelope is one line until expanded', async ($: any) => {
-    expect(await row($, 'UserMessage', { text: steered, origin: tiller, isExpanded: false })).toContain('↘ message from Builder (n-3f2a) · steer · reply-to n-3f2a')
-    expect(await row($, 'UserMessage', { text: msg, origin: tiller, isExpanded: true })).toBe('engine')
+  test('rows other than a send call are left alone', async ($: any) => {
+    expect(await row($, 'ToolUse', { tool_use_id: 't', tool: 'Bash', input: {}, isRunning: false, isErrored: false, isInterrupted: false, isExpanded: false })).toBe('engine')
   })
-  test('other rows are left alone', async ($: any) => {
-    expect(await row($, 'UserMessage', { text: msg, origin: { kind: 'plugin', name: 'other', asUser: true }, isExpanded: false })).toBe('engine')
-    expect(await row($, 'UserMessage', { text: msg, origin: { kind: 'composer' }, isExpanded: false })).toBe('engine')
-    expect(await row($, 'UserMessage', { text: 'hi', origin: tiller, isExpanded: false })).toBe('engine')
-    expect(await row($, 'ToolUse', { tool_use_id: 't', tool: 'Bash', input: {}, isRunning: false, isErrored: false, isInterrupted: false })).toBe('engine')
-  })
+  // The shape Claude Code 2.1.310 passed for a send call, logged live (there with isExpanded true: ctrl+o).
   test('a send call is one line with its outcome; its result block is empty until expanded', async ($: any) => {
-    const output = [{ type: 'text', text: '{"outcome":"delivered"}' }]
+    const output = [{ type: 'text', text: '{"outcome":"delivered","messageId":"m1"}' }]
     const use = { tool_use_id: 't', tool: 'mcp__tiller__send', input: { nodeId: 'n-1', text: 'x' }, isRunning: false, isErrored: false, isInterrupted: false, isExpanded: false, output }
     expect(await row($, 'ToolUse', use)).toContain('↗ message to n-1 · delivered')
     expect(await row($, 'ToolUse', { ...use, isExpanded: true })).toBe('engine')
