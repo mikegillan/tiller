@@ -101,7 +101,7 @@ function worktreeText(o: { worktree?: Worktree; sharesWorktreeOf?: string }): st
   return o.sharesWorktreeOf ? `\n\nYou share the worktree of node ${o.sharesWorktreeOf}; coordinate before editing files it is editing.` : '';
 }
 
-export function systemPrompt(o: { nodeId: string; title: string; parentId: string | null; home: string; cwd: string; harness?: Harness; role?: Role; profile?: Profile; worktree?: Worktree; sharesWorktreeOf?: string; sessionDir?: string; preset?: Preset }): string {
+export function systemPrompt(o: { nodeId: string; title: string; parentId: string | null; home: string; cwd: string; harness?: Harness; role?: Role; profile?: Profile; worktree?: Worktree; sharesWorktreeOf?: string; sessionDir?: string; preset?: Preset; memory?: string }): string {
   const preamble = `You are tiller node ${o.nodeId}, titled "${o.title}". Your parent node is ${o.parentId ?? 'none'}.
 
 The tiller MCP tools spawn and control other nodes. Spawning never moves the user's view.
@@ -121,7 +121,7 @@ When your task ends, call report_outcome with "succeeded" or "failed" and fill s
 Notes that must outlive your context go in $TL_SESSION_DIR (${o.sessionDir}); keep handoff.md there as the current state of the work.` : ''}${worktreeText(o)}`;
   const role = o.preset?.body || rolePrompt(o.home, o.cwd, roleFor(o.role, o.parentId), o.harness); // a preset's body replaces the role text
   const profile = roleFor(o.role, o.parentId) === 'none' ? undefined : PROFILE_PROMPTS[profileFor(o.profile, o.parentId, o.role)];
-  return `${preamble}${role ? `\n\n# Role\n${role}` : ''}${profile && !o.preset?.body ? `\n\n# Task profile\n${profile}` : ''}`;
+  return `${preamble}${role ? `\n\n# Role\n${role}` : ''}${profile && !o.preset?.body ? `\n\n# Task profile\n${profile}` : ''}${o.memory ? `\n\n${o.memory}` : ''}`;
 }
 
 const TERMINAL_BUNDLES: Record<string, string> = {
@@ -170,6 +170,8 @@ export interface LaunchInput {
   claudeConfigDir?: string;
   /** Pi loads the user's extensions ("all", or unset), only tiller's ("none"), or tiller's and these package sources. */
   piExtensions?: 'all' | 'none' | string[];
+  /** The node's # Memory digest (NodeManager.memoryDigest), appended last to the system prompt; unset or '' adds nothing. */
+  memory?: string;
 }
 
 export interface LaunchSpec { file: string; args: string[]; env: Record<string, string> }
