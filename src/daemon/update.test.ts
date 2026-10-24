@@ -1,18 +1,23 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyUpdate, checkUpdate, compareVersions, createUpdater, githubReleases, githubRepo, updateLine, UPDATE_CHECK_INTERVAL, type PublishedRelease, type ReleaseSource } from './update.js';
+import type { ReleaseUpdate, UpdateStatus } from '../shared/protocol.js';
+import { applyUpdate, checkUpdate, compareVersions, createUpdater, gitCheckout, githubReleases, githubRepo, lockFileHolder, updateLine, UPDATE_CHECK_INTERVAL, type PublishedRelease, type ReleaseSource, type Updater } from './update.js';
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
   cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.com' },
 }).trim();
 let dir: string, seed: string, work: string, rows: PublishedRelease[], source: ReleaseSource;
 let template: string | undefined, initialRows: PublishedRelease[];
 const commit = (path: string, text = path) => { writeFileSync(join(seed, path), text); git(seed, 'add', path); git(seed, 'commit', '-qm', text); };
+const publish = (tag: string) => {
+  const r = { id: rows.length + 1, tag, name: tag, body: `Notes for ${tag}`, publishedAt: '2026-10-17T00:00:00Z' }; rows.push(r); return r;
+};
 const release = (tag: string) => {
   git(seed, 'tag', tag); git(seed, 'push', '-q', 'origin', 'main', '--tags');
-  const r = { id: rows.length + 1, tag, name: tag, body: `Notes for ${tag}`, publishedAt: '2026-10-17T00:00:00Z' }; rows.push(r); return r;
+  return publish(tag);
 };
 function setupCheckout() {
   if (!template) {
@@ -35,6 +40,43 @@ function setupCheckout() {
   rows = structuredClone(initialRows);
   source = { transport: join(dir, 'origin.git'), list: async () => [...rows], get: async (_repo, id) => rows.find((r) => r.id === id)! };
 }
+/**
+ * A linear in-memory release history for tests of updater state rather than Git. It mirrors checkUpdate's
+ * results on a fast-forward-only main; the Git-backed suites cover checkUpdate itself.
+ */
+function setupFake() {
+  dir = mkdtempSync(join(tmpdir(), 'tiller-release-test-'));
+  rows = [];
+  source = { list: async () => [...rows], get: async (_repo, id) => rows.find((r) => r.id === id)! };
+  const history: string[] = [], tags = new Map<string, string>();
+  const ancestor = (a: string, b: string) => history.includes(a) && history.indexOf(a) <= history.indexOf(b);
+  const checkout = {
+    head: '', repository: 'example/tiller',
+    commit() { history.push(createHash('sha1').update(String(history.length)).digest('hex')); },
+    release(tag: string) { tags.set(tag, history.at(-1)!); publish(tag); },
+    install(tag: string) { checkout.commit(); checkout.release(tag); checkout.head = tags.get(tag)!; },
+    isAncestor: async (a: string, b: string) => ancestor(a, b),
+    lockHolder: () => lockFileHolder(join(dir, 'update.lock')),
+    async check(source: ReleaseSource, notesSince?: string): Promise<UpdateStatus> {
+      const sha = checkout.head, base: UpdateStatus = { sha, checkedAt: Date.now(), eligible: false, releases: [] };
+      try {
+        const published = (await source.list(checkout.repository)).sort((a, b) => compareVersions(b.tag, a.tag))
+          .map((r): ReleaseUpdate => ({ ...r, sha: tags.get(r.tag)!, tagObject: tags.get(r.tag)! }));
+        if (!published.length) return { ...base, reason: 'no published stable releases' };
+        const [target] = published, current = published.find((r) => ancestor(r.sha, sha));
+        const missed = current?.sha === sha && notesSince && notesSince !== sha && ancestor(notesSince, sha)
+          ? published.filter((r) => compareVersions(r.tag, current.tag) <= 0 && !ancestor(r.sha, notesSince)) : undefined;
+        const installedNotes = missed && { identity: createHash('sha256').update(JSON.stringify([checkout.repository, missed])).digest('hex'), releases: missed };
+        const reason = ancestor(sha, target.sha) ? undefined : 'local or unreleased commits; latest release cannot fast-forward this checkout';
+        return { ...base, repository: checkout.repository, target, currentVersion: current?.tag, releases: published.filter((r) => !ancestor(r.sha, sha)), installedNotes, eligible: !reason, reason };
+      } catch (e) { return { ...base, reason: 'release check unavailable; try again later', fetchError: (e as Error).message }; }
+    },
+  };
+  checkout.install('v0.1.0');
+  return checkout;
+}
+// Fake only the scheduler; fixture Git subprocesses still run normally.
+const fakeClock = () => vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
 afterEach(() => { vi.useRealTimers(); });
 afterAll(() => { if (template) rmSync(template, { recursive: true, force: true }); });
 
@@ -361,48 +403,6 @@ describe('installed unread release notes', () => {
     expect(status.installedNotes?.releases.map((r) => r.tag)).toEqual(['v0.1.1']);
   });
 
-  it('persists a shared acknowledgment across reconnects, restarts, checks and offline starts', async () => {
-    await updater().check(); await install('v0.1.1');
-    const changed = vi.fn(), current = updater(changed);
-    const notes = (await current.check()).installedNotes!;
-    expect(updater().status().installedNotes).toEqual(notes);
-    await current.acknowledgeNotes('stale');
-    expect(current.status().installedNotes).toEqual(notes);
-    await current.acknowledgeNotes(notes.identity);
-    expect(changed.mock.lastCall![0].installedNotes).toBeUndefined();
-    expect((await current.check()).installedNotes).toBeUndefined();
-    source.list = async () => { throw new Error('offline'); };
-    const restarted = updater();
-    expect(restarted.status().installedNotes).toBeUndefined();
-    expect(await restarted.check()).toMatchObject({ eligible: false, fetchError: 'offline' });
-    expect(restarted.status().installedNotes).toBeUndefined();
-  });
-
-  it('does not let an older client acknowledgment dismiss a newer unseen installed release', async () => {
-    await updater().check(); await install('v0.1.1');
-    const old = (await updater().check()).installedNotes!;
-    await install('v0.1.2');
-    const current = updater(), notes = (await current.check()).installedNotes!;
-    expect(notes.identity).not.toBe(old.identity);
-    expect(notes.releases.map((r) => r.tag)).toEqual(['v0.1.2', 'v0.1.1']);
-    await current.acknowledgeNotes(old.identity);
-    expect(current.status().installedNotes).toEqual(notes);
-    await current.acknowledgeNotes(notes.identity);
-    expect(updater().status().installedNotes).toBeUndefined();
-  });
-
-  it('keeps proven cached notes offline or with no published releases without allowing apply', async () => {
-    await updater().check(); await install('v0.1.1');
-    const notes = (await updater().check()).installedNotes!;
-    source.list = async () => { throw new Error('offline'); };
-    const current = updater();
-    expect(current.status().installedNotes).toEqual(notes);
-    expect(await current.check()).toMatchObject({ installedNotes: notes, eligible: false, fetchError: 'offline' });
-    await expect(current.apply({ tag: 'v0.1.1', sha: notes.releases[0].sha })).rejects.toThrow('release changed');
-    source.list = async () => [];
-    expect(await current.check()).toMatchObject({ installedNotes: notes, eligible: false, reason: 'no published stable releases' });
-  });
-
   it('does not fabricate a partial rollup or disable future updates when older installed history is missing', async () => {
     await updater().check(); await install('v0.1.1'); await install('v0.1.2');
     commit('future'); release('v0.1.3');
@@ -425,18 +425,71 @@ describe('installed unread release notes', () => {
     expect((await updater().check()).installedNotes?.releases.map((r) => r.tag)).toEqual(['v0.1.1']);
   });
 
-  it('does not call development commits an installed release or infer notices from corrupt cache', async () => {
+  it('does not call development commits an installed release', async () => {
     await updater().check(); await install('v0.1.1');
     git(work, 'commit', '--allow-empty', '-qm', 'development');
     expect((await updater().check()).installedNotes).toBeUndefined();
+  });
+});
+
+describe('installed unread release notes state', () => {
+  let fake: ReturnType<typeof setupFake>;
+  beforeEach(() => { fake = setupFake(); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const updater = (onChange = vi.fn()) => createUpdater({ repo: dir, home: dir, source, checkout: fake, onChange, spawnHelper: vi.fn(() => { throw new Error('must not apply'); }) });
+
+  it('persists a shared acknowledgment across reconnects, restarts, checks and offline starts', async () => {
+    await updater().check(); fake.install('v0.1.1');
+    const changed = vi.fn(), current = updater(changed);
+    const notes = (await current.check()).installedNotes!;
+    expect(updater().status().installedNotes).toEqual(notes);
+    await current.acknowledgeNotes('stale');
+    expect(current.status().installedNotes).toEqual(notes);
+    await current.acknowledgeNotes(notes.identity);
+    expect(changed.mock.lastCall![0].installedNotes).toBeUndefined();
+    expect((await current.check()).installedNotes).toBeUndefined();
+    source.list = async () => { throw new Error('offline'); };
+    const restarted = updater();
+    expect(restarted.status().installedNotes).toBeUndefined();
+    expect(await restarted.check()).toMatchObject({ eligible: false, fetchError: 'offline' });
+    expect(restarted.status().installedNotes).toBeUndefined();
+  });
+
+  it('does not let an older client acknowledgment dismiss a newer unseen installed release', async () => {
+    await updater().check(); fake.install('v0.1.1');
+    const old = (await updater().check()).installedNotes!;
+    fake.install('v0.1.2');
+    const current = updater(), notes = (await current.check()).installedNotes!;
+    expect(notes.identity).not.toBe(old.identity);
+    expect(notes.releases.map((r) => r.tag)).toEqual(['v0.1.2', 'v0.1.1']);
+    await current.acknowledgeNotes(old.identity);
+    expect(current.status().installedNotes).toEqual(notes);
+    await current.acknowledgeNotes(notes.identity);
+    expect(updater().status().installedNotes).toBeUndefined();
+  });
+
+  it('keeps proven cached notes offline or with no published releases without allowing apply', async () => {
+    await updater().check(); fake.install('v0.1.1');
+    const notes = (await updater().check()).installedNotes!;
+    source.list = async () => { throw new Error('offline'); };
+    const current = updater();
+    expect(current.status().installedNotes).toEqual(notes);
+    expect(await current.check()).toMatchObject({ installedNotes: notes, eligible: false, fetchError: 'offline' });
+    await expect(current.apply({ tag: 'v0.1.1', sha: notes.releases[0].sha })).rejects.toThrow('release changed');
+    source.list = async () => [];
+    expect(await current.check()).toMatchObject({ installedNotes: notes, eligible: false, reason: 'no published stable releases' });
+  });
+
+  it('does not infer notices from a corrupt cache', async () => {
+    await updater().check(); fake.install('v0.1.1');
     writeFileSync(join(dir, 'update-notes.json'), '{broken');
     const current = updater();
     expect((await current.check()).installedNotes).toBeUndefined();
-    expect(JSON.parse(readFileSync(join(dir, 'update-notes.json'), 'utf8')).baselineSha).toBe(git(work, 'rev-parse', 'HEAD'));
+    expect(JSON.parse(readFileSync(join(dir, 'update-notes.json'), 'utf8')).baselineSha).toBe(fake.head);
   });
 
   it('does not resurrect acknowledged notes when an in-flight check finishes', async () => {
-    await updater().check(); await install('v0.1.1');
+    await updater().check(); fake.install('v0.1.1');
     const current = updater(), notes = (await current.check()).installedNotes!;
     const list = source.list;
     let finish!: () => void;
@@ -450,7 +503,7 @@ describe('installed unread release notes', () => {
   });
 
   it('does not resurrect another instance acknowledgment after its paused check finishes', async () => {
-    await updater().check(); await install('v0.1.1');
+    await updater().check(); fake.install('v0.1.1');
     const a = updater(), notes = (await a.check()).installedNotes!;
     const b = updater(), list = source.list;
     let finish!: () => void;
@@ -464,9 +517,9 @@ describe('installed unread release notes', () => {
   });
 
   it('keeps a newer persisted release when an old daemon acknowledges its stale identity', async () => {
-    await updater().check(); await install('v0.1.1');
+    await updater().check(); fake.install('v0.1.1');
     const old = updater(), previous = (await old.check()).installedNotes!;
-    await install('v0.1.2');
+    fake.install('v0.1.2');
     const current = updater(), newer = (await current.check()).installedNotes!;
     await old.acknowledgeNotes(previous.identity);
     source.list = async () => { throw new Error('offline'); };
@@ -475,7 +528,7 @@ describe('installed unread release notes', () => {
   });
 
   it('waits for brief notes-lock contention without blocking daemon initialization', async () => {
-    await updater().check(); await install('v0.1.1');
+    await updater().check(); fake.install('v0.1.1');
     const lock = join(dir, 'update-notes.json.lock');
     writeFileSync(lock, 'fixture');
     const current = updater();
@@ -485,7 +538,7 @@ describe('installed unread release notes', () => {
   });
 
   it('retains unread notes and does not broadcast read state when persistence fails', async () => {
-    await updater().check(); await install('v0.1.1');
+    await updater().check(); fake.install('v0.1.1');
     const changed = vi.fn(), current = updater(changed), notes = (await current.check()).installedNotes!;
     changed.mockClear();
     const path = join(dir, 'update-notes.json'), saved = `${path}.saved`;
@@ -501,19 +554,19 @@ describe('installed unread release notes', () => {
 
 
 describe('automatic discovery while a UI is connected', () => {
-  beforeEach(setupCheckout);
+  let fake: ReturnType<typeof setupFake>;
+  beforeEach(() => { fake = setupFake(); });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
-  // Fake only the scheduler; fixture Git subprocesses still run normally.
-  const fakeClock = () => vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+  // Join an automatic check without starting one; the in-memory checkout may already have finished it.
+  const settle = async (updater: Updater) => { if (updater.status().checking) await updater.check(); };
   const setup = () => {
     const changed = vi.fn();
     const spawnHelper = vi.fn(() => 'unused');
     const list = vi.spyOn(source, 'list');
-    const updater = createUpdater({ repo: work, home: dir, source, onChange: changed, spawnHelper });
+    const updater = createUpdater({ repo: dir, home: dir, source, checkout: fake, onChange: changed, spawnHelper });
     const tick = async (ms: number) => {
       await vi.advanceTimersByTimeAsync(ms);
-      // The automatic callback has already started the check; this only joins it.
-      await updater.check();
+      await settle(updater);
     };
     return { updater, changed, spawnHelper, list, tick };
   };
@@ -548,7 +601,7 @@ describe('automatic discovery while a UI is connected', () => {
     expect(list).not.toHaveBeenCalled();
   });
   it('waits for fresh eligibility before applying and keeps checking off during installation', async () => {
-    commit('approved'); release('v0.1.1');
+    fake.commit(); fake.release('v0.1.1');
     const { updater, changed, list, spawnHelper } = setup();
     const target = (await updater.check()).target!;
     let finish!: (rows: PublishedRelease[]) => void;
@@ -564,7 +617,7 @@ describe('automatic discovery while a UI is connected', () => {
     expect(changed.mock.calls.every(([s]) => !(s.checking && s.applying))).toBe(true);
   });
   it('refuses a waiting apply when the refresh fails', async () => {
-    commit('approved'); release('v0.1.1');
+    fake.commit(); fake.release('v0.1.1');
     const { updater, list, spawnHelper } = setup();
     const target = (await updater.check()).target!;
     let fail!: (error: Error) => void;
@@ -579,22 +632,23 @@ describe('automatic discovery while a UI is connected', () => {
   it('discovers a newly published release on one shared timer, without installing or marking notes unread', async () => {
     fakeClock();
     const { updater, changed, spawnHelper, list } = setup();
+    const installed = fake.head;
     updater.start(); updater.start();
     expect(vi.getTimerCount()).toBe(1);
     const firstBroadcast = new Promise((resolve) => changed.mockImplementationOnce(resolve));
     await vi.advanceTimersByTimeAsync(0);
-    await firstBroadcast; await updater.check();
+    await firstBroadcast; await settle(updater);
     expect(list).toHaveBeenCalledTimes(1);
-    commit('automatic'); release('v0.1.1');
+    fake.commit(); fake.release('v0.1.1');
     const calls = changed.mock.calls.length;
     const discovery = new Promise((resolve) => changed.mockImplementationOnce(resolve));
     await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL);
-    await discovery; await updater.check();
+    await discovery; await settle(updater);
     expect(changed.mock.calls.length).toBe(calls + 2);
     expect(list).toHaveBeenCalledTimes(2);
     expect(updater.status()).toMatchObject({ target: { tag: 'v0.1.1' }, eligible: true });
     expect(updater.status().installedNotes).toBeUndefined();
-    expect(git(work, 'describe', '--tags', '--exact-match', 'HEAD')).toBe('v0.1.0');
+    expect(fake.head).toBe(installed);
     expect(spawnHelper).not.toHaveBeenCalled();
     updater.stop();
     expect(vi.getTimerCount()).toBe(0);
@@ -625,7 +679,7 @@ describe('automatic discovery while a UI is connected', () => {
     expect(updater.check()).toBe(first);
     expect(updater.status()).toMatchObject({ checking: true, eligible: false });
     updater.stop();
-    // Wait until the real Git subprocess reaches the mocked release request.
+    // Wait until the check reaches the mocked release request.
     await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
     finish([...rows]); await first;
     expect(changed.mock.calls.map(([s]) => s.checking)).toEqual([true, false]);
@@ -635,32 +689,36 @@ describe('automatic discovery while a UI is connected', () => {
   it('backs off offline failures, recovers automatically, and allows an explicit retry sooner', async () => {
     fakeClock();
     const { updater, list, tick } = setup();
-    list.mockRejectedValueOnce(new Error('offline'));
+    list.mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline'));
     updater.start(); await tick(0);
     expect(updater.status()).toMatchObject({ checking: false, eligible: false, fetchError: 'offline' });
     await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL);
     expect(list).toHaveBeenCalledTimes(1);
-    await tick(UPDATE_CHECK_INTERVAL);
+    // An explicit retry runs inside the backoff; failing again doubles it to 40 minutes.
+    expect(await updater.check()).toMatchObject({ fetchError: 'offline' });
     expect(list).toHaveBeenCalledTimes(2);
-    expect(updater.status().fetchError).toBeUndefined();
-    await updater.check();
+    await vi.advanceTimersByTimeAsync(40 * 60_000 - 1);
+    expect(list).toHaveBeenCalledTimes(2);
+    await tick(1);
     expect(list).toHaveBeenCalledTimes(3);
+    expect(updater.status()).toMatchObject({ checking: false, eligible: true });
+    expect(updater.status().fetchError).toBeUndefined();
     updater.stop();
   });
   it('pauses discovery during an explicitly approved install and resumes after helper failure', async () => {
     fakeClock();
-    commit('approved'); release('v0.1.1');
+    fake.commit(); fake.release('v0.1.1');
     let exit!: (code: number | null) => void;
     const list = vi.spyOn(source, 'list');
-    const updater = createUpdater({ repo: work, home: dir, source, onChange: vi.fn(), spawnHelper: (_expected, onExit) => { exit = onExit; return 'fixture'; } });
-    updater.start(); await vi.advanceTimersByTimeAsync(0); await updater.check();
+    const updater = createUpdater({ repo: dir, home: dir, source, checkout: fake, onChange: vi.fn(), spawnHelper: (_expected, onExit) => { exit = onExit; return 'fixture'; } });
+    updater.start(); await vi.advanceTimersByTimeAsync(0); await settle(updater);
     const target = updater.status().target!;
     await updater.apply({ tag: target.tag, sha: target.sha });
     await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL);
     expect(await updater.check()).toMatchObject({ applying: true, checking: false });
     expect(list).toHaveBeenCalledTimes(1);
     exit(1);
-    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL); await updater.check();
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL); await settle(updater);
     expect(list).toHaveBeenCalledTimes(2);
     expect(updater.status().applying).toBe(false);
     updater.stop();
@@ -671,19 +729,31 @@ describe('automatic discovery while a UI is connected', () => {
   ])('does not check, and says so, while %s holds the checkout lock', async (_, contents, reason) => {
     fakeClock();
     const { updater, list, tick } = setup();
-    writeFileSync(join(work, '.git/update.lock'), contents());
+    writeFileSync(join(dir, 'update.lock'), contents());
     updater.start(); await vi.advanceTimersByTimeAsync(0);
     expect(list).not.toHaveBeenCalled();
     expect(updater.status()).toMatchObject({ eligible: false, reason: expect.stringContaining(reason) });
-    rmSync(join(work, '.git/update.lock'));
+    rmSync(join(dir, 'update.lock'));
     await tick(UPDATE_CHECK_INTERVAL);
     expect(list).toHaveBeenCalledTimes(1);
     updater.stop();
   });
+});
+
+describe('automatic discovery of a Git checkout', () => {
+  beforeEach(setupCheckout);
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  it('finds the lock holder in the Git common directory', () => {
+    expect(gitCheckout(work).lockHolder()).toBeUndefined();
+    const lock = join(work, '.git/update.lock');
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, sha: 'fixture' }));
+    expect(gitCheckout(work).lockHolder()).toEqual({ path: lock, pid: process.pid, stale: false });
+  });
   it('checks past a lock whose holder exited and reports the interrupted update without removing the lock', async () => {
     fakeClock();
     commit('two'); release('v0.1.1');
-    const { updater, list, spawnHelper } = setup();
+    const list = vi.spyOn(source, 'list'), spawnHelper = vi.fn(() => 'unused');
+    const updater = createUpdater({ repo: work, home: dir, source, onChange: vi.fn(), spawnHelper });
     const lock = join(work, '.git/update.lock');
     writeFileSync(lock, JSON.stringify({ pid: spawnSync('true').pid, sha: 'fixture' }));
     updater.start(); await vi.advanceTimersByTimeAsync(0);
