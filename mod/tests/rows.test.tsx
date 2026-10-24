@@ -6,12 +6,19 @@ const steered = msg.replace('reply-to: n-3f2a\n', 'reply-to: n-3f2a\nsteer: the 
 
 describe('envelope parsing', () => {
   test('a framed message parses', async () => {
-    expect(parseEnvelope(msg)).toEqual({ from: 'Builder (n-3f2a)', replyTo: 'n-3f2a', steer: false, body: 'please rebase\nthen merge' })
+    expect(parseEnvelope(msg)).toEqual({ from: 'Builder (n-3f2a)', replyTo: 'n-3f2a', steer: false })
     expect(receivedLine(parseEnvelope(msg)!)).toBe('↘ message from Builder (n-3f2a) · reply-to n-3f2a')
   })
-  test('a steer line is not part of the body', async () => {
-    expect(parseEnvelope(steered)).toMatchObject({ steer: true, body: 'please rebase\nthen merge' })
+  test('the daemon\'s steer line marks a steer; a body starting "steer: " does not', async () => {
+    expect(parseEnvelope(steered)?.steer).toBe(true)
+    expect(parseEnvelope(msg.replace('please rebase', 'steer: left'))?.steer).toBe(false)
     expect(receivedLine(parseEnvelope(steered)!)).toBe('↘ message from Builder (n-3f2a) · steer · reply-to n-3f2a')
+  })
+  test('CRLF and a trailing newline still parse; a daemon notice has reply-to none', async () => {
+    expect(parseEnvelope(msg.replace(/\n/g, '\r\n') + '\r\n')).toEqual({ from: 'Builder (n-3f2a)', replyTo: 'n-3f2a', steer: false })
+    expect(parseEnvelope(msg + '\n')?.from).toBe('Builder (n-3f2a)')
+    const notice = parseEnvelope(msg.replace('from: Builder (n-3f2a)', 'from: tiller (daemon restarted)').replace('reply-to: n-3f2a', 'reply-to: none'))!
+    expect(receivedLine(notice)).toBe('↘ message from tiller (daemon restarted) · reply-to none')
   })
   test('anything else is not an envelope', async () => {
     expect(parseEnvelope('hello')).toBeUndefined()
@@ -56,13 +63,21 @@ describe('render hooks', () => {
     expect(await row($, 'UserMessage', { text: 'hi', origin: tiller, isExpanded: false })).toBe('engine')
     expect(await row($, 'ToolUse', { tool_use_id: 't', tool: 'Bash', input: {}, isRunning: false, isErrored: false, isInterrupted: false })).toBe('engine')
   })
-  test('a send call is one line with its outcome; its result block is hidden until expanded', async ($: any) => {
+  test('a send call is one line with its outcome; its result block is empty until expanded', async ($: any) => {
     const output = [{ type: 'text', text: '{"outcome":"delivered"}' }]
-    const use = { tool_use_id: 't', tool: 'mcp__tiller__send', input: { nodeId: 'n-1', text: 'x' }, isRunning: false, isErrored: false, isInterrupted: false, output }
+    const use = { tool_use_id: 't', tool: 'mcp__tiller__send', input: { nodeId: 'n-1', text: 'x' }, isRunning: false, isErrored: false, isInterrupted: false, isExpanded: false, output }
     expect(await row($, 'ToolUse', use)).toContain('↗ message to n-1 · delivered')
     expect(await row($, 'ToolUse', { ...use, isExpanded: true })).toBe('engine')
+    expect(await row($, 'ToolUse', { ...use, isExpanded: undefined })).toBe('engine')
     expect(await row($, 'ToolUse', { ...use, isErrored: true })).toBe('engine')
-    expect(await row($, 'ToolResult', { tool_use_id: 't', tool: 'mcp__tiller__send', output, isErrored: false })).not.toBe('engine')
-    expect(await row($, 'ToolResult', { tool_use_id: 't', tool: 'mcp__tiller__send', output, isErrored: false, isExpanded: true })).toBe('engine')
+    const result = { tool_use_id: 't', tool: 'mcp__tiller__send', output, isErrored: false, isExpanded: false }
+    expect(JSON.parse(await row($, 'ToolResult', result))).toEqual({ type: 'Box', part: { plugin: 'tiller' } }) // no children: nothing drawn
+    expect(await row($, 'ToolResult', { ...result, isExpanded: true })).toBe('engine')
+    expect(await row($, 'ToolResult', { ...result, isExpanded: undefined })).toBe('engine')
+  })
+  test('a failed send keeps its result block', async ($: any) => {
+    const result = { tool_use_id: 't', tool: 'mcp__tiller__send', isExpanded: false }
+    expect(await row($, 'ToolResult', { ...result, output: 'error: boom', isErrored: true })).toBe('engine')
+    expect(await row($, 'ToolResult', { ...result, output: [{ type: 'text', text: '{"outcome":"refused","detail":"out of scope"}' }], isErrored: false })).toBe('engine')
   })
 })

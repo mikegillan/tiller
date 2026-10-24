@@ -5,7 +5,7 @@ import { parse, request, type Ctx } from './api'
 import { Band } from './band'
 import { COMMANDS, parseSend, parseSpawn } from './commands'
 import { changes } from './notify'
-import { parseEnvelope, receivedLine, sentLine } from './rows'
+import { parseEnvelope, receivedLine, sendResult, sentLine } from './rows'
 
 // tiller per-node mod. Inert unless TL_NODE_ID is set. Contract: src/shared/protocol.ts "Mod-facing HTTP API".
 const kids = atom({ plugin: 'tiller', key: 'children' } as const, [] as Child[])
@@ -130,13 +130,15 @@ export const register: Register = on => {
     return <Text dimColor wrap="truncate-end">{receivedLine(env)}</Text>
   })
   on('ui.render', { component: 'ToolUse', props: { tool: 'mcp__tiller__send' } }, async ($, e, next) => {
-    if (e.props.isExpanded || e.props.isErrored || e.props.isInterrupted) return next(e)
+    // isExpanded is optional here: a surface that does not say (an export) draws in full.
+    if (e.props.isExpanded !== false || e.props.isErrored || e.props.isInterrupted) return next(e)
     const { Text } = $.ui.resolve(e)
     return <Text dimColor wrap="truncate-end">{sentLine(e.props.input, e.props.output, e.props.isRunning, await read($, kids))}</Text>
   })
-  // The outcome is on the call's own line, so its result block draws nothing until expanded.
+  // The outcome is on the call's own line, so its result block draws nothing until expanded; a failed send's shows its reason.
   on('ui.render', { component: 'ToolResult', props: { tool: 'mcp__tiller__send' } }, async ($, e, next) => {
-    if (e.props.isExpanded || e.props.isErrored) return next(e)
+    const outcome = sendResult(e.props.output)?.outcome
+    if (e.props.isExpanded !== false || e.props.isErrored || (outcome !== 'queued' && outcome !== 'delivered')) return next(e)
     const { Box } = $.ui.resolve(e)
     return <Box />
   })

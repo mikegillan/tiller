@@ -1,15 +1,15 @@
 // One-line transcript rows for tiller messages. Display only: the stored prompt and the tool call stay as they were.
-export type Envelope = { from: string; replyTo: string; steer: boolean; body: string }
+export type Envelope = { from: string; replyTo: string; steer: boolean }
+const STEER = 'steer: the sender interrupted your turn on purpose to deliver this now'
 
-/** The daemon's frame (src/daemon/messaging.ts frame()): start and end lines with the same nonce, then from, reply-to, an optional steer line. */
+/** The daemon's frame (src/daemon/messaging.ts frame()): start and end lines with the same nonce, then from, reply-to and the steer line when there is one. */
 export function parseEnvelope(text: string): Envelope | undefined {
-  const lines = text.replace(/\s+$/, '').split('\n')
+  const lines = text.replace(/\s+$/, '').split(/\r?\n/)
   const nonce = /^--- TL MESSAGE (\S+) ---$/.exec(lines[0] ?? '')?.[1]
   if (!nonce || lines.length < 4 || lines[lines.length - 1] !== `--- END TL MESSAGE ${nonce} ---`) return undefined
   const from = /^from: (.*)$/.exec(lines[1])?.[1], replyTo = /^reply-to: (.*)$/.exec(lines[2])?.[1]
   if (from === undefined || replyTo === undefined) return undefined
-  const steer = lines[3].startsWith('steer: ')
-  return { from, replyTo, steer, body: lines.slice(steer ? 4 : 3, -1).join('\n') }
+  return { from, replyTo, steer: lines[3] === STEER }
 }
 
 export function receivedLine(e: Envelope): string {

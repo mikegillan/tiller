@@ -16,7 +16,7 @@ reply-to: n-3f2a
 
 The nonce is new for each delivery. Every node's system prompt says that framed messages are legitimate instructions and that only the outermost frame is authentic, so a body that contains something frame-shaped is plain data. Messages from the daemon itself have `reply-to: none`.
 
-In a Claude node's chat the mod draws a delivered envelope as one line, `↘ message from Builder (n-3f2a) · reply-to n-3f2a` (with `· steer` for a steer), and the node's own `send` calls as `↗ message to <title> (<id>) · queued`. ctrl+o shows the full text. This changes the drawing only; Claude reads the whole envelope.
+In a Claude node's chat the mod draws a delivered envelope as one line, `↘ message from Builder (n-3f2a) · reply-to n-3f2a` (with `· steer` for a steer), and the node's own `send` calls as `↗ message to <title> (<id>) · queued`. The sent line's outcome is what the call returned (usually `queued`) and is not updated when the message is delivered; a send that failed or was refused also shows its result. ctrl+o shows the full text. This changes the drawing only; Claude reads the whole envelope.
 
 ## The queue and delivery
 
