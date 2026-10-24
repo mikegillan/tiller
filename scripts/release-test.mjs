@@ -27,9 +27,15 @@ function fixture(t) {
   const releases = [];
   const tags = new Map();
   const calls = [];
+  const pulls = new Map();
   let failPublication = false;
   const api = async (method, path, body) => {
     calls.push({ method, path, body });
+    if (method === 'GET' && path.startsWith('/commits/')) {
+      const pr = pulls.get(path.split('/')[2]);
+      if (pr instanceof Error) throw pr;
+      return pr ? [pr] : [];
+    }
     if (path.startsWith('/releases?')) {
       const page = Number(new URLSearchParams(path.split('?')[1]).get('page'));
       return releases.slice((page - 1) * 100, page * 100);
@@ -55,8 +61,35 @@ function fixture(t) {
     releases.push({ tag_name: tag, draft: false, prerelease: false, published_at: '2026-10-17T00:00:00Z', ...extra });
     tags.set(tag, { object: { type: 'commit', sha } });
   };
-  return { first, second, third, git, api, releases, tags, calls, addRelease, fail: value => { failPublication = value; } };
+  return { first, second, third, git, api, releases, tags, calls, pulls, addRelease, fail: value => { failPublication = value; } };
 }
+
+const merged = (number, ...labels) => ({ number, merged_at: '2026-10-17T00:00:00Z', labels: labels.map(name => ({ name })) });
+
+test('a merged PR labelled no-release publishes nothing; the next release rolls up its commits', async t => {
+  const f = fixture(t);
+  f.addRelease('v0.1.0', f.first);
+  f.pulls.set(f.second, merged(6, 'tests', 'no-release'));
+  f.git(['checkout', '--detach', f.second]);
+  assert.deepEqual(await publishRelease({ sha: f.second, api: f.api, git: f.git }), { skipped: '#6 is labelled no-release' });
+  assert(!f.calls.some(c => c.method === 'POST'));
+  assert.equal(f.tags.size, 1);
+  f.pulls.set(f.third, merged(7, 'tests'));
+  f.git(['checkout', '--detach', f.third]);
+  assert.equal((await publishRelease({ sha: f.third, api: f.api, git: f.git })).tag, 'v0.1.1');
+  const body = f.releases.at(-1).body;
+  assert(body.includes(f.second));
+  assert(body.includes(f.third));
+});
+
+test('fails closed, publishing nothing, when the PR lookup fails', async t => {
+  const f = fixture(t);
+  f.pulls.set(f.third, new Error('GitHub GET /commits/x/pulls: HTTP 403'));
+  await assert.rejects(publishRelease({ sha: f.third, api: f.api, git: f.git }), /HTTP 403/);
+  const missing = fixture(t);
+  await assert.rejects(publishRelease({ sha: missing.third, api: async () => null, git: missing.git }), /Cannot list pull requests/);
+  assert(!f.calls.some(c => c.method === 'POST'));
+});
 
 test('first release is stable v0.1.0 at exact validated SHA, includes PR and all commit notes', async t => {
   const f = fixture(t);
