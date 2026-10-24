@@ -551,7 +551,14 @@ export class NodeManager extends EventEmitter {
     if (isAgentKind(rec.kind)) {
       const harness = harnessFor(rec);
       const d = profileDefaults(loadConfig(this.projectDir(rec), this.home), harness, profileFor(rec.profile, rec.parentId, rec.role), roleFor(rec.role, rec.parentId));
-      fresh = { ...(rec.explicit?.includes('model') ? {} : { model: d.model }), ...(rec.explicit?.includes('effort') ? {} : { effort: d.effort }) };
+      let explicit = rec.explicit;
+      if (!explicit && rec.preset) { // a legacy record: what its preset sets counts as chosen; an unloadable preset keeps both
+        try {
+          const p = loadPreset(rec.preset, this.projectDir(rec), this.home);
+          explicit = (['model', 'effort'] as const).filter((k) => p[k] !== undefined);
+        } catch { explicit = ['model', 'effort']; }
+      }
+      fresh = { ...(explicit?.includes('model') ? {} : { model: d.model }), ...(explicit?.includes('effort') ? {} : { effort: d.effort }) };
       if (fresh.effort && !isSupportedEffort(harness, fresh.effort)) return { ok: false, error: `unsupported ${harness} effort: ${fresh.effort}` };
     }
     const old = rec.sessionId;

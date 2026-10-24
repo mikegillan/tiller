@@ -61,3 +61,16 @@ it('restart re-resolves both on a legacy record without the marker', async () =>
   expect(manager.restart(id)).toEqual({ ok: true });
   expect(manager.registry.get(id)).toMatchObject({ model: 'claude-opus-5-5', effort: 'high' });
 });
+
+it('restart keeps what a legacy record\'s preset sets, and its stored values when the preset is gone', async () => {
+  configure('claude-opus-5-5', 'high');
+  const agents = join(manager.home, 'agents'); mkdirSync(agents, { recursive: true });
+  writeFileSync(join(agents, 'pinned.md'), '---\nmodel: claude-haiku-5-5\n---\nBody\n');
+  const { id } = await manager.spawn({ kind: 'claude', title: 'O', cwd: home, preset: 'pinned', byHuman: true });
+  manager.registry.update(id, { explicit: undefined, effort: 'max' });
+  expect(manager.restart(id)).toEqual({ ok: true });
+  expect(manager.registry.get(id)).toMatchObject({ model: 'claude-haiku-5-5', effort: 'high' });
+  manager.registry.update(id, { preset: 'gone', model: 'claude-mythos-5-1', effort: 'max' });
+  manager.restart(id); // the launch itself fails on the missing preset; the stored values stay
+  expect(manager.registry.get(id)).toMatchObject({ model: 'claude-mythos-5-1', effort: 'max' });
+});
