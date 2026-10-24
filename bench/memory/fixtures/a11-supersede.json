@@ -23,7 +23,7 @@
   "queries": [
     { "id": "orchestrator", "repo": "lib", "role": "orchestrator", "must": ["@note-new-agent", "@note-new-human"],
       "forbidden": ["@note-old-agent", "@note-old-human"] },
-    { "id": "worker", "repo": "lib", "role": "worker", "brief": "Write the release notes for the Node upgrade", "must": ["@note-new-agent", "@note-new-human"],
+    { "id": "worker", "repo": "lib", "role": "worker", "brief": "Write the release notes for the Node upgrade", "must": ["@note-new-agent"],
       "forbidden": ["@note-old-agent", "@note-old-human"] }
   ]
 }

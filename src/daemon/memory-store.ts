@@ -245,10 +245,17 @@ export class MemoryStore implements DigestSource {
         procedures: list(kind('procedure'), -1).sort((a, b) => weight(b) - weight(a)).slice(0, c.procedures),
         pitfalls: list(kind('pitfall'), c.pitfalls),
         notes: list(kind('note'), c.notes),
+        // An item is related only when it matches at least two of the terms (or the one there is), so a single shared
+        // word does not make it related (bench D-2).
+        // prune: one MATCH per term, counted over the whole file; restrict to the repo if term lists or files grow large.
         matched: q.role === 'worker' && terms ? (db.prepare(`SELECT i.* FROM items_fts CROSS JOIN items i ON i.id = items_fts.rowid
           WHERE items_fts MATCH :terms AND i.repo_id = :repo AND i.kind IN ('ledger', 'procedure', 'pitfall', 'note')
             AND i.invalid_at IS NULL AND i.pinned = 0 AND ${ELIGIBLE}
-          ORDER BY bm25(items_fts) LIMIT ${c.matched}`).all({ terms, repo }) as unknown as ItemRow[]).map((r) => view(r)) : [],
+            AND i.id IN (SELECT rowid FROM (${q.terms.map((_, n) => `SELECT rowid FROM items_fts WHERE items_fts MATCH :t${n}`).join(' UNION ALL ')})
+              GROUP BY rowid HAVING count(*) >= :need)
+          ORDER BY bm25(items_fts) LIMIT ${c.matched}`).all({
+          terms, repo, need: Math.min(2, q.terms.length), ...Object.fromEntries(q.terms.map((t, n) => [`t${n}`, ftsQuery([t])])),
+        }) as unknown as ItemRow[]).map((r) => view(r)) : [],
       };
     });
   }

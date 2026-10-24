@@ -359,6 +359,15 @@ describe('search, history and eligibility', () => {
     expect(c.notes).toEqual([]);
     expect(s.candidates(scope(), { role: 'orchestrator', terms: ['messaging'], now: clock }).matched).toEqual([]);
   });
+
+  it('counts an item as matched only when it shares two of the terms, or the only one', () => {
+    const s = open();
+    s.apply(scope('n-r1'), derived([item('ledger', 'invoice rounding in billing'), item('pitfall', 'billing flake')]));
+    const matched = (terms: string[]) => s.candidates(scope(), { role: 'worker', terms, now: clock }).matched.map((v) => v.text);
+    expect(matched(['invoice', 'billing', 'theme'])).toEqual(['invoice rounding in billing']);
+    expect(matched(['billing', 'theme'])).toEqual([]);
+    expect(matched(['billing']).sort()).toEqual(['billing flake', 'invoice rounding in billing']);
+  });
 });
 
 describe('failure modes', () => {

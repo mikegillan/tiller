@@ -1,7 +1,7 @@
 {
   "name": "A1 gate fail→pass (and A8 no word overlap)",
   "claim": 1,
-  "note": "A8 (query a8-no-overlap) is reported, not asserted: workers get pitfalls only through FTS (decision D-1).",
+  "note": "Workers get pitfalls only through FTS, so the lesson is a should for both briefs: worker-overlap shares only code stopwords with it since D-2, and A8 (a8-no-overlap) shares nothing and is reported only (decision D-1).",
   "now": "2026-10-20T12:00:00Z",
   "repos": { "lib": "git:bench.invalid/ledgerlib" },
   "episodes": [
@@ -31,7 +31,7 @@
   "exactCounts": { "pitfall": 1, "procedure": 2, "ledger": 1, "open_question": 0, "note": 0 },
   "queries": [
     { "id": "worker-overlap", "repo": "lib", "role": "worker", "brief": "Add parseCents to src/money.js with tests",
-      "must": ["@pit-changelog"], "should": ["@proc-gate"] },
+      "should": ["@pit-changelog", "@proc-gate"] },
     { "id": "a8-no-overlap", "repo": "lib", "role": "worker", "brief": "Rename the Formatter class",
       "should": ["@pit-changelog"], "report": true },
     { "id": "orchestrator", "repo": "lib", "role": "orchestrator", "brief": "Plan the money formatting work",

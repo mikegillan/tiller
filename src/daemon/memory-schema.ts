@@ -456,14 +456,19 @@ export function normalizeRemote(url: string): string {
 const STOPWORDS = new Set(('a an and are as at be but by can do does for from has have if in into is it its me my no not of on or our '
   + 'should so than that the their them then there these they this to too use was we were what when where which while who why will with '
   + 'would you your all any also each how just more most only other some such very').split(' '));
+/** Directory names and file extensions that nearly every code path shares, so they say nothing about which work is related (bench D-2). */
+const CODE_STOPWORDS = new Set(('src lib test tests spec specs index dist js jsx mjs cjs ts tsx mts cts json md yml yaml toml txt css scss html '
+  + 'py rs go sh').split(' '));
 const TOKEN = /[\p{L}\p{N}_]+/gu;
 const PATH = /[\p{L}\p{N}_-]+(?:[/.][\p{L}\p{N}_-]+)+/gu;
 
 /**
  * Search terms from untrusted text (a node's brief, a tool query): path mentions (src/daemon/x.ts, messaging.ts) as
- * phrases of their tokens, space-joined, then single tokens of 2+ letters, digits or _, lowercased, without stopwords
- * or repeats, at most LIMITS.digest.ftsTerms. A term holds only letters, digits, _ and single spaces, so quoting each
- * one (and joining with OR) keeps every FTS5 operator out of a MATCH.
+ * phrases of all their tokens, space-joined, so only that exact path matches one; then single tokens of 2+ letters,
+ * digits or _, lowercased, without stopwords, code stopwords (src, test, ts...) or repeats, at most
+ * LIMITS.digest.ftsTerms. A path's specific parts thus stay as tokens and its generic ones only inside the phrase. A
+ * term holds only letters, digits, _ and single spaces, so quoting each one (and joining with OR) keeps every FTS5
+ * operator out of a MATCH.
  */
 export function ftsTerms(text: string): string[] {
   const terms = new Set<string>();
@@ -471,7 +476,9 @@ export function ftsTerms(text: string): string[] {
     const parts = path.match(TOKEN) ?? [];
     if (parts.length > 1 && (path.includes('/') || /[\p{L}\p{N}_-]{2,}\.\p{L}[\p{L}\p{N}]{0,4}$/u.test(path))) terms.add(parts.join(' '));
   }
-  for (const [token] of text.toLowerCase().matchAll(TOKEN)) if (token.length >= 2 && !STOPWORDS.has(token)) terms.add(token);
+  for (const [token] of text.toLowerCase().matchAll(TOKEN)) {
+    if (token.length >= 2 && !STOPWORDS.has(token) && !CODE_STOPWORDS.has(token)) terms.add(token);
+  }
   return [...terms].slice(0, LIMITS.digest.ftsTerms);
 }
 
