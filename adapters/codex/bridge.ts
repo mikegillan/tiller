@@ -15,6 +15,9 @@ export interface BridgeOptions {
   model?: string;
   effort?: string;
 }
+/** How long lifecycle reports retry an unreachable daemon, e.g. across `tl reload`. */
+const DAEMON_GAP_MS = 60_000;
+
 export interface Rpc {
   request(method: string, params: Record<string, unknown>): Promise<any>;
   send(packet: Packet): void;
@@ -44,6 +47,7 @@ export class CodexBridge {
   private stopped = false;
   private stopTask?: Promise<void>;
   private expired = false;
+  private unreachableSince?: number;
   private readonly shutdown = new AbortController();
 
   constructor(private o: BridgeOptions, private rpc: Rpc, private client: TillerClient,
@@ -129,6 +133,24 @@ When the user asks for workers or subagents in this Tiller session, use the ${na
     finally { this.shutdown.signal.removeEventListener('abort', cancel); }
   }
 
+  /**
+   * Send a lifecycle report, retrying each second while the daemon is unreachable. One outage
+   * stalls the event queue for at most DAEMON_GAP_MS; after that reports are dropped (logged)
+   * until one succeeds, as hook.sh drops failed hooks.
+   */
+  private async report(send: () => Promise<void>): Promise<void> {
+    for (;;) {
+      try { await this.untilDeadline(send); this.unreachableSince = undefined; return; } catch (error) {
+        this.unreachableSince ??= Date.now();
+        if (this.expired || Date.now() - this.unreachableSince >= DAEMON_GAP_MS) {
+          this.print(`Tiller report dropped: ${(error as Error).message}\n`);
+          return;
+        }
+      }
+      await this.untilDeadline(() => new Promise<void>((resolve) => setTimeout(resolve, 1000)));
+    }
+  }
+
   private async event(p: Packet): Promise<void> {
     const v = p.params ?? {};
     // Account quota updates apply independently of the managed thread.
@@ -140,20 +162,20 @@ When the user asks for workers or subagents in this Tiller session, use the ${na
     if (p.id !== undefined && p.method) {
       // The real Codex TUI handles every approval/input request. Only mirror its waiting state.
       if (p.method.endsWith('/requestApproval') || p.method.endsWith('/requestUserInput') || p.method === 'mcpServer/elicitation/request') {
-        await this.untilDeadline(() => this.client.hook({ hook_event_name: 'Notification', notification_type:
+        await this.report(() => this.client.hook({ hook_event_name: 'Notification', notification_type:
           p.method?.includes('Approval') ? 'permission_prompt' : 'elicitation_dialog', message: v.reason ?? p.method }));
       }
     } else if (p.method === 'serverRequest/resolved') {
-      if (this.busy) await this.untilDeadline(() => this.client.hook({ hook_event_name: 'PostToolUse' }));
+      if (this.busy) await this.report(() => this.client.hook({ hook_event_name: 'PostToolUse' }));
     } else if (p.method === 'thread/settings/updated' && typeof v.threadSettings?.model === 'string') {
       this.model = v.threadSettings.model;
-      await this.untilDeadline(() => this.client.modEvent('session.measure', { model: this.model }));
+      await this.report(() => this.client.modEvent('session.measure', { model: this.model }));
     } else if (p.method === 'turn/started') {
       this.busy = true;
       this.turnId = v.turn?.id;
       this.answer = '';
       this.interrupted = undefined;
-      await this.untilDeadline(() => this.client.modEvent('turn.start', { turnId: this.turnId }));
+      await this.report(() => this.client.modEvent('turn.start', { turnId: this.turnId }));
 
     } else if (p.method === 'item/started' || p.method === 'item/completed') {
       const item = v.item;
@@ -169,20 +191,20 @@ When the user asks for workers or subagents in this Tiller session, use the ${na
         : item.type === 'mcpToolCall' ? `mcp__${item.server}__${item.tool}` : undefined;
       if (tool) {
         if (p.method === 'item/completed') this.append('assistant', [{ type: 'tool_use', name: tool }]);
-        await this.untilDeadline(() => this.client.hook({ hook_event_name: p.method === 'item/started' ? 'PreToolUse' : 'PostToolUse',
+        await this.report(() => this.client.hook({ hook_event_name: p.method === 'item/started' ? 'PreToolUse' : 'PostToolUse',
           tool_name: tool, tool_input: { command: item.command, file_path: item.changes?.[0]?.path } }));
       }
     } else if (p.method === 'thread/tokenUsage/updated') {
       const tokens = v.tokenUsage?.last?.totalTokens, window = v.tokenUsage?.modelContextWindow;
       if (Number.isFinite(tokens) && Number.isFinite(window) && window > 0) {
-        await this.untilDeadline(() => this.client.modEvent('session.measure', { context: { tokens, window, percent: tokens / window * 100 }, model: this.model }));
+        await this.report(() => this.client.modEvent('session.measure', { context: { tokens, window, percent: tokens / window * 100 }, model: this.model }));
       }
     } else if (p.method === 'turn/completed') {
       const turn = v.turn;
       if (!turn || typeof turn.id !== 'string') throw new Error('invalid Codex turn completion');
       this.busy = false;
       this.turnId = undefined;
-      await this.untilDeadline(() => this.client.modEvent('turn.complete', { turnId: turn.id, answer: this.answer,
+      await this.report(() => this.client.modEvent('turn.complete', { turnId: turn.id, answer: this.answer,
         isAborted: turn.status === 'interrupted', reason: turn.status === 'failed' ? 'error' : 'answer', usage: { model: this.model } }));
     }
   }
