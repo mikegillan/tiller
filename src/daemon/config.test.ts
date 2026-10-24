@@ -195,6 +195,41 @@ describe('loadConfig', () => {
     err.mockRestore();
   });
 
+  it('reads the memory opt-in, projects and size from the home file only; a project may turn memory off', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { cwd, homeDir } = setup(
+      JSON.stringify({ memory: { enabled: true, projects: [{ path: '/x', enabled: true }], maxMB: 50 } }),
+      JSON.stringify({ memory: { maxMB: 300 } }),
+    );
+    expect(loadConfig(cwd, homeDir).memory).toEqual({ enabled: false, projects: [], digest: 'on', maxMB: 300 });
+    expect(err.mock.calls.map((c) => c[0])).toEqual([`tiller: ignoring in ${join(cwd, '.tiller', 'config.json')}: memory.projects: read from the home file only; `
+      + 'memory.maxMB: read from the home file only; memory.enabled: a project file may only set false; opt in from the home file']);
+    writeFileSync(join(cwd, '.tiller', 'config.json'), JSON.stringify({ memory: { enabled: false } }));
+    writeFileSync(join(homeDir, 'config.json'), JSON.stringify({ memory: { enabled: true } }));
+    expect(configEntries(cwd, homeDir)['memory.enabled']).toEqual({ value: false, source: join(cwd, '.tiller', 'config.json') });
+    err.mockRestore();
+  });
+
+  it('lets a project file make memory.digest stricter, never looser', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // [project digest, home digest, expected value, expected source]
+    const cases: [string, string | undefined, string, 'project' | 'home'][] = [
+      ['off', undefined, 'off', 'project'], ['ab', 'on', 'ab', 'project'], ['off', 'ab', 'off', 'project'],
+      ['on', 'ab', 'ab', 'home'], ['ab', 'off', 'off', 'home'],
+    ];
+    for (const [project, home, value, from] of cases) {
+      const { cwd, homeDir } = setup(JSON.stringify({ memory: { digest: project } }), home && JSON.stringify({ memory: { digest: home } }));
+      err.mockClear();
+      const homeFile = join(homeDir, 'config.json'), source = from === 'project' ? join(cwd, '.tiller', 'config.json') : homeFile;
+      expect(configEntries(cwd, homeDir)['memory.digest'], JSON.stringify([project, home])).toEqual({ value, source });
+      if (from === 'project') expect(err).not.toHaveBeenCalled();
+      else expect(err.mock.calls.map((c) => c[0])).toEqual([`tiller: ignoring in ${join(cwd, '.tiller', 'config.json')}: memory.digest: "${project}" injects memory more often than allowed, `
+        + `so "${value}" (from ${homeFile}) applies instead. A project file may only make memory.digest stricter, because agents can edit it; to allow "${project}", set memory.digest to "${project}" in ${homeFile}`]);
+      rmSync(dir, { recursive: true, force: true });
+    }
+    err.mockRestore();
+  });
+
   it('skips a file that is not JSON with one log line', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { cwd, homeDir } = setup('{not json', JSON.stringify({ approvals: { close: 'always' } }));
