@@ -1,13 +1,13 @@
 import { Select } from '../controls/Select';
 import { useEffect, useRef, useState } from 'react';
-import { PROFILES, PROFILE_LABELS, harnessFor, profileFor, type InstalledReleaseNotes, type Profile, type Effort, isAgentKind, type ClientMessage, type Harness, type NodeKind, type Role } from '../../src/shared/protocol';
+import { PROFILES, PROFILE_LABELS, harnessFor, profileFor, type InstalledReleaseNotes, type Profile, type Effort, isAgentKind, type ClaudeAccountView, type ClientMessage, type Harness, type NodeKind, type Role } from '../../src/shared/protocol';
 import { SETTINGS_HARNESSES, SETTINGS_EFFORTS } from '../../src/shared/settings';
 import { send } from '../conn';
 import type { TauriWindow } from '../hooks';
 import { Modal } from '../controls/Modal';
 import { actionsFor } from '../controls/ActionButtons';
 import { ReleaseNotes } from '../release-notes/ReleaseNotes';
-import { expectSpawn, openDialog, useStore, type Dialog } from '../store';
+import { expectSpawn, openDialog, toast, useStore, type Dialog } from '../store';
 import { IN_APP } from '../url';
 import { UpdateDialog } from './UpdateDialog';
 import './dialogs.css';
@@ -30,10 +30,15 @@ const choiceKind = (choice: SpawnChoice): NodeKind => (choice === 'terminal' ? '
 /** The harness sent for a choice; omitted for claude and terminal so their records keep the legacy shape. */
 const choiceHarness = (choice: SpawnChoice): Harness | undefined => (choice !== 'claude' && choice !== 'terminal' ? choice : undefined);
 
-/** What the spawn dialog sends: kind/harness from the choice, with the agent fields only for agent nodes. */
+/** An account option: its name and login state. */
+export const accountLabel = (a: ClaudeAccountView) => `${a.name}${a.isDefault ? ' (default)' : ''} · ${
+  a.loggedIn ? [a.email, a.orgName].filter(Boolean).join(', ') || 'logged in' : a.loggedIn === false ? 'not logged in' : 'login unknown'}`;
+
+/** What the spawn dialog sends: kind/harness from the choice, with the agent fields only for agent nodes.
+ *  A Claude account is chosen only for a root Claude node; children inherit their parent's. */
 export function spawnMsg(
   d: { parentId: string | null },
-  form: { choice: SpawnChoice; title: string; cwd: string; prompt: string; model: string; role: Role; defaultRole: Role; profile?: Profile; effort?: Effort; isolate: boolean },
+  form: { choice: SpawnChoice; title: string; cwd: string; prompt: string; model: string; role: Role; defaultRole: Role; profile?: Profile; effort?: Effort; isolate: boolean; account?: string },
 ): ClientMessage {
   const kind = choiceKind(form.choice);
   const agent = isAgentKind(kind);
@@ -47,6 +52,7 @@ export function spawnMsg(
     ...(agent && form.role !== form.defaultRole ? { role: form.role } : {}),
     ...(agent && form.isolate ? { isolation: 'worktree' as const } : {}),
     ...(form.model.trim() ? { model: form.model.trim() } : {}),
+    ...(!d.parentId && form.choice === 'claude' && form.account ? { account: form.account } : {}),
   };
 }
 
@@ -63,11 +69,16 @@ function SpawnDialog({ d }: { d: Spawn }) {
   const [role, setRole] = useState<Role>(byPosition);
   const profile = profileFor(chosenProfile, d.parentId, role);
   const [isolate, setIsolate] = useState(false);
+  const accounts = useStore((s) => s.claudeAccounts);
+  const [account, setAccount] = useState('');
+  useEffect(() => { if (!d.parentId) send({ t: 'claudeAccounts' }); }, [d.parentId]);
+  // A selection the latest reply no longer lists falls back to Automatic, so a stale name is never sent.
+  const chosen = accounts?.find((a) => a.name === account);
   const kind = choiceKind(choice);
   const agent = isAgentKind(kind);
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    send(spawnMsg(d, { choice, title, cwd, prompt, model, role, profile, effort: effort || undefined, defaultRole: byPosition, isolate }));
+    send(spawnMsg(d, { choice, title, cwd, prompt, model, role, profile, effort: effort || undefined, defaultRole: byPosition, isolate, account: chosen?.name }));
     expectSpawn();
     close();
   };
@@ -84,6 +95,24 @@ function SpawnDialog({ d }: { d: Spawn }) {
           <input className="mono" value={cwd} onChange={(e) => setCwd(e.target.value)} required placeholder="/path/to/project" />
           {IN_APP && <button type="button" className="btn" onClick={() => void pickFolder(cwd).then((p) => p && setCwd(p)).catch(() => {})}>Choose…</button>}
         </div></label>
+        {choice === 'claude' && !d.parentId && !!accounts?.length && <>
+          <label>Account<Select value={chosen?.name ?? ''} onChange={(e) => setAccount(e.target.value)} aria-describedby={chosen?.loggedIn === false || chosen?.error ? 'account-login' : undefined}>
+            <option value="">Automatic (by project)</option>
+            {accounts.map((a) => <option key={a.name} value={a.name}>{accountLabel(a)}</option>)}
+          </Select></label>
+          {chosen && (chosen.loggedIn === false || chosen.error) && <div className="account-login" id="account-login">
+            {chosen.error && <p>{chosen.error}</p>}
+            {chosen.loggedIn === false && <>
+              <p>Not logged in. Log in with:</p>
+              <div className="pick">
+                <input className="mono" readOnly value={chosen.loginCommand} aria-label="Login command" onFocus={(e) => e.currentTarget.select()} />
+                <button type="button" className="btn" onClick={() => void navigator.clipboard?.writeText(chosen.loginCommand).then(() => toast('Login command copied', undefined, 'ok')).catch(() => {})}>Copy</button>
+              </div>
+              <p>or /login in the node's terminal</p>
+            </>}
+          </div>}
+        </>}
+        {choice === 'claude' && parent?.account && <p className="account-inherited">Account: {parent.account} (inherited)</p>}
         {agent && <label>Initial prompt<textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional" /></label>}
         {agent && <label>Task profile<Select value={profile} onChange={(e) => setProfile(e.target.value as Profile)}>{PROFILES.map((p) => <option key={p} value={p}>{PROFILE_LABELS[p]}</option>)}</Select></label>}
         <label>Model<input className="mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="Default" /></label>
