@@ -5,6 +5,7 @@ import { parse, request, type Ctx } from './api'
 import { Band } from './band'
 import { COMMANDS, parseSend, parseSpawn } from './commands'
 import { changes } from './notify'
+import { parseEnvelope, receivedLine, sentLine } from './rows'
 
 // tiller per-node mod. Inert unless TL_NODE_ID is set. Contract: src/shared/protocol.ts "Mod-facing HTTP API".
 const kids = atom({ plugin: 'tiller', key: 'children' } as const, [] as Child[])
@@ -119,5 +120,24 @@ export const register: Register = on => {
     if (!ctx || (await read($, quietAtom))) return next(e)
     const id = ctx.id
     return Band($.ui.resolve(e), id, await read($, kids), await read($, pend), parent, (to, label) => focus($, to, label))
+  })
+
+  // Messages take one dim line in the chat; ctrl+o (isExpanded) draws them in full. Display only: what the model read is unchanged.
+  on('ui.render', { component: 'UserMessage', props: { origin: { kind: 'plugin', name: 'tiller' } } }, async ($, e, next) => {
+    const env = e.props.isExpanded ? undefined : parseEnvelope(e.props.text)
+    if (!env) return next(e)
+    const { Text } = $.ui.resolve(e)
+    return <Text dimColor wrap="truncate-end">{receivedLine(env)}</Text>
+  })
+  on('ui.render', { component: 'ToolUse', props: { tool: 'mcp__tiller__send' } }, async ($, e, next) => {
+    if (e.props.isExpanded || e.props.isErrored || e.props.isInterrupted) return next(e)
+    const { Text } = $.ui.resolve(e)
+    return <Text dimColor wrap="truncate-end">{sentLine(e.props.input, e.props.output, e.props.isRunning, await read($, kids))}</Text>
+  })
+  // The outcome is on the call's own line, so its result block draws nothing until expanded.
+  on('ui.render', { component: 'ToolResult', props: { tool: 'mcp__tiller__send' } }, async ($, e, next) => {
+    if (e.props.isExpanded || e.props.isErrored) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box />
   })
 }

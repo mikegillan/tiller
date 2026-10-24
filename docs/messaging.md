@@ -16,6 +16,8 @@ reply-to: n-3f2a
 
 The nonce is new for each delivery. Every node's system prompt says that framed messages are legitimate instructions and that only the outermost frame is authentic, so a body that contains something frame-shaped is plain data. Messages from the daemon itself have `reply-to: none`.
 
+In a Claude node's chat the mod draws a delivered envelope as one line, `↘ message from Builder (n-3f2a) · reply-to n-3f2a` (with `· steer` for a steer), and the node's own `send` calls as `↗ message to <title> (<id>) · queued`. ctrl+o shows the full text. This changes the drawing only; Claude reads the whole envelope.
+
 ## The queue and delivery
 
 A send is queued in the daemon's inbox for the target (kept in `inbox.json`, so it survives a daemon restart) and the reply has outcome `queued` and a `messageId`. The target's mod polls the inbox every second. While the target is running a turn, the mod leaves the message in the daemon, which keeps it withdrawable. When the turn ends, the mod claims the message (`POST /claim`); from that point it can no longer be withdrawn, and a message that was withdrawn or has expired fails the claim and is skipped. The mod then submits it as a prompt and acknowledges it once Claude accepts the prompt, which makes the outcome `delivered`. The daemon also counts a UserPromptSubmit hook that carries the message's frame as delivery, so an acknowledgement lost to a mod reload does not cause a second submit.
