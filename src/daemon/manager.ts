@@ -317,9 +317,10 @@ export class NodeManager extends EventEmitter {
 
   /**
    * The one way into memory: when memory is on for agent node `id`, redact the event, then derive what it records from
-   * the node's history and apply it. Never throws.
+   * the node's history and apply it. Never throws, and does nothing once shutdown has run (the store is closed).
    */
   captureMemory(id: string, event: CaptureEvent): void {
+    if (this.shutDown) return;
     try {
       const scope = this.memoryOnFor(id);
       if (scope) this.memory.apply(scope, derive(redact(event), this.memory.nodeHistory(scope, id)));
@@ -339,11 +340,12 @@ export class NodeManager extends EventEmitter {
   }
 
   /**
-   * The # Memory section for a launch of agent node `id`, or undefined for none; never throws. A resume reuses the text
-   * its session froze at its fresh launch (nothing when there is none) and records a resume row. A fresh session picks
-   * its arm from memory.digest, composes the digest with digestFor and records it, the off arm's as a shadow.
+   * The # Memory section for a launch of agent node `id` (text; undefined for none) and `record`, which writes its
+   * injection row once the launch has succeeded. Undefined when memory does not apply; never throws. A resume reuses the
+   * text its session froze at its fresh launch (nothing, and no row, when there is none) under a resume row. A fresh
+   * session picks its arm from memory.digest and composes the digest with digestFor; the off arm's row keeps it as a shadow.
    */
-  private memoryDigest(id: string, resume: boolean, digest: Config['memory']['digest']): string | undefined {
+  private memoryDigest(id: string, resume: boolean, digest: Config['memory']['digest']): { text?: string; record: () => void } | undefined {
     try {
       const rec = this.registry.get(id);
       if (!rec?.sessionId || !isAgentKind(rec.kind) || roleFor(rec.role, rec.parentId) === 'none') return undefined;
@@ -353,13 +355,13 @@ export class NodeManager extends EventEmitter {
       if (resume) {
         const frozen = this.memory.frozen(scope.account, sessionId);
         if (!frozen) return undefined;
-        this.memory.recordInjection(scope, { sessionId, arm: frozen.arm, cause: 'resume', itemIds: frozen.itemIds, text: '' });
-        return frozen.arm === 'on' ? frozen.text : undefined;
+        const record = () => this.memory.recordInjection(scope, { sessionId, arm: frozen.arm, cause: 'resume', itemIds: frozen.itemIds, text: '' });
+        return { text: frozen.arm === 'on' ? frozen.text : undefined, record };
       }
       const arm = digest === 'ab' ? digestArm(id) : digest;
       const { text, itemIds } = digestFor(this.memory, scope, { role: digestRole(rec.role, rec.profile, rec.parentId), brief: rec.prompt, now: Date.now() });
-      this.memory.recordInjection(scope, { sessionId, arm, cause: digest === 'ab' ? 'ab' : 'config', itemIds, text });
-      return arm === 'on' ? text : undefined;
+      const record = () => this.memory.recordInjection(scope, { sessionId, arm, cause: digest === 'ab' ? 'ab' : 'config', itemIds, text });
+      return { text: arm === 'on' ? text : undefined, record };
     } catch (err) {
       logError(err);
       return undefined;
@@ -1217,14 +1219,14 @@ export class NodeManager extends EventEmitter {
       rec = this.registry.update(id, { transcriptPath: adapter.prepareTranscript(rec, sessionDir, resume) })!;
     }
     const config = loadConfig(this.projectDir(rec), this.home);
-    const memory = adapter ? this.memoryDigest(id, resume, config.memory.digest) : undefined;
+    const memory = adapter ? this.memoryDigest(id, resume, config.memory.digest) : undefined; // recorded once the launch succeeds
     const input: LaunchInput = {
       nodeId: id, nodeDir: this.launchDir(id), endpoint: this.endpoint, path: this.path, harness: adapter?.id,
       title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, profile: rec.profile, sessionId: rec.sessionId ?? '',
       resume, forkSession, transcriptPath: rec.transcriptPath, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
       preset: rec.preset ? loadPreset(rec.preset, this.projectDir(rec), this.home) : undefined,
       inheritMcpServers: config.claude.inheritMcpServers, piExtensions: config.pi.extensions,
-      claudeConfigDir: adapter?.id === 'claude' ? this.claudeDirOf(rec) : undefined, memory,
+      claudeConfigDir: adapter?.id === 'claude' ? this.claudeDirOf(rec) : undefined, memory: memory?.text,
     };
     const spec = adapter ? adapter.launch(input) : terminalLaunch(input, this.shell);
     const cwd = adapter ? adapter.cwd(rec) : rec.cwd;
@@ -1236,6 +1238,7 @@ export class NodeManager extends EventEmitter {
     if (adapter && prompt) rt.starting = true;
     this.registry.update(id, { lastActiveAt: Date.now(), forkSession: undefined });
     this.liveChanged();
+    memory?.record();
     // The spawn episode, at the first launch so armed and queued spawns count too.
     if (first) this.captureMemory(id, { type: 'spawn', ts: Date.now(), parentId: rec.parentId, kind: rec.kind, ...(rec.worktree ? { branch: rec.worktree.branch } : {}), ...(rec.preset ? { preset: rec.preset } : {}) });
     const native = adapter !== undefined && adapter.id !== 'claude';
