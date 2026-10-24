@@ -29,7 +29,8 @@ export interface HarnessAdapter {
   launch(input: LaunchInput): LaunchSpec;
   /** Claude adopts worktrees itself; other CLIs start directly inside them. */
   cwd(node: NodeRecord): string;
-  transcript(node: Pick<NodeRecord, 'id' | 'cwd' | 'sessionId' | 'transcriptPath'>, sessionDir: string): string | undefined;
+  /** claudeHome: the Claude home of the node's account, for Claude's fallback path. */
+  transcript(node: Pick<NodeRecord, 'id' | 'cwd' | 'sessionId' | 'transcriptPath'> & { claudeHome?: string }, sessionDir: string): string | undefined;
   /** Adopt/repair owned session storage before launch, without changing the conversation identity. */
   prepareTranscript?(node: NodeRecord, sessionDir: string, resume: boolean): string;
 }
@@ -113,7 +114,7 @@ export const claudeAdapter: HarnessAdapter = {
   validate() {},
   launch: claudeLaunch,
   cwd: (n) => n.worktree?.repo ?? n.cwd,
-  transcript: (n) => n.transcriptPath ?? (n.sessionId ? transcriptFor(n.cwd, n.sessionId) : undefined),
+  transcript: (n) => n.transcriptPath ?? (n.sessionId ? transcriptFor(n.cwd, n.sessionId, n.claudeHome) : undefined),
 };
 
 export const piAdapter: HarnessAdapter = {

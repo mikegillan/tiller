@@ -21,10 +21,10 @@ function executable(tool: UsageTool, path: string): string | undefined {
   }
 }
 
-/** Filesystem evidence only; config-file presence does not establish authentication. */
-export function discoverUsage(path: string, home = homedir(), env = process.env, now = Date.now()): UsageSource[] {
+/** Filesystem evidence only; config-file presence does not establish authentication. claudeDirs: the configured Claude accounts' homes. */
+export function discoverUsage(path: string, home = homedir(), env = process.env, now = Date.now(), claudeDirs: string[] = []): UsageSource[] {
   const configs: Record<UsageTool, string[]> = {
-    claude: [join(env.CLAUDE_CONFIG_DIR || join(home, '.claude'), 'settings.json'), join(home, '.claude.json')],
+    claude: [join(env.CLAUDE_CONFIG_DIR || join(home, '.claude'), 'settings.json'), join(home, '.claude.json'), ...claudeDirs.map((d) => join(d, '.claude.json'))],
     codex: [join(env.CODEX_HOME || join(home, '.codex'), 'config.toml'), join(env.CODEX_HOME || join(home, '.codex'), 'auth.json')],
     pi: [join(env.PI_CODING_AGENT_DIR || join(home, '.pi', 'agent'), 'settings.json'), join(env.PI_CODING_AGENT_DIR || join(home, '.pi', 'agent'), 'auth.json')],
   };
@@ -60,13 +60,13 @@ export class UsageRegistry {
   private windowTimes = new Map<string, Map<string, number>>();
   private probedAt?: number;
   private scanning?: Promise<void>;
-  constructor(private path: string) { this.discovery = discoverUsage(path); }
+  constructor(private path: string, private claudeDirs: () => string[] = () => []) { this.discovery = discoverUsage(path, undefined, undefined, undefined, claudeDirs()); }
   /** Coalesce concurrent viewers and cap subprocess discovery to one scan per minute. */
   refresh(now = Date.now()): Promise<void> {
     if (this.scanning) return this.scanning;
     if (this.probedAt !== undefined && now - this.probedAt < 60_000) return Promise.resolve();
     this.probedAt = now;
-    this.scanning = probeVersions(discoverUsage(this.path, undefined, undefined, now), this.path)
+    this.scanning = probeVersions(discoverUsage(this.path, undefined, undefined, now, this.claudeDirs()), this.path)
       .then((sources) => { this.discovery = sources; })
       .finally(() => { this.scanning = undefined; });
     return this.scanning;
@@ -84,7 +84,7 @@ export class UsageRegistry {
       else this.reports.set(id, { ...source, nodeIds: source.nodeIds.filter((id) => id !== nodeId) });
     }
     for (const tool of ['claude', 'codex', 'pi'] as const) {
-      const closed = [...this.reports.values()].filter((s) => s.tool === tool && !s.accountId && !s.nodeIds.length)
+      const closed = [...this.reports.values()].filter((s) => s.tool === tool && !s.accountId && !s.account && !s.nodeIds.length)
         .sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
       for (const source of closed.slice(1)) { this.reports.delete(source.id); this.windowTimes.delete(source.id); changed = true; }
     }
@@ -93,7 +93,7 @@ export class UsageRegistry {
   unavailable(tool: UsageTool, nodeId: string, now: number): boolean {
     let changed = false;
     for (const [id, source] of this.reports) {
-      if (source.tool === tool && !source.accountId && source.nodeIds.includes(nodeId) && source.availability !== 'unavailable') {
+      if (source.tool === tool && !source.accountId && !source.account && source.nodeIds.includes(nodeId) && source.availability !== 'unavailable') {
         this.reports.set(id, { ...source, availability: 'unavailable' }); changed = true;
       }
     }
@@ -109,10 +109,11 @@ export class UsageRegistry {
     let changed = false;
     for (const report of reports) {
       if (!report.rateLimits.length && !report.removedWindows?.length) continue;
-      // Unknown accounts remain isolated by node; never assume two CLI sessions share credentials.
-      const id = JSON.stringify([tool, report.provider ?? '', report.accountId ?? `node:${nodeId}`, report.poolId ?? report.pool ?? '', report.scope, report.scope === 'model' ? report.model ?? '' : '']);
+      // Unknown accounts remain isolated by node; never assume two CLI sessions share credentials. Nodes in one Tiller
+      // Claude account (the daemon stamps `account`) do share them.
+      const id = JSON.stringify([tool, report.provider ?? '', report.accountId ?? (report.account ? `account:${report.account}` : `node:${nodeId}`), report.poolId ?? report.pool ?? '', report.scope, report.scope === 'model' ? report.model ?? '' : '']);
       for (const [key, previous] of this.reports) {
-        if (previous.tool === tool && previous.provider === report.provider && previous.accountId !== report.accountId && previous.nodeIds.includes(nodeId)) {
+        if (previous.tool === tool && previous.provider === report.provider && (previous.accountId !== report.accountId || previous.account !== report.account) && previous.nodeIds.includes(nodeId)) {
           this.reports.set(key, { ...previous, nodeIds: previous.nodeIds.filter((id) => id !== nodeId) }); changed = true;
         }
       }
