@@ -17,6 +17,9 @@ export interface SpawnOpts {
 
 export type ScreenClass = 'prompt' | 'dialog' | 'unknown';
 
+/** Lines of headless scrollback kept above the visible screen for each node. */
+export const SCROLLBACK_LINES = 1000;
+
 const DIALOG_TEXT = /Enter to confirm|Esc to cancel|Quick safety check|No, exit/;
 const NUMBERED_OPTION = /^(❯\s*)?\d+\.\s+\S/;
 const RULE = /^─{3,}/;
@@ -50,7 +53,7 @@ export class PtySession {
 
   private constructor(pty: nodePty.IPty, cols: number, rows: number) {
     this.pty = pty;
-    this.term = new Terminal({ cols, rows, scrollback: 5000, allowProposedApi: true });
+    this.term = new Terminal({ cols, rows, scrollback: SCROLLBACK_LINES, allowProposedApi: true });
     this.term.loadAddon(this.ser);
     // SerializeAddon preserves mouse tracking but omits SGR/SGR-pixel encoding.
     // Observe the supported modes without consuming them or bypassing xterm's parser.
