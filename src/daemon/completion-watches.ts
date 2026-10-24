@@ -22,7 +22,7 @@ interface Watch extends NotifyWhen { at: number; since: Record<string, number> }
 export class CompletionWatches {
   private readonly all = new Map<string, Watch>();
 
-  constructor(private readonly query: CompletionQuery, private readonly notify: (text: string, label: string) => void) {}
+  constructor(private readonly query: CompletionQuery, private readonly notify: (text: string, label: string, ids: string[]) => void) {}
 
   covers(id: string): boolean {
     return [...this.all.values()].some((w) => w.ids.includes(id));
@@ -65,6 +65,6 @@ export class CompletionWatches {
     if (w.when === 'all' ? done.length < w.ids.length : !done.length) return;
     this.all.delete(key);
     const text = `${done.length} of ${w.ids.length} finished:\n${w.ids.map((id) => this.line(id)).join('\n')}`;
-    this.notify(text, `tiller (notify_when ${w.when} of ${w.of})`);
+    this.notify(text, `tiller (notify_when ${w.when} of ${w.of})`, w.ids);
   }
 }

@@ -14,7 +14,7 @@ When a root is closed, its `meta.json` gets `closedAt`. On daemon start and once
 
 ## The event log
 
-The daemon appends one JSON line per event to `events.jsonl` in the tree's directory: spawn, close, state changes, report_outcome, each send with its outcome, withdraw, restart, resume, merge, the arming, queueing, release and launch of held spawns, and a cost snapshot at most once a minute per node. `tl log [id] [--since 2h] [--follow]` prints it; a non-root id shows only that node's events.
+The daemon appends one JSON line per event to `events.jsonl` in the tree's directory: spawn, close, state changes, report_outcome, each send (the human's, nodes' and the daemon's own notices) with its outcome and text, the final outcome (`settle`) of a send that was queued, withdraw, restart, resume, merge, the arming, queueing, release and launch of held spawns, and a cost snapshot at most once a minute per node. `tl log [id] [--since 2h] [--follow]` prints it; a non-root id shows only that node's events. Message text is kept here, on this machine, so the Transcript tab can show a node's conversations with its parent, its children and its peers, for closed nodes too. Agents in the tree can write this file, so the daemon checks each event's shape when it reads them and shows their text only as plain text.
 
 ## The away digest
 

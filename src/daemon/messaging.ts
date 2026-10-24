@@ -5,6 +5,7 @@ import { fmtAge, outcomeLine } from '../shared/format.js';
 import type { InboxMessage, NodeView, SendMode, SendResult } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
 import { adapterFor } from './harness.js';
+import { appendEvent } from './sessions.js';
 import { CompletionWatches, type NotifyWhen } from './completion-watches.js';
 import type { NodeManager } from './manager.js';
 import { logError } from './util.js';
@@ -24,11 +25,13 @@ const STATUS_TTL_MS = 3600_000;
 /** A node is mod-live while its mod's last GET /inbox is this recent. */
 const MOD_LIVE_MS = 5000;
 const SAVE_MS = 50;
+/** Message text kept in a `send` event; longer text is cut and the event marked `textCut`. */
+const LOG_TEXT_CHARS = 32_000;
 /** Caller ids that are not nodes. Both have full scope. */
 export const HUMAN = 'human';
 export const DAEMON = 'tiller';
 
-export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input' | 'logEvent' | 'projectDir'> & Partial<Pick<NodeManager, 'home' | 'runtimes' | 'draining'>>;
+export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input' | 'logEvent' | 'projectDir'> & Partial<Pick<NodeManager, 'home' | 'runtimes' | 'draining' | 'sessionDirOf'>>;
 interface DeliverOpts {
   /** "now" interrupts a working target and delivers at once; default "queue". */
   mode?: SendMode;
@@ -40,6 +43,8 @@ interface DeliverOpts {
   onSettle?: (r: SendResult) => void;
   /** Queue in the target's inbox even before its mod polls, for a node that has just been resumed. */
   inbox?: boolean;
+  /** The nodes a daemon notice concerns, recorded on its `send` event so each child's conversation can show it. */
+  about?: string[];
 }
 
 // ---- scope (PLAN §5): self, ancestors, siblings, descendants ----
@@ -89,10 +94,14 @@ interface State {
   queues: Map<string, Entry[]>;
   locks: Map<string, Promise<unknown>>;
   /** Outcome of every message sent, for message_status. Pruned after STATUS_TTL_MS and when the sender is removed. */
-  status: Map<string, { from: string; to: string; result: SendResult; at: number; onSettle?: (r: SendResult) => void }>;
+  status: Map<string, Status>;
   /** Per-target timer that re-checks a verified-idle target whose screen was not ready yet. */
   retry: Map<string, NodeJS.Timeout>;
+  /** Log a `settle` event when a queued message reaches its final outcome. */
+  logSettle: (messageId: string, st: Status, r: SendResult) => void;
 }
+/** `dir`: the target's tree directory at send time, where a settle is logged once the target is closed. */
+interface Status { from: string; to: string; result: SendResult; at: number; onSettle?: (r: SendResult) => void; dir?: string }
 type Attempt = { result: SendResult } | { wait: string };
 
 const states = new WeakMap<object, State>();
@@ -100,7 +109,13 @@ const states = new WeakMap<object, State>();
 function stateOf(m: Mgr): State {
   let s = states.get(m);
   if (s) return s;
-  const st: State = { seen: new Map(), inbox: new Map(), last: new Map(), sent: new Map(), loopNoticed: new Map(), queues: new Map(), locks: new Map(), status: new Map(), retry: new Map() };
+  // On the target's tree; once the target is closed it no longer maps to its tree, so on the directory kept at send time.
+  const logSettle = (messageId: string, st: Status, r: SendResult) => {
+    const data = { messageId, from: st.from, outcome: r.outcome, ...(r.detail ? { detail: r.detail } : {}) };
+    if (m.view(st.to)) m.logEvent(st.to, 'settle', data);
+    else if (st.dir) appendEvent(st.dir, { ts: Date.now(), type: 'settle', id: st.to, ...data });
+  };
+  const st: State = { seen: new Map(), inbox: new Map(), last: new Map(), sent: new Map(), loopNoticed: new Map(), queues: new Map(), locks: new Map(), status: new Map(), retry: new Map(), logSettle };
   states.set(m, st);
   const kick = (id: string) => { if (st.queues.get(id)?.length) drain(m, st, id).catch(logError); };
   if (m.home) loadInbox(m, st, join(m.home, 'inbox.json'));
@@ -161,10 +176,13 @@ const busy = (v: NodeView | undefined) => v?.status.state === 'working';
 const gone: SendResult = { outcome: 'gone', retryable: false, detail: 'target does not exist or has exited' };
 const oneLine = (s: string) => s.replace(/[\r\n]+/g, ' ');
 
+/** The envelope line that marks a steer (see conversation.ts, which parses envelopes). */
+export const STEER_LINE = 'steer: the sender interrupted your turn on purpose to deliver this now';
+
 function frame(e: Entry): { text: string; nonce: string } {
   const nonce = randomBytes(6).toString('base64url');
   // paste() strips ESC bytes, so the body cannot close the paste frame.
-  const steer = e.steer ? 'steer: the sender interrupted your turn on purpose to deliver this now\n' : '';
+  const steer = e.steer ? `${STEER_LINE}\n` : '';
   return { nonce, text: `--- TL MESSAGE ${nonce} ---\nfrom: ${e.label}\nreply-to: ${e.replyTo ?? 'none'}\n${steer}${e.text}\n--- END TL MESSAGE ${nonce} ---` };
 }
 
@@ -269,6 +287,7 @@ const modLive = (s: State, id: string) => Date.now() - (s.seen.get(id) ?? -Infin
 function setResult(s: State, messageId: string, result: SendResult): void {
   const st = s.status.get(messageId);
   if (!st) return;
+  if (st.result.outcome === 'queued' && result.outcome !== 'queued') s.logSettle(messageId, st, result);
   st.result = result;
   // A message that never reached the target does not count toward loop detection, so the retry it invites is accepted.
   const key = `${st.from}\0${st.to}`;
@@ -402,7 +421,8 @@ function loadInbox(m: Mgr, s: State, file: string): void {
       if (data.held && !i.claimed) i.since = Date.now();
       // An old claimed Pi message is ambiguous, not a safe-to-retry expiration.
       if (Date.now() - (i.since ?? i.msg.enqueuedAt) >= QUEUE_TTL_MS && !(i.claimed && nativeInbox(m.view(i.to)))) continue;
-      s.status.set(i.msg.id, { from: i.from, to: i.to, result: { outcome: 'queued', retryable: false, messageId: i.msg.id }, at: i.msg.enqueuedAt });
+      s.status.set(i.msg.id, { from: i.from, to: i.to, result: { outcome: 'queued', retryable: false, messageId: i.msg.id }, at: i.msg.enqueuedAt,
+        ...(m.view(i.to) ? { dir: m.sessionDirOf?.(i.to) } : {}) });
       addInbox(m, s, i);
     }
   } catch { /* no file, or unreadable: start empty */ }
@@ -531,9 +551,15 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
   for (const [k, v] of s.status) if (now - v.at > STATUS_TTL_MS) s.status.delete(k);
   const out = (r: SendResult): SendResult => {
     const result = { ...r, messageId: id };
-    s.status.set(id, { from: fromId, to: toId, result, at: now, onSettle: opts.onSettle });
+    s.status.set(id, { from: fromId, to: toId, result, at: now, onSettle: opts.onSettle, ...(m.view(toId) ? { dir: m.sessionDirOf?.(toId) } : {}) });
     setResult(s, id, result);
-    if (fromId !== DAEMON && m.view(toId)) m.logEvent(toId, 'send', { from: fromId, outcome: result.outcome, messageId: id, ...(result.steer ? { steer: true } : {}) });
+    if (m.view(toId)) {
+      m.logEvent(toId, 'send', { from: fromId, outcome: result.outcome, messageId: id, ...(result.steer ? { steer: true } : {}),
+        // A refused send (an out-of-scope one included) never reached the target: keep its words out of the target's log.
+        ...(result.outcome === 'refused' ? {} : { text: text.slice(0, LOG_TEXT_CHARS), ...(text.length > LOG_TEXT_CHARS ? { textCut: true } : {}),
+          ...(opts.fromLabel ? { label: oneLine(opts.fromLabel) } : {}) }),
+        ...(opts.about?.length ? { about: opts.about } : {}) });
+    }
     return result;
   };
   const refuse = (detail: string, retryable = false) => out({ outcome: 'refused', retryable, detail });
@@ -589,7 +615,7 @@ function loopNotice(m: Mgr, s: State, from: NodeView | undefined, key: string, w
   if (!from?.parentId || now - (s.loopNoticed.get(key) ?? -Infinity) < LOOP_MS) return;
   s.loopNoticed.set(key, now);
   deliver(m, DAEMON, from.parentId, `Refused a send: ${why}. It was told to escalate to the human or change approach.`,
-    { fromLabel: `tiller (child ${from.id} "${from.title}" may be looping)`, replyTo: null }).catch(logError);
+    { fromLabel: `tiller (child ${from.id} "${from.title}" may be looping)`, replyTo: null, about: [from.id] }).catch(logError);
 }
 
 // ---- station notices (PLAN §7) ----
@@ -609,7 +635,7 @@ export function startNotices(m: Mgr): () => void {
     if (!v.parentId || notified.has(v.id)) return;
     notified.add(v.id);
     const body = v.status.lastAssistantMessage?.slice(0, 300) ?? 'No further details.';
-    deliver(m, DAEMON, v.parentId, body, { fromLabel: `tiller (child ${v.id} "${v.title}" stopped: ${reason})`, replyTo: null }).catch(logError);
+    deliver(m, DAEMON, v.parentId, body, { fromLabel: `tiller (child ${v.id} "${v.title}" stopped: ${reason})`, replyTo: null, about: [v.id] }).catch(logError);
   };
   const onNode = (v: NodeView) => {
     if (!v.parentId) return;
@@ -630,14 +656,14 @@ export function startNotices(m: Mgr): () => void {
     else if (!stallNoticed.has(v.id)) {
       stallNoticed.add(v.id);
       const body = `No hook event for ${fmtAge(Date.now() - v.status.changedAt)} while working${v.status.activity ? `; last activity: ${v.status.activity}` : ''}.`;
-      deliver(m, DAEMON, v.parentId, body, { fromLabel: `tiller (child ${v.id} "${v.title}" no activity)`, replyTo: null }).catch(logError);
+      deliver(m, DAEMON, v.parentId, body, { fromLabel: `tiller (child ${v.id} "${v.title}" no activity)`, replyTo: null, about: [v.id] }).catch(logError);
     }
     if (exited) notice(v, 'exited');
     else if (state === 'done' && errored) {
       const at = retried.get(v.id);
       if (at === undefined) {
         retried.set(v.id, v.status.changedAt);
-        deliver(m, DAEMON, v.id, RETRY_TEXT, { fromLabel: 'tiller (your turn errored)', replyTo: null,
+        deliver(m, DAEMON, v.id, RETRY_TEXT, { fromLabel: 'tiller (your turn errored)', replyTo: null, about: [v.id],
           onSettle: (r) => { if (r.outcome !== 'delivered') notice(v, 'turn-errored'); } }).catch(logError);
       } else if (at !== v.status.changedAt) notice(v, 'turn-errored');
     } else if (state === 'done' && v.status.doneSource === 'stop') { notified.delete(v.id); retried.delete(v.id); } // only a clean Stop re-arms
@@ -645,7 +671,7 @@ export function startNotices(m: Mgr): () => void {
   const onOutcome = (id: string) => {
     const v = m.view(id);
     if (!v?.parentId || !v.outcome || watching(m, v.parentId, id)) return;
-    deliver(m, DAEMON, v.parentId, `${id} reported ${outcomeLine(v.outcome)}`, { fromLabel: `tiller (child ${id} "${v.title}" reported ${v.outcome.outcome})`, replyTo: null }).catch(logError);
+    deliver(m, DAEMON, v.parentId, `${id} reported ${outcomeLine(v.outcome)}`, { fromLabel: `tiller (child ${id} "${v.title}" reported ${v.outcome.outcome})`, replyTo: null, about: [id] }).catch(logError);
   };
   m.on('node', onNode);
   m.on('outcome', onOutcome);
@@ -678,6 +704,6 @@ export function notifyWhen(m: NodeManager, caller: string, req: NotifyWhen): { r
   }
   const rt = m.runtimes.get(caller)!;
   rt.watches ??= new CompletionWatches({ view: (id) => m.view(id), turnStartedAt: (id) => m.turnStartedAt(id) },
-    (text, fromLabel) => { deliver(m, DAEMON, caller, text, { fromLabel, replyTo: null }).catch(logError); });
+    (text, fromLabel, about) => { deliver(m, DAEMON, caller, text, { fromLabel, replyTo: null, about }).catch(logError); });
   return rt.watches.register(req);
 }

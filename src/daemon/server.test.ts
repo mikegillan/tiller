@@ -183,6 +183,25 @@ describe('websocket', () => {
     send({ t: 'transcript', id: 'n-nope' });
     expect(await until(() => seen.find((m) => m.t === 'transcript' && m.id === 'n-nope'))).toEqual({ t: 'transcript', id: 'n-nope', error: 'no such node: n-nope' });
   });
+
+  it('replies to conversations and conversation from the tree\'s event log, with a missing transcript read as none', async () => {
+    const root = manager.registry.create({ parentId: null, kind: 'claude', title: 'lead', cwd: home, prompt: 'plan it' }).id;
+    const child = manager.registry.create({ parentId: root, kind: 'claude', title: 'worker', cwd: home, prompt: 'build it', sessionId: 's1', transcriptPath: join(home, 'gone.jsonl') }).id;
+    mkdirSync(manager.sessionDirOf(root), { recursive: true });
+    manager.logEvent(root, 'send', { from: child, outcome: 'delivered', messageId: 'm-1', text: 'done, see branch' });
+    await connect();
+    send({ t: 'conversations', id: root });
+    expect(await until(() => seen.find((m) => m.t === 'conversations'))).toMatchObject({ t: 'conversations', id: root, items: [
+      { id: root, relation: 'parent', counterpart: 'human', messages: 0 },
+      { id: child, relation: 'child', counterpart: child, title: 'worker', live: true, messages: 1 },
+    ] });
+    send({ t: 'conversation', id: child });
+    expect(await until(() => seen.find((m) => m.t === 'conversation'))).toMatchObject({ t: 'conversation', id: child, a: root, b: child, relation: 'parent',
+      titles: { [root]: 'lead', [child]: 'worker' },
+      items: [{ kind: 'brief', from: root, text: 'build it' }, { kind: 'message', from: child, to: root, text: 'done, see branch', delivery: 'delivered' }] });
+    send({ t: 'conversation', id: 'n-nope', with: child });
+    expect(await until(() => seen.find((m) => m.t === 'conversation' && m.id === 'n-nope'))).toEqual({ t: 'conversation', id: 'n-nope', with: child, error: 'no such node: n-nope' });
+  });
 });
 
 describe('POST /hook', () => {
