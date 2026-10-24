@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   MEMORY_TOOL_SHAPES, REDACTED, SCHEMA_V1, accountKey, firstErrorLine, ftsTerms, gateExit, itemRef, normalizeDedupe, normalizeRemote,
-  parseItemRef, redact, structuralCode, type CaptureEvent,
+  parseItemRef, pinDedupe, redact, structuralCode, type CaptureEvent,
 } from './memory-schema.js';
 
 const dirs: string[] = [];
@@ -152,6 +152,20 @@ describe('normalizeDedupe', () => {
     expect(normalizeDedupe('procedure', '  npm  Run\ttypecheck 2 ')).toBe('npm run typecheck 2');
     expect(normalizeDedupe('pitfall', 'gate `npm test` failed: x.ts(12,3): error TS2345')).toBe('gate `npm test` failed: x.ts(#,#): error ts#');
     expect(normalizeDedupe('pitfall', 'X.ts(9,1)')).toBe(normalizeDedupe('pitfall', 'x.ts(40,22)'));
+  });
+
+  it('keeps a text pin apart from any agent note', () => {
+    const db = schemaDb();
+    const insert = db.prepare("INSERT OR IGNORE INTO items (repo_id, kind, text, author, dedupe, pinned, created_at, updated_at) VALUES (1, 'note', ?, ?, ?, ?, 1, 1)");
+    const pin = 'Never run  the release script';
+    expect(pinDedupe(pin)).toBe(pinDedupe('never run the RELEASE script'));
+    for (const agent of [pin, `PIN:${pin}`, `pin:${pin}`, `pin: ${pin}`]) {
+      expect(normalizeDedupe('note', agent)).not.toBe(pinDedupe(pin));
+      insert.run(agent, 'agent', normalizeDedupe('note', agent), 0);
+    }
+    insert.run(pin, 'human', pinDedupe(pin), 1);
+    expect(db.prepare("SELECT author, pinned FROM items WHERE dedupe = ?").all(pinDedupe(pin))).toEqual([{ author: 'human', pinned: 1 }]);
+    db.close();
   });
 });
 

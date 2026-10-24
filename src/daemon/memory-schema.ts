@@ -77,7 +77,11 @@ PRAGMA user_version = 1;
 `;
 export const SCHEMA_VERSION = 1;
 
-/** A text pin (memory_pin { text }) is a human `note` with pinned = 1; pinned items of any kind render only as pins. */
+/**
+ * A text pin (memory_pin { text }) is a human `note` with pinned = 1 and its own dedupe key (pinDedupe), so it never merges
+ * into an agent's note. Pinning by id (memory_pin { id }) sets pinned = 1 on that row, whoever wrote it: the human's
+ * explicit choice. Pinned items of any kind render only as pins.
+ */
 export const ITEM_KINDS = ['ledger', 'open_question', 'procedure', 'pitfall', 'note'] as const;
 export type ItemKind = (typeof ITEM_KINDS)[number];
 /** The kinds an agent or the human may record with memory_add. */
@@ -316,8 +320,11 @@ export interface DigestCandidates {
   notes: ItemView[];
   matched: ItemView[];
 }
-/** What digestFor reads; MemoryStore implements it. terms come from ftsTerms(brief). */
-export interface DigestSource { candidates(scope: MemoryScope, q: { role: DigestRole; terms: string[] }): DigestCandidates }
+/**
+ * What digestFor reads; MemoryStore implements it. terms come from ftsTerms(brief). now is the caller's clock (digestFor
+ * passes its own): the open-question window and procedure recency are measured from it, not from the store's.
+ */
+export interface DigestSource { candidates(scope: MemoryScope, q: { role: DigestRole; terms: string[]; now: number }): DigestCandidates }
 export interface DigestInput { role: DigestRole; brief?: string; now: number }
 /** text is '' when nothing was selected. */
 export interface DigestResult { text: string; itemIds: number[] }
@@ -420,6 +427,12 @@ export function normalizeDedupe(kind: ItemKind, text: string): string {
   const key = text.toLowerCase().replace(/\s+/g, ' ').trim();
   return kind === 'pitfall' ? key.replace(/\d+/g, '#') : key;
 }
+
+/**
+ * A text pin's dedupe key. normalizeDedupe lowercases, so its keys never contain "PIN:": no agent text can produce this
+ * key, and UNIQUE (repo_id, kind, dedupe) keeps a pin apart from an agent note with the same text.
+ */
+export const pinDedupe = (text: string): string => `PIN:${normalizeDedupe('note', text)}`;
 
 /**
  * A git remote URL as one key: scheme, userinfo, a trailing / and .git removed, scp host:path as host/path, lowercased.
