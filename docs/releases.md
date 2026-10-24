@@ -13,9 +13,11 @@ Label a pull request `no-release` when it changes only tests or CI. Merging it
 still runs full validation on `main`, and the publish job still runs, but before
 allocating a version the script looks up the merged PR for the pushed SHA
 (`GET /repos/{repo}/commits/{sha}/pulls`; the publish job holds
-`pull-requests: read` for this). If that PR carries the label, the script logs
-`no release: #N is labelled no-release` and succeeds without creating a tag or
-release. Direct pushes have no PR and release as usual. A failed lookup fails
+`pull-requests: read` for this). If that PR was merged into the released branch
+and carries the label, the script logs `no release: #N is labelled no-release`
+and succeeds without creating a tag or release. A labelled PR into another
+branch, such as a task branch later merged into `main`, does not count. Direct
+pushes have no PR and release as usual. A failed lookup fails
 the job and publishes nothing. Do not use `[skip ci]` instead: it skips
 validation on `main`.
 
@@ -177,9 +179,10 @@ node --check scripts/release.mjs
 node --test scripts/release-test.mjs
 ```
 
-The tests cover first release, the `no-release` label, numeric PATCH allocation, notes boundaries,
-pagination, exact SHA and annotated tags, publication failure/retry, reruns,
-conflicts, stale source rejection and API failures. The Release workflow runs
+The tests cover first release, the `no-release` label, numeric PATCH
+allocation, notes boundaries, pagination, exact SHA and annotated tags,
+publication failure/retry, reruns, conflicts, stale source rejection and API
+failures. The Release workflow runs
 them before publication. Actual GitHub permissions, rulesets and queue behavior
 require a live authorized run; local tests do not exercise those policies.
 Actionlint 1.7.12 predates GitHub's `concurrency.queue` support and reports that

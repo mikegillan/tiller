@@ -440,8 +440,8 @@ const tools = {
     'Stop the daemon: flush the registry, kill every node process and exit. The nodes are not resumed on the next start. Only the human may call this.',
     {},
     async (c) => {
-      c.manager.shutdown({ clearLive: true });
-      setTimeout(() => process.exit(0), 100); // after the reply is flushed
+      // Exit only once shutdown (bounded) has finished, and no sooner than 100ms so the reply is flushed.
+      void Promise.all([c.manager.shutdown({ clearLive: true }).catch(logError), sleep(100)]).finally(() => process.exit(0));
       return { text: 'daemon stopping', data: { ok: true, pid: process.pid } };
     }, true),
 

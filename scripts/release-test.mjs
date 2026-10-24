@@ -64,7 +64,13 @@ function fixture(t) {
   return { first, second, third, git, api, releases, tags, calls, pulls, addRelease, fail: value => { failPublication = value; } };
 }
 
-const merged = (number, ...labels) => ({ number, merged_at: '2026-10-17T00:00:00Z', labels: labels.map(name => ({ name })) });
+const merged = (number, ...labels) => ({ number, merged_at: '2026-10-17T00:00:00Z', base: { ref: 'main' }, labels: labels.map(name => ({ name })) });
+
+test('a no-release label on a PR into another branch does not suppress the release', async t => {
+  const f = fixture(t);
+  f.pulls.set(f.third, { ...merged(8, 'no-release'), base: { ref: 'tl/task' } });
+  assert.equal((await publishRelease({ sha: f.third, api: f.api, git: f.git, branch: 'main' })).tag, 'v0.1.0');
+});
 
 test('a merged PR labelled no-release publishes nothing; the next release rolls up its commits', async t => {
   const f = fixture(t);

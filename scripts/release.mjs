@@ -52,14 +52,15 @@ async function tagCommit(api, tag, knownRef) {
   return object.sha;
 }
 
-export async function publishRelease({ sha, api, git = args => execFileSync('git', args, { encoding: 'utf8' }).trim() }) {
+export async function publishRelease({ sha, api, branch = 'main', git = args => execFileSync('git', args, { encoding: 'utf8' }).trim() }) {
   if (!/^[0-9a-f]{40}$/.test(sha ?? '')) throw new Error('RELEASE_SHA must be a full commit SHA');
   if (git(['rev-parse', 'HEAD']) !== sha) throw new Error('Checkout is not the validated SHA');
 
-  // A merged PR labelled no-release publishes nothing; the next release's notes still span its commits.
+  // A PR merged into the released branch and labelled no-release publishes nothing; the next release's notes still
+  // span its commits. A labelled PR into another branch that later reaches this one does not count.
   const pulls = await api('GET', `/commits/${sha}/pulls`);
   if (!Array.isArray(pulls)) throw new Error('Cannot list pull requests for the validated SHA');
-  const optOut = pulls.find(pr => pr?.merged_at && pr.labels?.some(label => label?.name === 'no-release'));
+  const optOut = pulls.find(pr => pr?.merged_at && pr.base?.ref === branch && pr.labels?.some(label => label?.name === 'no-release'));
   if (optOut) return { skipped: `#${optOut.number} is labelled no-release` };
 
   const releases = [];
@@ -146,6 +147,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
     const result = await publishRelease({
       sha: process.env.RELEASE_SHA,
+      branch: process.env.GITHUB_REF_NAME,
       api: githubApi({ repository: process.env.GITHUB_REPOSITORY, token: process.env.GITHUB_TOKEN, baseUrl: process.env.GITHUB_API_URL }),
     });
     console.log(result.skipped ? `no release: ${result.skipped}` : `${result.tag}: ${result.alreadyPublished ? 'already published' : 'published'}`);

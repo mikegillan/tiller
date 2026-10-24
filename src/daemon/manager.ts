@@ -49,6 +49,8 @@ const GIT_EDIT_TOOLS = ['Edit', 'Write', 'Bash'];
 const COST_EVENT_MS = 60_000;
 /** A drain ends by itself when whoever restarts the daemon has not polled it for this long (it died or was stopped). */
 const DRAIN_LEASE_MS = 15_000;
+/** Shutdown waits at most this long for processes and background work; restartDaemon allows the old daemon 10s. */
+const SHUTDOWN_WAIT_MS = 7000;
 
 /** The daemon's message to a resumed node whose turn the restart cut off. */
 export const cutOffText = (reason: string) => `The tiller daemon restarted (${reason}) while your turn was running, so that turn was cut off. Your conversation is intact, but the last tool call may not have finished. Check where you were, for example with git status and the commands you last ran, then continue the task.`;
@@ -100,7 +102,7 @@ export interface ManagerOptions {
   shell?: string;
   /** PATH handed to children (from loginShellPath()). Defaults to this process's PATH. */
   path?: string;
-  /** How long changeHarness waits for the old process to exit. Defaults to PtySession.terminate's. */
+  /** How long changeHarness waits for the old process to exit, and shutdown for its background work. Defaults to PtySession.terminate's. */
   terminateTimeoutMs?: number;
 }
 
@@ -1012,8 +1014,9 @@ export class NodeManager extends EventEmitter {
   /**
    * Flush the registry and the message inbox, and kill every PTY. The live set is kept for resume on next start, unless
    * `clearLive` (an explicit stop: do not come back). Resolves once nothing more writes into the home or a worktree: the
-   * PTYs have exited (or ignored the signal for 7s), worktree setups and git refreshes in flight have settled, and the
-   * event appends already queued have landed. No git refresh starts once it is called.
+   * PTYs have exited, worktree setups and git refreshes in flight have settled (or SHUTDOWN_WAIT_MS has passed, safely
+   * inside the restart's wait for the old daemon), and the event appends already queued have landed. No git refresh
+   * starts once it is called.
    */
   async shutdown(opts: { clearLive?: boolean } = {}): Promise<void> {
     if (!this.shutDown) this.registry.setStopped(this.drainState?.reason ?? 'the daemon was stopped');
@@ -1021,18 +1024,19 @@ export class NodeManager extends EventEmitter {
     clearTimeout(this.drainState?.lease);
     if (opts.clearLive) this.registry.setLive([]);
     clearInterval(this.sweepTimer);
-    const exits: Promise<unknown>[] = [];
+    const wait = this.terminateTimeoutMs ?? SHUTDOWN_WAIT_MS;
+    const work: Promise<unknown>[] = [];
     for (const rt of this.runtimes.values()) {
       clearTimeout(rt.interruptTimer);
       clearTimeout(rt.gitTimer);
       rt.setup?.abort.abort();
-      if (rt.setup) exits.push(rt.setup.done);
-      if (rt.session) exits.push(rt.session.terminate().catch(() => false));
+      if (rt.setup) work.push(rt.setup.done);
+      if (rt.session) work.push(rt.session.terminate(wait).catch(() => false));
+      work.push(gitSettled(rt));
     }
     this.registry.flush();
     saveInboxForRestart(this);
-    await Promise.all(exits);
-    await Promise.all([...this.runtimes.values()].map(gitSettled));
+    await Promise.race([Promise.all(work), sleep(wait, undefined, { ref: false })]);
     await flushEvents();
   }
 
