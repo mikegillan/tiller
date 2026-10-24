@@ -524,6 +524,7 @@ export class NodeManager extends EventEmitter {
   async resume(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
     const rec = this.registry.get(id);
     if (!rec) return { ok: false, error: 'No such node' };
+    if (rec.pending) return { ok: false, error: 'node is armed or queued: it launches by itself; close it to drop it' };
     if (!isAgentKind(rec.kind)) return { ok: false, error: 'Only agent nodes can be resumed' };
     const rt = this.runtimes.get(id)!;
     if (rt.busy) return { ok: false, error: `${id} is ${rt.busy}` };
@@ -938,7 +939,7 @@ export class NodeManager extends EventEmitter {
       let resumed = 0;
       const cutOff: string[] = [];
       for (const { node: n } of treeOrder(this.registry.list())) {
-        if (!ids.has(n.id)) continue;
+        if (!ids.has(n.id) || n.pending) continue; // a held node launches by itself once re-armed below
         if ((n.lastActiveAt ?? n.createdAt) < cutoff) { skipped.push(`${n.id} (idle over ${resumeMaxAgeDays} days)`); continue; }
         const r = await this.resume(n.id);
         if (r.ok) resumed++;
