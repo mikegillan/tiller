@@ -11,6 +11,7 @@ import { NodeManager, type SpawnRequest } from './manager.js';
 import { mountMcp } from './mcp.js';
 import { transcriptFor } from './transcript.js';
 import * as wt from './worktree.js';
+import { refreshGit } from './worktree-lifecycle.js';
 
 const g = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 const commit = (dir: string, file: string) => { writeFileSync(join(dir, file), `${file}\n`); g(dir, 'add', file); g(dir, 'commit', '-qm', `add ${file}`); };
@@ -203,6 +204,38 @@ describe('worktree nodes', () => {
     expect(g(repo, 'branch', '--list', `tl/${v.id}`)).toBe('');
   });
 
+  it('a resumed worktree session keeps its transcript under the worktree, though SessionStart reports the main checkout', async () => {
+    setup();
+    const v = await spawnW();
+    const sid = m.registry.get(v.id)!.sessionId!, transcript = transcriptFor(v.cwd, sid);
+    mkdirSync(dirname(transcript), { recursive: true });
+    writeFileSync(transcript, '');
+    m.applyHook(v.id, { hook_event_name: 'SessionStart', session_id: sid, transcript_path: transcript, cwd: v.cwd, source: 'startup' });
+    await exited(v.id);
+    expect(await m.resume(v.id)).toEqual({ ok: true });
+    // What claude --resume, run from the main checkout, sends before it re-enters the worktree (Claude Code 2.1.310).
+    m.applyHook(v.id, { hook_event_name: 'SessionStart', session_id: sid, transcript_path: transcriptFor(repo, sid), cwd: repo, source: 'resume' });
+    expect(m.registry.get(v.id)!.transcriptPath).toBe(transcript);
+    await exited(v.id);
+    expect(await m.resume(v.id)).toEqual({ ok: true });
+  });
+
+  it('a restart repoints a recorded main-checkout transcript at the worktree file, and leaves it when neither exists', async () => {
+    setup();
+    const fixed = await spawnW(), lost = await spawnW();
+    const sid = m.registry.get(fixed.id)!.sessionId!, transcript = transcriptFor(fixed.cwd, sid);
+    mkdirSync(dirname(transcript), { recursive: true });
+    writeFileSync(transcript, '');
+    const stale = (id: string) => transcriptFor(repo, m.registry.get(id)!.sessionId!);
+    m.registry.update(fixed.id, { transcriptPath: stale(fixed.id), sessionHistory: [{ sessionId: sid, harness: 'claude', transcriptPath: stale(fixed.id) }] });
+    m.registry.update(lost.id, { transcriptPath: stale(lost.id) });
+    await m.shutdown();
+    m = new NodeManager({ home: m.home, shell: '/bin/sh', path: `${join(home, 'bin')}:/usr/bin:/bin` });
+    expect(m.registry.get(fixed.id)!.transcriptPath).toBe(transcript);
+    expect(m.registry.get(fixed.id)!.sessionHistory).toEqual([{ sessionId: sid, harness: 'claude', transcriptPath: transcript }]);
+    expect(m.registry.get(lost.id)!.transcriptPath).toBe(stale(lost.id));
+  });
+
   it('a worktree under a symlinked .claude, which git lists by its resolved path, is not missing; resume and close discard work', async () => {
     setup();
     mkdirSync(join(repo, '.agent'));
@@ -315,6 +348,18 @@ describe('git state and merge', () => {
     });
     expect(d.files[2]!.patch).toMatch(/^diff --git a\/new.txt b\/new.txt\n[^]*@@ -0,0 \+1,2 @@\n\+one\n\+two\n$/);
     expect(g(v.cwd, 'status', '--porcelain')).toBe('D  gone.txt\n?? new.txt');
+  });
+
+  it('shutdown waits for the git refresh in flight and the PTY exits, so the home can go', async () => {
+    setup();
+    const v = await spawnW();
+    writeFileSync(join(v.cwd, 'c.txt'), `${'y'.repeat(99)}\n`.repeat(Math.ceil(wt.MAX_PATCH_BYTES / 100))); // a slow diff
+    const session = m.session(v.id)!;
+    let refreshed = false;
+    refreshGit(m, v.id).then(() => { refreshed = true; }, () => { refreshed = true; });
+    await m.shutdown();
+    expect(refreshed).toBe(true);
+    expect(session.exited).toBe(true);
   });
 
   it('lists binary files and files past the patch cap without a patch', async () => {
