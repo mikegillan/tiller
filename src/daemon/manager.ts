@@ -387,7 +387,7 @@ export class NodeManager extends EventEmitter {
     }
     const rec = this.registry.create({ // the resolved fields, so restart keeps them
       parentId, kind: req.kind, ...(req.harness ? { harness: req.harness } : {}), title: req.title, cwd: req.cwd,
-      model, effort, ...(explicit?.length ? { explicit } : {}), permissionMode, role, profile, preset: req.preset,
+      model, effort, ...(adapter ? { explicit } : {}), permissionMode, role, profile, preset: req.preset,
       sessionId: adapter ? req.followup?.sessionId ?? randomUUID() : undefined,
       ...(adapter && adapter.id !== 'claude' && req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
       ...(adapter && adapter.id !== 'claude' && req.followup?.previousSessions ? { previousSessions: req.followup.previousSessions } : {}),
@@ -641,7 +641,7 @@ export class NodeManager extends EventEmitter {
       const sessionHistory = this.priorSessions(id), from = harnessFor(rec), sessionId = randomUUID();
       this.registry.update(id, { kind: 'agent', harness, sessionId, transcriptPath: undefined,
         previousSessions: [...(rec.previousSessions ?? []), ...(rec.sessionId ? [rec.sessionId] : [])].slice(-MAX_PREVIOUS_SESSIONS), sessionHistory,
-        credentialGeneration: randomUUID(), model: defaults.model, effort: defaults.effort, explicit: undefined, permissionMode: undefined, preset: undefined,
+        credentialGeneration: randomUUID(), model: defaults.model, effort: defaults.effort, explicit: [], permissionMode: undefined, preset: undefined,
         forkSession: undefined, lastCost: undefined });
       clearTimeout(rt.interruptTimer);
       rt.lastHookAt = rt.turnStart = rt.lastCostEvent = undefined;

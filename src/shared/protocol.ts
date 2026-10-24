@@ -151,7 +151,7 @@ export interface NodeRecord {
   cwd: string;
   model?: string;
   effort?: Effort;
-  /** Which of model and effort the spawn chose (argument or preset); restart re-resolves the others from current config. Absent: neither. */
+  /** Which of model and effort the spawn chose (argument or preset); restart re-resolves the others from current config. Absent only on records from before this field: restart then keeps just what their preset sets. */
   explicit?: ('model' | 'effort')[];
   permissionMode?: string;
   /** Explicit role override; absent means derive from parentId at each launch. */
