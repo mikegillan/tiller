@@ -52,7 +52,7 @@ export function usageParts(limits: readonly RateLimit[], compact = false, now = 
 /** The line list_nodes and `tl usage` print. */
 export function usageLine(u: Usage | undefined, now = Date.now()): string {
   if (!u) return 'usage: no report yet';
-  return `usage: ${usageParts(u.rateLimits, false, now).map((p) => p.text).join(' · ')} (from ${u.nodeId}, ${fmtAge(now - u.at)} ago)`;
+  return `usage${u.account ? ` (${u.account})` : ''}: ${usageParts(u.rateLimits, false, now).map((p) => p.text).join(' · ')} (from ${u.nodeId}, ${fmtAge(now - u.at)} ago)`;
 }
 
 /** A reported outcome as one line: "succeeded (gate passed): <summary, else note>", the text capped at 200 characters. */

@@ -40,6 +40,7 @@
 .settings-control input::placeholder { color: var(--dim); opacity: 1; }
 .settings-dialog button:disabled, .settings-dialog input:disabled, .settings-dialog select:disabled, .settings-dialog textarea:disabled { opacity: .5; cursor: not-allowed; }
 .settings-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; font-size: 13px; color: var(--dim); line-height: 1.5; }
+.settings-account-note { margin: 6px 0 0; font-size: 13px; color: var(--dim); line-height: 1.5; overflow-wrap: anywhere; }
 .settings-reset { padding: 0; background: transparent; border: 0; color: var(--dim); font-size: inherit; text-decoration: underline; text-underline-offset: 3px; }
 .settings-reset:hover { color: var(--fg); }
 .settings-pending { color: var(--accent); }

@@ -151,6 +151,10 @@ export interface NodeRecord {
   cwd: string;
   model?: string;
   effort?: Effort;
+  /** Which of model and effort the spawn chose (argument or preset); restart re-resolves the others from current config. Absent only on records from before this field: restart then keeps just what their preset sets. */
+  explicit?: ('model' | 'effort')[];
+  /** Tiller Claude account name (home config claude.accounts), set at spawn and inherited from the parent; never re-resolved. Absent: Claude's default home. */
+  account?: string;
   permissionMode?: string;
   /** Explicit role override; absent means derive from parentId at each launch. */
   role?: Role;
@@ -244,6 +248,10 @@ export interface ArchivedNode {
   harness?: Harness;
   model?: string;
   effort?: Effort;
+  /** NodeRecord.explicit, so a follow-up keeps it. */
+  explicit?: ('model' | 'effort')[];
+  /** NodeRecord.account, so a follow-up stays in the same Claude account. */
+  account?: string;
   role?: Role;
   profile?: Profile;
   /** The first prompt the node was spawned with. */
@@ -273,7 +281,7 @@ export interface ArchivedNode {
 /** One rate-limit window as Claude Code's `session.measure` reports it; `kind` is five_hour, seven_day or a gateway's spend_limit. */
 export interface RateLimit { kind: string; percentUsed: number; resetsAt?: string; windowId?: string; observedAt?: number }
 /** Legacy latest Claude account report, retained for CLI consumers. */
-export interface Usage { rateLimits: RateLimit[]; nodeId: string; at: number }
+export interface Usage { rateLimits: RateLimit[]; nodeId: string; at: number; /** Tiller Claude account label, stamped by the daemon. */ account?: string }
 
 /** Prepared by the daemon only after notification suppression, grouping and sound policy. */
 export interface NativeNotification { id: string; title: string; subtitle?: string; body: string; sound: boolean }
@@ -284,6 +292,8 @@ export interface UsageSource {
   tool: UsageTool;
   provider?: string;
   accountId?: string;
+  /** Tiller Claude account label stamped by the daemon (not the provider's accountId). */
+  account?: string;
   pool?: string;
   poolId?: string;
   model?: string;
@@ -304,9 +314,17 @@ export interface UsageSource {
 /** A quota report from an adapter; tool identity comes from the authenticated node. */
 export interface UsageReport {
   provider?: string; accountId?: string; pool?: string; poolId?: string; model?: string;
+  /** Tiller Claude account label; the daemon sets it from the reporting node, never trusted from the adapter. */
+  account?: string;
   scope: 'account' | 'model'; rateLimits: RateLimit[];
   /** Explicit full-read removals, ordered against window observations. Omission is a sparse update. */
   removedWindows?: { windowId: string; observedAt: number }[];
+}
+
+/** A configured Claude account (home config claude.accounts) with its login state. loggedIn null: not checked or unknown. */
+export interface ClaudeAccountView {
+  name: string; configDir?: string; projects: string[]; isDefault: boolean;
+  loggedIn: boolean | null; email?: string; orgName?: string; loginCommand: string; error?: string;
 }
 
 /** Published stable GitHub release, pinned to its tag object and peeled commit. */
@@ -336,6 +354,7 @@ export interface Drain {
 // Daemon -> UI (WebSocket, JSON). One message per line.
 export type ServerMessage =
   | { t: 'update'; update: UpdateStatus }
+  | { t: 'claudeAccounts'; accounts: ClaudeAccountView[] } // reply to the claudeAccounts request
   | { t: 'snapshot'; nodes: NodeView[]; update?: UpdateStatus; usage?: Usage; usageSources?: UsageSource[]; dnd?: Dnd; drain?: Drain }
   | { t: 'drain'; drain?: Drain }            // a restart started, progressed or ended waiting for agents
   | ({ t: 'dnd' } & Dnd)                     // do not disturb changed
@@ -363,6 +382,7 @@ export interface DigestItem { id: string; title: string; kind: 'needsYou' | 'err
 // UI -> Daemon.
 export type ClientMessage =
   | { t: 'update'; tag: string; sha: string }
+  | { t: 'claudeAccounts' }                  // list configured Claude accounts with their login state
   | { t: 'updateCheck' }
   | { t: 'restartNow' }                       // stop waiting for agents and restart the daemon at once
   | { t: 'updateNotesRead'; identity: string }
@@ -376,7 +396,7 @@ export type ClientMessage =
   | { t: 'input'; id: string; data: string; binary?: boolean } // binary: data contains raw byte values (xterm legacy mouse reports)
   | { t: 'resize'; id: string; cols: number; rows: number }
   | { t: 'select'; id: string }                // clears unread
-  | { t: 'spawn'; kind: NodeKind; harness?: Harness; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; profile?: Profile; parentId?: string | null; isolation?: Isolation; base?: string; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string } // fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); the node must run the claude harness
+  | { t: 'spawn'; kind: NodeKind; harness?: Harness; title: string; cwd: string; prompt?: string; model?: string; effort?: Effort; role?: Role; profile?: Profile; parentId?: string | null; isolation?: Isolation; base?: string; preset?: string; after?: string[]; afterSuccess?: string[]; now?: boolean; fork?: string; account?: string } // account: Claude account name, human only (children inherit); fork: a live or archived node id whose conversation the new node starts from (claude --resume <session> --fork-session); the node must run the claude harness
   | { t: 'close'; id: string; force?: boolean; worktree?: 'keep' | 'discard' }  // a root (orchestrator) is refused without force; worktree picks what happens to a dirty or unmerged worktree (default: refuse)
   | { t: 'merge'; id: string }                 // merge a worktree node's branch into its base, in the worktrees.mergeStyle style
   | { t: 'restart'; id: string; prompt?: string } // relaunch with a fresh session: clears context, keeps the node and its children; prompt is its first prompt
