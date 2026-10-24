@@ -92,3 +92,12 @@ it('inside a node, refuses when TL_PORT names another port', async () => {
   await expect(tl('ps')).rejects.toThrow('exit 1');
   expect(fetch).not.toHaveBeenCalled();
 });
+
+it("tl url prints the browser UI's URL with the admin token, outside a node only", async () => {
+  vi.stubEnv('TL_HOME', other);
+  await tl('url');
+  expect(console.log).toHaveBeenCalledWith('http://127.0.0.1:7802/?k=admin-other');
+  insideNode();
+  await expect(tl('url')).rejects.toThrow('exit 1');
+  expect(console.log).toHaveBeenCalledTimes(1);
+});

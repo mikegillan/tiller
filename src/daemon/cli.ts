@@ -28,6 +28,7 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
   tl [up|app] PATH [--new] [--title T] [--prompt P] [--harness claude|pi|codex]  open the app on (or create) PATH's orchestrator;
                                                       --harness picks which agent CLI (default claude); without up/app, PATH
                                                       must start with . / or ~; any of these flags without a PATH means .
+  tl url                                              print the browser UI's URL, which carries the admin token (not inside a node)
   tl status | stop                                    show or stop the daemon (tld runs it in the foreground); stop also means
                                                       the nodes are not resumed on the next start
   tl update [--check] [--now]                         check stable releases or install/build/restart at the latest release; the
@@ -343,6 +344,11 @@ switch (cmd) {
     }
     break;
   }
+  case 'url':
+    // The admin token stays out of the daemon log and out of agents' terminals; the human asks for it here.
+    if (process.env.TL_NODE_ID) fail('tl url: refusing inside a node, since it prints the admin token');
+    console.log(`http://127.0.0.1:${daemonPort()}/?k=${adminToken()}`);
+    break;
   case 'status': {
     const h = await findDaemon(daemonPort());
     if (!h) { console.log('no daemon'); break; }

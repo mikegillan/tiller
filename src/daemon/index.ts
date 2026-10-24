@@ -1,9 +1,9 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { treeOrder } from '../shared/tree.js';
 import { loadConfig } from './config.js';
-import { ADMIN_TOKEN_FILE, daemonPort, PORT_FILE, REPO_FILE } from './home.js';
+import { daemonPort, PORT_FILE, REPO_FILE } from './home.js';
 import { terminalBundleFor } from './launch.js';
 import { createNotifier, findBin, runDetached } from './notifier.js';
 import { NodeManager } from './manager.js';
@@ -47,7 +47,8 @@ manager.on('removed', () => {
 writeFileSync(join(manager.home, PORT_FILE), `${server.port}\n`); // lets `tl` find the daemon without TL_PORT
 writeFileSync(join(manager.home, REPO_FILE), fileURLToPath(new URL('../..', import.meta.url))); // lets the Tauri app find bin/tld
 if (process.env.TL_DEBUG) manager.on('hook', (id, ev) => console.log(`${new Date().toISOString().slice(11, 23)} hook ${id.slice(0, 6)} ${JSON.stringify({ e: ev.hook_event_name, err: ev.error, tool: ev.tool_name, type: ev.notification_type, prompt: (ev.prompt_id as string | undefined)?.slice(0, 6), msg: ev.message, mode: ev.permission_mode })}`));
-console.log(`tiller daemon listening. Open ${manager.endpoint}/?k=${readFileSync(join(manager.home, ADMIN_TOKEN_FILE), 'utf8')}\nhome: ${manager.home}`);
+// Never log the admin token: this goes to daemon.log. `tl url` prints the full URL on request.
+console.log(`tiller daemon listening on ${manager.endpoint} (run tl url for the browser UI's URL)\nhome: ${manager.home}`);
 
 // Clear worktrees a crash left with no work in them and report the rest; then resume the nodes that were live.
 manager.worktrees({ clean: 'startup' }).then((r) => {
