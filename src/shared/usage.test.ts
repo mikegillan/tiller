@@ -89,3 +89,17 @@ it('keeps group identity when the newest reporting session changes and distingui
   expect(pools).toHaveLength(2);
   expect(pools[0].id).not.toBe(pools[1].id);
 });
+
+it('a node in a Tiller Claude account sees that account\'s quota, never another account\'s or an unaccounted node\'s', () => {
+  const work: UsageSource = { ...source, id: 'account:work', account: 'work', nodeIds: ['b'] };
+  const inWork = { ...node('a'), account: 'work' };
+  expect(selectedUsage(inWork, [work])).toEqual([work]);
+  expect(selectedUsage({ ...node('a'), account: 'personal' }, [work])).toEqual([]);
+  expect(selectedUsage(node('a'), [work])).toEqual([]);
+  expect(selectedUsage({ ...node('a'), account: 'work' }, [{ ...source, nodeIds: ['b'] }])).toEqual([]);
+});
+
+it('groups Claude reports by Tiller account apart from unidentified per-node readings', () => {
+  const groups = groupUsageObservations([source, { ...source, id: 'account:work', account: 'work' }, { ...source, id: 'account:home', account: 'home' }, { ...source, id: 'b' }]);
+  expect(groups.map((g) => [g.unidentified, g.reports.map((r) => r.id)])).toEqual([[true, ['a', 'b']], [false, ['account:work']], [false, ['account:home']]]);
+});

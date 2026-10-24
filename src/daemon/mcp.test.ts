@@ -259,6 +259,33 @@ describe('mcp api', () => {
     expect((await api('spawn', { ...args, permissionMode: 'yolo' })).status).toBe(400);
   });
 
+  it('only the human may choose a Claude account; an agent sees only its own account\'s usage line', async () => {
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ claude: { accounts: [{ name: 'work', configDir: join(home, 'claude-work') }] } }));
+    try {
+      const p = (await spawnT('acct', 'human', admin, { account: 'work' })).body.data.nodeId as string;
+      expect(manager.registry.get(p)?.account).toBe('work');
+      const refused = await api('spawn', { kind: 'terminal', title: 'k', cwd: tmpdir(), account: 'work' }, p, manager.tokenFor(p));
+      expect(refused.body.error).toMatch(/only the human may choose a Claude account/);
+      const child = (await spawnT('inherits', p, manager.tokenFor(p))).body.data.nodeId as string;
+      expect(manager.registry.get(child)?.account).toBe('work');
+      const plain = (await spawnT('no account')).body.data.nodeId as string;
+      const report = (nodeId: string, account?: string) => ({ rateLimits: [{ kind: 'five_hour', percentUsed: 1 }], nodeId, at: Date.now(), ...(account ? { account } : {}) });
+      manager.usageByAccount.set('work', report(p, 'work'));
+      manager.usageByAccount.set('', report(plain));
+      manager.usage = report(plain);
+      const first = async (id: string) => (await api('list_nodes', {}, id, id === 'human' ? admin : manager.tokenFor(id))).body.text?.split('\n')[0];
+      expect(await first(child)).toMatch(new RegExp(`^usage \\(work\\): .*from ${p}`));
+      expect(await first(plain)).toMatch(new RegExp(`^usage: .*from ${plain}`));
+      expect(await first('human')).toMatch(new RegExp(`^usage: .*from ${plain}`));
+      expect((await api('list_nodes', {}, p, manager.tokenFor(p))).body.data.find((n: { id: string }) => n.id === p)).toMatchObject({ account: 'work' });
+      for (const id of [child, p, plain]) await manager.close(id, true);
+    } finally {
+      rmSync(join(home, 'config.json'), { force: true });
+      manager.usageByAccount.clear();
+      manager.usage = undefined;
+    }
+  });
+
   it('spawn inherits the caller\'s observed permission mode; bypassPermissions is never inherited', async () => {
     const p = (await spawnT('pm')).body.data.nodeId as string;
     const tok = manager.tokenFor(p);

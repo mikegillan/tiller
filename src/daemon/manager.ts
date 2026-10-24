@@ -7,6 +7,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { profileFor, type Profile, harnessFor, isAgentKind, NEEDS_YOU_STATES, type Harness, type ArchivedNode, type Diff, type DigestItem, type Drain, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
 import { profileDefaults, loadConfig, type Config, type MergeStyle } from './config.js';
 import { UsageRegistry } from './usage.js';
+import { accountForProject, claudeConfigDir, claudeHomeOf, claudeHomes } from './claude-accounts.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
 import { projectMcpServerNames, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
@@ -88,6 +89,8 @@ export interface SpawnRequest {
   fork?: string;
   /** The archived node whose session the new node continues (see followup). */
   followup?: ArchivedNode;
+  /** A Claude account name (home config claude.accounts); the human's root spawns only. Absent: a child's parent's, else by project. */
+  account?: string;
 }
 
 export interface ManagerOptions {
@@ -155,6 +158,8 @@ export class NodeManager extends EventEmitter {
   readonly registry: NodeRegistry;
   /** Newest account-level rate limits from any node. Not persisted: the next measure after a restart refills it. */
   usage?: Usage;
+  /** The newest Claude report per Tiller account ('' for nodes without one), so an agent sees its own account's. */
+  readonly usageByAccount = new Map<string, Usage>();
   readonly usageRegistry: UsageRegistry;
   /** Base URL of the daemon, set by the server once it knows its port. */
   endpoint = '';
@@ -183,7 +188,7 @@ export class NodeManager extends EventEmitter {
     this.home = opts.home ?? homeDir();
     this.shell = opts.shell ?? process.env.SHELL ?? '/bin/sh';
     this.path = opts.path ?? process.env.PATH ?? '';
-    this.usageRegistry = new UsageRegistry(this.path);
+    this.usageRegistry = new UsageRegistry(this.path, () => claudeHomes(this.home).filter((d): d is string => !!d));
     mkdirSync(join(this.home, 'nodes'), { recursive: true, mode: 0o700 });
     chmodSync(this.home, 0o700); // mkdir's mode does not apply to a directory that already existed
     ensurePresets(this.home);
@@ -351,6 +356,7 @@ export class NodeManager extends EventEmitter {
     const explicit = req.followup ? req.followup.explicit : (['model', 'effort'] as const).filter((k) => (req[k] ?? p[k]) !== undefined);
     if (adapter?.id === 'codex' && effort && !isSupportedEffort('codex', effort)) throw new Error(`unsupported Codex effort: ${effort}`);
     const parent = parentId ? this.registry.get(parentId) : undefined;
+    const account = this.spawnAccount(req, parent, from);
     // Other harnesses cannot carry Claude restrictions. Only the human, a same-harness parent,
     // or an unrestricted Claude parent may select them. This is not a process sandbox.
     if (adapter && adapter.id !== 'claude' && !req.byHuman && !(parent && isAgentKind(parent.kind) && harnessFor(parent) === adapter.id)) {
@@ -381,13 +387,13 @@ export class NodeManager extends EventEmitter {
     if (isolation === 'worktree') {
       const repo = await wt.mainCheckout(req.cwd);
       head = await wt.headInfo(req.cwd);
-      if (adapter?.id === 'claude' && !trustedForWorktree(repo, readClaudeJson())) throw new Error(`refusing isolation "worktree": Claude does not trust ${repo} yet; run claude once in ${repo} to trust it`);
+      if (adapter?.id === 'claude' && !trustedForWorktree(repo, readClaudeJson(account && claudeConfigDir(this.home, account)))) throw new Error(`refusing isolation "worktree": Claude does not trust ${repo} yet; run claude once in ${repo} to trust it`);
       const protectedBranches = await wt.protectedBranches(repo, config.worktrees.protected);
       base = await wt.pickBase(req.cwd, head, { requested: req.base, protected: protectedBranches, pattern: config.worktrees.taskBranch, title: req.title });
     }
     const rec = this.registry.create({ // the resolved fields, so restart keeps them
       parentId, kind: req.kind, ...(req.harness ? { harness: req.harness } : {}), title: req.title, cwd: req.cwd,
-      model, effort, ...(adapter ? { explicit } : {}), permissionMode, role, profile, preset: req.preset,
+      model, effort, ...(adapter ? { explicit } : {}), ...(account ? { account } : {}), permissionMode, role, profile, preset: req.preset,
       sessionId: adapter ? req.followup?.sessionId ?? randomUUID() : undefined,
       ...(adapter && adapter.id !== 'claude' && req.followup?.transcriptPath ? { transcriptPath: req.followup.transcriptPath } : {}),
       ...(adapter && adapter.id !== 'claude' && req.followup?.previousSessions ? { previousSessions: req.followup.previousSessions } : {}),
@@ -417,10 +423,33 @@ export class NodeManager extends EventEmitter {
   }
 
   /**
-   * The session a fork starts from (node req.fork's, live or archived, from the new node's own tree when both exist) and
-   * its cwd: the one asked for, else the source's, either falling back to the main checkout for a removed worktree.
+   * The Claude account of a new node: a child's is its parent's, a root's the human's choice, else a follow-up's or
+   * fork's source's, else the one claude.accounts maps its project to. Only the human chooses one, never across accounts:
+   * Claude finds a session only in its own account's home, and conversations must not move between accounts.
    */
-  private async forkSource(req: SpawnRequest): Promise<{ sessionId: string; cwd: string }> {
+  private spawnAccount(req: SpawnRequest, parent: NodeRecord | undefined, from: { account?: string } | undefined): string | undefined {
+    if (req.account !== undefined && !req.byHuman) throw new Error('refused: only the human may choose a Claude account; a node you spawn runs in yours');
+    const name = (a?: string) => a ?? 'default';
+    // Compared by Claude home, so no account and the named default (no configDir) are the same; throws for an unconfigured name.
+    const dirOf = (a?: string) => (a === undefined ? undefined : claudeConfigDir(this.home, a));
+    const account = parent ? parent.account : req.account ?? (req.followup ? req.followup.account : from ? from.account : accountForProject(this.home, this.projectDir(req)));
+    if (parent && req.account !== undefined && dirOf(req.account) !== dirOf(account)) throw new Error(`refused: a child runs in its parent's Claude account (${name(account)}), not ${req.account}`);
+    if (req.followup && dirOf(req.followup.account) !== dirOf(account)) throw new Error(`refused: cannot follow up across Claude accounts (archived: ${name(req.followup.account)}, new node: ${name(account)})`);
+    if (from && dirOf(from.account) !== dirOf(account)) throw new Error(`refused: cannot fork across Claude accounts (source: ${name(from.account)}, new node: ${name(account)})`);
+    if (account) claudeConfigDir(this.home, account); // throws for one no longer configured
+    return account;
+  }
+
+  /** CLAUDE_CONFIG_DIR for a node's account (undefined: the default home); throws when its account is no longer configured. */
+  private claudeDirOf(rec: { account?: string }): string | undefined {
+    return rec.account ? claudeConfigDir(this.home, rec.account) : undefined;
+  }
+
+  /**
+   * The session a fork starts from (node req.fork's, live or archived, from the new node's own tree when both exist), its
+   * Claude account and its cwd: the one asked for, else the source's, either falling back to the main checkout for a removed worktree.
+   */
+  private async forkSource(req: SpawnRequest): Promise<{ sessionId: string; cwd: string; account?: string }> {
     if (!isAgentKind(req.kind)) throw new Error('fork is for agent nodes only');
     if (!adapterFor(req).capabilities.fork) throw new Error('this harness does not support session forking');
     const src = this.registry.get(req.fork!) ?? await findArchived(this.home, req.fork!, req.parentId ? this.rootIdOf(req.parentId) : undefined);
@@ -430,7 +459,7 @@ export class NodeManager extends EventEmitter {
     if (!src.sessionId || !src.transcriptPath) throw new Error(`refused: ${req.fork} has no session yet to fork`);
     const want = req.cwd || src.cwd, cwd = usableCwd(want);
     if (!cwd) throw new Error(`refused: ${want} no longer exists`);
-    return { sessionId: src.sessionId, cwd };
+    return { sessionId: src.sessionId, cwd, account: src.account };
   }
 
   /**
@@ -454,7 +483,8 @@ export class NodeManager extends EventEmitter {
 
   /** A live or archived Claude node's conversation in one of its sessions (default: the current one). */
   async transcript(id: string, sessionId?: string): Promise<Transcript> {
-    return nodeTranscript(await this.transcriptNode(id), sessionId);
+    const n = await this.transcriptNode(id);
+    return nodeTranscript({ ...n, claudeHome: claudeHomeOf(this.home, n.account) }, sessionId);
   }
 
   /** The record of a live node, else the archive line of a closed one; throws for neither. */
@@ -512,7 +542,12 @@ export class NodeManager extends EventEmitter {
     const status = rt.status!;
     const { sessionId } = rec;
     if (!sessionId) return { ok: false, error: 'No session to resume' };
-    const transcript = adapterFor(rec).transcript(rec, this.sessionDirOf(id));
+    try {
+      if (harnessFor(rec) === 'claude') this.claudeDirOf(rec);
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+    const transcript = adapterFor(rec).transcript({ ...rec, claudeHome: claudeHomeOf(this.home, rec.account) }, this.sessionDirOf(id));
     if (!transcript || !existsSync(transcript)) return { ok: false, error: `No conversation to resume (missing ${transcript})` };
     rt.lastHookAt = undefined;
     try {
@@ -550,6 +585,11 @@ export class NodeManager extends EventEmitter {
     let fresh: Pick<NodeRecord, 'model' | 'effort'> = {};
     if (isAgentKind(rec.kind)) {
       const harness = harnessFor(rec);
+      try {
+        if (harness === 'claude') this.claudeDirOf(rec); // the account is kept, never re-resolved; check it before stopping the node
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
       const d = profileDefaults(loadConfig(this.projectDir(rec), this.home), harness, profileFor(rec.profile, rec.parentId, rec.role), roleFor(rec.role, rec.parentId));
       let explicit = rec.explicit;
       if (!explicit && rec.preset) { // a legacy record: what its preset sets counts as chosen; an unloadable preset keeps both
@@ -587,7 +627,7 @@ export class NodeManager extends EventEmitter {
 
   private priorSessions(id: string) {
     const rec = this.registry.get(id)!;
-    const records = new Map(recordedSessions(rec).map((s) => [s.sessionId, s]));
+    const records = new Map(recordedSessions({ ...rec, claudeHome: claudeHomeOf(this.home, rec.account) }).map((s) => [s.sessionId, s]));
     return [...(rec.previousSessions ?? []), ...(rec.sessionId ? [rec.sessionId] : [])]
       .slice(-MAX_PREVIOUS_SESSIONS).flatMap((sid) => records.get(sid) ?? []);
   }
@@ -612,6 +652,7 @@ export class NodeManager extends EventEmitter {
       if (defaults.effort && !isSupportedEffort(harness, defaults.effort)) throw new Error(`unsupported ${harness} effort: ${defaults.effort}`);
       // Explicit confirmation resets preset/model/effort/permission overrides to target defaults.
       requireHarnessExecutable(harness, this.path);
+      if (harness === 'claude') this.claudeDirOf(rec); // the node keeps its account
       adapter.validate({ piExtensions: { setting: loadConfig(this.projectDir(rec), this.home).pi.extensions, cwd: this.projectDir(rec), path: this.path } });
       const owner = this.registry.list().find((n) => n.id !== id && n.worktree && inside(rec.cwd, n.worktree.path));
       const ownerRuntime = owner && this.runtimes.get(owner.id);
@@ -620,7 +661,7 @@ export class NodeManager extends EventEmitter {
         const w = rec.worktree;
         const listed = existsSync(w.path) && (await wt.listWorktrees(w.repo)).some((e) => wt.samePath(e.path, w.path));
         if (!listed) throw new Error('worktree missing');
-        if (harness === 'claude' && !trustedForWorktree(w.repo, readClaudeJson())) throw new Error(`Claude does not trust ${w.repo}; run claude there to trust it before changing harness`);
+        if (harness === 'claude' && !trustedForWorktree(w.repo, readClaudeJson(this.claudeDirOf(rec)))) throw new Error(`Claude does not trust ${w.repo}; run claude there to trust it before changing harness`);
       }
       if (!existsSync(rec.cwd)) throw new Error(`working directory does not exist: ${rec.cwd}`);
       await waitForDeliveries(this, id);
@@ -852,13 +893,18 @@ export class NodeManager extends EventEmitter {
       const { context, cost, rateLimits } = ev.payload;
       const rec = this.registry.get(nodeId);
       const tool = rec && isAgentKind(rec.kind) ? harnessFor(rec) : undefined;
+      // The account label is the daemon's, from the node's record; never the adapter's.
+      const account = tool === 'claude' ? rec?.account : undefined;
       if (tool) {
         const unavailable = ev.payload.usageUnavailable ? this.usageRegistry.unavailable(tool, nodeId, now) : false;
-        const changed = this.usageRegistry.record(tool, nodeId, ev.payload.usageReports ?? (rateLimits?.length ? [{ scope: 'account', rateLimits }] : []), now);
+        const reports = (ev.payload.usageReports ?? (rateLimits?.length ? [{ scope: 'account' as const, rateLimits }] : []))
+          .map(({ account: _, ...r }) => (account ? { ...r, account } : r));
+        const changed = this.usageRegistry.record(tool, nodeId, reports, now);
         if (changed || unavailable) this.emit('usageSources', this.usageRegistry.sources);
       }
       if (rateLimits?.length && (!tool || tool === 'claude')) { // empty off a subscription or before the first reading: keep the last report
-        this.usage = { rateLimits, nodeId, at: now };
+        this.usage = { rateLimits, nodeId, at: now, ...(account ? { account } : {}) };
+        this.usageByAccount.set(account ?? '', this.usage);
         this.emit('usage', this.usage);
       }
       if (cost) this.addSpend(nodeId, cost.usd, cost.incomplete === true, cost.unpricedAdded === true, now);
@@ -1086,6 +1132,7 @@ export class NodeManager extends EventEmitter {
       resume, forkSession, transcriptPath: rec.transcriptPath, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
       preset: rec.preset ? loadPreset(rec.preset, this.projectDir(rec), this.home) : undefined,
       inheritMcpServers: config.claude.inheritMcpServers, piExtensions: config.pi.extensions,
+      claudeConfigDir: adapter?.id === 'claude' ? this.claudeDirOf(rec) : undefined,
     };
     const spec = adapter ? adapter.launch(input) : terminalLaunch(input, this.shell);
     const cwd = adapter ? adapter.cwd(rec) : rec.cwd;
@@ -1129,15 +1176,15 @@ export class NodeManager extends EventEmitter {
       this.emit('notify', { id, kind: 'exited', title: rec.title } satisfies NotifyEvent);
       refreshGit(this, id).catch(logError);
     });
-    if (adapter?.id === 'claude') this.watchTrust(id, s, cwd).catch(logError);
+    if (adapter?.id === 'claude') this.watchTrust(id, s, cwd, input.claudeConfigDir).catch(logError);
   }
 
   /**
    * Watch a fresh Claude screen for the folder-trust dialog; answer it only if policy allows. The dialog's
    * heading scrolls out of the viewport, so match on the option text and footer instead.
    */
-  private async watchTrust(id: string, s: PtySession, cwd: string): Promise<void> {
-    const auto = trustPolicy(cwd, readClaudeJson()) === 'auto';
+  private async watchTrust(id: string, s: PtySession, cwd: string, claudeConfigDir: string | undefined): Promise<void> {
+    const auto = trustPolicy(cwd, readClaudeJson(claudeConfigDir)) === 'auto';
     let downAt = 0;
     for (const end = Date.now() + TRUST_WATCH_MS; Date.now() < end; await sleep(250)) {
       const rt = this.runtimes.get(id);

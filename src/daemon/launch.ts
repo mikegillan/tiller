@@ -162,6 +162,8 @@ export interface LaunchInput {
   preset?: Preset;
   /** Claude also loads its usual MCP servers; false passes `--strict-mcp-config` so the node has only tiller's. Unset means true. */
   inheritMcpServers?: boolean;
+  /** Claude only: the node's account CLAUDE_CONFIG_DIR; unset means Claude's default home. */
+  claudeConfigDir?: string;
   /** Pi loads the user's extensions ("all", or unset), only tiller's ("none"), or tiller's and these package sources. */
   piExtensions?: 'all' | 'none' | string[];
 }
@@ -170,7 +172,8 @@ export interface LaunchSpec { file: string; args: string[]; env: Record<string, 
 
 /** Command line and environment for a Claude node. Run directly as the PTY program, not through a shell. */
 export function claudeLaunch(i: LaunchInput): LaunchSpec {
-  return { file: 'claude', args: launchArgs(i), env: nodeEnv(i) };
+  // Here, not in nodeEnv: Pi, Codex and terminal nodes never get it (buildChildEnv strips the daemon's own CLAUDE* variables).
+  return { file: 'claude', args: launchArgs(i), env: { ...nodeEnv(i), ...(i.claudeConfigDir ? { CLAUDE_CONFIG_DIR: i.claudeConfigDir } : {}) } };
 }
 
 export function launchArgs(i: LaunchInput): string[] {

@@ -131,6 +131,7 @@ export function SidebarInspector({ node, onClose }: { node: NodeView | null; onC
         <dl className="inspector-facts">
           {row('Live status', <span className={`inspector-state ${kind}`}><StateDot kind={kind} />{KIND_LABEL[kind]}</span>)}
           {row('Harness', kindTag(node))}
+          {agent && node.account && row('Account', node.account)}
           {agent && row('Role', node.role ?? (node.parentId ? 'worker' : 'orchestrator'))}
           {agent && row('Profile', PROFILE_LABELS[profileFor(node.profile, node.parentId, node.role)])}
           {agent && row('Model', shortModel(s.model ?? node.model) || 'Not reported')}

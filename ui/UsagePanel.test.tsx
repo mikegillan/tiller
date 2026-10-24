@@ -138,3 +138,23 @@ it('preserves the disclosure parent key when another session supplies the newest
   fixture.state.usageSources = [{ ...first, at: fixture.now + 1000 }, second];
   expect(groupKey()).toBe(before);
 });
+
+it('labels Claude quota by Tiller account and leaves unidentified readings unchanged', () => {
+  fixture.state.usageSources = [source({ id: 'discovery:claude', tool: 'claude' }),
+    report({ id: 'account:work', tool: 'claude', accountId: undefined, account: 'work' }),
+    report({ id: 'session', tool: 'claude', accountId: undefined, rateLimits: [{ kind: 'five_hour', percentUsed: 7 }] })];
+  const html = render();
+  expect(html).toContain('Account: work');
+  expect(html).toContain('Latest session reading'); expect(html).toContain('7% used');
+  expect(html).not.toContain('Separate quota');
+});
+
+it('numbers separate quotas without counting unidentified or account groups', () => {
+  fixture.state.usageSources = [source({ id: 'discovery:claude', tool: 'claude' }),
+    report({ id: 'session', tool: 'claude', accountId: undefined }),
+    report({ id: 'account:work', tool: 'claude', accountId: undefined, account: 'work' }),
+    report({ id: 'pool', tool: 'claude', accountId: 'pool' })];
+  const html = render();
+  expect(html).toContain('Account: work'); expect(html).toContain('Separate quota 1');
+  expect(html).not.toContain('Separate quota 2'); expect(html).not.toContain('Separate quota 3');
+});
