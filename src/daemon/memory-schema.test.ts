@@ -172,7 +172,7 @@ describe('normalizeDedupe', () => {
 describe('ftsTerms', () => {
   it('makes path phrases and plain tokens without stopwords', () => {
     expect(ftsTerms('Fix the flake in src/daemon/messaging.ts and messaging.test.ts')).toEqual([
-      'src daemon messaging ts', 'messaging test ts', 'fix', 'flake', 'src', 'daemon', 'messaging', 'ts', 'test',
+      'src daemon messaging ts', 'messaging test ts', 'fix', 'flake', 'daemon', 'messaging',
     ]);
     expect(ftsTerms('e.g. café_au_lait Ünïcode')).toEqual(['café_au_lait', 'ünïcode']);
   });

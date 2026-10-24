@@ -276,7 +276,8 @@ function contract(text: string, itemIds: number[], role: DigestRole): { violatio
   const lines = text.slice(DIGEST_HEADER.length + 1).split('\n');
   lines.forEach((line, i) => {
     if (line.length > LIMITS.digest.line) violations.push(`a ${line.length}-char line`);
-    if (line.includes('--- TL MESSAGE')) violations.push(`a TL frame line: ${line}`);
+    // A frame is authentic only at the start of a line (the outermost one); mid-line, a marker is plain data.
+    if (/^--- (?:END )?TL MESSAGE/.test(line)) violations.push(`a line opens a TL frame: ${line}`);
     if (line === '' && i === 0) return;
     if (line.startsWith('#')) {
       const at = HEADINGS.findIndex(([, h]) => h === line);
@@ -411,6 +412,9 @@ for (const fx of fixtures) {
 }
 
 // R9: placeholders wait as todo or skip, never it.fails, so the suite stays green when the behaviour lands.
+// Left for the bench follow-up: captureMemory runs the same redact, nodeHistory, derive and apply as Case.replay, but
+// through it each fixture node needs a registry node whose cwd is a checkout with that repo alias's remote, and
+// manager.memory stamps add, forget and pin with Date.now, so backdated ops cannot replay without a clock hook.
 it.todo('replays fixtures through NodeManager.captureMemory (W5) instead of this file\'s redact, nodeHistory, derive and apply');
 
 describe('aggregate', () => {

@@ -207,7 +207,7 @@ describe('digestFor', () => {
       const got = digestFor(source, scope, { role, brief, now: NOW });
       const [s, q] = calls.at(-1)!;
       expect(s).toBe(scope);
-      expect(q).toEqual({ role, terms: ['src daemon messaging ts', 'fix', 'delivery', 'receipt', 'race', 'src', 'daemon', 'messaging', 'ts'], now: NOW });
+      expect(q).toEqual({ role, terms: ['src daemon messaging ts', 'fix', 'delivery', 'receipt', 'race', 'daemon', 'messaging'], now: NOW });
       expect(got).toEqual(buildDigest(source.candidates(scope, q), { role, now: NOW }));
     }
   });

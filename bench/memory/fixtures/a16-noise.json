@@ -1,7 +1,7 @@
 {
   "name": "A16 noise",
   "claim": 5,
-  "note": "200 ledgers from an unrelated subsystem plus 1 relevant. The zero-relevance query is reported: its related-line count is the noise metric, and over 2 fires D-2.",
+  "note": "200 ledgers from an unrelated subsystem plus 1 relevant. The zero-relevance brief's related-line count is the noise metric: over 2 fired D-2 (17 before the code stopwords and the two-term rule), so it is now asserted.",
   "now": "2026-10-20T12:00:00Z",
   "repos": { "lib": "git:bench.invalid/ledgerlib" },
   "episodes": [
@@ -22,6 +22,6 @@
   "exactCounts": { "ledger": 201 },
   "queries": [
     { "id": "needle", "repo": "lib", "role": "worker", "brief": "Make the fetcher retry on 503 in src/net/fetcher.ts", "must": ["@ledger-needle"] },
-    { "id": "zero-relevance", "repo": "lib", "role": "worker", "brief": "Add a dark mode toggle to src/ui/theme.ts", "report": true }
+    { "id": "zero-relevance", "repo": "lib", "role": "worker", "brief": "Add a dark mode toggle to src/ui/theme.ts", "sectionLines": { "related": [0, 2] } }
   ]
 }
