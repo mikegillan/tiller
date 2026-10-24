@@ -132,6 +132,47 @@ describe('Codex delivery failures', () => {
   });
 });
 
+describe('Codex daemon gap', () => {
+  it('retries lifecycle reports while the daemon restarts instead of failing the session', async () => {
+    const { client, fatal } = await setup([]);
+    vi.useFakeTimers();
+    const down = new Error('fetch failed');
+    vi.mocked(client.modEvent).mockRejectedValueOnce(down).mockRejectedValueOnce(down);
+    vi.mocked(client.hook).mockRejectedValueOnce(down);
+    bridge.handle({ method: 'turn/started', params: { turn: { id: 'turn' } } });
+    bridge.handle({ method: 'item/started', params: { item: { type: 'commandExecution', command: 'ls' } } });
+    bridge.handle({ method: 'turn/completed', params: { turn: { id: 'turn', status: 'completed' } } });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fatal).not.toHaveBeenCalled();
+    expect(vi.mocked(client.modEvent).mock.calls.map(([event]) => event)).toEqual(['turn.start', 'turn.start', 'turn.start', 'turn.complete']);
+    expect(client.hook).toHaveBeenLastCalledWith(expect.objectContaining({ hook_event_name: 'PreToolUse' }));
+  });
+
+  it('drops a report after about a minute without blocking later events', async () => {
+    const { client, fatal } = await setup([]);
+    const print = (bridge as unknown as { print: ReturnType<typeof vi.fn> }).print;
+    vi.useFakeTimers();
+    vi.mocked(client.modEvent).mockRejectedValue(new Error('fetch failed'));
+    bridge.handle({ method: 'turn/started', params: { turn: { id: 'turn' } } });
+    bridge.handle({ method: 'item/completed', params: { item: { type: 'agentMessage', text: 'kept answer' } } });
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(readFileSync(join(dir, 'session.jsonl'), 'utf8')).not.toContain('kept answer');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(readFileSync(join(dir, 'session.jsonl'), 'utf8')).toContain('kept answer');
+    expect(print).toHaveBeenCalledWith(expect.stringContaining('dropped'));
+    // Still unreachable: later reports are tried once and dropped rather than stalling again.
+    const calls = vi.mocked(client.modEvent).mock.calls.length;
+    bridge.handle({ method: 'turn/completed', params: { turn: { id: 'turn', status: 'completed' } } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.modEvent).toHaveBeenCalledTimes(calls + 1);
+    vi.mocked(client.modEvent).mockResolvedValue();
+    bridge.handle({ method: 'turn/started', params: { turn: { id: 'next' } } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.modEvent).toHaveBeenLastCalledWith('turn.start', { turnId: 'next' });
+    expect(fatal).not.toHaveBeenCalled();
+  });
+});
+
 describe('Codex shutdown', () => {
   it('drains accepted user, tool, answer and lifecycle events and rejects later events/polls', async () => {
     const { client, fatal } = await setup([]);
@@ -214,19 +255,18 @@ describe('Codex shutdown', () => {
     expect(client.hook).toHaveBeenLastCalledWith({ hook_event_name: 'SessionEnd' });
   });
 
-  it('drains the remaining accepted events when an event failure initiates fatal shutdown', async () => {
+  it('drains the remaining accepted events when shutdown starts during a daemon retry', async () => {
     const { client, fatal } = await setup([]);
-    let stopped: Promise<void> | undefined;
-    fatal.mockImplementation(async () => { stopped = bridge.stop(); await stopped; });
-    vi.mocked(client.modEvent).mockRejectedValueOnce(new Error('daemon request timed out'));
+    vi.useFakeTimers();
+    vi.mocked(client.modEvent).mockRejectedValue(new Error('daemon request timed out'));
     bridge.handle({ method: 'turn/started', params: { turn: { id: 'last' } } });
     bridge.handle({ method: 'item/completed', params: { item: { type: 'agentMessage', text: 'retained answer' } } });
     bridge.handle({ method: 'turn/completed', params: { turn: { id: 'last', status: 'completed' } } });
-    await expect.poll(() => stopped !== undefined).toBe(true);
+    const stopped = bridge.stop();
+    await vi.advanceTimersByTimeAsync(5000);
     await stopped;
     expect(readFileSync(join(dir, 'session.jsonl'), 'utf8')).toContain('retained answer');
-    expect(client.modEvent).toHaveBeenLastCalledWith('turn.complete', expect.objectContaining({ answer: 'retained answer' }));
-    expect(client.hook).toHaveBeenLastCalledWith({ hook_event_name: 'SessionEnd' });
+    expect(fatal).not.toHaveBeenCalled();
   });
 
   it('bounds shutdown with hung HTTP, retains queued transcripts and cancels pending requests', async () => {

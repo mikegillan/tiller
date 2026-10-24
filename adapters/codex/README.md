@@ -53,6 +53,10 @@ placed on the command line. Tiller's existing tools and lineage restrictions are
 The bridge serializes lifecycle reports from `turn/started`, `turn/completed`, item events,
 and token-usage notifications through `/hook` and `/mod-event`. Context usage is reported;
 dollar cost and account rate limits are not available from this adapter.
+A report the daemon cannot take, for example during `tl reload` or `tl update`, is retried
+every second for up to 60 seconds, holding later events so reports stay in order. After that
+the report is logged and dropped, and later reports are tried once each until the daemon
+answers again. A daemon outage never closes the Codex session.
 
 Inbox messages remain queued and withdrawable while busy. A steer interrupts once and runs
 first after completion. The bridge claims only immediately before `turn/start`, and acknowledges
