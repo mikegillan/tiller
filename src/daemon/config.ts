@@ -8,6 +8,7 @@ import { PROFILES, isSupportedEffort } from '../shared/harness-policy.js';
 import { EFFORTS, ISOLATIONS, type Harness, type Profile, type Role } from '../shared/protocol.js';
 import { SETTINGS_HARNESSES, SETTINGS_PROFILES, SETTINGS_PROFILE_DEFAULTS, type SettingsEntry } from '../shared/settings.js';
 import { homeDir } from './home.js';
+import { LIMITS } from './memory-schema.js';
 import { expandHome } from './util.js';
 
 export const MERGE_STYLES = ['merge', 'squash', 'ff-only'] as const;
@@ -37,6 +38,8 @@ const ClaudeAccounts = z.array(z.object({
   configDir: AccountPath.optional(),
   /** Root nodes whose project is inside one of these run in this account (the longest match wins; Settings writes a repo's exact path). */
   projects: z.array(AccountPath).optional(),
+  /** Memory for nodes in this account: true opts in; false keeps it off whatever a memory.projects entry says. Unset: no say. */
+  memory: z.boolean().optional(),
 }).strict()).superRefine((accounts, ctx) => {
   const names = new Set<string>(), dirs = new Set<string>();
   const issue = (message: string) => ctx.addIssue({ code: 'custom', message });
@@ -138,6 +141,18 @@ export const ConfigFile = z.object({
     stallMinutes: z.number().positive().optional(),
     maxMessagesPer10Min: z.number().int().positive().optional(),
   }).strict().optional(),
+  /**
+   * Daemon-native memory (docs/memory.md), off unless the human opts in. enabled: the global opt-in; a project file may
+   * only set it false. projects (home file only): per-project opt-in or opt-out, the longest containing path wins.
+   * digest: whether a launch gets the # Memory section ("ab" splits nodes by id); a project may only make it stricter.
+   * maxMB (home file only): the size past which each account's file evicts old entries.
+   */
+  memory: z.object({
+    enabled: z.boolean().optional(),
+    projects: z.array(z.object({ path: AccountPath, enabled: z.boolean() }).strict()).optional(),
+    digest: z.enum(['on', 'ab', 'off']).optional(),
+    maxMB: z.number().min(LIMITS.size.minMB).optional(),
+  }).strict().optional(),
 }).strict();
 type ConfigFile = z.infer<typeof ConfigFile>;
 
@@ -175,6 +190,7 @@ export const DEFAULTS = {
   'notifications.kinds.needsYou': 'sound', 'notifications.kinds.errored': 'silent', 'notifications.kinds.done': 'banner', 'notifications.kinds.exited': 'silent',
   'notifications.treeDoneSummary': true, 'notifications.quietHours': undefined,
   'limits.maxDepth': 3, 'limits.maxChildren': 8, 'limits.stallMinutes': 5, 'limits.maxMessagesPer10Min': 20,
+  'memory.enabled': false, 'memory.projects': [], 'memory.digest': 'on', 'memory.maxMB': LIMITS.size.defaultMB,
 } satisfies Flat;
 
 type Defaulted = { [K in Key]: (typeof DEFAULTS)[K] extends undefined ? never : K }[Key];
