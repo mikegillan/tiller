@@ -1,5 +1,5 @@
 // A harness's transcript file, read as the user and assistant messages of a conversation.
-// Claude keeps one JSON object per line in <sessionId>.jsonl under ~/.claude/projects.
+// Claude keeps one JSON object per line in <sessionId>.jsonl under <Claude home>/projects (~/.claude, or the account's CLAUDE_CONFIG_DIR).
 // Pi keeps JSONL entries in <treeSessionDir>/agents/<nodeId>/<sessionId>.jsonl,
 // with a tree of id/parentId entries whose active branch is the current conversation.
 // The Codex bridge stores a header plus normalized user/assistant entries in the Claude content format.
@@ -16,13 +16,14 @@ export const TAIL_BYTES = 8 << 20;
 
 /** One user or assistant message with its text and tool calls in content order. */
 export interface Message { role: 'user' | 'assistant'; at?: number; parts: Array<{ text: string } | { tool: string }> }
-type Node = { cwd: string; sessionId?: string; previousSessions?: string[]; sessionHistory?: SessionRecord[]; transcriptPath?: string; harness?: Harness };
+/** claudeHome: the node's account's Claude home, for the fallback path (default ~/.claude). */
+type Node = { cwd: string; sessionId?: string; previousSessions?: string[]; sessionHistory?: SessionRecord[]; transcriptPath?: string; harness?: Harness; claudeHome?: string };
 
 /** Materialize legacy paths before changing harness or cwd; never infer an old decoder from the new harness. */
 export function recordedSessions(n: Node): SessionRecord[] {
   if (!n.sessionId) return [];
   const harness = n.harness ?? 'claude';
-  const current = n.transcriptPath ?? (harness === 'claude' ? transcriptFor(n.cwd, n.sessionId) : undefined);
+  const current = n.transcriptPath ?? (harness === 'claude' ? transcriptFor(n.cwd, n.sessionId, n.claudeHome) : undefined);
   const prior = new Map(n.sessionHistory?.map((s) => [s.sessionId, s]));
   return [n.sessionId, ...(n.previousSessions ?? [])].flatMap((sid) => {
     if (sid !== n.sessionId && prior.has(sid)) return [prior.get(sid)!];
@@ -62,10 +63,10 @@ type Entry = {
 };
 
 /** Fallback for where Claude keeps a session's transcript: the real path of cwd with every non-alphanumeric character replaced by -. */
-export function transcriptFor(cwd: string, sessionId: string): string {
+export function transcriptFor(cwd: string, sessionId: string, claudeHome = join(homedir(), '.claude')): string {
   let real = cwd;
   try { real = realpathSync(cwd); } catch { /* keep the path as given */ }
-  return join(homedir(), '.claude', 'projects', real.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`);
+  return join(claudeHome, 'projects', real.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`);
 }
 
 /** JSON.parse each non-empty line, dropping malformed lines and non-objects. */

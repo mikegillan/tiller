@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildChanges, cliStatus, fieldPreview, groups, profileFields, type SettingsSnapshot } from './settings-model';
+import { accountsError, accountStatus, buildChanges, cliStatus, fieldPreview, groups, profileFields, type SettingsSnapshot } from './settings-model';
 const snapshot: SettingsSnapshot = { scope: 'project', path: '/tmp/project/.tiller/config.json', projectPath: '/tmp/project', revision: 'a', values: { 'limits.maxDepth': 3, 'worktrees.include': ['local'], 'approvals.merge': true }, entries: {}, inherited: {} };
 const fields = [...groups.flatMap((g) => g.fields), ...profileFields('codex')];
 describe('settings drafts', () => {
@@ -119,5 +119,24 @@ describe('scope inheritance and reset previews', () => {
     const unset: SettingsSnapshot = { ...state, values: {}, entries: { [effort.key]: { value: undefined, source: 'default' } }, inherited: { [effort.key]: { value: undefined, source: 'default' } } };
     expect(fieldPreview(unset, {}, effort)).toMatchObject({ explicit: false, raw: '', entry: { value: undefined, source: 'default' } });
     expect(buildChanges(unset, { [effort.key]: null }, [effort])).toEqual({});
+  });
+});
+
+describe('Claude account setting', () => {
+  const at = (claudeAccount: SettingsSnapshot['claudeAccount'], scope: 'project' | 'home' = 'project'): SettingsSnapshot => ({ ...snapshot, scope, claudeAccount });
+  it('says where the effective account comes from', () => {
+    expect(accountStatus(at({ effective: 'work', project: '/tmp/project' }))).toBe('This repository runs in work.');
+    expect(accountStatus(at({ effective: 'work', project: '/tmp' }))).toBe('Currently from work via /tmp.');
+    expect(accountStatus(at({ effective: 'personal' }))).toBe('Currently from the global default (personal).');
+    expect(accountStatus(at({}))).toBe('Currently no account: Claude’s default home.');
+    expect(accountStatus(at({ effective: 'personal' }, 'home'))).toBe('Root nodes outside listed projects run in personal.');
+  });
+  it('saves a chosen account and its removal like other select fields', () => {
+    expect(buildChanges(snapshot, { 'claude.account': 'work' }, fields)).toEqual({ 'claude.account': 'work' });
+    expect(buildChanges({ ...snapshot, values: { 'claude.account': 'work' } }, { 'claude.account': null }, fields)).toEqual({ 'claude.account': null });
+  });
+  it('recognizes the single error view of an invalid accounts config', () => {
+    expect(accountsError([{ name: 'claude.accounts', projects: [], isDefault: false, loggedIn: null, loginCommand: '', error: 'bad' }])).toBe('bad');
+    expect(accountsError([{ name: 'work', projects: [], isDefault: false, loggedIn: null, loginCommand: 'x', error: 'probe failed' }])).toBeUndefined();
   });
 });

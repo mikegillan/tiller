@@ -104,3 +104,13 @@ it('falls back to Automatic when a fresh reply no longer lists the selected acco
   elements(tree).find((el) => el.type === 'form')!.props.onSubmit({ preventDefault() {} });
   expect(send).toHaveBeenLastCalledWith(expect.not.objectContaining({ account: expect.anything() }));
 });
+
+it('shows an invalid accounts config as an error, never as an account to send', () => {
+  const error = 'claude.accounts in /home/config.json is invalid: claude.accounts: duplicate account name work; fix it before starting Claude nodes';
+  update(() => ({ claudeAccounts: [{ name: 'claude.accounts', projects: [], isDefault: false, loggedIn: null, loginCommand: '', error }] }));
+  const tree = render();
+  expect(accountSelect(tree)).toBeUndefined();
+  expect(elements(tree).find((el) => el.props.role === 'alert')!.props.children).toBe(error);
+  elements(tree).find((el) => el.type === 'form')!.props.onSubmit({ preventDefault() {} });
+  expect(send).toHaveBeenLastCalledWith(expect.not.objectContaining({ account: expect.anything() }));
+});

@@ -12,8 +12,15 @@ export interface SettingsSnapshot {
   values: Record<string, unknown>;
   entries: Record<string, SettingsEntry>;
   inherited: Record<string, SettingsEntry>;
+  /** Revision of the home file. claude.account always lives there, so a project-scope account change is checked against it. */
+  homeRevision?: string;
+  /**
+   * claude.account, the account a root node here runs in, and the claude.accounts `projects` entry that decides it (absent:
+   * the global default or none). At project scope, values['claude.account'] is the account listing this repo's exact path.
+   */
+  claudeAccount?: { effective?: string; project?: string };
 }
-export interface SettingsUpdate { scope: SettingsScope; nodeId?: string; revision: string; changes: Record<string, unknown | null> }
+export interface SettingsUpdate { scope: SettingsScope; nodeId?: string; revision: string; changes: Record<string, unknown | null>; /** Required for a project-scope claude.account change. */ homeRevision?: string }
 export interface SettingsField {
   key: string; label: string; type: 'text' | 'number' | 'boolean' | 'select' | 'lines';
   options?: readonly string[]; min?: number; integer?: boolean; description?: string;
@@ -40,6 +47,8 @@ export const SETTINGS_FIELDS: SettingsField[] = [
   ...SETTINGS_HARNESSES.flatMap(h => SETTINGS_PROFILES.flatMap(p => [field(`profiles.${h}.${p}.model`, 'text'), field(`profiles.${h}.${p}.effort`, 'select', { options: SETTINGS_EFFORTS[h] })])),
   ...['orchestrator', 'worker'].flatMap(r => [field(`roles.${r}.model`, 'text'), field(`roles.${r}.effort`, 'select', { options: EFFORTS })]),
   field('claude.inheritMcpServers', 'boolean'),
+  // Options are the configured claude.accounts names. Home scope sets claude.account; project scope lists the repo under that account's projects, in the home file.
+  field('claude.account', 'select', { options: [] }),
   field('pi.extensions', 'lines', { keywords: ['all', 'none'] }),
   field('approvals.close', 'select', { options: ['never', 'done', 'always'] }), field('approvals.merge', 'boolean'),
   field('worktrees.isolation', 'select', { options: ['none', 'worktree'] }),
