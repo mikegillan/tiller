@@ -4,13 +4,13 @@ import { stripVTControlCharacters } from 'node:util';
 import { chmodSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { profileFor, type Profile, harnessFor, isAgentKind, NEEDS_YOU_STATES, type Harness, type ArchivedNode, type Diff, type DigestItem, type Drain, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
-import { profileDefaults, loadConfig, type Config, type MergeStyle } from './config.js';
+import { type Profile, harnessFor, isAgentKind, NEEDS_YOU_STATES, type Harness, type ArchivedNode, type Diff, type DigestItem, type Drain, type Transcript, type GitState, type ModEvent, type NodeKind, type NodeRecord, type NodeStatus, type NodeView, type Outcome, type Effort, type Isolation, type Role, type Usage, type Worktree } from '../shared/protocol.js';
+import { loadConfig, type Config, type MergeStyle } from './config.js';
 import { UsageRegistry } from './usage.js';
 import { accountForProject, claudeConfigDir, claudeHomeOf, claudeHomes } from './claude-accounts.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
-import { projectMcpServerNames, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
+import { projectMcpServerNames, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
 import { adapterFor, requireHarnessExecutable } from './harness.js';
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
@@ -21,6 +21,7 @@ import { CompletionGate, gateFor } from './completion-gate.js';
 import type { CompletionWatches } from './completion-watches.js';
 import { NodeTokens } from './node-tokens.js';
 import { lifecycleRefusal } from './lifecycle-guards.js';
+import { nodeDefaults, resolveSpawn, restartSelection, spawnTarget } from './spawn-policy.js';
 
 import { DAEMON, deliver, handoverInbox, holdDeliveries, HUMAN, inScope, saveInboxForRestart, submitting, waitForDeliveries } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
@@ -339,52 +340,20 @@ export class NodeManager extends EventEmitter {
    */
   async spawn(req: SpawnRequest): Promise<NodeView> {
     if (!req.byHuman && req.parentId && this.runtimes.get(req.parentId)?.busy === 'changing harness') throw new Error('parent is changing harness');
-    if (req.kind === 'terminal' && req.harness) throw new Error('terminal nodes cannot select a harness');
-    if (req.kind === 'claude' && req.harness && req.harness !== 'claude') throw new Error('use kind "agent" for a non-Claude harness');
-    // Generic agent children inherit their parent's CLI unless explicitly selected.
-    if (req.kind === 'agent' && !req.harness && req.parentId) {
-      const parent = this.registry.get(req.parentId);
-      if (parent && isAgentKind(parent.kind)) req = { ...req, harness: harnessFor(parent) };
-    }
+    req = spawnTarget(req, req.parentId ? this.registry.get(req.parentId) : undefined);
     const adapter = isAgentKind(req.kind) ? adapterFor(req) : undefined;
     const from = req.fork ? await this.forkSource(req) : undefined;
     if (from) req = { ...req, cwd: from.cwd };
     const parentId = req.parentId ?? null, dir = this.projectDir(req);
     const config = loadConfig(dir, this.home);
-    if (req.preset && !adapter) throw new Error('a preset is for agent nodes only');
-    const p: Partial<Preset> = req.preset ? loadPreset(req.preset, dir, this.home) : {};
-    const role = req.role ?? p.role, isOrchestrator = roleFor(role, parentId) === 'orchestrator';
-    const profile = adapter ? profileFor(req.profile ?? p.profile, parentId, role) : undefined;
-    const defaults: Pick<NodeRecord, 'model' | 'effort'> = adapter ? profileDefaults(config, adapter.id, profile!, roleFor(role, parentId)) : {};
-    const model = req.model ?? p.model ?? defaults.model, effort = req.effort ?? p.effort ?? defaults.effort;
-    // A follow-up's model and effort come from the archived node, so its own record says which were chosen.
-    const explicit = req.followup ? req.followup.explicit : (['model', 'effort'] as const).filter((k) => (req[k] ?? p[k]) !== undefined);
-    if (adapter?.id === 'codex' && effort && !isSupportedEffort('codex', effort)) throw new Error(`unsupported Codex effort: ${effort}`);
-    const parent = parentId ? this.registry.get(parentId) : undefined;
-    const account = this.spawnAccount(req, parent, from);
-    // Other harnesses cannot carry Claude restrictions. Only the human, a same-harness parent,
-    // or an unrestricted Claude parent may select them. This is not a process sandbox.
-    if (adapter && adapter.id !== 'claude' && !req.byHuman && !(parent && isAgentKind(parent.kind) && harnessFor(parent) === adapter.id)) {
-      const rt = parent ? this.runtimes.get(parent.id) : undefined;
-      const mode = rt?.status?.permissionMode ?? parent?.permissionMode;
-      // A restored/armed node has no launch snapshot. Its preset file may have changed since the old process;
-      // do not infer that process's restrictions from today's file. A successful launch establishes the snapshot.
-      if (parent?.preset && !rt?.launchedPreset) {
-        throw new Error(`refused: Claude preset restrictions are unknown until the parent launches; only the human may spawn ${adapter.id === 'pi' ? 'Pi' : 'Codex'}`);
-      }
-      const preset = rt?.launchedPreset ?? {};
-      const restricted = preset.tools !== undefined || preset.disallowedTools !== undefined || preset.maxTurns !== undefined;
-      if (!parent || !isAgentKind(parent.kind) || mode !== 'bypassPermissions' || restricted) {
-        throw new Error(`refused: only the human or an unrestricted agent parent may spawn ${adapter.id === 'pi' ? 'Pi' : 'Codex'}; Claude requires effective permissionMode bypassPermissions and no preset tools, disallowedTools or maxTurns restrictions`);
-      }
-    }
-    const inherited = req.byHuman || !parent || (adapter && adapter.id !== 'claude') || (adapter && harnessFor(parent) !== adapter.id)
-      ? undefined : this.runtimes.get(parentId!)?.status?.permissionMode ?? parent.permissionMode;
-    const permissionMode = req.permissionMode ?? p.permissionMode ?? (inherited === 'bypassPermissions' ? undefined : inherited);
-    if (permissionMode === 'bypassPermissions' && !req.byHuman) throw new Error('refused: only the human may spawn a node with permissionMode bypassPermissions');
-    adapter?.validate({ permissionMode, preset: p, piExtensions: { setting: config.pi.extensions, cwd: dir, path: this.path } });
-    const isolation = req.isolation ?? p.isolation ?? (!adapter || isOrchestrator ? 'none' : config.worktrees.isolation);
-    if (isolation === 'worktree' && !adapter) throw new Error('isolation "worktree" is for agent nodes only');
+    const parent = parentId ? this.registry.get(parentId) : undefined, parentRt = parent && this.runtimes.get(parent.id);
+    const { role, profile, model, effort, explicit, account, permissionMode, isolation } = resolveSpawn({
+      req, adapterId: adapter?.id, config,
+      parent: parent && { rec: parent, observedMode: parentRt?.status?.permissionMode, launchedPreset: parentRt?.launchedPreset },
+      loadPreset: (name) => loadPreset(name, dir, this.home),
+      account: () => this.spawnAccount(req, parent, from),
+      validate: (permissionMode, preset) => adapter?.validate({ permissionMode, preset, piExtensions: { setting: config.pi.extensions, cwd: dir, path: this.path } }),
+    });
     this.checkLimits(req, config.limits);
     this.checkDependencies(req);
     if (req.base && isolation !== 'worktree') throw new Error('base is for isolation "worktree" only');
@@ -590,16 +559,9 @@ export class NodeManager extends EventEmitter {
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }
-      const d = profileDefaults(loadConfig(this.projectDir(rec), this.home), harness, profileFor(rec.profile, rec.parentId, rec.role), roleFor(rec.role, rec.parentId));
-      let explicit = rec.explicit;
-      if (!explicit && rec.preset) { // a legacy record: what its preset sets counts as chosen; an unloadable preset keeps both
-        try {
-          const p = loadPreset(rec.preset, this.projectDir(rec), this.home);
-          explicit = (['model', 'effort'] as const).filter((k) => p[k] !== undefined);
-        } catch { explicit = ['model', 'effort']; }
-      }
-      fresh = { ...(explicit?.includes('model') ? {} : { model: d.model }), ...(explicit?.includes('effort') ? {} : { effort: d.effort }) };
-      if (fresh.effort && !isSupportedEffort(harness, fresh.effort)) return { ok: false, error: `unsupported ${harness} effort: ${fresh.effort}` };
+      const selection = restartSelection(rec, loadConfig(this.projectDir(rec), this.home), (name) => loadPreset(name, this.projectDir(rec), this.home));
+      if ('error' in selection) return { ok: false, error: selection.error };
+      fresh = selection.fresh;
     }
     const old = rec.sessionId;
     const sessionHistory = this.priorSessions(id);
@@ -646,7 +608,7 @@ export class NodeManager extends EventEmitter {
     let disrupted = false;
     try {
       const adapter = adapterFor({ kind: 'agent', harness });
-      const defaults = profileDefaults(loadConfig(this.projectDir(rec), this.home), harness, profileFor(rec.profile, rec.parentId, rec.role), roleFor(rec.role, rec.parentId));
+      const defaults = nodeDefaults(loadConfig(this.projectDir(rec), this.home), harness, rec);
       if (defaults.effort && !isSupportedEffort(harness, defaults.effort)) throw new Error(`unsupported ${harness} effort: ${defaults.effort}`);
       // Explicit confirmation resets preset/model/effort/permission overrides to target defaults.
       requireHarnessExecutable(harness, this.path);
