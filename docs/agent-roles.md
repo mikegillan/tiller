@@ -14,7 +14,7 @@ The built-in orchestrator prompt tells the orchestrator to coordinate rather tha
 
 ## Model, effort and permission mode
 
-Model and effort resolve independently: explicit spawn argument, preset, selected harness/profile config, then legacy `roles` config for Claude only (`none` counts as worker). No built-in model or effort is forced. See [configuration](config.md) for the exact per-field project/home precedence and opt-in Codex example. Resolved selections persist across resume, restart and follow-up.
+Model and effort resolve independently: explicit spawn argument, preset, selected harness/profile config, then legacy `roles` config for Claude only (`none` counts as worker). No built-in model or effort is forced. See [configuration](config.md) for the exact per-field project/home precedence and opt-in Codex example. Resolved selections persist across resume and follow-up. A restart keeps an explicit or preset model and effort and re-resolves the config-supplied ones from the current config.
 
 A Claude spawn without a permission mode inherits its same-harness parent's mode, except that `bypassPermissions` is never inherited, and only the human may spawn a node with `bypassPermissions`. Other harnesses retain their own permission policy.
 
