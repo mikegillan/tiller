@@ -289,7 +289,7 @@ describe('NodeManager harness delegation and lifecycle', () => {
     m = new NodeManager({ home, shell: '/bin/sh' });
     vi.spyOn(PtySession, 'spawn').mockImplementation(() => ({
       // No real process or trust watcher: callbacks are driven by the tests below.
-      exited: true, kill() {},
+      exited: true, kill() {}, terminate: async () => true,
       onData(cb: typeof output) { output = cb; }, onExit(cb: typeof exit) { exit = cb; },
     } as unknown as PtySession));
     writeFileSync(join(home, 'agents', 'plain.md'), 'Prompt only.');
