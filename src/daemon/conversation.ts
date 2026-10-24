@@ -97,18 +97,27 @@ function titlesFor(names: Record<string, string>, items: ConversationItem[], ids
   return Object.fromEntries([...all].flatMap((id) => (names[id] ? [[id, names[id]]] : [])));
 }
 
+/** Line endings and trailing spaces differ between the recorded text and a transcript's copy; compare without them. */
+const norm = (t: string) => t.replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').trim();
+
+/**
+ * User lines the harness writes itself, not prompts the human typed: Claude's messages from other sessions, task and
+ * subagent notifications, slash-command and `!` command echoes, skill loads, image notes and interrupt markers.
+ */
+const INJECTED = /^(?:Another Claude session sent a message|Base directory for this skill:|\[Request interrupted by user|\[Image: source:|<(?:task-notification|local-command-[a-z]+|command-(?:name|message|args)|bash-(?:input|stdout|stderr)|system-reminder)>)/;
+
 export interface Subject { id: string; parentId: string | null; prompt?: string; createdAt: number }
 
 /**
  * `subject`'s conversation with its parent (the human for a root): the brief, the messages and notices between them,
  * its reports and lifecycle marks, merged by time with its own transcript `turns`. A user turn that repeats the brief
- * or a recorded message is dropped; an envelope with no record (from before messages were recorded) is kept only
+ * or a recorded message, or that the harness injected, is dropped; an envelope with no record (from before messages were recorded) is kept only
  * from the parent or the human.
  */
 export function buildConversation(subject: Subject, r: Records, turns: TranscriptEntry[], names = r.titles): Conversation {
   const { id, parentId } = subject;
   const parent = parentId ?? HUMAN;
-  const brief = subject.prompt?.trim();
+  const brief = subject.prompt && norm(subject.prompt);
   const sends = r.sends.filter((s) => counted(s) && upward(s, id, parent));
   const records: Exclude<ConversationItem, { kind: 'turn' }>[] = [
     ...(brief ? [{ kind: 'brief' as const, at: subject.createdAt, from: parent, text: brief }] : []),
@@ -118,19 +127,19 @@ export function buildConversation(subject: Subject, r: Records, turns: Transcrip
     ...r.marks.filter((e) => e.id === id).map((e) => ({ kind: 'event' as const, at: e.ts, id, text: e.text })),
   ].sort((x, y) => x.at - y.at);
 
-  const recorded = r.sends.filter((s) => s.to === id && s.text !== undefined).map((s) => ({ text: s.text!.trim(), cut: !!s.textCut }));
+  const recorded = r.sends.filter((s) => s.to === id && s.text !== undefined).map((s) => ({ text: norm(s.text!), cut: !!s.textCut }));
   const isRecorded = (body: string) => recorded.some((x) => (x.cut ? body.startsWith(x.text) : body === x.text));
   let last: number | undefined;
   const own = turns.flatMap((e): ConversationItem[] => {
     last = e.at ?? last;
     const turn = (from: string, text: string): ConversationItem[] =>
       [{ kind: 'turn', ...(last !== undefined ? { at: last } : {}), from, role: e.role, text, ...(e.tools?.length ? { tools: e.tools } : {}) }];
-    const text = e.text.trim();
+    const text = norm(e.text);
     if (e.role === 'assistant') return turn(id, e.text);
-    if (!text || text === brief) return [];
+    if (!text || text === brief || INJECTED.test(text)) return [];
     const env = parseEnvelope(text);
     if (!env) return turn(HUMAN, text);
-    const body = env.body.trim();
+    const body = norm(env.body);
     if (isRecorded(body)) return [];
     if (env.label === HUMAN) return turn(HUMAN, body);
     return parentId && env.label.endsWith(`(${parentId})`) ? turn(parentId, body) : [];

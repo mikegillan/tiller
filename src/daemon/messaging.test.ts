@@ -5,6 +5,7 @@ import { classify, composerTextOf } from './pty.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { flushEvents } from './sessions.js';
 import { ack, claim, deliver, flushInbox, holdDeliveries, inbox, messageStatus, PI_CONFIRM_MS, QUEUE_TTL_MS, release, saveInboxForRestart, startNotices, unconfirmed, withdraw, type Mgr } from './messaging.js';
 
 const PROMPT = ['some output', '────────────────── n-b', '❯ ', '──────────────────'];
@@ -646,12 +647,23 @@ describe('event log', () => {
     ]);
   });
 
-  it('logs the settle on the sender\'s tree once the target is closed', async () => {
-    inbox(m.mgr, 'b');
-    const r = await deliver(m.mgr, 'a', 'b', 'hi');
-    m.nodes.delete('b');
-    m.emit('removed', 'b');
-    expect(m.events.at(-1)).toEqual(['a', 'settle', { messageId: r.messageId, from: 'a', outcome: 'gone', detail: 'target was closed' }]);
+  it('logs the settle in the target\'s tree directory, kept at send time, once the target is closed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tl-tree-'));
+    try {
+      Object.assign(m, { sessionDirOf: () => dir });
+      inbox(m.mgr, 'b');
+      const r = await deliver(m.mgr, 'human', 'b', 'hi');
+      m.nodes.delete('b');
+      m.emit('removed', 'b');
+      await flushEvents();
+      const lines = readFileSync(join(dir, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(lines).toEqual([{ ts: expect.any(Number), type: 'settle', id: 'b', messageId: r.messageId, from: 'human', outcome: 'gone', detail: 'target was closed' }]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('keeps the text and label of a refused send out of the log', async () => {
+    await deliver(m.mgr, 'a', 'a', 'to myself', { fromLabel: 'forged (p)' });
+    expect(m.events).toEqual([['a', 'send', { from: 'a', outcome: 'refused', messageId: expect.stringMatching(/^m-/) }]]);
   });
 
   it('station notices name the child they concern', async () => {

@@ -5,6 +5,7 @@ import { fmtAge, outcomeLine } from '../shared/format.js';
 import type { InboxMessage, NodeView, SendMode, SendResult } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
 import { adapterFor } from './harness.js';
+import { appendEvent } from './sessions.js';
 import { CompletionWatches, type NotifyWhen } from './completion-watches.js';
 import type { NodeManager } from './manager.js';
 import { logError } from './util.js';
@@ -30,7 +31,7 @@ const LOG_TEXT_CHARS = 32_000;
 export const HUMAN = 'human';
 export const DAEMON = 'tiller';
 
-export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input' | 'logEvent' | 'projectDir'> & Partial<Pick<NodeManager, 'home' | 'runtimes' | 'draining'>>;
+export type Mgr = Pick<NodeManager, 'view' | 'session' | 'on' | 'off' | 'input' | 'logEvent' | 'projectDir'> & Partial<Pick<NodeManager, 'home' | 'runtimes' | 'draining' | 'sessionDirOf'>>;
 interface DeliverOpts {
   /** "now" interrupts a working target and delivers at once; default "queue". */
   mode?: SendMode;
@@ -93,12 +94,14 @@ interface State {
   queues: Map<string, Entry[]>;
   locks: Map<string, Promise<unknown>>;
   /** Outcome of every message sent, for message_status. Pruned after STATUS_TTL_MS and when the sender is removed. */
-  status: Map<string, { from: string; to: string; result: SendResult; at: number; onSettle?: (r: SendResult) => void }>;
+  status: Map<string, Status>;
   /** Per-target timer that re-checks a verified-idle target whose screen was not ready yet. */
   retry: Map<string, NodeJS.Timeout>;
   /** Log a `settle` event when a queued message reaches its final outcome. */
-  logSettle: (messageId: string, from: string, to: string, r: SendResult) => void;
+  logSettle: (messageId: string, st: Status, r: SendResult) => void;
 }
+/** `dir`: the target's tree directory at send time, where a settle is logged once the target is closed. */
+interface Status { from: string; to: string; result: SendResult; at: number; onSettle?: (r: SendResult) => void; dir?: string }
 type Attempt = { result: SendResult } | { wait: string };
 
 const states = new WeakMap<object, State>();
@@ -106,10 +109,11 @@ const states = new WeakMap<object, State>();
 function stateOf(m: Mgr): State {
   let s = states.get(m);
   if (s) return s;
-  // On the target's tree, or the sender's once the target is closed (a removed node no longer maps to its tree).
-  const logSettle = (messageId: string, from: string, to: string, r: SendResult) => {
-    const on = [to, from].find((id) => m.view(id));
-    if (on) m.logEvent(on, 'settle', { messageId, from, outcome: r.outcome, ...(r.detail ? { detail: r.detail } : {}) });
+  // On the target's tree; once the target is closed it no longer maps to its tree, so on the directory kept at send time.
+  const logSettle = (messageId: string, st: Status, r: SendResult) => {
+    const data = { messageId, from: st.from, outcome: r.outcome, ...(r.detail ? { detail: r.detail } : {}) };
+    if (m.view(st.to)) m.logEvent(st.to, 'settle', data);
+    else if (st.dir) appendEvent(st.dir, { ts: Date.now(), type: 'settle', id: st.to, ...data });
   };
   const st: State = { seen: new Map(), inbox: new Map(), last: new Map(), sent: new Map(), loopNoticed: new Map(), queues: new Map(), locks: new Map(), status: new Map(), retry: new Map(), logSettle };
   states.set(m, st);
@@ -283,7 +287,7 @@ const modLive = (s: State, id: string) => Date.now() - (s.seen.get(id) ?? -Infin
 function setResult(s: State, messageId: string, result: SendResult): void {
   const st = s.status.get(messageId);
   if (!st) return;
-  if (st.result.outcome === 'queued' && result.outcome !== 'queued') s.logSettle(messageId, st.from, st.to, result);
+  if (st.result.outcome === 'queued' && result.outcome !== 'queued') s.logSettle(messageId, st, result);
   st.result = result;
   // A message that never reached the target does not count toward loop detection, so the retry it invites is accepted.
   const key = `${st.from}\0${st.to}`;
@@ -417,7 +421,8 @@ function loadInbox(m: Mgr, s: State, file: string): void {
       if (data.held && !i.claimed) i.since = Date.now();
       // An old claimed Pi message is ambiguous, not a safe-to-retry expiration.
       if (Date.now() - (i.since ?? i.msg.enqueuedAt) >= QUEUE_TTL_MS && !(i.claimed && nativeInbox(m.view(i.to)))) continue;
-      s.status.set(i.msg.id, { from: i.from, to: i.to, result: { outcome: 'queued', retryable: false, messageId: i.msg.id }, at: i.msg.enqueuedAt });
+      s.status.set(i.msg.id, { from: i.from, to: i.to, result: { outcome: 'queued', retryable: false, messageId: i.msg.id }, at: i.msg.enqueuedAt,
+        ...(m.view(i.to) ? { dir: m.sessionDirOf?.(i.to) } : {}) });
       addInbox(m, s, i);
     }
   } catch { /* no file, or unreadable: start empty */ }
@@ -546,12 +551,14 @@ export async function deliver(m: Mgr, fromId: string, toId: string, text: string
   for (const [k, v] of s.status) if (now - v.at > STATUS_TTL_MS) s.status.delete(k);
   const out = (r: SendResult): SendResult => {
     const result = { ...r, messageId: id };
-    s.status.set(id, { from: fromId, to: toId, result, at: now, onSettle: opts.onSettle });
+    s.status.set(id, { from: fromId, to: toId, result, at: now, onSettle: opts.onSettle, ...(m.view(toId) ? { dir: m.sessionDirOf?.(toId) } : {}) });
     setResult(s, id, result);
     if (m.view(toId)) {
       m.logEvent(toId, 'send', { from: fromId, outcome: result.outcome, messageId: id, ...(result.steer ? { steer: true } : {}),
-        text: text.slice(0, LOG_TEXT_CHARS), ...(text.length > LOG_TEXT_CHARS ? { textCut: true } : {}),
-        ...(opts.fromLabel ? { label: oneLine(opts.fromLabel) } : {}), ...(opts.about?.length ? { about: opts.about } : {}) });
+        // A refused send (an out-of-scope one included) never reached the target: keep its words out of the target's log.
+        ...(result.outcome === 'refused' ? {} : { text: text.slice(0, LOG_TEXT_CHARS), ...(text.length > LOG_TEXT_CHARS ? { textCut: true } : {}),
+          ...(opts.fromLabel ? { label: oneLine(opts.fromLabel) } : {}) }),
+        ...(opts.about?.length ? { about: opts.about } : {}) });
     }
     return result;
   };
