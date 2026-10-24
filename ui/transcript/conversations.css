@@ -43,7 +43,8 @@
 @container convos (max-width: 720px) {
   .convo-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .convo-rail { display: none; }
-  .convo-pick { display: flex; align-items: center; gap: 8px; padding: 8px 16px 0; color: var(--dim); font-size: 12px; }
+  .convo-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px 0; color: var(--dim); font-size: 12px; }
   .convo-pick .select { flex: 1; min-width: 0; }
+  .convo-pick .hint { flex-basis: 100%; padding: 0; }
   .bubble, .entry.notice { max-width: 92%; }
 }

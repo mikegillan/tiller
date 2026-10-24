@@ -71,4 +71,14 @@ describe('conversation list', () => {
     expect(html).toMatch(/<option value="n\|" selected="">↑ With you \(12\)<\/option>/);
     expect(html).toContain('<nav class="convo-rail" aria-label="Conversations">');
   });
+
+  it('shows loading and a list error in both the rail and the narrow-pane select', () => {
+    const loading = renderToStaticMarkup(<ConversationList selected={{ id: 'n' }} onSelect={() => {}} />);
+    expect(loading).toContain('<li class="hint">Loading conversations…</li>');
+    expect(loading).toContain('<option value="n|" selected="">Loading…</option>');
+    const failed = renderToStaticMarkup(<ConversationList error="no such node: n" selected={{ id: 'n' }} onSelect={() => {}} />);
+    expect(failed).toContain('<li class="hint">no such node: n</li>');
+    expect(failed).toContain('<option value="n|" selected="">Unavailable</option>');
+    expect(failed).toContain('<span class="hint">no such node: n</span>');
+  });
 });

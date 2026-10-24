@@ -156,12 +156,15 @@ export function TranscriptPane({ id, currentSessionId, refresh, harness, childre
   const [choice, setChoice] = useState<Choice>({ id });
   const list = useStore((s) => s.conversations?.id === id ? s.conversations : undefined);
   const connected = useStore((s) => s.connected);
+  // Children come and go and finish while the node works; their rows' presence, glyphs and counts follow.
+  const childKey = useStore((s) => Object.values(s.nodes).filter((n) => n.parentId === id)
+    .map((n) => `${n.id}:${finished(n.status) ? n.status.changedAt : ''}`).sort().join(' '));
 
   useEffect(() => {
     if (!connected) return;
     conversationsRequested(id);
     send({ t: 'conversations', id });
-  }, [id, connected, refresh]);
+  }, [id, connected, refresh, childKey]);
 
   const archived = Object.fromEntries((list?.items ?? []).flatMap((c) => c.archived ? [[c.counterpart, c.archived]] : []));
   return (

@@ -24,8 +24,10 @@ function arrows(e: KeyboardEvent<HTMLElement>) {
  * A node's conversations (parent, children, peers, as the daemon orders them) and Full transcript: a rail on wide panes,
  * a select on narrow ones (CSS picks which shows).
  */
-export function ConversationList({ items = [], error, selected, onSelect }: { items?: ConversationSummary[]; error?: string; selected: Choice; onSelect: (c: Choice) => void }) {
+export function ConversationList({ items, error, selected, onSelect }: { items?: ConversationSummary[]; error?: string; selected: Choice; onSelect: (c: Choice) => void }) {
   const current = keyOf(selected);
+  const status = error ?? (items ? undefined : 'Loading conversations…');
+  items ??= [];
   const byKey = new Map<string, Choice>([['full', 'full'], ...items.map((c) => [keyOf(c), { id: c.id, with: c.with }] as const)]);
   return (
     <>
@@ -47,7 +49,7 @@ export function ConversationList({ items = [], error, selected, onSelect }: { it
               </li>
             );
           })}
-          {error && <li className="hint">{error}</li>}
+          {status && <li className="hint">{status}</li>}
           <li className="sep">
             <button className={`convo-row${current === 'full' ? ' sel' : ''}`} aria-current={current === 'full'} onClick={() => onSelect('full')}>
               <span className="rel" aria-hidden>≡</span><span className="title">Full transcript</span>
@@ -57,10 +59,11 @@ export function ConversationList({ items = [], error, selected, onSelect }: { it
       </nav>
       <label className="convo-pick">Conversation
         <Select value={current} onChange={(e) => onSelect(byKey.get(e.target.value) ?? 'full')}>
-          {!byKey.has(current) && <option value={current}>Loading…</option>}
+          {!byKey.has(current) && <option value={current}>{error ? 'Unavailable' : 'Loading…'}</option>}
           {items.map((c) => <option key={keyOf(c)} value={keyOf(c)}>{RELATION[c.relation].glyph} {rowTitle(c)} ({c.messages})</option>)}
           <option value="full">≡ Full transcript</option>
         </Select>
+        {error && <span className="hint">{error}</span>}
       </label>
     </>
   );
@@ -126,10 +129,18 @@ export function ConversationView({ data, showTools, jump }: { data: Conversation
         return <p className="convo-event"><span>{it.text}</span> <When at={it.at} /></p>;
     }
   };
+  // Stable keys, so an expanded "Show more" stays put when older items are dropped from the front.
+  const seen = new Map<string, number>();
+  const keyFor = (it: ConversationItem) => {
+    if (it.kind === 'message') return it.messageId;
+    const base = `${it.kind}|${it.at ?? ''}`, n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return `${base}|${n}`;
+  };
   return (
     <>
       {data.truncated && <p className="hint">Older messages are not shown.</p>}
-      {data.items.map((it, i) => <Fragment key={i}>{item(it)}</Fragment>)}
+      {data.items.map((it) => <Fragment key={keyFor(it)}>{item(it)}</Fragment>)}
       {!data.items.length && <p className="hint">No messages yet.</p>}
     </>
   );

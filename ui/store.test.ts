@@ -42,6 +42,14 @@ it('toggleShowTools persists tl.showTools per viewer and still toggles when loca
   vi.unstubAllGlobals();
 });
 
+it('a throwing localStorage getItem at load leaves showTools off', async () => {
+  vi.stubGlobal('localStorage', { getItem: () => { throw new Error('denied'); } });
+  vi.resetModules();
+  const fresh = await import('./store');
+  expect(fresh.getState().showTools).toBe(false);
+  vi.unstubAllGlobals();
+});
+
 it('a conversation reply lands only in the slot asked for; a stale one is ignored', () => {
   conversationRequested('w');
   applyServer({ t: 'conversation', id: 'w', with: 'p', ...conversation }); // the peer conversation, not the upward one
