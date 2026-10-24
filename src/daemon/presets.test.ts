@@ -58,15 +58,25 @@ describe('presets', () => {
     expect(loadPreset('researcher', home, home).tools).toEqual(['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch']);
   });
 
+  it('built-in presets leave the report to report_outcome instead of also sending the parent a summary', () => {
+    for (const text of Object.values(DEFAULT_PRESETS)) {
+      expect(text).toContain('report_outcome');
+      expect(text).not.toMatch(/send (it|your parent) (the verdict|a short version)/);
+      expect(text).toContain('do not also send');
+    }
+  });
+
   it('refreshes an unedited built-in file, and keeps an edited file or one with no record', () => {
     const home = tmp(), reviewer = join(home, 'agents', 'reviewer.md'), record = join(home, 'agents', '.builtin.json');
-    const old = DEFAULT_PRESETS.reviewer.replace('profile: reviewer\n', '');
-    const oldResearcher = DEFAULT_PRESETS.researcher.replace('profile: explorer\n', '');
+    // Older built-ins: no profile, and a duplicate send after report_outcome.
+    const old = DEFAULT_PRESETS.reviewer.replace('profile: reviewer\n', '').replace(/Your parent is told.*\n$/, 'Then send your parent the verdict in a few lines.\n');
+    const oldResearcher = DEFAULT_PRESETS.researcher.replace('profile: explorer\n', '').replace(/; your parent is told.*\n$/, ' and send your parent a short version.\n');
     put(join(home, 'agents'), 'researcher', oldResearcher);
     put(join(home, 'agents'), 'reviewer', old);
     writeFileSync(record, JSON.stringify({ reviewer: sha256(old), researcher: sha256(oldResearcher) }));
     ensurePresets(home);
     expect(readFileSync(reviewer, 'utf8')).toBe(DEFAULT_PRESETS.reviewer);
+    expect(readFileSync(join(home, 'agents', 'researcher.md'), 'utf8')).toBe(DEFAULT_PRESETS.researcher);
     expect(loadPreset('reviewer', home, home).profile).toBe('reviewer');
     expect(loadPreset('researcher', home, home).profile).toBe('explorer');
     expect(JSON.parse(readFileSync(record, 'utf8')).reviewer).toBe(sha256(DEFAULT_PRESETS.reviewer));
