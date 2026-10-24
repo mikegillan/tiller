@@ -15,7 +15,7 @@ import { setProjectTrust } from './trust.js';
 import { ADMIN_TOKEN_FILE, daemonPort as portFor, homeDir } from './home.js';
 import { agentStatus, install, LABEL, TLD, plistPath, uninstall } from './autostart.js';
 import { buildChildEnv, loginShellPath } from './pty.js';
-import { formatEvent, listSessions, parseSince, readEvents, sessionDir, type SessionEvent } from './sessions.js';
+import { formatEvent, listSessions, parseSince, readEvents, readNewEvents, sessionDir, type EventCursor, type SessionEvent } from './sessions.js';
 import { fmtAge } from '../shared/format.js';
 import { fmtUsd } from '../shared/spend.js';
 import type { Harness, NodeKind } from '../shared/protocol.js';
@@ -440,10 +440,12 @@ switch (cmd) {
     if (since === undefined) fail('--since takes a number and s, m, h or d, for example 2h');
     const { dir, only } = await sessionTarget(pos[0]);
     const show = (evs: SessionEvent[]) => { for (const e of evs) if (!only || e.id === only) console.log(formatEvent(e)); };
-    let seen = 0;
-    const tick = () => { const evs = readEvents(dir); show(evs.slice(seen).filter((e) => !since || e.ts >= Date.now() - since)); seen = evs.length; };
+    const cutoff = since ? Date.now() - since : 0;
+    if (!f.follow) { show(readEvents(dir, cutoff)); break; }
+    let cursor: EventCursor | undefined;
+    const tick = () => { const r = readNewEvents(dir, cursor, cutoff); cursor = r.cursor; show(r.events); };
     tick();
-    if (f.follow) setInterval(tick, 1000);
+    setInterval(tick, 1000);
     break;
   }
   case 'doctor': {

@@ -1,11 +1,18 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { archivedOf, briefOf, history } from './archive.js';
+import { readFile } from 'node:fs/promises';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { archivedOf, briefOf, findArchived, history } from './archive.js';
 import { NodeManager } from './manager.js';
 import { nodeTranscript, parseMessages, parseTranscript, readMessages, renderMessage, sessionMessages, TAIL_BYTES } from './transcript.js';
 import type { NodeRecord } from '../shared/protocol.js';
+
+// readFile passes through, recorded, so a test can see which archives were read.
+vi.mock('node:fs/promises', async (orig) => {
+  const m = await orig<typeof import('node:fs/promises')>();
+  return { ...m, readFile: vi.fn(m.readFile) };
+});
 
 const line = (o: object) => JSON.stringify(o);
 const FIXTURE = [
@@ -141,6 +148,32 @@ describe('archivedOf harness', () => {
     expect(archivedOf(pi, { ...status, model: 'openai/other' }, undefined, 'n-1', {}).model).toBe('openai/other');
     expect(archivedOf(pi, { ...status, model: 'other' }, undefined, 'n-1', {}).model).toBe('other'); // Do not reuse a stale requested model.
     expect(archivedOf({ ...rec, model: 'old' }, status, undefined, 'n-1', {}).model).toBe(status.model); // Claude is unchanged.
+  });
+});
+
+describe('findArchived', () => {
+  let home = '';
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  it('finds the same node with and without a preferred tree, and a hit in that tree reads no other', async () => {
+    home = mkdtempSync(join(tmpdir(), 'tl-find-'));
+    const tree = (rootId: string, ...nodes: object[]) => {
+      mkdirSync(join(home, 'sessions', rootId), { recursive: true });
+      writeFileSync(join(home, 'sessions', rootId, 'archive.jsonl'), `${nodes.map(line).join('\n')}\nnot json\n`);
+    };
+    // n-dup is in both trees; t2's copy closed later and claims rootId t1, which the directory overrides.
+    tree('t1', { id: 'n-a', title: 'a', closedAt: 10 }, { id: 'n-dup', title: 'old', closedAt: 20 }, { id: 'n-dup', title: 'older tie', closedAt: 20 });
+    tree('t2', { id: 'n-b', title: 'b', closedAt: 30 }, { id: 'n-dup', title: 'new', rootId: 't1', closedAt: 40 });
+    const find = async (id: string, prefer?: string) => (await findArchived(home, id, prefer))?.title;
+    for (const prefer of [undefined, 't1', 't2', 't3']) expect(await find('n-missing', prefer)).toBeUndefined();
+    expect([await find('n-a'), await find('n-a', 't1'), await find('n-a', 't2')]).toEqual(['a', 'a', 'a']);
+    expect([await find('n-b'), await find('n-b', 't1'), await find('n-b', 't3')]).toEqual(['b', 'b', 'b']);
+    expect([await find('n-dup'), await find('n-dup', 't1'), await find('n-dup', 't2')]).toEqual(['new', 'old', 'new']);
+    expect((await findArchived(home, 'n-dup'))?.rootId).toBe('t2');
+
+    vi.mocked(readFile).mockClear();
+    expect(await find('n-a', 't1')).toBe('a');
+    expect(vi.mocked(readFile).mock.calls.map(([p]) => p)).toEqual([join(home, 'sessions', 't1', 'archive.jsonl')]);
   });
 });
 

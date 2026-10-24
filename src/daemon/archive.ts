@@ -1,12 +1,12 @@
 // <sessionDir>/archive.jsonl: one ArchivedNode per closed Claude node, so it can be found, read, followed up or forked
 // later. The sessions sweep deletes it with the rest of the directory.
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { outcomeLine } from '../shared/format.js';
 import { profileFor } from '../shared/protocol.js';
 import type { ArchivedNode, NodeRecord, NodeStatus, Outcome } from '../shared/protocol.js';
 import { roleFor } from './launch.js';
-import { appendLine, flushEvents, listSessions } from './sessions.js';
+import { appendLine, flushEvents, listSessions, sessionDir } from './sessions.js';
 
 const ARCHIVE = 'archive.jsonl';
 const BRIEF_CHARS = 200;
@@ -60,9 +60,9 @@ export function archivedOf(rec: NodeRecord, status: NodeStatus | undefined, outc
 export const archiveNode = (dir: string, a: ArchivedNode): void => appendLine(join(dir, ARCHIVE), a);
 
 /** The tree's archive lines. Agents can write the file, so rootId comes from the directory, never from the line. */
-function readArchive(dir: string, rootId: string): ArchivedNode[] {
+async function readArchive(dir: string, rootId: string): Promise<ArchivedNode[]> {
   let raw: string;
-  try { raw = readFileSync(join(dir, ARCHIVE), 'utf8'); } catch { return []; }
+  try { raw = await readFile(join(dir, ARCHIVE), 'utf8'); } catch { return []; }
   return raw.split('\n').flatMap((l) => { try { return l ? [{ ...(JSON.parse(l) as ArchivedNode), rootId }] : []; } catch { return []; } });
 }
 
@@ -72,11 +72,22 @@ export async function history(home: string, f: { rootId?: string; query?: string
   const q = f.query?.toLowerCase();
   const hit = (a: ArchivedNode) => !q || [a.title, a.prompt, a.lastAssistantMessage].some((s) => s?.toLowerCase().includes(q));
   // prune: reads every archive on each call; keep an index by id if trees and lookups grow large.
-  return listSessions(home).filter((s) => !f.rootId || s.rootId === f.rootId).flatMap((s) => readArchive(s.dir, s.rootId)).filter(hit).sort((a, b) => b.closedAt - a.closedAt);
+  const trees = listSessions(home).filter((s) => !f.rootId || s.rootId === f.rootId);
+  return (await Promise.all(trees.map((s) => readArchive(s.dir, s.rootId)))).flat().filter(hit).sort((a, b) => b.closedAt - a.closedAt);
 }
 
-/** The archived node `id`, from tree `prefer` when it has one (a line elsewhere could claim the same id), else the newest. */
+/** The newest-closed of `nodes` with id `id`. */
+const newest = (nodes: ArchivedNode[], id: string) => nodes.filter((a) => a.id === id).sort((a, b) => b.closedAt - a.closedAt)[0];
+
+/**
+ * The archived node `id`, from tree `prefer` when it has one (a line elsewhere could claim the same id), else the newest.
+ * Reads tree `prefer` alone first, so a hit there scans no other tree.
+ */
 export async function findArchived(home: string, id: string, prefer?: string): Promise<ArchivedNode | undefined> {
-  const hits = (await history(home)).filter((a) => a.id === id);
-  return hits.find((a) => a.rootId === prefer) ?? hits[0];
+  if (prefer) {
+    await flushEvents(); // archive lines still being written
+    const hit = newest(await readArchive(sessionDir(home, prefer), prefer), id);
+    if (hit) return hit;
+  }
+  return newest(await history(home), id);
 }
