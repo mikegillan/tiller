@@ -18,7 +18,11 @@ describe('envelope parsing', () => {
     expect(parseEnvelope(msg.replace(/\n/g, '\r\n') + '\r\n')).toEqual({ from: 'Builder (n-3f2a)', replyTo: 'n-3f2a', steer: false })
     expect(parseEnvelope(msg + '\n')?.from).toBe('Builder (n-3f2a)')
     const notice = parseEnvelope(msg.replace('from: Builder (n-3f2a)', 'from: tiller (daemon restarted)').replace('reply-to: n-3f2a', 'reply-to: none'))!
-    expect(receivedLine(notice)).toBe('↘ message from tiller (daemon restarted) · reply-to none')
+    expect(receivedLine(notice)).toBe('↘ message from tiller (daemon restarted)')
+  })
+  test('a steer from the daemon with reply-to none has no reply-to part', async () => {
+    const daemonSteer = parseEnvelope(steered.replace('from: Builder (n-3f2a)', 'from: tiller (daemon restarted)').replace('reply-to: n-3f2a', 'reply-to: none'))!
+    expect(receivedLine(daemonSteer)).toBe('↘ message from tiller (daemon restarted) · steer')
   })
   test('anything else is not an envelope', async () => {
     expect(parseEnvelope('hello')).toBeUndefined()
@@ -46,7 +50,7 @@ describe('UserMessage rows', () => {
     onScreen: { first: 0, last: 0, of: 1 },
   }
   test('a tiller envelope is one line until expanded', async ($: any) => {
-    expect(await row($, live)).toContain('↘ message from tiller (child n-1d64c0ec reported succeeded) · reply-to none')
+    expect(await row($, live)).toContain('↘ message from tiller (child n-1d64c0ec reported succeeded)')
     expect(await row($, { ...live, text: steered })).toContain('↘ message from Builder (n-3f2a) · steer · reply-to n-3f2a')
     expect(await row($, { ...live, isExpanded: true, onScreen: { first: 0, last: 4, of: 5 } })).toBe('engine')
   })
