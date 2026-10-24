@@ -222,6 +222,18 @@ describe('NodeManager runtime state', () => {
     await m.close(id, true);
     expect([...m.runtimes.keys()]).toEqual([]);
   });
+
+  it('shutdown gives up on background work that never settles after its bound', async () => {
+    home = mkdtempSync(join(tmpdir(), 'tl-'));
+    m = new NodeManager({ home, shell: '/bin/sh', terminateTimeoutMs: 200 });
+    const { id } = await m.spawn({ kind: 'terminal', title: 't', cwd: tmpdir() });
+    const session = m.session(id)!;
+    vi.spyOn(session, 'terminate').mockReturnValue(new Promise(() => {}));
+    const start = Date.now();
+    await m.shutdown();
+    expect(Date.now() - start).toBeLessThan(2000);
+    session.kill();
+  });
 });
 
 describe('NodeManager restart', () => {
@@ -289,7 +301,7 @@ describe('NodeManager harness delegation and lifecycle', () => {
     m = new NodeManager({ home, shell: '/bin/sh' });
     vi.spyOn(PtySession, 'spawn').mockImplementation(() => ({
       // No real process or trust watcher: callbacks are driven by the tests below.
-      exited: true, kill() {},
+      exited: true, kill() {}, terminate: async () => true,
       onData(cb: typeof output) { output = cb; }, onExit(cb: typeof exit) { exit = cb; },
     } as unknown as PtySession));
     writeFileSync(join(home, 'agents', 'plain.md'), 'Prompt only.');
