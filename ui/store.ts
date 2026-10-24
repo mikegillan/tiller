@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { ArchivedNode, InstalledReleaseNotes, Diff, DigestItem, Dnd, Drain, ServerMessage, Transcript, UpdateStatus, Usage, UsageSource } from '../src/shared/protocol';
+import type { ArchivedNode, Conversation, ConversationSummary, InstalledReleaseNotes, Diff, DigestItem, Dnd, Drain, ServerMessage, Transcript, UpdateStatus, Usage, UsageSource } from '../src/shared/protocol';
 import type { ReviewComment } from './diff';
 import { pickInitial, rootOf } from './sidebar/sessions';
 import { insertSorted, type Nodes } from './sidebar/tree';
@@ -69,6 +69,12 @@ export interface State {
   transcriptOpen: boolean;
   /** The last transcript asked for (no sessionId: the node's current session); data stays while a refresh is out. */
   transcript: { id: string; sessionId?: string; data?: Transcript; error?: string } | null;
+  /** The Transcript tab shows tool calls (per viewer, remembered). */
+  showTools: boolean;
+  /** The last conversation list asked for; items stay while a refresh is out. */
+  conversations: { id: string; items?: ConversationSummary[]; error?: string } | null;
+  /** The last conversation asked for: the upward conversation of `id`, or its peer conversation with `with`. */
+  conversation: { id: string; with?: string; data?: Conversation; error?: string } | null;
   /** The sidebar shows closed nodes instead of the tree. */
   historyOpen: boolean;
   /** The last history reply. */
@@ -80,11 +86,12 @@ export interface State {
 }
 
 const stored = (() => { try { return localStorage.getItem('tl.panel') === '1'; } catch { return false; } })();
+const storedTools = (() => { try { return localStorage.getItem('tl.showTools') === '1'; } catch { return false; } })();
 
 let state: State = {
   nodes: {}, order: [], selected: null, session: null, opened: [], collapsed: [], toasts: [], confirms: [], activity: [], activityOpen: false,
   connected: false, retry: 0, panel: stored, dialog: null, renaming: null, awaitSpawn: false, diffOpen: false, diff: null, comments: [],
-  transcriptOpen: false, transcript: null, historyOpen: false, history: [], archived: null, removals: 0,
+  transcriptOpen: false, transcript: null, showTools: storedTools, conversations: null, conversation: null, historyOpen: false, history: [], archived: null, removals: 0,
 };
 const subs = new Set<() => void>();
 let toastSeq = 0;
@@ -127,6 +134,10 @@ export const togglePanel = () => update((s) => {
   try { localStorage.setItem('tl.panel', s.panel ? '0' : '1'); } catch { /* per-viewer convenience only */ }
   return { panel: !s.panel };
 });
+export const toggleShowTools = () => update((s) => {
+  try { localStorage.setItem('tl.showTools', s.showTools ? '0' : '1'); } catch { /* per-viewer convenience only */ }
+  return { showTools: !s.showTools };
+});
 
 /** What the stage shows for a live node. */
 export const showPane = (pane: 'terminal' | 'diff' | 'transcript') => update(() => ({ diffOpen: pane === 'diff', transcriptOpen: pane === 'transcript' }));
@@ -135,6 +146,12 @@ export const diffRequested = (id: string) => update((s) => ({ diff: s.diff?.id =
 /** Note that a transcript for `id` (and `sessionId`, else the current one) was asked for; the caller sends the request. */
 export const transcriptRequested = (id: string, sessionId?: string) =>
   update((s) => ({ transcript: s.transcript?.id === id && s.transcript.sessionId === sessionId ? s.transcript : { id, sessionId } }));
+/** Note that `id`'s conversation list was asked for; the caller sends the request. */
+export const conversationsRequested = (id: string) =>
+  update((s) => ({ conversations: s.conversations?.id === id ? s.conversations : { id } }));
+/** Note that a conversation was asked for; the caller sends the request. */
+export const conversationRequested = (id: string, peer?: string) =>
+  update((s) => ({ conversation: s.conversation?.id === id && s.conversation.with === peer ? s.conversation : { id, with: peer } }));
 export const toggleHistory = () => update((s) => ({ historyOpen: !s.historyOpen }));
 export const viewArchived = (archived: ArchivedNode | null) => update(() => ({ archived }));
 export const addComment = (c: ReviewComment) => update((s) => ({ comments: [...s.comments, c] }));
@@ -222,6 +239,18 @@ export function applyServer(m: ServerMessage) {
         if (current && liveSession && current !== liveSession) return {};
         if (want?.id !== id || (want.sessionId !== sessionId && !(want.sessionId === undefined && sessionId === current))) return {};
         return { transcript: 'error' in data ? { id, sessionId: want.sessionId, error: data.error } : { id, sessionId: want.sessionId, data } };
+      });
+    }
+    case 'conversations': {
+      const { t: _, id, ...data } = m;
+      return update((s) => (s.conversations?.id === id ? { conversations: { id, ...data } } : {}));
+    }
+    case 'conversation': {
+      const { t: _, id, with: peer, ...data } = m;
+      return update((s) => {
+        const want = s.conversation;
+        if (want?.id !== id || want.with !== peer) return {};
+        return { conversation: 'error' in data ? { id, with: peer, error: data.error } : { id, with: peer, data } };
       });
     }
     case 'history':
