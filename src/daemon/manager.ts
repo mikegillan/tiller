@@ -20,6 +20,7 @@ import { arm, scheduleSoon, working } from './scheduling.js';
 import { CompletionGate, gateFor } from './completion-gate.js';
 import type { CompletionWatches } from './completion-watches.js';
 import { NodeTokens } from './node-tokens.js';
+import { lifecycleRefusal } from './lifecycle-guards.js';
 
 import { DAEMON, deliver, handoverInbox, holdDeliveries, HUMAN, inScope, saveInboxForRestart, submitting, waitForDeliveries } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
@@ -528,13 +529,9 @@ export class NodeManager extends EventEmitter {
   async resume(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
     const rec = this.registry.get(id);
     if (!rec) return { ok: false, error: 'No such node' };
-    if (rec.pending) return { ok: false, error: 'node is armed or queued: it launches by itself; close it to drop it' };
-    if (!isAgentKind(rec.kind)) return { ok: false, error: 'Only agent nodes can be resumed' };
     const rt = this.runtimes.get(id)!;
-    if (rt.busy) return { ok: false, error: `${id} is ${rt.busy}` };
-    if (rt.session) return { ok: false, error: 'Node is still running' };
-    if (rt.setup) return { ok: false, error: 'worktree setup is running' };
-    if (rt.needsSetup) return { ok: false, error: 'worktree setup has not succeeded; restart runs it again' };
+    const refusal = lifecycleRefusal('resume', id, rec, rt);
+    if (refusal) return { ok: false, error: refusal };
     if (rec.worktree) {
       // Without its worktree, claude --resume carries on in the main checkout with no isolation.
       const w = rec.worktree;
@@ -582,11 +579,9 @@ export class NodeManager extends EventEmitter {
   restart(id: string, prompt?: string): { ok: true } | { ok: false; error: string } {
     const rec = this.registry.get(id);
     if (!rec) return { ok: false, error: 'No such node' };
-    if (rec.pending) return { ok: false, error: 'node is armed or queued: it launches by itself; close it to drop it' };
-    if (rec.worktree && !existsSync(rec.worktree.path)) return { ok: false, error: 'worktree missing' }; // --worktree would make a fresh one
     const rt = this.runtimes.get(id)!;
-    if (rt.setup) return { ok: false, error: 'worktree setup is running' };
-    if (rt.busy) return { ok: false, error: `${id} is ${rt.busy}` };
+    const refusal = lifecycleRefusal('restart', id, rec, rt);
+    if (refusal) return { ok: false, error: refusal };
     let fresh: Pick<NodeRecord, 'model' | 'effort'> = {};
     if (isAgentKind(rec.kind)) {
       const harness = harnessFor(rec);
@@ -644,10 +639,8 @@ export class NodeManager extends EventEmitter {
     if (!rec || !rt) return { ok: false, error: 'No such node' };
     if (!isAgentKind(rec.kind)) return { ok: false, error: 'Only agent nodes can change harness' };
     if (harnessFor(rec) === harness) return { ok: false, error: `Node already uses ${harness}; use Restart for a fresh context` };
-    if (rec.pending) return { ok: false, error: 'node is armed or queued; wait until it launches' };
-    if (rt.busy) return { ok: false, error: `${id} is ${rt.busy}` };
-    if (rt.setup || rt.needsSetup) return { ok: false, error: 'worktree setup must succeed before changing harness; use Restart to retry setup' };
-    if (rt.gate?.state === 'running') return { ok: false, error: 'completion gate is running' };
+    const refusal = lifecycleRefusal('changeHarness', id, rec, rt);
+    if (refusal) return { ok: false, error: refusal };
     rt.busy = 'changing harness';
     this.emitNode(id);
     let disrupted = false;
@@ -724,8 +717,9 @@ export class NodeManager extends EventEmitter {
   async close(id: string, force = false, worktree?: 'keep' | 'discard'): Promise<string | undefined> {
     const rec = this.registry.get(id);
     if (!force && rec?.parentId === null) throw new Error('refusing to close an orchestrator: restart it instead, or force the close');
-    const busy = this.runtimes.get(id)?.busy;
-    if (busy) throw new Error(`${id} is already ${busy}`);
+    const rt = this.runtimes.get(id);
+    const refusal = rec && rt && lifecycleRefusal('close', id, rec, rt);
+    if (refusal) throw new Error(refusal);
     if (rec?.worktree) return closeWorktreeNode(this, id, rec.title, rec.worktree, worktree);
     this.kill(id);
     if (!this.registry.get(id)) return undefined;
