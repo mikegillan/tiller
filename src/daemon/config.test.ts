@@ -36,6 +36,7 @@ describe('loadConfig', () => {
       daemon: { resumeOnStart: true, resumeMaxAgeDays: 7, sessionsKeepDays: 14, digestAfterMinutes: 30, maxLiveNodes: 20, maxWorking: 4 },
       limits: { maxDepth: 3, maxChildren: 2, stallMinutes: 2, maxMessagesPer10Min: 20 },
       notifications: { kinds: { needsYou: 'sound', errored: 'silent', done: 'silent', exited: 'silent' }, treeDoneSummary: true, quietHours: '22:00-07:00' },
+      memory: { enabled: false, projects: [], digest: 'on', maxMB: 200 },
     });
     const sources = Object.fromEntries(Object.entries(configEntries(cwd, homeDir)).map(([k, e]) => [k, e.source]));
     expect(sources).toEqual({
@@ -49,6 +50,7 @@ describe('loadConfig', () => {
       'notifications.kinds.needsYou': 'default', 'notifications.kinds.done': proj, 'notifications.kinds.errored': 'default', 'notifications.kinds.exited': home,
       'notifications.treeDoneSummary': 'default', 'notifications.quietHours': home,
       'limits.maxDepth': 'default', 'limits.maxChildren': proj, 'limits.stallMinutes': home, 'limits.maxMessagesPer10Min': 'default',
+      'memory.enabled': 'default', 'memory.projects': 'default', 'memory.digest': 'default', 'memory.maxMB': 'default',
     });
     expect(configEntries(cwd, homeDir)['gate.timeoutMinutes']).toEqual({ value: 10, source: 'default' });
   });
@@ -143,6 +145,9 @@ describe('loadConfig', () => {
       [JSON.stringify({ worktrees: { taskBranch: 'tl/task' }, limits: { maxChildren: 2 } }), 'worktrees.taskBranch: must contain {slug}'],
       [JSON.stringify({ notifications: { quietHours: '22-7' }, limits: { maxChildren: 2 } }), 'notifications.quietHours'],
       [JSON.stringify({ daemon: { maxWorking: 1 }, limits: { maxChildren: 2 } }), 'daemon: read from the home file only'],
+      [JSON.stringify({ memory: { maxMB: 8 }, limits: { maxChildren: 2 } }), 'memory.maxMB'],
+      [JSON.stringify({ memory: { digest: 'sometimes' }, limits: { maxChildren: 2 } }), 'memory.digest'],
+      [JSON.stringify({ memory: { projects: [{ path: 'rel', enabled: true }] }, limits: { maxChildren: 2 } }), 'memory.projects'],
     ];
     for (const [bad, named] of cases) {
       const { cwd, homeDir } = setup(bad, JSON.stringify({ roles: { worker: { effort: 'low' } }, approvals: { close: 'always' }, daemon: { maxWorking: 3 } }));
@@ -218,6 +223,11 @@ describe('claude.accounts', () => {
   it('reads the list from the home file', () => {
     const { homeDir } = setup([{ name: 'personal' }, work]);
     expect(loadConfig(null, homeDir).claude.accounts).toEqual([{ name: 'personal' }, work]);
+  });
+
+  it('accepts an account memory opt-in or opt-out', () => {
+    const { homeDir } = setup([{ name: 'personal', memory: true }, { ...work, memory: false }]);
+    expect(loadConfig(null, homeDir).claude.accounts).toEqual([{ name: 'personal', memory: true }, { ...work, memory: false }]);
   });
 
   it('drops accounts from a project file with a warning', () => {

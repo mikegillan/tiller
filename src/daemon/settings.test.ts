@@ -75,8 +75,8 @@ describe('settings persistence', () => {
     write({ limits: { maxDepth: -1, maxChildren: 4 }, roles: { worker: { effort: 'invalid' } }, custom: 'kept' });
     const s = snapshot();
     const runtime = configEntries(project, home), homeRuntime = configEntries(null, home);
-    // claude.accounts is home-file JSON only, never a Settings field.
-    for (const key of Object.keys(runtime).filter(key => !key.startsWith('profiles.') && key !== 'claude.accounts') as (keyof typeof runtime)[]) {
+    // claude.accounts is home-file JSON only, never a Settings field; memory has no Settings fields in v1.
+    for (const key of Object.keys(runtime).filter(key => !key.startsWith('profiles.') && key !== 'claude.accounts' && !key.startsWith('memory.')) as (keyof typeof runtime)[]) {
       expect(s.entries[key]).toEqual(runtime[key]);
       expect(s.inherited[key]).toEqual(homeRuntime[key]);
     }
