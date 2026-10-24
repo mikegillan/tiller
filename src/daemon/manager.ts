@@ -60,6 +60,22 @@ function usableCwd(cwd: string): string | undefined {
   return repo && existsSync(repo) ? repo : undefined;
 }
 
+/**
+ * A Claude worktree record's transcript paths that name a missing file where the worktree's project dir holds it: from
+ * before applyHook corrected the main checkout's path that a resumed session reports. Undefined when none changes.
+ */
+function repairedTranscripts(n: NodeRecord, claudeHome: string): Pick<NodeRecord, 'transcriptPath' | 'sessionHistory'> | undefined {
+  if (!n.worktree || harnessFor(n) !== 'claude') return undefined;
+  const repair = (sid: string | undefined, path: string | undefined) => {
+    const real = sid && path && !existsSync(path) ? transcriptFor(n.worktree!.path, sid, claudeHome) : undefined;
+    return real && existsSync(real) ? real : path;
+  };
+  const transcriptPath = repair(n.sessionId, n.transcriptPath);
+  const sessionHistory = n.sessionHistory?.map((s) => (s.harness === 'claude' ? { ...s, transcriptPath: repair(s.sessionId, s.transcriptPath)! } : s));
+  const changed = transcriptPath !== n.transcriptPath || sessionHistory?.some((s, i) => s.transcriptPath !== n.sessionHistory![i]!.transcriptPath);
+  return changed ? { transcriptPath, sessionHistory } : undefined;
+}
+
 export interface SpawnRequest {
   kind: NodeKind;
   harness?: Harness;
@@ -205,6 +221,8 @@ export class NodeManager extends EventEmitter {
     // Nodes from a previous run have no process; they can be resumed.
     for (const n of this.registry.list()) {
       if (n.parentId && !n.rootId) this.registry.update(n.id, { rootId: this.rootIdOf(n.id) }); // records from before rootId
+      const repaired = repairedTranscripts(n, claudeHomeOf(this.home, n.account));
+      if (repaired) this.registry.update(n.id, repaired);
       if (n.pending) {
         this.runtimes.set(n.id, { restored: true, status: { state: 'armed', changedAt: Date.now() } });
         continue;
