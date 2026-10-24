@@ -131,6 +131,23 @@ describe('task profile prompts', () => {
   });
 });
 
+describe('memory digest in the system prompt', () => {
+  const base = { nodeId: 'n', title: 't', parentId: 'p', home: '/nonexistent', cwd: '/nonexistent' };
+  const memory = '# Memory\n\nHeader.\n\n## Pitfalls\n- [m1] 1d ago · n-x claude: gate `npm test` failed: x';
+  it('appends it last, after the role and task profile or a preset body, for every harness', () => {
+    for (const harness of ['claude', 'pi', 'codex'] as const) {
+      for (const o of [{ ...base, harness }, { ...base, harness, preset: { name: 'p', body: 'Custom behavior', source: 'x' } }]) {
+        expect(systemPrompt({ ...o, memory })).toBe(`${systemPrompt(o)}\n\n${memory}`);
+      }
+    }
+  });
+  it('leaves the prompt unchanged when unset or empty', () => {
+    expect(systemPrompt({ ...base, memory: '' })).toBe(systemPrompt(base));
+    expect(launchArgs({ ...base, nodeDir: '/tmp/n', endpoint: 'http://x', path: '', sessionId: 's', memory: undefined }))
+      .toEqual(launchArgs({ ...base, nodeDir: '/tmp/n', endpoint: 'http://x', path: '', sessionId: 's' }));
+  });
+});
+
 it('retains enforced reviewer preset guidance for Claude and Pi and uses the portable review profile for Codex', () => {
   const base = { nodeId: 'n', title: 't', parentId: null, home: '/nonexistent', cwd: '/nonexistent' };
   for (const harness of ['claude', 'codex', 'pi'] as const) {

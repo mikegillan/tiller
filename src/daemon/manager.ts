@@ -10,7 +10,7 @@ import { UsageRegistry } from './usage.js';
 import { accountForProject, claudeConfigDir, claudeHomeOf, claudeHomes } from './claude-accounts.js';
 import { homeDir } from './home.js';
 import { ensurePresets, loadPreset, type Preset } from './presets.js';
-import { projectMcpServerNames, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
+import { projectMcpServerNames, roleFor, terminalLaunch, writeNodeFiles, type LaunchInput } from './launch.js';
 import { adapterFor, requireHarnessExecutable } from './harness.js';
 import { pruneIds } from '../shared/prune.js';
 import { dayKey } from '../shared/spend.js';
@@ -26,7 +26,10 @@ import { nodeDefaults, resolveSpawn, restartSelection, spawnTarget } from './spa
 import { DAEMON, deliver, handoverInbox, holdDeliveries, HUMAN, inScope, saveInboxForRestart, submitting, waitForDeliveries } from './messaging.js';
 import { NodeRegistry } from './nodes.js';
 import { MemoryStore } from './memory-store.js';
-import type { MemoryScope } from './memory-schema.js';
+import { redact, type CaptureEvent, type MemoryScope } from './memory-schema.js';
+import { memoryOn } from './memory-config.js';
+import { derive } from './memory-derive.js';
+import { digestArm, digestFor, digestRole } from './memory-digest.js';
 import { buildChildEnv, PtySession } from './pty.js';
 import { count, inside, logError } from './util.js';
 import * as wt from './worktree.js';
@@ -296,12 +299,71 @@ export class NodeManager extends EventEmitter {
   }
 
   /**
-   * Append an event to the node's tree's events.jsonl; never blocks. Nothing is logged after shutdown: the PTY exits it
-   * causes are not the tree's history (the nodes resume on the next start), and the append would outlive the process.
+   * Append an event to the node's tree's events.jsonl. It never blocks on I/O, apart from a synchronous memory write
+   * (bounded by a 100 ms lock timeout) for an outcome, merge or human send when memory is on for the node. Nothing is
+   * logged after shutdown: the PTY exits it causes are not the tree's history (the nodes resume on the next start), and
+   * the append would outlive the process.
    */
   logEvent(id: string, type: string, data: Record<string, unknown> = {}): void {
     if (this.shutDown) return;
-    appendEvent(this.sessionDirOf(id), { ts: Date.now(), type, id, title: this.registry.get(id)?.title, ...data });
+    const ts = Date.now();
+    appendEvent(this.sessionDirOf(id), { ts, type, id, title: this.registry.get(id)?.title, ...data });
+    // The memory tap: runGate, closed() and first launch capture directly, with more than they log.
+    if (type === 'outcome' || type === 'merge') this.captureMemory(id, { type, ts, ...data } as CaptureEvent);
+    else if (type === 'send' && data.from === HUMAN && data.outcome !== 'refused') {
+      this.captureMemory(id, { type: 'human_send', ts, messageId: data.messageId as string, outcome: data.outcome as Extract<CaptureEvent, { type: 'human_send' }>['outcome'] });
+    }
+  }
+
+  /**
+   * The one way into memory: when memory is on for agent node `id`, redact the event, then derive what it records from
+   * the node's history and apply it. Never throws.
+   */
+  captureMemory(id: string, event: CaptureEvent): void {
+    try {
+      const scope = this.memoryOnFor(id);
+      if (scope) this.memory.apply(scope, derive(redact(event), this.memory.nodeHistory(scope, id)));
+    } catch (err) {
+      logError(err);
+    }
+  }
+
+  /**
+   * Agent node `id`'s memory scope when memory is on for its project and account (memoryOn), else undefined. The opt-in
+   * is checked first, so memory that is off never computes a repo key.
+   */
+  private memoryOnFor(id: string): MemoryScope | undefined {
+    const rec = this.registry.get(id);
+    if (!rec || !isAgentKind(rec.kind) || !memoryOn(this.home, this.projectDir(rec), rec.account).on) return undefined;
+    return this.memoryScope(id);
+  }
+
+  /**
+   * The # Memory section for a launch of agent node `id`, or undefined for none; never throws. A resume reuses the text
+   * its session froze at its fresh launch (nothing when there is none) and records a resume row. A fresh session picks
+   * its arm from memory.digest, composes the digest with digestFor and records it, the off arm's as a shadow.
+   */
+  private memoryDigest(id: string, resume: boolean, digest: Config['memory']['digest']): string | undefined {
+    try {
+      const rec = this.registry.get(id);
+      if (!rec?.sessionId || !isAgentKind(rec.kind) || roleFor(rec.role, rec.parentId) === 'none') return undefined;
+      const scope = this.memoryOnFor(id);
+      if (!scope) return undefined;
+      const { sessionId } = rec;
+      if (resume) {
+        const frozen = this.memory.frozen(scope.account, sessionId);
+        if (!frozen) return undefined;
+        this.memory.recordInjection(scope, { sessionId, arm: frozen.arm, cause: 'resume', itemIds: frozen.itemIds, text: '' });
+        return frozen.arm === 'on' ? frozen.text : undefined;
+      }
+      const arm = digest === 'ab' ? digestArm(id) : digest;
+      const { text, itemIds } = digestFor(this.memory, scope, { role: digestRole(rec.role, rec.profile, rec.parentId), brief: rec.prompt, now: Date.now() });
+      this.memory.recordInjection(scope, { sessionId, arm, cause: digest === 'ab' ? 'ab' : 'config', itemIds, text });
+      return arm === 'on' ? text : undefined;
+    } catch (err) {
+      logError(err);
+      return undefined;
+    }
   }
 
   /** The away digest: what every tree's event log says happened since `since`. */
@@ -322,7 +384,9 @@ export class NodeManager extends EventEmitter {
         if (path && inside(resolve(path), sessionsRoot)) protectedRoots.add(relative(sessionsRoot, resolve(path)).split(sep)[0]!);
       }
     }
-    return sweepSessions(this.home, protectedRoots, loadConfig(null, this.home).daemon.sessionsKeepDays);
+    const config = loadConfig(null, this.home);
+    void this.memory.enforceLimit(config.memory.maxMB); // existing memory files only: it never creates one
+    return sweepSessions(this.home, protectedRoots, config.daemon.sessionsKeepDays);
   }
 
   // ---- lifecycle ----
@@ -731,7 +795,11 @@ export class NodeManager extends EventEmitter {
     this.logEvent(id, 'close', note ? { note } : {});
     const rec = this.registry.get(id), rt = this.runtimes.get(id);
     // Every launch sets lastActiveAt; a node that never launched has no conversation (nor a session directory) to keep.
-    if (rec && isAgentKind(rec.kind) && rec.lastActiveAt !== undefined) archiveNode(this.sessionDirOf(id), archivedOf(rec, rt?.status, rt?.outcome, this.rootIdOf(id), fate));
+    if (rec && isAgentKind(rec.kind) && rec.lastActiveAt !== undefined) {
+      const archived = archivedOf(rec, rt?.status, rt?.outcome, this.rootIdOf(id), fate);
+      archiveNode(this.sessionDirOf(id), archived);
+      this.captureMemory(id, { type: 'close', ts: Date.now(), archived });
+    }
     if (rec?.parentId === null) markClosed(this.home, id);
     this.discard(id);
     this.emit('removed', id);
@@ -1037,6 +1105,7 @@ export class NodeManager extends EventEmitter {
     this.registry.close();
     saveInboxForRestart(this);
     await flushEvents();
+    this.memory.close();
   }
 
   // ---- internals; worktree-lifecycle.ts and scheduling.ts call the ones not marked private ----
@@ -1107,11 +1176,18 @@ export class NodeManager extends EventEmitter {
     if (rt.busy === 'changing harness') return { ok: false, tail: 'node is changing harness', failures: 0 };
     const completion = rt.gate ?? new CompletionGate();
     const env = rec.worktree ? worktreeEnv(this, id, rec.worktree) : buildChildEnv({ PATH: this.path, TL_NODE_ID: id });
-    return completion.run(gate, {
+    const result = await completion.run(gate, {
       cwd: rec.cwd, env, log: join(this.nodeDir(id), 'gate.log'),
       present: () => !!this.registry.get(id),
       changed: () => { rt.gate = completion; this.emitNode(id); },
     });
+    if (this.registry.get(id)) {
+      // failures counts this run only when it failed. The event goes to events.jsonl whether or not memory is on; the tail stays out.
+      const { ok, tail } = result, gateRun = { ok, command: gate.command, attempt: ok ? result.failures + 1 : result.failures };
+      this.logEvent(id, 'gate', gateRun);
+      this.captureMemory(id, { type: 'gate', ts: Date.now(), ...gateRun, tail });
+    }
+    return result;
   }
 
   /** Forget the node: its record, its runtime state and its files. The caller has killed its process. */
@@ -1127,6 +1203,7 @@ export class NodeManager extends EventEmitter {
 
   launch(id: string, prompt: string | undefined, resume: boolean): void {
     let rec = this.registry.get(id)!;
+    const first = rec.lastActiveAt === undefined; // every launch sets it
     // A follow-up's first launch (every launch sets lastActiveAt) resumes the session its record was created with.
     // prune: a restart before that first launch mints a fresh session and loses it; a follow-up has no worktree setup to fail first.
     resume ||= rec.lastActiveAt === undefined && !!rec.followupOf && !rec.credentialGeneration;
@@ -1140,13 +1217,14 @@ export class NodeManager extends EventEmitter {
       rec = this.registry.update(id, { transcriptPath: adapter.prepareTranscript(rec, sessionDir, resume) })!;
     }
     const config = loadConfig(this.projectDir(rec), this.home);
+    const memory = adapter ? this.memoryDigest(id, resume, config.memory.digest) : undefined;
     const input: LaunchInput = {
       nodeId: id, nodeDir: this.launchDir(id), endpoint: this.endpoint, path: this.path, harness: adapter?.id,
       title: rec.title, parentId: rec.parentId, home: this.home, cwd: this.projectDir(rec), role: rec.role, profile: rec.profile, sessionId: rec.sessionId ?? '',
       resume, forkSession, transcriptPath: rec.transcriptPath, prompt, model: rec.model, effort: rec.effort, permissionMode: rec.permissionMode, worktree: rec.worktree, sharesWorktreeOf: owner?.id, sessionDir,
       preset: rec.preset ? loadPreset(rec.preset, this.projectDir(rec), this.home) : undefined,
       inheritMcpServers: config.claude.inheritMcpServers, piExtensions: config.pi.extensions,
-      claudeConfigDir: adapter?.id === 'claude' ? this.claudeDirOf(rec) : undefined,
+      claudeConfigDir: adapter?.id === 'claude' ? this.claudeDirOf(rec) : undefined, memory,
     };
     const spec = adapter ? adapter.launch(input) : terminalLaunch(input, this.shell);
     const cwd = adapter ? adapter.cwd(rec) : rec.cwd;
@@ -1158,6 +1236,8 @@ export class NodeManager extends EventEmitter {
     if (adapter && prompt) rt.starting = true;
     this.registry.update(id, { lastActiveAt: Date.now(), forkSession: undefined });
     this.liveChanged();
+    // The spawn episode, at the first launch so armed and queued spawns count too.
+    if (first) this.captureMemory(id, { type: 'spawn', ts: Date.now(), parentId: rec.parentId, kind: rec.kind, ...(rec.worktree ? { branch: rec.worktree.branch } : {}), ...(rec.preset ? { preset: rec.preset } : {}) });
     const native = adapter !== undefined && adapter.id !== 'claude';
     let outputTail = ''; // native bridge failures are printed in the terminal
     s.onData((d) => {
