@@ -203,6 +203,22 @@ describe('worktree nodes', () => {
     expect(g(repo, 'branch', '--list', `tl/${v.id}`)).toBe('');
   });
 
+  it('a resumed worktree session keeps its transcript under the worktree, though SessionStart reports the main checkout', async () => {
+    setup();
+    const v = await spawnW();
+    const sid = m.registry.get(v.id)!.sessionId!, transcript = transcriptFor(v.cwd, sid);
+    mkdirSync(dirname(transcript), { recursive: true });
+    writeFileSync(transcript, '');
+    m.applyHook(v.id, { hook_event_name: 'SessionStart', session_id: sid, transcript_path: transcript, cwd: v.cwd, source: 'startup' });
+    await exited(v.id);
+    expect(await m.resume(v.id)).toEqual({ ok: true });
+    // What claude --resume, run from the main checkout, sends before it re-enters the worktree (Claude Code 2.1.310).
+    m.applyHook(v.id, { hook_event_name: 'SessionStart', session_id: sid, transcript_path: transcriptFor(repo, sid), cwd: repo, source: 'resume' });
+    expect(m.registry.get(v.id)!.transcriptPath).toBe(transcript);
+    await exited(v.id);
+    expect(await m.resume(v.id)).toEqual({ ok: true });
+  });
+
   it('a worktree under a symlinked .claude, which git lists by its resolved path, is not missing; resume and close discard work', async () => {
     setup();
     mkdirSync(join(repo, '.agent'));

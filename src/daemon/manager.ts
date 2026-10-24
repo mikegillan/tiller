@@ -29,7 +29,7 @@ import * as wt from './worktree.js';
 import { addWorktree, closeWorktreeNode, mergeWorktree, readClaudeJson, refreshGit, refreshGitSoon, setMissing, setupThenLaunch, trustedForWorktree, trustPolicy, worktreeCheck, worktreeCommands, worktreeEnv, worktrees, type WorktreeCheck, type WorktreeReport } from './worktree-lifecycle.js';
 import { appendEvent, buildDigest, ensureSession, flushEvents, handoffPrompt, listSessions, markClosed, readEvents, sessionDir, sweepSessions } from './sessions.js';
 import { archivedOf, archiveNode, findArchived, type BranchFate } from './archive.js';
-import { adoptSessionHistory, nodeTranscript, recordedSessions } from './transcript.js';
+import { adoptSessionHistory, nodeTranscript, recordedSessions, transcriptFor } from './transcript.js';
 import { active, initialState, interruptKeyPressed, interruptTimeout, ptyExited, reduce, stall, sweep, turnComplete, type HookEvent } from './status.js';
 
 export { gateFor } from './completion-gate.js';
@@ -855,7 +855,12 @@ export class NodeManager extends EventEmitter {
     if (next.state !== prev.state) this.registry.update(nodeId, { lastActiveAt: now });
     if (event.hook_event_name === 'SessionStart') {
       const sessionId = typeof event.session_id === 'string' ? event.session_id : undefined;
-      const transcriptPath = typeof event.transcript_path === 'string' ? event.transcript_path : undefined;
+      let transcriptPath = typeof event.transcript_path === 'string' ? event.transcript_path : undefined;
+      // claude --resume runs from the main checkout and fires SessionStart before it re-enters the worktree, so it reports
+      // the checkout's project dir; the session's transcript stays under the worktree's.
+      if (transcriptPath && rec.worktree && harnessFor(rec) === 'claude' && typeof event.cwd === 'string' && !wt.samePath(event.cwd, rec.worktree.path)) {
+        transcriptPath = transcriptFor(rec.worktree.path, sessionId ?? rec.sessionId!, claudeHomeOf(this.home, rec.account));
+      }
       if (sessionId && sessionId !== rec.sessionId) this.registry.update(nodeId, { sessionId });
       if (transcriptPath && transcriptPath !== rec.transcriptPath) this.registry.update(nodeId, { transcriptPath });
     }
