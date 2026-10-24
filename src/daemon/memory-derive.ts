@@ -23,44 +23,60 @@ function item(kind: ItemKind, text: string, author: DerivedItem['author'], body?
 const distinct = (items: DerivedItem[]) => items.filter((x, i) => items.findIndex((y) => y.kind === x.kind && y.dedupe === x.dedupe) === i);
 
 const TOOLS = new Set(['tsc', 'vitest', 'jest', 'eslint', 'prettier', 'playwright']);
-const BANNED_ARGS = /^(?:-e|-c|-p|--eval|--print|--exec)(?:=|$)/;
-// git diff --output writes a file; git grep -O runs a pager command.
-const GIT_BANNED_ARGS = /^(?:--output|-O|--open-files-in-pager)/;
+// Options that only select, filter or format what a check runs. Anything else is refused: config files, preloads,
+// wrappers, reporters, pagers and shells (--node-options, --config, -exec, -toolexec, -f, -p, git grep -O) can all run code.
+const SAFE_FLAGS = new Set([
+  '--', '--noEmit', '--locked', '--frozen', '--offline', '--all-targets', '--all-features', '--workspace', '--release', '--no-fail-fast',
+  '--check', '--quiet', '-q', '--verbose', '-v', '--silent', '--run', '--bail', '--passWithNoTests', '--ci', '--coverage', '--json',
+  '--max-warnings', '--oneline', '--stat', '--name-only', '--name-status', '--cached', '--staged', '--short', '-n', '-race', '-short',
+  '-count', '-run', '-x', '-k', '-t',
+]);
+/** A package script name, as in test:unit. */
 const SCRIPT = /^[\w:.-]+$/;
-const PATH = /^[\w./@-]+$/;
+/** A path, ref, target or test name: no quotes, backslashes, '=' (so no VAR= or --opt=), ':' or ','. */
+const ARG = /^[\w./@^~+-]+$/;
 const isScript = (s?: string) => !!s && SCRIPT.test(s) && !s.startsWith('-');
-const isPath = (s?: string) => !!s && PATH.test(s) && !s.startsWith('-');
+const isArg = (s?: string) => !!s && ARG.test(s) && !/^[-~]/.test(s);
 
-/** Whether a command an agent reported is safe to replay as a procedure: the D4 rule 5 allowlist. */
-export function isProcedure(span: string): boolean {
-  const cmd = span.trim();
-  if (!cmd || cmd.length > LIMITS.procedure.span || /[|;&`<>]|\$\(/.test(cmd)) return false;
-  const args = cmd.split(/\s+/);
-  const [c, a, b, d] = args;
-  if (args.some((x) => BANNED_ARGS.test(x))) return false;
+/** How many leading tokens name an allowlisted command and subcommand; 0 when they do not. */
+function head([c, a, b]: string[]): number {
   switch (c) {
-    case 'npm': return a === 'test' || a === 't' || ((a === 'run' || a === 'run-script') && isScript(b));
+    case 'npm': return a === 'test' || a === 't' ? 2 : (a === 'run' || a === 'run-script') && isScript(b) ? 3 : 0;
     case 'pnpm': case 'yarn': case 'bun':
-      return a === 'test' || (a === 'run' && isScript(b)) || (a === 'exec' && c !== 'bun' && TOOLS.has(b ?? ''));
-    case 'npx': return TOOLS.has((a === '--no-install' ? b : a) ?? '');
-    case 'node': return (a === '--test' && (b === undefined || isPath(b))) || (isPath(a) && /\.(?:js|mjs|cjs|ts)$/.test(a ?? ''));
-    case 'tsx': return isPath(a);
-    case 'cargo': return ['test', 'check', 'build', 'clippy', 'fmt'].includes(a ?? '');
-    case 'go': return ['test', 'vet', 'build'].includes(a ?? '');
-    case 'make': return isScript(a);
-    case 'pytest': return true;
-    case 'python': case 'python3': return a === '-m' && (b === 'pytest' || b === 'unittest');
-    case 'uv': return a === 'run' && b === 'pytest';
-    case 'git':
-      return ['status', 'diff', 'log', 'show', 'grep', 'ls-files', 'rev-parse', 'blame'].includes(a ?? '') && !args.some((x) => GIT_BANNED_ARGS.test(x));
+      return a === 'test' ? 2 : (a === 'run' && isScript(b)) || (a === 'exec' && c !== 'bun' && TOOLS.has(b ?? '')) ? 3 : 0;
+    case 'npx': return a === '--no-install' ? (TOOLS.has(b ?? '') ? 3 : 0) : TOOLS.has(a ?? '') ? 2 : 0;
+    case 'node': return a === '--test' || (isArg(a) && /\.(?:js|mjs|cjs|ts)$/.test(a ?? '')) ? 2 : 0;
+    case 'tsx': return isArg(a) ? 2 : 0;
+    case 'cargo': return ['test', 'check', 'build', 'clippy', 'fmt'].includes(a ?? '') ? 2 : 0;
+    case 'go': return ['test', 'vet', 'build'].includes(a ?? '') ? 2 : 0;
+    case 'make': return isArg(a) ? 2 : 0;
+    case 'pytest': return 1;
+    case 'python': case 'python3': return a === '-m' && (b === 'pytest' || b === 'unittest') ? 3 : 0;
+    case 'uv': return a === 'run' && b === 'pytest' ? 3 : 0;
+    case 'git': return ['status', 'diff', 'log', 'show', 'grep', 'ls-files', 'rev-parse', 'blame'].includes(a ?? '') ? 2 : 0;
     case 'tl':
-      // sessions clean deletes; only the listing and its path lookup are read-only.
-      if (a === 'sessions') return b === undefined || b === 'path';
-      if (a === 'memory') return b === 'search' || b === 'show';
-      return ['list', 'ps', 'config', 'gate', 'diff', 'history', 'transcript', 'read', 'status', 'log'].includes(a ?? '');
-    case 'claude': return a === 'plugin' && (b === 'validate' || b === 'test') && (d === undefined || isPath(d));
-    default: return false;
+      // sessions clean deletes; only the bare listing and its path lookup are read-only.
+      if (a === 'sessions') return b === 'path' ? 3 : b === undefined ? 2 : 0;
+      if (a === 'memory') return b === 'search' || b === 'show' ? 3 : 0;
+      return ['list', 'ps', 'config', 'gate', 'diff', 'history', 'transcript', 'read', 'status', 'log'].includes(a ?? '') ? 2 : 0;
+    case 'claude': return a === 'plugin' && (b === 'validate' || b === 'test') ? 3 : 0;
+    default: return 0;
   }
+}
+
+/**
+ * Whether a command an agent reported is safe to replay as a procedure: the D4 rule 5 allowlist of commands, then only
+ * SAFE_FLAGS (and tsc's -p) and plain arguments.
+ */
+export function isProcedure(span: string): boolean {
+  // Printable ASCII with single spaces: no \r, tabs or Unicode spaces that a shell might split differently.
+  if (/[^ -~]/.test(span)) return false;
+  const cmd = span.trim();
+  if (!cmd || cmd.length > LIMITS.procedure.span || /\s\s|[|;&`<>]|\$\(/.test(cmd)) return false;
+  const args = cmd.split(' ');
+  const n = head(args);
+  const tsc = args.slice(0, n).includes('tsc');
+  return n > 0 && args.slice(n).every((x) => SAFE_FLAGS.has(x) || (tsc && (x === '-p' || x === '--project')) || isArg(x));
 }
 
 /** The outcome's data, cut until its JSON fits LIMITS.outcome.episode: verified, summary, note, then list entries. */
@@ -74,6 +90,13 @@ function outcomeData(o: EpisodeData['outcome']): EpisodeData['outcome'] {
   return data;
 }
 
+const EXIT = /^(?:exited with \d+|stopped by \S+ \(time limit [\d.]+ minutes\))$/;
+/** The tail's last line when it is exactly the exit line runCommands writes for this command (worktree.ts). */
+function exitLine(command: string, tail: string): string | undefined {
+  const line = gateExit(tail);
+  return line?.startsWith(`${command}: `) && EXIT.test(line.slice(command.length + 2)) ? line : undefined;
+}
+
 const failures = (history: HistoryEntry[]) =>
   history.flatMap((h) => (h.kind === 'gate' && !h.data.ok ? [h.data] : []));
 
@@ -83,7 +106,7 @@ function outcomeItems(o: EpisodeData['outcome'], history: HistoryEntry[]): Deriv
   const succeeded = o.outcome === 'succeeded' && o.gate !== 'failed';
   if (succeeded) {
     for (const [, span] of (o.verified ?? '').matchAll(/`([^`\n]+)`/g)) {
-      if (isProcedure(span)) items.push(item('procedure', span.trim().replace(/\s+/g, ' '), 'agent'));
+      if (isProcedure(span)) items.push(item('procedure', span.trim(), 'agent'));
     }
   }
   if (succeeded && o.gate === 'passed') {
@@ -98,11 +121,13 @@ function outcomeItems(o: EpisodeData['outcome'], history: HistoryEntry[]): Deriv
   }
   const last = failures(history).at(-1);
   if (o.outcome === 'failed' && o.gate === 'failed' && last) {
-    // Unresolved: daemon facts only, the command, the daemon's exit line and one structural code.
+    // Unresolved: daemon facts only, the command, the daemon's exit line and one structural code. Keyed on the command
+    // alone, so codes the agent's output chooses cannot fan out into new items.
+    // prune: never retired when this node later passes; it stays until the human forgets it or eviction takes it.
     const tail = last.tail ?? '';
     const code = structuralCode(tail);
-    const facts = [gateExit(tail), code].filter(Boolean).join(' · ');
-    const dedupe = `GATE:${normalizeDedupe('pitfall', last.command)}${code ? ` ${code}` : ''}`;
+    const facts = [exitLine(last.command, tail), code].filter(Boolean).join(' · ');
+    const dedupe = `GATE:${normalizeDedupe('pitfall', last.command)}`;
     const note = '\nunresolved';
     items.push(item('pitfall', cut(`gate \`${last.command}\` failed${facts ? ` (${facts})` : ''}`, LIMITS.item.text), 'daemon', cutFront(tail, LIMITS.item.body - note.length) + note, dedupe));
   }
@@ -115,18 +140,21 @@ function citesOf(o: EpisodeData['outcome']): number[] {
   return [...new Set([...text.matchAll(/\[m(\d+)\]/g)].map(([, d]) => parseItemRef(`m${d}`)).filter((id) => id !== undefined))];
 }
 
+// Git refs may hold | ; $( and more, and the spawner picks them: show a base name only when it is plainly a name.
+const BRANCH = /^[\w./-]{1,80}$/;
 const fateText = (a: ArchivedNode) =>
-  a.branchFate === 'merged' ? `merged to task branch ${a.base ?? '?'}` : a.branchFate === 'kept' ? 'branch kept, unmerged' : a.branchFate === 'discarded' ? 'branch discarded' : undefined;
+  a.branchFate === 'merged' ? `merged to task branch${a.base && BRANCH.test(a.base) ? ` ${a.base}` : ''}`
+    : a.branchFate === 'kept' ? 'branch kept, unmerged' : a.branchFate === 'discarded' ? 'branch discarded' : undefined;
 const verdict = (o?: Outcome) => (o ? `${o.outcome}${o.gate ? ` (gate ${o.gate})` : ''}` : 'no outcome');
 
 function ledger(a: ArchivedNode): DerivedItem {
-  const title = cut(a.title.replace(/\s+/g, ' ').trim(), LIMITS.item.title);
   const fate = fateText(a);
   const o = a.outcome;
   const succeeded = o?.outcome === 'succeeded' && o.gate !== 'failed';
+  // A node can rename itself, so its title is agent text: only a succeeded node's line carries it.
   const text = succeeded
-    ? `${title}: ${briefOf({ ...a, branchFate: undefined }) ?? verdict(o)}${fate ? ` (${fate})` : ''}`
-    : `${title}: ${verdict(o)}${fate ? ` · ${fate}` : ''}`;
+    ? `${cut(a.title.replace(/\s+/g, ' ').trim(), LIMITS.item.title)}: ${briefOf({ ...a, branchFate: undefined }) ?? verdict(o)}${fate ? ` (${fate})` : ''}`
+    : `${a.id}: ${verdict(o)}${fate ? ` · ${fate}` : ''}`;
   const body = [
     a.prompt && cut(a.prompt.trim(), LIMITS.item.ledgerBrief),
     o?.summary,
