@@ -51,6 +51,15 @@ describe('completion watches', () => {
     expect(notices).toEqual(['1 of 2 finished:\na: done\nb: working']);
   });
 
+  it('passes the label and the watched ids to notify', () => {
+    add('a', 'done', 10);
+    add('b', 'done', 20);
+    const calls: unknown[][] = [];
+    watches = new CompletionWatches({ view: (id) => nodes.get(id), turnStartedAt: () => 200 }, (...args) => { calls.push(args); });
+    watches.register({ ids: ['b', 'a'], when: 'all', of: 'turn' });
+    expect(calls).toEqual([['2 of 2 finished:\na: done\nb: done', 'tiller (notify_when all of turn)', ['a', 'b']]]);
+  });
+
   it('waits for a fresh report of either verdict, and counts removed or exited nodes', () => {
     add('a', 'done', 10);
     add('b', 'working', 20);
