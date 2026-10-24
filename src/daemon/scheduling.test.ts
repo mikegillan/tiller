@@ -126,6 +126,32 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
     await expect.poll(() => live(c)).toBe(true);
   });
 
+  it('resume refuses a queued node that has a transcript, so it launches once, when its slot frees', async () => {
+    const { m, child, turn, live } = await setup({ daemon: { maxWorking: 1 } });
+    const a = await child('a'), b = await child('b');
+    const transcript = join(home, 'b.jsonl');
+    writeFileSync(transcript, '');
+    m.registry.update(b, { transcriptPath: transcript }); // as a queued follow-up's record has
+    expect(m.view(b)!.status.state).toBe('queued');
+    expect(await m.resume(b)).toEqual({ ok: false, error: 'node is armed or queued: it launches by itself; close it to drop it' });
+    expect(live(b)).toBe(false);
+    turn(a);
+    await expect.poll(() => live(b)).toBe(true);
+    expect(m.registry.get(b)!.pending).toBeUndefined();
+  });
+
+  it('a queued node that already has a process is kept when its slot frees, not discarded', async () => {
+    const { m, child, turn, live } = await setup({ daemon: { maxWorking: 1 } });
+    const a = await child('a'), b = await child('b');
+    m.launch(b, undefined, false); // some path that missed the pending check
+    const pty = m.session(b);
+    turn(a);
+    await expect.poll(() => m.registry.get(b)?.pending).toBeUndefined();
+    expect(m.session(b)).toBe(pty);
+    expect(live(b)).toBe(true);
+    expect(m.view(b)!.status.state).toBe('unknown');
+  });
+
   it('a restart with no prompt frees the limits.maxWorking slot of a node whose first turn never began', async () => {
     const { m, child, live } = await setup({ limits: { maxWorking: 1 } });
     const a = await child('a');

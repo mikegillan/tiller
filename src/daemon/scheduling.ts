@@ -113,6 +113,12 @@ function blockedNotice(m: NodeManager, id: string, blocked: string): void {
 function release(m: NodeManager, id: string): void {
   const rec = m.registry.get(id)!, p = rec.pending as Pending, rt = m.runtimes.get(id)!;
   m.registry.update(id, { pending: undefined });
+  if (rt.session) { // already launched some other way; launching again would fail and discard it with its process live
+    const cur = rt.status!;
+    if (cur.state === 'armed' || cur.state === 'queued') m.setStatus(id, { ...cur, state: 'unknown', activity: undefined, changedAt: Date.now() }, false);
+    else m.emitNode(id);
+    return;
+  }
   m.logEvent(id, 'launch', p.isolation === 'worktree' ? { isolation: 'worktree' } : {});
   const fail = (err: Error) => {
     if (!m.registry.get(id)) return;
