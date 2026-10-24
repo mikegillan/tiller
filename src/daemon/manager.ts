@@ -100,6 +100,8 @@ export interface ManagerOptions {
   shell?: string;
   /** PATH handed to children (from loginShellPath()). Defaults to this process's PATH. */
   path?: string;
+  /** How long changeHarness waits for the old process to exit. Defaults to PtySession.terminate's. */
+  terminateTimeoutMs?: number;
 }
 
 export interface NotifyEvent { id: string; kind: 'done' | 'needsYou' | 'errored' | 'exited'; title: string; body?: string }
@@ -172,6 +174,7 @@ export class NodeManager extends EventEmitter {
   /** Set by shutdown: the live set is then frozen, so the PTYs' exits do not empty it. */
   private shutDown = false;
   private shell: string;
+  private readonly terminateTimeoutMs?: number;
   private readonly tokens: NodeTokens;
   private sweepTimer: NodeJS.Timeout;
   /** Ids that were live when the daemon last went away, until resumeLive has dealt with them. */
@@ -188,6 +191,7 @@ export class NodeManager extends EventEmitter {
     this.home = opts.home ?? homeDir();
     this.shell = opts.shell ?? process.env.SHELL ?? '/bin/sh';
     this.path = opts.path ?? process.env.PATH ?? '';
+    this.terminateTimeoutMs = opts.terminateTimeoutMs;
     this.usageRegistry = new UsageRegistry(this.path, () => claudeHomes(this.home).filter((d): d is string => !!d));
     mkdirSync(join(this.home, 'nodes'), { recursive: true, mode: 0o700 });
     chmodSync(this.home, 0o700); // mkdir's mode does not apply to a directory that already existed
@@ -670,7 +674,7 @@ export class NodeManager extends EventEmitter {
       const oldProcess = rt.session;
       if (oldProcess) {
         try {
-          if (!(await oldProcess.terminate())) throw new Error('old process has not exited; harness was not changed. Wait for exit before retrying');
+          if (!(await oldProcess.terminate(this.terminateTimeoutMs))) throw new Error('old process has not exited; harness was not changed. Wait for exit before retrying');
         } catch (error) {
           rt.stoppingAfterFailedChange = !oldProcess.exited;
           throw error;

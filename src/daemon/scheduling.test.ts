@@ -1,10 +1,16 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { loadConfig } from './config.js';
 import { notifyWhen, watching } from './messaging.js';
 import { NodeManager } from './manager.js';
 import { inbox } from './messaging.js';
+
+vi.mock('./config.js', async (original) => {
+  const real = await original<typeof import('./config.js')>();
+  return { ...real, loadConfig: vi.fn(real.loadConfig) };
+});
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
@@ -159,6 +165,18 @@ describe('dependency launches, notify_when and the spawn queue (fake claude)', (
     const b = await child('b');
     expect(m.view(b)!.status.state).not.toBe('queued');
     expect(live(b)).toBe(true);
+  });
+
+  it('loads the config once a scheduling pass, however many nodes are pending', async () => {
+    const { m, root, child } = await setup();
+    const a = await child('a', { after: [root] }), b = await child('b', { after: [root] });
+    await tick();
+    vi.mocked(loadConfig).mockClear();
+    m.emitNode(root);
+    await tick();
+    expect(m.view(a)!.status.state).toBe('armed');
+    expect(m.view(b)!.status.state).toBe('armed');
+    expect(vi.mocked(loadConfig).mock.calls).toEqual([[null, m.home]]);
   });
 
   it('armed nodes survive a manager restart', async () => {

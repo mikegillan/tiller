@@ -291,8 +291,35 @@ export function setMissing(m: NodeManager, id: string, missing: boolean): void {
   m.emitNode(id);
 }
 
-/** Recompute a worktree node's git state and re-emit the node when it changed. */
-export async function refreshGit(m: NodeManager, id: string): Promise<void> {
+type GitRun = { done: Promise<void>; again?: Promise<void> };
+/** Per node runtime: the git refresh in flight and the one rerun queued behind it. */
+const gitRuns = new WeakMap<object, GitRun>();
+
+/**
+ * Recompute a worktree node's git state and re-emit the node when it changed. Calls coalesce per node: one made while a
+ * refresh runs queues a single rerun, shared by every later call, so each call settles after a refresh that started
+ * after it. A node closed or a daemon stopped meanwhile skips the rerun.
+ */
+export function refreshGit(m: NodeManager, id: string): Promise<void> {
+  const rt = m.runtimes.get(id);
+  if (!rt) return Promise.resolve();
+  const run = gitRuns.get(rt);
+  if (!run) return startGit(m, id, rt);
+  const next = () => {
+    if (m.runtimes.get(id) === rt && !m.stopped) return startGit(m, id, rt);
+    gitRuns.delete(rt);
+  };
+  return (run.again ??= run.done.then(next, next));
+}
+
+function startGit(m: NodeManager, id: string, rt: object): Promise<void> {
+  // A queued rerun keeps the entry until it replaces it, so no call slips in between and runs alongside.
+  const run: GitRun = { done: readGit(m, id).finally(() => { if (!run.again) gitRuns.delete(rt); }) };
+  gitRuns.set(rt, run);
+  return run.done;
+}
+
+async function readGit(m: NodeManager, id: string): Promise<void> {
   const w = m.registry.get(id)?.worktree;
   if (!w) return;
   const missing = !existsSync(w.path);

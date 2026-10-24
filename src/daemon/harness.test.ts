@@ -98,6 +98,33 @@ describe('harness boundary', () => {
     expect(manager.list()).toEqual([]);
     expect(existsSync(join(repo, '.claude', 'worktrees'))).toBe(false);
   });
+  it('runs pi list once for a spawn\'s validate and launch, again after the reuse window, and refuses alike from a reused list', async () => {
+    const path = fakePiList(), calls = () => readFileSync(join(home, 'pi-list.calls'), 'utf8').split('\n').length - 1;
+    const repo = join(home, 'repo'); mkdirSync(join(repo, '.tiller'), { recursive: true });
+    writeFileSync(join(repo, '.tiller', 'config.json'), JSON.stringify({ pi: { extensions: ['npm:web'] } }));
+    manager = new NodeManager({ home: join(home, 'tl'), path });
+    const node = await manager.spawn({ kind: 'agent', harness: 'pi', title: 'w', cwd: repo, byHuman: true });
+    await expect.poll(() => manager!.view(node.id)?.status.exited).toBe(true); // the fake exits on anything but list
+    expect(calls()).toBe(1);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const gone = { piExtensions: { setting: ['npm:gone'], cwd: repo, path } };
+      expect(() => piAdapter.validate(gone)).toThrow('pi.extensions lists npm:gone, which is not an installed Pi package');
+      expect(() => piAdapter.validate(gone)).toThrow('pi.extensions lists npm:gone, which is not an installed Pi package');
+      expect(calls()).toBe(1);
+      vi.setSystemTime(Date.now() + 10_000);
+      expect(() => piAdapter.validate(gone)).toThrow('pi.extensions lists npm:gone, which is not an installed Pi package');
+      expect(calls()).toBe(2);
+    } finally { vi.useRealTimers(); }
+  });
+  it('does not reuse a failed pi list', () => {
+    const path = fakePiList();
+    writeFileSync(join(home, 'pi-list.fail'), '');
+    const check = () => piAdapter.validate({ piExtensions: { setting: ['npm:web'], cwd: home, path } });
+    expect(check).toThrow();
+    expect(check).toThrow();
+    expect(readFileSync(join(home, 'pi-list.calls'), 'utf8')).toBe('list\nlist\n');
+  });
   it('preserves independent launch effort validation for Codex and Pi', () => {
     for (const effort of ['low', 'medium', 'high', 'xhigh'] as const) {
       const spec = codexAdapter.launch({ ...input(), effort });
@@ -112,11 +139,13 @@ describe('harness boundary', () => {
   });
 });
 
-/** A `pi` whose only command is `list`: a user and a project listing with chalk-style colour codes, as FORCE_COLOR gives. */
+/** A `pi` whose only command is `list`, logged to pi-list.calls and failing while pi-list.fail exists: a user and a project listing with chalk-style colour codes, as FORCE_COLOR gives. */
 function fakePiList(): string {
   const bin = join(home, 'listbin'); mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, 'pi'), `#!/bin/sh
 [ "$1" = list ] || exit 2
+echo list >> ${JSON.stringify(join(home, 'pi-list.calls'))}
+[ -e ${JSON.stringify(join(home, 'pi-list.fail'))} ] && exit 1
 printf '\\033[1mUser packages:\\033[22m\\n  npm:web\\n\\033[2m    /pkgs/web\\033[22m\\n  npm:gone\\n  npm:filt (filtered)\\n\\033[2m    /pkgs/filt\\033[22m\\n\\n\\033[1mProject packages:\\033[22m\\n  npm:web\\n\\033[2m    /project/web\\033[22m\\n'
 `);
   chmodSync(join(bin, 'pi'), 0o755);
