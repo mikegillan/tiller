@@ -5,7 +5,7 @@
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { claudeAccounts } from './claude-accounts.js';
+import { claudeAccounts, type ClaudeAccount } from './claude-accounts.js';
 import { loadConfig } from './config.js';
 import {
   accountKey, ADD_KINDS, firstErrorLine, ftsTerms, ITEM_KINDS, itemRef, LIMITS, normalizeDedupe, pinDedupe, redact, SCHEMA_V1, SCHEMA_VERSION,
@@ -17,6 +17,8 @@ import { logError } from './util.js';
 
 const DAY = 86_400_000;
 const MB = 1024 * 1024;
+/** How long a read of claude.accounts is reused. */
+const ACCOUNTS_TTL_MS = 2_000;
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /** A refusal or a missing item, for the caller as written. Anything else a tool-facing method throws is "memory is unavailable". */
@@ -73,6 +75,9 @@ export interface ArmStats {
 export type AddResult = { id: number; existing?: true; revived?: true };
 
 const EMPTY_CANDIDATES = (): DigestCandidates => ({ pins: [], ledger: [], openQuestions: [], procedures: [], pitfalls: [], notes: [], matched: [] });
+
+// FTS queries join as `items_fts CROSS JOIN items`, which fixes the FTS index as the outer loop: one MATCH, then a rowid
+// lookup per hit. Left to the planner, items can drive and re-run the MATCH for every row of the repo.
 
 /** A MATCH expression from search terms (ftsTerms): each quoted, joined with OR, so no FTS5 syntax gets through; '' for none. */
 export const ftsQuery = (terms: readonly string[]): string => terms.map((t) => `"${t.replaceAll('"', '""')}"`).join(' OR ');
@@ -136,6 +141,8 @@ function tx<T>(db: DatabaseSync, fn: () => T): T {
  */
 function rewrite(db: DatabaseSync, table: 'items' | 'episodes' | 'injections', rows: Record<string, SQLInputValue>[]): void {
   if (rows.length === 0) return;
+  // PRAGMA foreign_keys is a no-op inside a transaction, where the DELETE would null episode_id and fail supersedes.
+  if (db.isTransaction) throw new Error('rewrite() must run outside a transaction');
   const cols = Object.keys(rows[0]);
   db.exec('PRAGMA foreign_keys = OFF');
   try {
@@ -163,6 +170,7 @@ export class MemoryStore implements DigestSource {
   private readonly overLimit = new Set<string>();
   private readonly checks = new Map<string, NodeJS.Immediate | undefined>();
   private readonly enforcing = new Set<string>();
+  private accountsRead?: { at: number; value: ClaudeAccount[] | Error };
 
   constructor(readonly home: string, opts: MemoryStoreOptions = {}) {
     this.now = opts.now ?? Date.now;
@@ -179,7 +187,13 @@ export class MemoryStore implements DigestSource {
   /** Append derive()'s episode and upsert its items, redacting everything again. Creates the file. */
   apply(scope: MemoryScope, derived: Derived): void {
     this.quiet(scope.account, undefined, () => {
-      const { episode, items, cites } = redact(derived);
+      const { episode, cites } = redact(derived);
+      // A dedupe key is lowercased text, which case-sensitive secret patterns (AKIA, AIza, eyJ...) no longer match:
+      // derive it again from the redacted text, and redact any other key.
+      const items = derived.items.map((it) => {
+        const text = redact(it.text);
+        return { ...it, text, body: redact(it.body), dedupe: it.dedupe === normalizeDedupe(it.kind, it.text) ? normalizeDedupe(it.kind, text) : redact(it.dedupe) };
+      });
       const db = this.db(scope.account, true)!;
       tx(db, () => {
         const repo = this.repo(db, scope, true)!;
@@ -231,7 +245,7 @@ export class MemoryStore implements DigestSource {
         procedures: list(kind('procedure'), -1).sort((a, b) => weight(b) - weight(a)).slice(0, c.procedures),
         pitfalls: list(kind('pitfall'), c.pitfalls),
         notes: list(kind('note'), c.notes),
-        matched: q.role === 'worker' && terms ? (db.prepare(`SELECT i.* FROM items_fts JOIN items i ON i.id = items_fts.rowid
+        matched: q.role === 'worker' && terms ? (db.prepare(`SELECT i.* FROM items_fts CROSS JOIN items i ON i.id = items_fts.rowid
           WHERE items_fts MATCH :terms AND i.repo_id = :repo AND i.kind IN ('ledger', 'procedure', 'pitfall', 'note')
             AND i.invalid_at IS NULL AND i.pinned = 0 AND ${ELIGIBLE}
           ORDER BY bm25(items_fts) LIMIT ${c.matched}`).all({ terms, repo }) as unknown as ItemRow[]).map((r) => view(r)) : [],
@@ -294,7 +308,7 @@ export class MemoryStore implements DigestSource {
       const repo = db && this.repo(db, scope, false);
       const terms = ftsQuery(ftsTerms(q.query));
       if (!db || repo === undefined || !terms) return [];
-      return (db.prepare(`SELECT i.* FROM items_fts JOIN items i ON i.id = items_fts.rowid
+      return (db.prepare(`SELECT i.* FROM items_fts CROSS JOIN items i ON i.id = items_fts.rowid
         WHERE items_fts MATCH :terms AND i.repo_id = :repo ${q.kind ? 'AND i.kind = :kind' : ''} ${q.includeRetracted ? '' : 'AND i.invalid_at IS NULL'}
         ORDER BY bm25(items_fts) LIMIT :limit`).all({
         terms, repo, ...(q.kind ? { kind: q.kind } : {}), limit: Math.min(q.limit ?? LIMITS.tools.search.default, LIMITS.tools.search.max),
@@ -334,7 +348,7 @@ export class MemoryStore implements DigestSource {
         });
         if ('sticky' in result) throw new MemoryError(`retracted by the human as ${itemRef(result.sticky)}; not re-added`);
         const episodeId = this.episode(db, repo, { ...scope, ...this.episodeScope(actor) }, { kind: 'add', ts: this.now(), data: { itemId: result.id, actor: who.actor } });
-        db.prepare('UPDATE items SET episode_id = ? WHERE id = ? AND episode_id IS NULL').run(episodeId, result.id);
+        if (!result.existing) db.prepare('UPDATE items SET episode_id = ? WHERE id = ?').run(episodeId, result.id);
         if (old && old.id !== result.id) {
           db.prepare('UPDATE items SET supersedes = ? WHERE id = ?').run(old.id, result.id);
           if (actor.kind === 'human' || old.invalid_at === null) {
@@ -370,7 +384,7 @@ export class MemoryStore implements DigestSource {
         else this.invalidate(db, item.id, actor.kind === 'human' ? 'human' : 'agent', who.actor, reason);
         return this.item(db, repo, item.id);
       });
-      if (input.purge) this.scrub(db);
+      if (input.purge) this.scrub(db, this.keyOf(scope.account));
       return view(row, true);
     });
   }
@@ -395,8 +409,12 @@ export class MemoryStore implements DigestSource {
             VALUES (?, 'note', ?, 'human', ?, 1, ?, ?) RETURNING id`).get(repo, text, dedupe, this.now(), this.now()) as { id: number }).id);
         }
         const item = this.item(db, repo, id!);
-        if (input.unpin) db.prepare('UPDATE items SET pinned = 0, updated_at = ? WHERE id = ?').run(this.now(), item.id);
-        else {
+        if (!input.unpin && item.text === '') throw new MemoryError(`${itemRef(item.id)} was ${view(item).tombstone}; its text is gone`);
+        if (input.unpin) {
+          db.prepare('UPDATE items SET pinned = 0, updated_at = ? WHERE id = ?').run(this.now(), item.id);
+          // A text pin exists only as a pin: unpinned, it is the human's retracted note.
+          if (text !== undefined) this.invalidate(db, item.id, 'human', 'human', 'unpinned');
+        } else {
           db.prepare(`UPDATE items SET pinned = 1, updated_at = ?, invalid_at = NULL, invalid_kind = NULL, invalid_by = NULL, invalid_reason = NULL
             WHERE id = ?`).run(this.now(), item.id);
         }
@@ -429,6 +447,11 @@ export class MemoryStore implements DigestSource {
     this.loud(() => {
       const db = this.db(account, false);
       if (!db) throw new MemoryError(`no memory file for ${this.keyOf(account)}`);
+      try {
+        closeSync(openSync(path, 'wx', 0o600)); // VACUUM INTO fills an empty file and keeps its mode
+      } catch (err) {
+        throw new MemoryError(`cannot create ${path}: ${(err as Error).message}`);
+      }
       db.prepare('VACUUM INTO ?').run(path);
     });
   }
@@ -442,7 +465,18 @@ export class MemoryStore implements DigestSource {
   // --- Internals ---
 
   private keyOf(account: string | undefined): string {
-    return accountKey(account === undefined ? [] : claudeAccounts(this.home), account);
+    return accountKey(account === undefined ? [] : this.accounts(), account);
+  }
+
+  /** claudeAccounts(home), or its error, reused for ACCOUNTS_TTL_MS: it reads and validates the home file on every call. */
+  private accounts(): ClaudeAccount[] {
+    if (!this.accountsRead || Date.now() - this.accountsRead.at > ACCOUNTS_TTL_MS) {
+      let value: ClaudeAccount[] | Error;
+      try { value = claudeAccounts(this.home); } catch (err) { value = err as Error; }
+      this.accountsRead = { at: Date.now(), value };
+    }
+    if (this.accountsRead.value instanceof Error) throw this.accountsRead.value;
+    return this.accountsRead.value;
   }
 
   private fileOf(key: string): string {
@@ -552,7 +586,13 @@ export class MemoryStore implements DigestSource {
       const version = pragma(db, 'user_version'); // the first statement: a corrupt file throws here
       if (version > SCHEMA_VERSION) throw new Unavailable(`written by a newer tiller (schema ${version})`);
       db.exec('PRAGMA secure_delete = ON; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON');
-      if (version === 0) db.exec(SCHEMA_V1);
+      if (version === 0) {
+        // auto_vacuum and journal_mode cannot run in a transaction; the tables and user_version go in one, so a crash or
+        // a second daemon creating the same file never leaves half a schema. The second finds version 1 and stops.
+        const tables = SCHEMA_V1.search(/^CREATE TABLE/m);
+        db.exec(SCHEMA_V1.slice(0, tables));
+        tx(db, () => { if (pragma(db, 'user_version') === 0) db.exec(SCHEMA_V1.slice(tables)); });
+      }
       return db;
     } catch (err) {
       db.close();
@@ -612,10 +652,12 @@ export class MemoryStore implements DigestSource {
       return { id: Number(id.id) };
     }
     if (row.invalid_kind === 'human' || row.invalid_kind === 'superseded') return { sticky: row.id };
+    // A revive is the reviver's item: its text, author and node decide eligibility, provenance and what purge reaches.
     const revived = row.invalid_kind !== null;
+    const { repo_id, kind, dedupe, now, ...fresh } = it;
     db.prepare(`UPDATE items SET seen = seen + 1, updated_at = :now${revived
-      ? ', text = :text, body = :body, invalid_at = NULL, invalid_kind = NULL, invalid_by = NULL, invalid_reason = NULL' : ''} WHERE id = :id`)
-      .run({ now: it.now, id: row.id, ...(revived ? { text: it.text, body: it.body } : {}) });
+      ? `, ${Object.keys(fresh).map((c) => `${c} = :${c}`).join(', ')}, invalid_at = NULL, invalid_kind = NULL, invalid_by = NULL, invalid_reason = NULL` : ''}
+      WHERE id = :id`).run({ now, id: row.id, ...(revived ? fresh : {}) });
     return revived ? { id: row.id, revived: true } : { id: row.id, existing: true };
   }
 
@@ -669,13 +711,19 @@ export class MemoryStore implements DigestSource {
    * Remove purged bytes: secure_delete zeroed the freed cells; optimize rewrites FTS segments that still hold the old
    * tokens; the checkpoints and incremental_vacuum empty the WAL and drop freed pages. One blocking pass, for a rare human action.
    */
-  private scrub(db: DatabaseSync): void {
+  private scrub(db: DatabaseSync, key: string): void {
     db.exec(`INSERT INTO items_fts(items_fts) VALUES ('optimize')`);
-    db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
+    this.checkpoint(db, key);
     for (let left = pragma(db, 'freelist_count'), was = Infinity; left > 0 && left < was; was = left, left = pragma(db, 'freelist_count')) {
       db.exec(`PRAGMA incremental_vacuum(${LIMITS.size.vacuumPages})`);
     }
-    db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
+    this.checkpoint(db, key);
+  }
+
+  /** wal_checkpoint(TRUNCATE), logging when a reader kept it from finishing (the WAL then still holds old pages). */
+  private checkpoint(db: DatabaseSync, key: string): void {
+    const r = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy: number; log: number; checkpointed: number };
+    if (r.busy) this.report(key, new Error(`wal_checkpoint(TRUNCATE) was blocked by another reader (${r.checkpointed} of ${r.log} frames)`));
   }
 
   private statusOf(key: string): MemoryDbStatus {
@@ -731,12 +779,15 @@ export class MemoryStore implements DigestSource {
       for (let i = 0; i < LIMITS.size.ftsMergeSteps && live(); i++, await tick()) {
         db.prepare(`INSERT INTO items_fts(items_fts, rank) VALUES ('merge', ?)`).run(LIMITS.size.ftsMergePages);
       }
-      for (let left = live() ? pragma(db, 'freelist_count') : 0, was = Infinity; live() && left > 0 && left < was; was = left, left = pragma(db, 'freelist_count')) {
+      for (let was = Infinity; live();) {
+        const left = pragma(db, 'freelist_count');
+        if (left === 0 || left >= was) break;
+        was = left;
         db.exec(`PRAGMA incremental_vacuum(${LIMITS.size.vacuumPages})`);
         await tick();
       }
       if (!live()) return;
-      db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
+      this.checkpoint(db, key);
       if (used(db) > limit) {
         this.overLimit.add(key);
         this.report(key, new Error(`over memory.maxMB (${maxMB}) after eviction`));
