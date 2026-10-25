@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { MEMORY_INVALID_KINDS, MEMORY_ITEM_KINDS } from '../shared/protocol.js';
 import {
-  MEMORY_TOOL_SHAPES, REDACTED, SCHEMA_V1, accountKey, firstErrorLine, ftsTerms, gateExit, itemRef, normalizeDedupe, normalizeRemote,
+  EPISODE_KINDS, INVALID_KINDS, ITEM_KINDS, LIMITS, MEMORY_TOOL_SHAPES, REDACTED, SCHEMA_V1, accountKey, firstErrorLine, ftsTerms, gateExit, itemRef, normalizeDedupe, normalizeRemote,
   parseItemRef, pinDedupe, redact, structuralCode, type CaptureEvent,
 } from './memory-schema.js';
 
@@ -221,7 +222,26 @@ describe('item refs and tool shapes', () => {
     expect(parse('memory_forget', { id: 'm1', reason: 'stale', purge: true })).toBe(true);
     expect(parse('memory_pin', { text: 'x'.repeat(500) })).toBe(true);
     expect(parse('memory_status', { days: 366 })).toBe(false);
+    expect(parse('memory_status', { repo: '/r/sub' })).toBe(true);
+    expect(parse('memory_status', { repo: '' })).toBe(false);
     expect(parse('memory_switch', { on: null, project: '/p' })).toBe(true);
     expect(parse('memory_switch', {})).toBe(false);
+  });
+});
+
+describe('the v2 contract', () => {
+  it('aliases the item and invalid kinds to the protocol lists, so v3 appends to one', () => {
+    expect(ITEM_KINDS).toBe(MEMORY_ITEM_KINDS);
+    expect(INVALID_KINDS).toBe(MEMORY_INVALID_KINDS);
+    expect(INVALID_KINDS).toEqual(['agent', 'human', 'superseded', 'evicted']);
+  });
+
+  it('records restore episodes', () => {
+    expect(EPISODE_KINDS).toContain('restore');
+  });
+
+  it('caps the panel and the Claude memory read', () => {
+    expect(LIMITS.panel).toEqual({ page: 50, given: 20, givenTo: 20 });
+    expect(LIMITS.claudeMemory).toEqual({ files: 100, fileBytes: 64 * 1024, totalBytes: 1024 * 1024 });
   });
 });
