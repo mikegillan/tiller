@@ -41,8 +41,9 @@ const notifier = createNotifier({
 });
 manager.on('notify', notifier);
 manager.on('node', notifier.observe);
-manager.on('removed', () => {
-  for (const node of manager.list()) if (node.parentId === null) notifier.observe(node);
+manager.on('removed', (id: string) => {
+  notifier.forget(id);
+  for (const node of manager.list()) if (node.parentId === null) notifier.recheck(node);
 });
 writeFileSync(join(manager.home, PORT_FILE), `${server.port}\n`); // lets `tl` find the daemon without TL_PORT
 writeFileSync(join(manager.home, REPO_FILE), fileURLToPath(new URL('../..', import.meta.url))); // lets the Tauri app find bin/tld
