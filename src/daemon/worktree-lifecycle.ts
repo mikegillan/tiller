@@ -353,7 +353,8 @@ async function readGit(m: NodeManager, id: string): Promise<void> {
   if (!w || m.stopped) return;
   const missing = !existsSync(w.path);
   const [counts, stat, merged] = await Promise.all([
-    wt.aheadBehind(w.repo, w.branch, w.base, w.baseSha).catch(() => undefined), // fails when the branch is gone
+    // Fails when the branch is gone: then zero counts. Any other failure keeps the last state.
+    wt.aheadBehind(w.repo, w.branch, w.base, w.baseSha).catch(async (err: Error) => { if (await wt.branchSha(w.repo, w.branch)) throw err; return undefined; }),
     wt.diffStat(w).catch((err: Error) => err),
     mergedAt(w),
   ]);

@@ -3,7 +3,7 @@ import type { NodeManager } from './manager.js';
 import * as wt from './worktree.js';
 import { refreshGit } from './worktree-lifecycle.js';
 
-vi.mock('./worktree.js', () => ({ aheadBehind: vi.fn(async () => { throw new Error('no such branch'); }), diffStat: vi.fn() }));
+vi.mock('./worktree.js', () => ({ aheadBehind: vi.fn(async () => { throw new Error('no such branch'); }), branchSha: vi.fn(async () => undefined), diffStat: vi.fn() }));
 
 /** Each diffStat call waits until the test resolves it with the dirty files it should see. */
 const pending: ((files: string[]) => void)[] = [];
@@ -80,6 +80,19 @@ describe('refreshGit limits', () => {
     while (pending.length) { pending.shift()!([]); await settle(); }
     await Promise.all(runs);
     expect(wt.diffStat).toHaveBeenCalledTimes(6);
+  });
+
+  it('keeps the last state when counting commits fails while the branch exists', async () => {
+    const { m, nm } = fakeManager();
+    const rt = m.runtimes.get('x')!;
+    rt.git = { dirty: 7 };
+    vi.mocked(wt.branchSha).mockResolvedValueOnce('abc');
+    const run = refreshGit(nm, 'x').catch((err: Error) => err.message);
+    await settle();
+    pending.shift()!([]);
+    expect(await run).toBe('no such branch');
+    expect(rt.git).toEqual({ dirty: 7 });
+    expect(m.emitNode).not.toHaveBeenCalled();
   });
 
   it('replaces a debounced refresh still waiting, so a turn end does not run git twice', async () => {
