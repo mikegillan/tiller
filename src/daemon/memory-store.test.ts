@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   normalizeDedupe, type Actor, type Derived, type DerivedItem, type EpisodeInput, type ItemKind, type MemoryScope,
 } from './memory-schema.js';
+import { DIGEST_SECTIONS, digestFor } from './memory-digest.js';
 import { ftsQuery, MemoryStore } from './memory-store.js';
 
 const DAY = 86_400_000;
@@ -16,7 +17,7 @@ let clock: number;
 let logs: string[];
 const stores: MemoryStore[] = [];
 const open = (opts: { now?: () => number } = {}) => {
-  const s = new MemoryStore(home, { now: () => clock, log: (err) => logs.push(String((err as Error).message)), ...opts });
+  const s = new MemoryStore(home, { now: () => clock, log: (err) => logs.push(typeof err === 'string' ? err : (err as Error).message), ...opts });
   stores.push(s);
   return s;
 };
@@ -153,6 +154,14 @@ describe('upsert and retraction', () => {
     s.apply(scope('n-r1'), derived([item('note', 'doomed')]));
     s.forget(scope(), human, { id: 2, reason: 'leak', purge: true });
     expect(() => s.pin(scope(), human, { id: 2 })).toThrow('m2 was purged; its text is gone');
+  });
+
+  it('retracts a text pin unpinned by id, so it never becomes an agent note', () => {
+    const s = open();
+    const pin = s.pin(scope(), human, { text: 'Ask before pushing' });
+    const unpinned = s.pin(scope(), human, { id: pin.id, unpin: true });
+    expect(s.candidates(scope(), { role: 'orchestrator', terms: [], now: clock }).notes).toEqual([]);
+    expect(unpinned).toMatchObject({ pinned: false, invalid: { kind: 'human', reason: 'unpinned' } });
   });
 
   it('gives a revived item to the reviver, so a failed node cannot launder a succeeded one\'s note', () => {
@@ -569,5 +578,207 @@ describe('injections and stats', () => {
     const stats = s.stats(undefined, 14);
     expect(stats.on).toMatchObject({ nodes: 1, firstPassGate: 1, failedOutcomes: 0, gateRunsPerSuccess: 1, citesPerInjected: 1, repeatedPitfalls: 0 });
     expect(stats.off).toMatchObject({ nodes: 1, firstPassGate: 0, failedOutcomes: 1, gateRunsPerSuccess: null, repeatedPitfalls: 1, repeatedInjectedPitfalls: 1 });
+  });
+});
+
+describe('the panel (v2)', () => {
+  it('browses newest first with a keyset that neither repeats nor skips rows sharing updated_at', () => {
+    const s = open();
+    s.apply(scope(), derived(Array.from({ length: 130 }, (_, i) => item('note', `same time note ${i}`))));
+    const ids: number[] = [];
+    let before: { updatedAt: number; id: number } | undefined, pages = 0;
+    do {
+      const page = s.list(scope(), { before });
+      expect(page.items.length).toBeLessThanOrEqual(50);
+      ids.push(...page.items.map((v) => v.id));
+      before = page.next;
+      pages++;
+    } while (before);
+    expect(pages).toBe(3);
+    expect(ids).toEqual(Array.from({ length: 130 }, (_, i) => 130 - i));
+    expect(s.list(scope(), { before: { updatedAt: T0, id: 1 } })).toEqual({ items: [] });
+  });
+
+  it('filters by kind, pinned and retracted, and omits body, cites, gets and rootId', () => {
+    const s = open();
+    s.apply(scope(), derived([item('procedure', 'npm test', 'agent', 'the body'), item('pitfall', 'gate failed: boom'), item('note', 'a note')]));
+    s.pin(scope(), human, { id: 2 });
+    s.forget(scope(), human, { id: 3, reason: 'stale' });
+    expect(s.list(scope(), {}).items.map((v) => v.id)).toEqual([2, 1]);
+    expect(s.list(scope(), { retracted: true }).items.map((v) => v.id)).toEqual([3, 2, 1]);
+    expect(s.list(scope(), { kind: 'procedure' }).items.map((v) => v.id)).toEqual([1]);
+    expect(s.list(scope(), { pinned: true }).items.map((v) => v.id)).toEqual([2]);
+    const [procedure] = s.list(scope(), { kind: 'procedure' }).items;
+    for (const omitted of ['body', 'cites', 'gets', 'rootId']) expect(procedure).not.toHaveProperty(omitted);
+  });
+
+  it('marks each row eligible as the digest would take it', () => {
+    const s = open();
+    s.apply(scope('n-ok'), derived([], outcome('succeeded', 'passed')));
+    s.apply(scope('n-bad'), derived([], outcome('failed')));
+    s.apply(scope('n-gatefail'), derived([], outcome('succeeded', 'failed')));
+    s.add(scope('n-ok'), agent('n-ok'), { kind: 'note', text: 'from a succeeded node' });
+    s.add(scope('n-bad'), agent('n-bad'), { kind: 'note', text: 'from a failed node' });
+    s.add(scope('n-gatefail'), agent('n-gatefail'), { kind: 'note', text: 'from a node whose gate failed' });
+    s.add(scope('n-none'), agent('n-none'), { kind: 'note', text: 'from a node with no outcome' });
+    s.add(scope('n-r1'), agent('n-r1', 'n-r1'), { kind: 'note', text: 'from the root' });
+    s.apply(scope('n-bad'), derived([item('ledger', 'daemon fact', 'daemon')]));
+    s.add(scope(), human, { kind: 'note', text: 'from the human' });
+    expect(Object.fromEntries(s.list(scope(), {}).items.map((v) => [v.text, v.eligible]))).toEqual({
+      'from a succeeded node': true, 'from a failed node': false, 'from a node whose gate failed': false, 'from a node with no outcome': false,
+      'from the root': true, 'daemon fact': true, 'from the human': true,
+    });
+  });
+
+  it('extends search with a pinned filter, eligible rows and a limit of 50, leaving the tool output as it was', () => {
+    const s = open();
+    s.apply(scope(), derived([item('note', 'zebra crossing rules')]));
+    expect(JSON.stringify(s.search(scope(), { query: 'zebra' }))).toBe(JSON.stringify([{
+      id: 1, kind: 'note', text: 'zebra crossing rules', author: 'agent', nodeId: 'n-w1', rootId: 'n-r1', harness: 'claude', model: 'claude-x',
+      seen: 1, pinned: false, cites: 0, gets: 0, createdAt: T0, updatedAt: T0,
+    }]));
+    s.apply(scope(), derived(Array.from({ length: 60 }, (_, i) => item('note', `zebra number ${i}`))));
+    s.pin(scope(), human, { id: 5 });
+    expect(s.search(scope(), { query: 'zebra', limit: 99 })).toHaveLength(50);
+    const rows = s.search(scope(), { query: 'zebra', limit: 99, eligible: true });
+    expect(rows.every((v) => v.eligible === false && !('body' in v) && !('gets' in v))).toBe(true);
+    expect(s.search(scope(), { query: 'zebra', pinned: true }).map((v) => v.id)).toEqual([5]);
+    expect(s.search(scope(), { query: 'the src of this' })).toEqual([]);
+  });
+
+  it('counts per kind, pins and retractions; lists repos without the sentinel; reports one file even for no account', () => {
+    const s = open();
+    s.apply(scope(), derived([item('procedure', 'npm test'), item('note', 'a')]));
+    s.apply(scope(), derived([item('note', 'b')]));
+    s.apply(scope('n-w1', 'n-r1', 'git:example.com/other'), derived([item('note', 'elsewhere')]));
+    s.pin(scope(), human, { text: 'pinned text' });
+    s.forget(scope(), human, { id: 2, reason: 'x' });
+    s.forget(scope(), human, { id: 3, reason: 'x', purge: true });
+    expect(s.counts(scope())).toEqual({ ledger: 0, open_question: 0, procedure: 1, pitfall: 0, note: 1, pinned: 1, retracted: 2 });
+    expect(s.repos(undefined)).toEqual([{ key: 'git:example.com/a/b', path: '/repo', items: 2 }, { key: 'git:example.com/other', path: '/repo', items: 1 }]);
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ claude: { accounts: [{ name: 'work', configDir: '/tmp/work-claude' }] } }));
+    s.apply({ ...scope(), account: 'work' }, derived([item('note', 'work note')]));
+    expect(s.status()).toHaveLength(2);
+    expect(s.fileStatus(undefined)).toMatchObject({ key: '_default', state: 'ok' });
+    expect(s.fileStatus('nobody').state).toMatch(/^off: .*not configured/);
+  });
+
+  it('peeks without counting a get, with its superseder and the fresh digests that gave it', () => {
+    const s = open();
+    s.apply(scope(), derived([item('note', 'old note', 'agent', 'the body')]));
+    s.add(scope(), human, { kind: 'note', text: 'new note', supersedes: 1 });
+    s.recordInjection(scope('n-a'), { sessionId: 's-a', arm: 'on', cause: 'config', itemIds: [1], text: 'x' });
+    clock += 1000;
+    s.recordInjection(scope('n-a'), { sessionId: 's-a', arm: 'on', cause: 'resume', itemIds: [1], text: '' });
+    s.recordInjection(scope('n-b'), { sessionId: 's-b', arm: 'off', cause: 'ab', itemIds: [2, 1], text: 'y' });
+    const d = s.peek(scope(), 1);
+    expect(d).toMatchObject({ item: { id: 1, body: 'the body', gets: 0, eligible: false, invalid: { kind: 'superseded' } }, supersededBy: 2 });
+    expect(d.givenTo).toEqual([{ nodeId: 'n-b', sessionId: 's-b', arm: 'off', ts: clock }, { nodeId: 'n-a', sessionId: 's-a', arm: 'on', ts: T0 }]);
+    expect(row(1).gets).toBe(0);
+    expect(() => s.peek(scope('n-w1', 'n-r1', 'git:example.com/other'), 1)).toThrow('no such item m1');
+  });
+
+  it('restores agent and human retractions, keeping pinned, and refuses the rest', () => {
+    const s = open();
+    s.apply(scope(), derived([item('procedure', 'npm test'), item('procedure', 'cargo test'), item('note', 'gardened'), item('note', 'live')]));
+    s.apply(scope(), derived([item('note', 'doomed')]));
+    s.pin(scope(), human, { id: 1 });
+    s.forget(scope(), human, { id: 1, reason: 'wrong' });
+    s.forget(scope(), agent(), { id: 2, reason: 'stale' });
+    s.forget(scope(), human, { id: 5, reason: 'leak', purge: true });
+    const db = raw();
+    db.prepare(`UPDATE items SET invalid_at = 1, invalid_kind = 'gardener', invalid_by = 'gardener' WHERE id = 3`).run();
+    db.close();
+    const pin = s.pin(scope(), human, { text: 'Ask first' });
+    s.pin(scope(), human, { id: pin.id, unpin: true });
+    expect(() => s.restore(scope(), human, { id: 4 })).toThrow('m4 is not retracted');
+    expect(() => s.restore(scope(), human, { id: 5 })).toThrow('m5 was purged; its text is gone');
+    expect(() => s.restore(scope(), human, { id: pin.id })).toThrow(`m${pin.id} is a text pin; pin it again instead`);
+    expect(() => s.restore(scope(), human, { id: 3 })).toThrow('cannot restore a gardener item here');
+    expect(() => s.restore(scope(), agent(), { id: 1 })).toThrow('only the human can restore');
+    expect(s.restore(scope(), human, { id: 2 })).toMatchObject({ id: 2, pinned: false });
+    expect(s.restore(scope(), human, { id: 1 })).toMatchObject({ id: 1, pinned: true });
+    expect(row(1)).toMatchObject({ invalid_at: null, pinned: 1 });
+    expect(s.candidates(scope(), { role: 'orchestrator', terms: [], now: clock }).pins.map((v) => v.id)).toEqual([1]);
+    const check = raw();
+    expect(check.prepare(`SELECT node_id, data FROM episodes WHERE kind = 'restore' ORDER BY id`).all()).toEqual([
+      { node_id: 'human', data: JSON.stringify({ itemId: 2, actor: 'human' }) }, { node_id: 'human', data: JSON.stringify({ itemId: 1, actor: 'human' }) },
+    ]);
+    check.close();
+    s.apply(scope('n-w2'), derived([item('procedure', 'npm test')]));
+    expect(row(1)).toMatchObject({ seen: 2, invalid_at: null });
+  });
+
+  it('edits a text pin: the new text supersedes the old, which only pinning its text again brings back', () => {
+    const s = open();
+    const digest = () => digestFor(s, scope(), { role: 'worker', brief: '', now: clock }).text;
+    const old = s.pin(scope(), human, { text: 'Never push to main' });
+    const edited = s.editPin(scope(), human, { id: old.id, text: 'Never push to main or release' });
+    expect(edited).toMatchObject({ pinned: true, supersedes: old.id, author: 'human', text: 'Never push to main or release' });
+    expect(digest()).toContain(`${DIGEST_SECTIONS.pinned}\n- [m${edited.id}] `);
+    expect(digest()).not.toMatch(/: Never push to main$/m);
+    expect(row(old.id)).toMatchObject({ pinned: 0, invalid_kind: 'superseded', invalid_by: 'human', invalid_reason: `edited as m${edited.id}` });
+    expect(() => s.editPin(scope(), human, { id: edited.id, text: 'never push to  MAIN or release' })).toThrow('unchanged');
+    // Editing to the text of an earlier pin, since unpinned, revives that row instead of hitting UNIQUE.
+    const earlier = s.pin(scope(), human, { text: 'Run the linter' });
+    s.pin(scope(), human, { id: earlier.id, unpin: true });
+    const again = s.editPin(scope(), human, { id: edited.id, text: 'run the LINTER' });
+    expect(again).toMatchObject({ id: earlier.id, pinned: true, text: 'run the LINTER', supersedes: edited.id });
+    expect(again.invalid).toBeUndefined();
+    const other = s.pin(scope(), human, { text: 'Other pin' });
+    expect(() => s.editPin(scope(), human, { id: other.id, text: 'Run the linter' })).toThrow(`already pinned as m${earlier.id}`);
+    // The human's prerogative: pinning the old text again revives the old row.
+    expect(s.pin(scope(), human, { text: 'Never push to main' })).toMatchObject({ id: old.id, pinned: true });
+    expect(row(old.id).invalid_at).toBeNull();
+    expect(digest()).toMatch(/: Never push to main$/m);
+    // Only the human's own live text pins can be edited.
+    s.apply(scope(), derived([item('note', 'an agent note')]));
+    const note = s.list(scope(), { kind: 'note' }).items.find((v) => v.text === 'an agent note')!;
+    s.pin(scope(), human, { id: note.id });
+    s.pin(scope(), human, { id: old.id, unpin: true });
+    for (const id of [note.id, old.id]) {
+      expect(() => s.editPin(scope(), human, { id, text: 'y' })).toThrow('only your own text pins can be edited; pin new text instead');
+    }
+    expect(() => s.editPin(scope(), agent(), { id: other.id, text: 'z' })).toThrow('only the human can pin');
+  });
+
+  it('logs expected conditions as one string and an unexpected failure as its own error', () => {
+    mkdirSync(join(home, 'memory'), { recursive: true });
+    writeFileSync(file(), 'this is not a database '.repeat(400));
+    const got: unknown[] = [];
+    stores.push(new MemoryStore(home, { now: () => clock, log: (e) => got.push(e) }));
+    stores.at(-1)!.apply(scope(), derived([item('note', 'x')]));
+    expect(got).toEqual([expect.stringMatching(/^memory \(_default\): .*_default\.db is corrupt \(.*\); moved it to /)]);
+    const boom = new Error('injected failure');
+    const real = process.getBuiltinModule('node:sqlite');
+    class Broken extends real.DatabaseSync {
+      constructor(path: string) {
+        if (path !== ':memory:') throw boom;
+        super(path);
+      }
+    }
+    vi.spyOn(process, 'getBuiltinModule').mockReturnValue({ ...real, DatabaseSync: Broken } as never);
+    const other = mkdtempSync(join(tmpdir(), 'tl-'));
+    try {
+      stores.push(new MemoryStore(other, { log: (e) => got.push(e) }));
+      stores.at(-1)!.apply(scope(), derived([item('note', 'x')]));
+      expect(got[1]).toBe(boom);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('never creates a file on a read, a restore or an edit', () => {
+    const s = open();
+    expect(s.list(scope(), {})).toEqual({ items: [] });
+    expect(s.counts(scope())).toMatchObject({ note: 0, pinned: 0, retracted: 0 });
+    expect(s.repos(undefined)).toEqual([]);
+    expect(s.fileStatus(undefined)).toMatchObject({ key: '_default', state: 'missing' });
+    expect(s.search(scope(), { query: 'anything', eligible: true })).toEqual([]);
+    expect(() => s.peek(scope(), 1)).toThrow('no such item m1');
+    expect(() => s.restore(scope(), human, { id: 1 })).toThrow('no such item m1');
+    expect(() => s.editPin(scope(), human, { id: 1, text: 'x' })).toThrow('no such item m1');
+    expect(() => s.pin(scope(), human, { id: 1, unpin: true })).toThrow('no such item m1');
+    expect(existsSync(join(home, 'memory'))).toBe(false);
   });
 });

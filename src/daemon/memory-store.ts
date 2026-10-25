@@ -5,6 +5,7 @@
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import type { MemoryItemDetail } from '../shared/protocol.js';
 import { claudeAccounts, type ClaudeAccount } from './claude-accounts.js';
 import { loadConfig } from './config.js';
 import {
@@ -29,6 +30,7 @@ class Unavailable extends Error {}
 export interface MemoryStoreOptions {
   /** The clock for the rows the store stamps itself; scripts backdate with it. Episodes keep their own ts. */
   now?: () => number;
+  /** Gets a string for an expected condition (quarantine, a blocked checkpoint, over the limit, unavailable), else the error itself. */
   log?: (err: unknown) => void;
 }
 
@@ -73,6 +75,11 @@ export interface ArmStats {
 }
 
 export type AddResult = { id: number; existing?: true; revived?: true };
+/** The panel's browse cursor: the last row's (updated_at, id). */
+export interface ListCursor { updatedAt: number; id: number }
+/** Live items per kind in one repository, plus its live pins and its retracted items (tombstones included). */
+export type ItemCounts = Record<ItemKind, number> & { pinned: number; retracted: number };
+export const noCounts = (): ItemCounts => ({ ...Object.fromEntries(ITEM_KINDS.map((k) => [k, 0])), pinned: 0, retracted: 0 }) as ItemCounts;
 
 const EMPTY_CANDIDATES = (): DigestCandidates => ({ pins: [], ledger: [], openQuestions: [], procedures: [], pitfalls: [], notes: [], matched: [] });
 
@@ -114,6 +121,14 @@ function view(r: ItemRow, withBody = false): ItemView {
     ...(r.text === '' ? { tombstone: r.dedupe.startsWith('purged:') ? 'purged' as const : 'evicted' as const } : {}),
   };
 }
+
+/** A panel row, selected with `${ELIGIBLE} AS eligible`: without body, cites, gets and rootId. */
+function rowView(r: ItemRow & { eligible: number }): ItemView {
+  const { cites: _cites, gets: _gets, rootId: _rootId, ...v } = view(r);
+  return { ...v, eligible: r.eligible === 1 };
+}
+
+const isTextPin = (r: Pick<ItemRow, 'dedupe'>) => r.dedupe.startsWith('PIN:');
 
 const injectionView = (r: InjectionRow): InjectionView =>
   ({ sessionId: r.session_id, arm: r.arm, cause: r.cause, itemIds: JSON.parse(r.item_ids) as number[], text: r.text, ts: r.ts });
@@ -284,19 +299,20 @@ export class MemoryStore implements DigestSource {
     });
   }
 
-  /** Each account file's health: one account's, or every existing file's. Opens existing files only. */
-  status(account?: string): MemoryDbStatus[] {
-    let keys: string[];
-    if (account === undefined) {
-      keys = this.existingKeys();
-    } else {
-      try {
-        keys = [this.keyOf(account)];
-      } catch (err) {
-        return [{ key: account, path: '', state: `off: ${(err as Error).message}`, quarantined: [] }];
-      }
+  /** Each account file's health: one account's, or every existing file's. Opens existing files only. brief: state only, no sizes or counts. */
+  status(account?: string, brief = false): MemoryDbStatus[] {
+    return account === undefined ? this.existingKeys().map((key) => this.statusOf(key, brief)) : [this.fileStatus(account, brief)];
+  }
+
+  /** One account file's health; undefined is the no-account file. Opens an existing file only. brief: state only. */
+  fileStatus(account: string | undefined, brief = false): MemoryDbStatus {
+    let key: string;
+    try {
+      key = this.keyOf(account);
+    } catch (err) {
+      return { key: account ?? '', path: '', state: `off: ${(err as Error).message}`, quarantined: [] };
     }
-    return keys.map((key) => this.statusOf(key));
+    return this.statusOf(key, brief);
   }
 
   /**
@@ -309,17 +325,91 @@ export class MemoryStore implements DigestSource {
 
   // --- Tool-facing: throw MemoryError as written, else "memory is unavailable: <reason>" ---
 
-  search(scope: MemoryScope, q: { query: string; kind?: ItemKind; limit?: number; includeRetracted?: boolean }): ItemView[] {
+  /**
+   * FTS over the repository's items, best match first. Terms are ORed (ftsQuery), so a query of stopwords only finds
+   * nothing. pinned keeps pinned items only; eligible returns panel rows (rowView). The tools cap limit at
+   * LIMITS.tools.search.max in zod; the panel asks for up to LIMITS.panel.page.
+   */
+  search(scope: MemoryScope, q: { query: string; kind?: ItemKind; pinned?: boolean; limit?: number; includeRetracted?: boolean; eligible?: boolean }): ItemView[] {
     return this.loud(() => {
       const db = this.db(scope.account, false);
       const repo = db && this.repo(db, scope, false);
       const terms = ftsQuery(ftsTerms(q.query));
       if (!db || repo === undefined || !terms) return [];
-      return (db.prepare(`SELECT i.* FROM items_fts CROSS JOIN items i ON i.id = items_fts.rowid
-        WHERE items_fts MATCH :terms AND i.repo_id = :repo ${q.kind ? 'AND i.kind = :kind' : ''} ${q.includeRetracted ? '' : 'AND i.invalid_at IS NULL'}
+      const rows = db.prepare(`SELECT i.*${q.eligible ? `, ${ELIGIBLE} AS eligible` : ''} FROM items_fts CROSS JOIN items i ON i.id = items_fts.rowid
+        WHERE items_fts MATCH :terms AND i.repo_id = :repo ${q.kind ? 'AND i.kind = :kind' : ''} ${q.pinned ? 'AND i.pinned = 1' : ''}
+          ${q.includeRetracted ? '' : 'AND i.invalid_at IS NULL'}
         ORDER BY bm25(items_fts) LIMIT :limit`).all({
-        terms, repo, ...(q.kind ? { kind: q.kind } : {}), limit: Math.min(q.limit ?? LIMITS.tools.search.default, LIMITS.tools.search.max),
-      }) as unknown as ItemRow[]).map((r) => view(r));
+        terms, repo, ...(q.kind ? { kind: q.kind } : {}), limit: Math.min(q.limit ?? LIMITS.tools.search.default, LIMITS.panel.page),
+      }) as unknown as (ItemRow & { eligible: number })[];
+      return rows.map((r) => (q.eligible ? rowView(r) : view(r)));
+    });
+  }
+
+  /**
+   * The panel's browse: the repository's items newest first (updated_at, then id), after `before` when given. pinned
+   * keeps pinned items only; retracted includes retracted ones. Rows are rowView's; next is set when more follow.
+   */
+  list(scope: MemoryScope, q: { kind?: ItemKind; pinned?: boolean; retracted?: boolean; before?: ListCursor; limit?: number }): { items: ItemView[]; next?: ListCursor } {
+    return this.loud(() => {
+      const db = this.db(scope.account, false);
+      const repo = db && this.repo(db, scope, false);
+      if (!db || repo === undefined) return { items: [] };
+      const limit = Math.min(q.limit ?? LIMITS.panel.page, LIMITS.panel.page);
+      // The page's ids first, so ELIGIBLE runs for its rows only.
+      const rows = db.prepare(`SELECT i.*, ${ELIGIBLE} AS eligible FROM items i WHERE i.id IN (SELECT id FROM items WHERE repo_id = :repo
+        ${q.kind ? 'AND kind = :kind' : ''} ${q.pinned ? 'AND pinned = 1' : ''} ${q.retracted ? '' : 'AND invalid_at IS NULL'}
+        ${q.before ? 'AND (updated_at, id) < (:at, :id)' : ''} ORDER BY updated_at DESC, id DESC LIMIT ${limit + 1})
+        ORDER BY i.updated_at DESC, i.id DESC`).all({
+        repo, ...(q.kind ? { kind: q.kind } : {}), ...(q.before ? { at: q.before.updatedAt, id: q.before.id } : {}),
+      }) as unknown as (ItemRow & { eligible: number })[];
+      const items = rows.slice(0, limit).map(rowView), last = items.at(-1);
+      return rows.length > limit && last ? { items, next: { updatedAt: last.updatedAt, id: last.id } } : { items };
+    });
+  }
+
+  /** The repository's live items per kind, its live pins and its retracted items, tombstones included. */
+  counts(scope: MemoryScope): ItemCounts {
+    return this.loud(() => {
+      const counts = noCounts();
+      const db = this.db(scope.account, false);
+      const repo = db && this.repo(db, scope, false);
+      if (!db || repo === undefined) return counts;
+      for (const r of db.prepare('SELECT kind, count(*) AS n FROM items WHERE repo_id = ? AND invalid_at IS NULL GROUP BY kind').all(repo) as { kind: ItemKind; n: number }[]) {
+        counts[r.kind] = Number(r.n);
+      }
+      const r = db.prepare(`SELECT coalesce(sum(invalid_at IS NULL AND pinned = 1), 0) AS pinned, coalesce(sum(invalid_at IS NOT NULL), 0) AS retracted
+        FROM items WHERE repo_id = ?`).get(repo) as { pinned: number; retracted: number };
+      return { ...counts, pinned: Number(r.pinned), retracted: Number(r.retracted) };
+    });
+  }
+
+  /** The file's repositories with their live item counts, oldest first; path is the first path recorded for the key. */
+  repos(account: string | undefined): { key: string; path: string; items: number }[] {
+    return this.loud(() => (this.db(account, false)?.prepare(`SELECT r.key, r.path,
+      (SELECT count(*) FROM items i WHERE i.repo_id = r.id AND i.invalid_at IS NULL) AS items
+      FROM repos r WHERE r.key <> 'account:' ORDER BY r.id`).all() as { key: string; path: string; items: number }[] | undefined ?? [])
+      .map((r) => ({ key: r.key, path: r.path, items: Number(r.items) })));
+  }
+
+  /** One item in full for the panel, with eligible, its newest superseder and the digests that gave it; the read is not counted. */
+  peek(scope: MemoryScope, id: number): MemoryItemDetail {
+    return this.loud(() => {
+      const db = this.db(scope.account, false);
+      const repo = db && this.repo(db, scope, false);
+      const row = db && repo !== undefined
+        ? db.prepare(`SELECT i.*, ${ELIGIBLE} AS eligible FROM items i WHERE i.id = ? AND i.repo_id = ?`).get(id, repo) as (ItemRow & { eligible: number }) | undefined
+        : undefined;
+      if (!db || !row) throw new MemoryError(`no such item ${itemRef(id)}`);
+      // prune: no index on supersedes, so this scans the repository's items; index it in a later schema version if bench M1's item read grows.
+      const by = db.prepare('SELECT id FROM items WHERE supersedes = ? AND repo_id = ? ORDER BY id DESC LIMIT 1').get(id, row.repo_id) as { id: number } | undefined;
+      const givenTo = db.prepare(`SELECT node_id, session_id, arm, ts FROM injections, json_each(item_ids)
+        WHERE json_each.value = ? AND cause <> 'resume' ORDER BY ts DESC, injections.id DESC LIMIT ${LIMITS.panel.givenTo}`).all(id) as
+        { node_id: string; session_id: string; arm: Arm; ts: number }[];
+      return {
+        item: { ...view(row, true), eligible: row.eligible === 1 }, ...(by ? { supersededBy: Number(by.id) } : {}),
+        givenTo: givenTo.map((g) => ({ nodeId: g.node_id, sessionId: g.session_id, arm: g.arm, ts: g.ts })),
+      };
     });
   }
 
@@ -419,14 +509,81 @@ export class MemoryStore implements DigestSource {
         if (!input.unpin && item.text === '') throw new MemoryError(`${itemRef(item.id)} was ${view(item).tombstone}; its text is gone`);
         if (input.unpin) {
           db.prepare('UPDATE items SET pinned = 0, updated_at = ? WHERE id = ?').run(this.now(), item.id);
-          // A text pin exists only as a pin: unpinned, it is the human's retracted note.
-          if (text !== undefined) this.invalidate(db, item.id, 'human', 'human', 'unpinned');
+          // A text pin exists only as a pin: unpinned, by text or by id, it is the human's retracted note.
+          if (isTextPin(item)) this.invalidate(db, item.id, 'human', 'human', 'unpinned');
         } else {
           db.prepare(`UPDATE items SET pinned = 1, updated_at = ?, invalid_at = NULL, invalid_kind = NULL, invalid_by = NULL, invalid_reason = NULL
             WHERE id = ?`).run(this.now(), item.id);
         }
         this.episode(db, repo, { ...scope, nodeId: 'human', rootId: 'human' }, { kind: 'pin', ts: this.now(), data: { itemId: item.id, ...(input.unpin ? { unpin: true } : {}) } });
         return this.item(db, repo, item.id);
+      });
+      return view(row, true);
+    });
+  }
+
+  /**
+   * The human's restore of an item hidden by an agent's or the human's retraction or supersede; pinned stays as it is.
+   * Refuses live items, tombstones, text pins (pinning the text again revives one) and any other kind of hiding.
+   */
+  restore(scope: MemoryScope, actor: Actor, input: { id: number }): ItemView {
+    return this.loud(() => {
+      if (actor.kind !== 'human') throw new MemoryError('only the human can restore');
+      const db = this.db(scope.account, false);
+      const repo = db && this.repo(db, scope, false);
+      if (!db || repo === undefined) throw new MemoryError(`no such item ${itemRef(input.id)}`);
+      const row = tx(db, () => {
+        const item = this.item(db, repo, input.id), ref = itemRef(item.id);
+        if (item.invalid_at === null) throw new MemoryError(`${ref} is not retracted`);
+        if (item.text === '') throw new MemoryError(`${ref} was ${view(item).tombstone}; its text is gone`);
+        if (isTextPin(item)) throw new MemoryError(`${ref} is a text pin; pin it again instead`);
+        // Other kinds (v3's) are undone by their own path, never cleared blindly here.
+        if (!['agent', 'human', 'superseded'].includes(item.invalid_kind!)) throw new MemoryError(`cannot restore a ${item.invalid_kind} item here`);
+        db.prepare('UPDATE items SET invalid_at = NULL, invalid_kind = NULL, invalid_by = NULL, invalid_reason = NULL WHERE id = ?').run(item.id);
+        this.episode(db, repo, { ...scope, ...this.episodeScope(actor) }, { kind: 'restore', ts: this.now(), data: { itemId: item.id, actor: 'human' } });
+        return this.item(db, repo, item.id);
+      });
+      return view(row, true);
+    });
+  }
+
+  /**
+   * The human's edit of their own text pin O to new text: the pin of that text (its PIN: row revived when one exists,
+   * else inserted) supersedes O, which is unpinned and hidden as superseded. Pinning O's text again revives O.
+   */
+  editPin(scope: MemoryScope, actor: Actor, input: { id: number; text: string }): ItemView {
+    return this.loud(() => {
+      if (actor.kind !== 'human') throw new MemoryError('only the human can pin');
+      const text = redact(input.text.trim());
+      if (!text || text.length > LIMITS.tools.pinText) throw new MemoryError(`text must be 1-${LIMITS.tools.pinText} characters`);
+      const db = this.db(scope.account, false);
+      const repo = db && this.repo(db, scope, false);
+      if (!db || repo === undefined) throw new MemoryError(`no such item ${itemRef(input.id)}`);
+      const row = tx(db, () => {
+        const old = this.item(db, repo, input.id);
+        if (old.invalid_at !== null || !old.pinned || old.author !== 'human' || !isTextPin(old)) {
+          throw new MemoryError('only your own text pins can be edited; pin new text instead');
+        }
+        const dedupe = pinDedupe(text);
+        if (dedupe === old.dedupe) throw new MemoryError('unchanged');
+        const now = this.now();
+        // One row per PIN: key: revive it whatever its state, so the edit never hits the UNIQUE constraint.
+        const found = db.prepare(`SELECT * FROM items WHERE repo_id = ? AND kind = 'note' AND dedupe = ?`).get(repo, dedupe) as ItemRow | undefined;
+        if (found && found.invalid_at === null && found.pinned) throw new MemoryError(`already pinned as ${itemRef(found.id)}`);
+        let id: number;
+        if (found) {
+          db.prepare(`UPDATE items SET text = ?, body = '', pinned = 1, updated_at = ?,
+            invalid_at = NULL, invalid_kind = NULL, invalid_by = NULL, invalid_reason = NULL WHERE id = ?`).run(text, now, found.id);
+          id = found.id;
+        } else {
+          id = Number((db.prepare(`INSERT INTO items (repo_id, kind, text, author, dedupe, pinned, created_at, updated_at)
+            VALUES (?, 'note', ?, 'human', ?, 1, ?, ?) RETURNING id`).get(repo, text, dedupe, now, now) as { id: number }).id);
+        }
+        db.prepare('UPDATE items SET supersedes = ? WHERE id = ?').run(old.id, id);
+        db.prepare('UPDATE items SET pinned = 0, updated_at = ? WHERE id = ?').run(now, old.id);
+        this.invalidate(db, old.id, 'superseded', 'human', `edited as ${itemRef(id)}`);
+        this.episode(db, repo, { ...scope, nodeId: 'human', rootId: 'human' }, { kind: 'pin', ts: now, data: { itemId: id } });
+        return this.item(db, repo, id);
       });
       return view(row, true);
     });
@@ -508,11 +665,15 @@ export class MemoryStore implements DigestSource {
     }
   }
 
+  /**
+   * Log once per key and reason: an expected condition (a string reason, or Unavailable) as one line, anything else as
+   * the error itself, so the stack printed is the failure's own.
+   */
   private report(key: string, err: unknown): void {
-    const reason = (err as Error)?.message ?? String(err);
+    const reason = typeof err === 'string' ? err : (err as Error)?.message ?? String(err);
     if (this.logged.has(`${key}\0${reason}`)) return;
     this.logged.add(`${key}\0${reason}`);
-    this.log(new Error(`memory${key ? ` (${key})` : ''}: ${reason}`));
+    this.log(typeof err === 'string' || err instanceof Unavailable ? `memory${key ? ` (${key})` : ''}: ${reason}` : err);
   }
 
   /** Tool-facing: MemoryError as written, anything else as "memory is unavailable: <reason>". */
@@ -556,7 +717,7 @@ export class MemoryStore implements DigestSource {
         throw err;
       }
       const aside = this.quarantine(key);
-      this.report(key, new Error(`${file} is corrupt (${(err as Error).message}); moved it to ${aside}`));
+      this.report(key, `${file} is corrupt (${(err as Error).message}); moved it to ${aside}`);
       if (!create) return undefined;
       db = this.openFile(sqlite, file, true);
     }
@@ -730,10 +891,10 @@ export class MemoryStore implements DigestSource {
   /** wal_checkpoint(TRUNCATE), logging when a reader kept it from finishing (the WAL then still holds old pages). */
   private checkpoint(db: DatabaseSync, key: string): void {
     const r = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy: number; log: number; checkpointed: number };
-    if (r.busy) this.report(key, new Error(`wal_checkpoint(TRUNCATE) was blocked by another reader (${r.checkpointed} of ${r.log} frames)`));
+    if (r.busy) this.report(key, `wal_checkpoint(TRUNCATE) was blocked by another reader (${r.checkpointed} of ${r.log} frames)`);
   }
 
-  private statusOf(key: string): MemoryDbStatus {
+  private statusOf(key: string, brief = false): MemoryDbStatus {
     const path = this.fileOf(key);
     let quarantined: string[] = [];
     try {
@@ -748,8 +909,9 @@ export class MemoryStore implements DigestSource {
       return { ...base, state: `${down?.state ?? (this.off ? 'off' : 'broken')}: ${(err as Error).message}` };
     }
     if (!db) return { ...base, state: 'missing' };
+    if (brief) return { ...base, state: 'ok' }; // opening read user_version, which a corrupt header fails
     try {
-      const count = (sql: string) => Number((db.prepare(sql).get() as { n: number }).n);
+      const count =(sql: string) => Number((db.prepare(sql).get() as { n: number }).n);
       const items = Object.fromEntries(ITEM_KINDS.map((k) => [k, 0])) as Record<ItemKind, number>;
       for (const r of db.prepare('SELECT kind, count(*) AS n FROM items WHERE invalid_at IS NULL GROUP BY kind').all() as { kind: ItemKind; n: number }[]) items[r.kind] = Number(r.n);
       const size = (f: string) => { try { return statSync(f).size; } catch { return 0; } };
@@ -797,7 +959,7 @@ export class MemoryStore implements DigestSource {
       this.checkpoint(db, key);
       if (used(db) > limit) {
         this.overLimit.add(key);
-        this.report(key, new Error(`over memory.maxMB (${maxMB}) after eviction`));
+        this.report(key, `over memory.maxMB (${maxMB}) after eviction`);
       } else {
         this.overLimit.delete(key);
       }

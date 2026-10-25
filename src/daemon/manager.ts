@@ -63,7 +63,7 @@ const SHUTDOWN_WAIT_MS = 7000;
 export const cutOffText = (reason: string) => `The tiller daemon restarted (${reason}) while your turn was running, so that turn was cut off. Your conversation is intact, but the last tool call may not have finished. Check where you were, for example with git status and the commands you last ran, then continue the task.`;
 
 /** `cwd`, or the main checkout when it was a worktree since removed; undefined when neither exists. */
-function usableCwd(cwd: string): string | undefined {
+export function usableCwd(cwd: string): string | undefined {
   if (existsSync(cwd)) return cwd;
   const at = cwd.indexOf(`${sep}${wt.WORKTREES_DIR}${sep}`), repo = at >= 0 ? cwd.slice(0, at) : undefined;
   return repo && existsSync(repo) ? repo : undefined;
@@ -210,7 +210,7 @@ export class NodeManager extends EventEmitter {
   private drainState?: { reason: string; exclude?: string; force?: boolean; lease: NodeJS.Timeout };
   /** projectDir's main checkout of each cwd outside a worktree node. */
   private projectDirs = new Map<string, string>();
-  /** Memory's repo key of each project dir (repoKeySync), computed on first use. */
+  /** Memory's repo key of each directory (repoKeyOf), computed on first use. */
   private repoKeys = new Map<string, string>();
   /** Memory's store. It opens nothing until memory is used, and memory is off unless the human opts in. */
   readonly memory: MemoryStore;
@@ -411,9 +411,14 @@ export class NodeManager extends EventEmitter {
     const rec = this.registry.get(id);
     if (!rec || !isAgentKind(rec.kind)) return undefined;
     const repoPath = this.projectDir(rec);
-    let repoKey = this.repoKeys.get(repoPath);
-    if (repoKey === undefined) this.repoKeys.set(repoPath, repoKey = wt.repoKeySync(repoPath));
-    return { account: rec.account, repoKey, repoPath, nodeId: id, rootId: this.rootIdOf(id), harness: harnessFor(rec), model: rec.model, role: rec.role, profile: rec.profile };
+    return { account: rec.account, repoKey: this.repoKeyOf(repoPath), repoPath, nodeId: id, rootId: this.rootIdOf(id), harness: harnessFor(rec), model: rec.model, role: rec.role, profile: rec.profile };
+  }
+
+  /** Memory's repo key for a directory (repoKeySync), cached for the daemon's life: one git call per directory. */
+  repoKeyOf(dir: string): string {
+    let repoKey = this.repoKeys.get(dir);
+    if (repoKey === undefined) this.repoKeys.set(dir, repoKey = wt.repoKeySync(dir));
+    return repoKey;
   }
 
   /** Throw when an agent's spawn would pass limits.maxDepth or maxChildren (from the node's project config) or daemon.maxLiveNodes (home config). */
