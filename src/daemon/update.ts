@@ -92,11 +92,12 @@ export function githubReleases(request: typeof fetch = fetch): ReleaseSource {
 const ancestor = async (repo: string, a: string, b: string) => (await tryGit(repo, 'merge-base', '--is-ancestor', a, b)) !== undefined;
 async function safeCheckout(repo: string): Promise<{ reason: string; blocker?: UpdateStatus['blocker'] } | undefined> {
   if (await tryGit(repo, 'symbolic-ref', '--short', '-q', 'HEAD') !== 'main') return { reason: 'The primary checkout must be on main to update. Switch it to main, then check releases again.' };
-  const common = await git(repo, 'rev-parse', '--git-common-dir');
-  const dir = await git(repo, 'rev-parse', '--git-dir');
+  const operations = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'BISECT_LOG'];
+  // rev-parse prints one line per option, in order.
+  const [common, dir, ...paths] = (await git(repo, 'rev-parse', '--git-common-dir', '--git-dir', ...operations.flatMap((name) => ['--git-path', name]))).split('\n');
   if (resolve(repo, common) !== resolve(repo, dir)) return { reason: 'updates require the primary checkout, not a linked worktree' };
-  for (const name of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'BISECT_LOG'])
-    if (existsSync(resolve(repo, await git(repo, 'rev-parse', '--git-path', name)))) return { reason: 'a git operation is in progress' };
+  if (paths.length !== operations.length) throw new Error('unexpected git rev-parse output');
+  if (paths.some((p) => existsSync(resolve(repo, p)))) return { reason: 'a git operation is in progress' };
   if (await git(repo, 'status', '--porcelain', '--untracked-files=all')) return { blocker: 'dirty', reason: 'The main checkout is not clean: it contains uncommitted or untracked files. Move or stash those changes (including untracked files), then check releases again.' };
 }
 async function remoteTag(repo: string, origin: string, tag: string): Promise<string> {
@@ -123,7 +124,53 @@ async function releaseTransport(repo: string, origin: string, repository: string
   // Feed Git the original URL so it applies exactly the one rewrite validated above.
   return origin;
 }
-export async function checkUpdate(repo: string, source: ReleaseSource = githubReleases(), notesSince?: string): Promise<UpdateStatus> {
+/** The releases resolved against one checkout HEAD: the part of a check that fetches tags. */
+interface ResolvedHistory {
+  target: ReleaseUpdate; releases: ReleaseUpdate[]; currentVersion?: string; installedNotes?: InstalledReleaseNotes;
+  /** HEAD is an ancestor of the target. */
+  fastForward: boolean;
+  /** False when the installed notes could not be resolved, so a later check must try again. */
+  complete: boolean;
+}
+/**
+ * One check's history, kept for the next: a check that finds the same HEAD, origin, transport, published releases and
+ * notes baseline reuses it instead of fetching every tag again. The checkout state and lock are always read afresh.
+ */
+export interface CheckMemo { key?: string; history?: ResolvedHistory }
+async function resolveHistory(repo: string, transport: string, repository: string, rows: PublishedRelease[], sha: string, notesSince?: string): Promise<ResolvedHistory> {
+  const target = await resolveRelease(repo, transport, rows[0]);
+  const releases: ReleaseUpdate[] = [];
+  let currentVersion: string | undefined;
+  let currentRelease: ReleaseUpdate | undefined;
+  for (const row of rows) {
+    const r = row.id === target.id ? target : await resolveRelease(repo, transport, row);
+    if (await ancestor(repo, r.sha, sha)) { currentVersion = r.tag; currentRelease = r; break; }
+    if (!(await ancestor(repo, r.sha, target.sha))) throw new Error(`${r.tag} is not in the latest release history`);
+    releases.push(r);
+  }
+  // An ancestor tag describes development ancestry, not an installed release.
+  // Only an exact runtime checkout can produce post-install notes.
+  let installedNotes: InstalledReleaseNotes | undefined;
+  let complete = true;
+  try {
+    if (notesSince && notesSince !== sha && await ancestor(repo, notesSince, sha)) {
+      const pinned = currentRelease;
+      if (pinned?.sha === sha) {
+        const missed: ReleaseUpdate[] = [];
+        for (const row of rows.filter((r) => compareVersions(r.tag, pinned.tag) <= 0)) {
+          const r = row.id === pinned.id ? pinned : await resolveRelease(repo, transport, row);
+          if (await ancestor(repo, r.sha, notesSince)) break;
+          if (!(await ancestor(repo, r.sha, sha))) throw new Error(`${r.tag} is not in the installed release history`);
+          missed.push(r);
+        }
+        installedNotes = { identity: createHash('sha256').update(JSON.stringify([repository, missed])).digest('hex'), releases: missed };
+      }
+    }
+  } catch { complete = false; /* Incomplete installed history waits for a later check; future update validation is independent. */ }
+  return { target, releases, currentVersion, installedNotes, fastForward: await ancestor(repo, sha, target.sha), complete };
+}
+/** `common` is the checkout's Git common directory when the caller already knows it. */
+export async function checkUpdate(repo: string, source: ReleaseSource = githubReleases(), notesSince?: string, o: { memo?: CheckMemo; common?: string } = {}): Promise<UpdateStatus> {
   const sha = await tryGit(repo, 'rev-parse', 'HEAD') ?? '';
   const base: UpdateStatus = { sha, checkedAt: Date.now(), eligible: false, releases: [] };
   try {
@@ -134,39 +181,18 @@ export async function checkUpdate(repo: string, source: ReleaseSource = githubRe
     const rows = (await source.list(repository)).sort((a, b) => compareVersions(b.tag, a.tag));
     if (!rows.length) return { ...base, reason: 'no published stable releases' };
     if (new Set(rows.map((r) => r.tag)).size !== rows.length) throw new Error('duplicate release tags');
-    const target = await resolveRelease(repo, transport, rows[0]);
-    const releases: ReleaseUpdate[] = [];
-    let currentVersion: string | undefined;
-    let currentRelease: ReleaseUpdate | undefined;
-    for (const row of rows) {
-      const r = row.id === target.id ? target : await resolveRelease(repo, transport, row);
-      if (await ancestor(repo, r.sha, sha)) { currentVersion = r.tag; currentRelease = r; break; }
-      if (!(await ancestor(repo, r.sha, target.sha))) throw new Error(`${r.tag} is not in the latest release history`);
-      releases.push(r);
+    const key = JSON.stringify([sha, origin, transport, rows, notesSince]);
+    let history = o.memo?.key === key ? o.memo.history : undefined;
+    if (!history) {
+      history = await resolveHistory(repo, transport, repository, rows, sha, notesSince);
+      if (o.memo) { o.memo.key = history.complete ? key : undefined; o.memo.history = history; }
     }
-    // An ancestor tag describes development ancestry, not an installed release.
-    // Only an exact runtime checkout can produce post-install notes.
-    let installedNotes: InstalledReleaseNotes | undefined;
-    try {
-      if (notesSince && notesSince !== sha && await ancestor(repo, notesSince, sha)) {
-        const pinned = currentRelease;
-        if (pinned?.sha === sha) {
-          const missed: ReleaseUpdate[] = [];
-          for (const row of rows.filter((r) => compareVersions(r.tag, pinned.tag) <= 0)) {
-            const r = row.id === pinned.id ? pinned : await resolveRelease(repo, transport, row);
-            if (await ancestor(repo, r.sha, notesSince)) break;
-            if (!(await ancestor(repo, r.sha, sha))) throw new Error(`${r.tag} is not in the installed release history`);
-            missed.push(r);
-          }
-          installedNotes = { identity: createHash('sha256').update(JSON.stringify([repository, missed])).digest('hex'), releases: missed };
-        }
-      }
-    } catch { /* Incomplete installed history waits for a later check; future update validation is independent. */ }
+    const { target, releases, currentVersion, installedNotes, fastForward } = history;
     const checkout = await safeCheckout(repo);
-    const holder = lockHolder(repo);
+    const holder = lockFileHolder(resolve(repo, o.common ?? await git(repo, 'rev-parse', '--git-common-dir'), UPDATE_LOCK));
     const reason = checkout?.reason
       ?? (holder?.stale ? `an interrupted update (pid ${holder.pid}, no longer running) left ${holder.path}; inspect update.log and the checkout, then remove the lock` : undefined)
-      ?? (!(await ancestor(repo, sha, target.sha)) ? 'local or unreleased commits; latest release cannot fast-forward this checkout' : undefined)
+      ?? (!fastForward ? 'local or unreleased commits; latest release cannot fast-forward this checkout' : undefined)
       ?? (currentVersion && compareVersions(target.tag, currentVersion) < 0 ? 'latest release would downgrade this checkout' : undefined);
     return { ...base, repository, origin, target, currentVersion, releases, installedNotes, eligible: !reason, reason, blocker: checkout?.blocker };
   } catch (e) { return { ...base, reason: 'release check unavailable; try again later', fetchError: (e as Error).message }; }
@@ -321,20 +347,26 @@ export interface UpdaterCheckout {
   head: string;
   /** The GitHub repository named by origin, or '' without one. */
   repository: string;
-  check(source: ReleaseSource, notesSince?: string): Promise<UpdateStatus>;
+  /** `reuse` lets an unchanged release list and HEAD skip fetching the release tags again; see CheckMemo. */
+  check(source: ReleaseSource, notesSince?: string, reuse?: boolean): Promise<UpdateStatus>;
   isAncestor(a: string, b: string): Promise<boolean>;
   lockHolder(): LockHolder | undefined;
 }
 export function gitCheckout(repo: string): UpdaterCheckout {
+  const read = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   let head = '';
-  try { head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { /* No checkout: release checks stay unavailable. */ }
+  try { head = read('rev-parse', 'HEAD'); } catch { /* No checkout: release checks stay unavailable. */ }
   let repository = '';
-  try { repository = githubRepo(execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) ?? ''; } catch { /* No origin: release discovery remains unavailable. */ }
+  try { repository = githubRepo(read('config', '--get', 'remote.origin.url')) ?? ''; } catch { /* No origin: release discovery remains unavailable. */ }
+  let common: string | undefined;
+  try { common = resolve(repo, read('rev-parse', '--git-common-dir')); } catch { /* No checkout: lockHolder looks again and throws. */ }
+  let memo: CheckMemo = {};
   return {
     head, repository,
-    check: (source, notesSince) => checkUpdate(repo, source, notesSince),
+    // A full check starts a new memo, so it never serves what an earlier check resolved.
+    check: (source, notesSince, reuse) => checkUpdate(repo, source, notesSince, { memo: reuse ? memo : (memo = {}), common }),
     isAncestor: (a, b) => ancestor(repo, a, b),
-    lockHolder: () => lockHolder(repo),
+    lockHolder: () => common ? lockFileHolder(resolve(common, UPDATE_LOCK)) : lockHolder(repo),
   };
 }
 
@@ -379,17 +411,18 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
       if (live && !applying) set({ ...status, eligible: false, blocker: undefined, reason: `another update${live.pid ? ` (pid ${live.pid})` : ''} holds ${live.path}; release checks resume after it finishes` });
       schedule(); return;
     }
-    void check().catch(() => { /* check publishes a recoverable failure and schedules a retry. */ });
+    void check(true).catch(() => { /* check publishes a recoverable failure and schedules a retry. */ });
   };
   const set = (s: UpdateStatus) => { status = { ...s, installedNotes: unread(), runtimeSha, checking: !!checking, applying }; o.onChange(status); return status; };
-  const check = () => {
+  /** `reuse`: an automatic poll, which may skip resolving an unchanged release history again. Others check in full. */
+  const check = (reuse = false) => {
     if (checking) return checking;
     if (applying || unavailable) return Promise.resolve(status);
     const perform = async () => {
       notes = readNotes(notesPath, repository, runtimeSha);
       const observed = JSON.stringify(notes);
       const previousInstalled = notes.unread?.releases[0].sha;
-      const s = await checkout.check(source, notes.baselineSha);
+      const s = await checkout.check(source, notes.baselineSha, reuse);
       const canAdvance = !previousInstalled || await checkout.isAncestor(previousInstalled, runtimeSha);
       notes = await notesTransaction(notesPath, () => {
         const current = readNotes(notesPath, repository, runtimeSha);
@@ -417,7 +450,7 @@ export function createUpdater(o: { repo: string; home: string; onChange(s: Updat
     status: () => {
       try { notes = readNotes(notesPath, repository, runtimeSha); } catch { /* Retain proven state on an unreadable file. */ }
       return status = { ...status, installedNotes: unread() };
-    }, check,
+    }, check: () => check(),
     async acknowledgeNotes(identity: string) {
       notes = await notesTransaction(notesPath, () => {
         const current = readNotes(notesPath, repository, runtimeSha);

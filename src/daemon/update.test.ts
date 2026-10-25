@@ -61,7 +61,7 @@ function setupFake() {
     install(tag: string) { checkout.commit(); checkout.release(tag); checkout.head = tags.get(tag)!; },
     isAncestor: async (a: string, b: string) => ancestor(a, b),
     lockHolder: () => lockFileHolder(join(dir, 'update.lock')),
-    async check(source: ReleaseSource, notesSince?: string): Promise<UpdateStatus> {
+    async check(source: ReleaseSource, notesSince?: string, _reuse?: boolean): Promise<UpdateStatus> {
       const sha = checkout.head, base: UpdateStatus = { sha, checkedAt: Date.now(), eligible: false, releases: [] };
       try {
         const published = (await source.list(checkout.repository)).sort((a, b) => compareVersions(b.tag, a.tag))
@@ -436,6 +436,37 @@ describe('installed unread release notes', () => {
   });
 });
 
+describe('repeated checks of a Git checkout', () => {
+  beforeEach(setupCheckout);
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  it('reuses the resolved releases while the list and HEAD are unchanged, reading the checkout afresh each time', async () => {
+    commit('two'); release('v0.1.1');
+    const checkout = gitCheckout(work);
+    const first = await checkout.check(source, undefined, true);
+    expect(first).toMatchObject({ eligible: true, target: { tag: 'v0.1.1' } });
+    // With the remote gone, only a check that fetches no tags still succeeds.
+    renameSync(join(dir, 'origin.git'), join(dir, 'gone.git'));
+    const { checkedAt: _, ...same } = first;
+    expect(await checkout.check(source, undefined, true)).toMatchObject(same);
+    writeFileSync(join(work, 'local'), 'keep');
+    expect(await checkout.check(source, undefined, true)).toMatchObject({ eligible: false, blocker: 'dirty', target: first.target });
+    rmSync(join(work, 'local'));
+    writeFileSync(join(work, '.git/update.lock'), JSON.stringify({ pid: spawnSync('true').pid }));
+    expect((await checkout.check(source, undefined, true)).reason).toContain('interrupted update');
+    rmSync(join(work, '.git/update.lock'));
+    expect(await checkout.check(source)).toMatchObject({ eligible: false, fetchError: expect.any(String) }); // a full check fetches
+    renameSync(join(dir, 'gone.git'), join(dir, 'origin.git'));
+    expect(await checkout.check(source, undefined, true)).toMatchObject(same); // and leaves nothing to reuse until it succeeds
+    renameSync(join(dir, 'origin.git'), join(dir, 'gone.git'));
+    publish('v0.1.2');
+    expect(await checkout.check(source, undefined, true)).toMatchObject({ fetchError: expect.any(String) }); // a new release
+    rows.pop();
+    expect(await checkout.check(source, undefined, true)).toMatchObject(same);
+    git(work, 'commit', '-q', '--allow-empty', '-m', 'local');
+    expect(await checkout.check(source, undefined, true)).toMatchObject({ fetchError: expect.any(String) }); // a new HEAD
+  });
+});
+
 describe('installed unread release notes state', () => {
   let fake: ReturnType<typeof setupFake>;
   beforeEach(() => { fake = setupFake(); });
@@ -595,6 +626,16 @@ describe('automatic discovery while a UI is connected', () => {
     expect(changed.mock.calls.map(([s]) => s.checking)).toEqual([true, false]);
     expect(changed.mock.calls[1][0].fetchError).toBe(fail ? 'offline' : undefined);
     expect(list).toHaveBeenCalledTimes(2);
+  });
+  it('lets only automatic polls reuse a resolved release history', async () => {
+    fakeClock();
+    const check = vi.spyOn(fake, 'check');
+    const { updater, tick } = setup();
+    updater.start(); await tick(0);
+    await tick(UPDATE_CHECK_INTERVAL);
+    await updater.check();
+    expect(check.mock.calls.map((c) => c[2])).toEqual([true, true, false]);
+    updater.stop();
   });
   it('clears progress after a notes-state error before discovery starts', async () => {
     const { updater, changed, list } = setup();

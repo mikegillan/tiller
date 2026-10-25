@@ -123,6 +123,25 @@ describe('worktree nodes', () => {
     expect(g(repo, 'branch', '--list', branch)).toBe('');
   });
 
+  it('judges kept branches against the main checkout: in it, patch-equivalent to it, or unmerged', async () => {
+    setup();
+    const [merged, picked, open] = ['tl/n-aaaaaaa1', 'tl/n-aaaaaaa2', 'tl/n-aaaaaaa3'];
+    g(repo, 'branch', merged);
+    for (const b of [picked, open]) {
+      g(repo, 'checkout', '-q', '-b', b, 'dev');
+      commit(repo, `${b.slice(-1)}.txt`);
+    }
+    g(repo, 'checkout', '-q', 'dev');
+    commit(repo, 'later.txt');
+    g(repo, 'cherry-pick', picked);
+    expect((await m.worktrees({ cwd: repo })).kept).toEqual([
+      { repo, branch: merged, unmerged: [] },
+      { repo, branch: picked, unmerged: [] },
+      { repo, branch: open, unmerged: [expect.stringContaining('add 3.txt')] },
+    ]);
+    expect((await m.worktrees({ cwd: repo, clean: 'safe' })).kept.map((k) => k.branch)).toEqual([open]);
+  });
+
   it('close discard removes the worktree and the branch with their work', async () => {
     setup();
     const v = await spawnW();
@@ -349,6 +368,24 @@ describe('git state and merge', () => {
     });
     expect(d.files[2]!.patch).toMatch(/^diff --git a\/new.txt b\/new.txt\n[^]*@@ -0,0 \+1,2 @@\n\+one\n\+two\n$/);
     expect(g(v.cwd, 'status', '--porcelain')).toBe('D  gone.txt\n?? new.txt');
+  });
+
+  it('counts the files git status lists as dirty, writing no objects into the repo', async () => {
+    setup();
+    commit(repo, 'gone.txt');
+    commit(repo, 'staged.txt');
+    const v = await spawnW();
+    const w = m.registry.get(v.id)!.worktree!;
+    writeFileSync(join(v.cwd, 'README'), 'modified\n');
+    writeFileSync(join(v.cwd, 'new.txt'), 'untracked\n');
+    rmSync(join(v.cwd, 'gone.txt'));
+    writeFileSync(join(v.cwd, 'staged.txt'), 'staged\n');
+    g(v.cwd, 'add', 'staged.txt');
+    const objects = () => g(repo, 'count-objects', '-v');
+    const before = objects();
+    expect(g(v.cwd, 'status', '--porcelain').split('\n').map((l) => l.trim())).toEqual(['M README', 'D gone.txt', 'M  staged.txt', '?? new.txt']);
+    expect(await wt.diffStat(w)).toEqual({ additions: 3, deletions: 3, dirty: 4 });
+    expect(objects()).toBe(before);
   });
 
   it('shutdown waits for the git refresh in flight and the PTY exits, so the home can go', async () => {
