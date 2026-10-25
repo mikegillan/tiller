@@ -135,6 +135,7 @@ function stateOf(m: Mgr): State {
     for (const i of [...(st.inbox.get(id) ?? [])]) takeInbox(st, id, i.msg.id, { outcome: 'gone', retryable: false, detail: 'target was closed' });
     st.inbox.delete(id);
     st.seen.delete(id);
+    for (const pairs of [st.last, st.sent, st.loopNoticed]) for (const k of pairs.keys()) if (k.split('\0').includes(id)) pairs.delete(k);
     kick(id);
   });
   return st;
@@ -143,7 +144,9 @@ function stateOf(m: Mgr): State {
 /** Serialize work per target so two deliveries never race for one idle composer. */
 function locked<T>(s: State, to: string, fn: () => Promise<T>): Promise<T> {
   const run = (s.locks.get(to) ?? Promise.resolve()).then(fn);
-  s.locks.set(to, run.catch(() => {}));
+  const tail = run.catch(() => {});
+  s.locks.set(to, tail);
+  void tail.then(() => { if (s.locks.get(to) === tail) s.locks.delete(to); }); // nothing queued behind it
   return run;
 }
 

@@ -94,14 +94,14 @@ describe('dndActive', () => {
 describe('createNotifier', () => {
   const setup = (watchers = 0, opts: { nodes?: NodeView[]; cfg?: Partial<Notifications>; dnd?: Dnd; native?: NotifierDeps['notifyNative'] } = {}) => {
     const calls: string[][] = [], logs: string[] = [];
-    let t = 1000, w = watchers;
+    let t = 1000, w = watchers, reads = 0;
     const nodes = opts.nodes ?? [node('api', { state: 'blocked', activity: 'needs approval: Bash ls' })];
     const notify = createNotifier({
-      view: (id) => nodes.find((n) => n.id === id), tree: () => nodes, config: () => ({ ...DEFAULTS, ...opts.cfg }), dnd: () => opts.dnd ?? { on: false },
+      view: (id) => nodes.find((n) => n.id === id), tree: () => (reads++, nodes), config: () => (reads++, { ...DEFAULTS, ...opts.cfg }), dnd: () => opts.dnd ?? { on: false },
       watchers: () => w, appConnected: () => false, notifyNative: opts.native, terminalNotifier: '/bin/tn', onClick: (id) => id,
       run: (_f, a) => calls.push(a), now: () => t, log: (l) => logs.push(l),
     } satisfies NotifierDeps);
-    return { calls, logs, notify, tick: (ms: number) => { t += ms; }, watch: (n: number) => { w = n; } };
+    return { calls, logs, notify, tick: (ms: number) => { t += ms; }, watch: (n: number) => { w = n; }, reads: () => reads };
   };
   const ev = (kind: 'needsYou' | 'done' | 'errored' | 'exited', id = 'n1') => ({ id, kind, title: 'api' }) as const;
 
@@ -352,7 +352,7 @@ describe('createNotifier', () => {
     s.notify(ev('done', 'r'));
     expect(s.calls).toHaveLength(0);
     nodes.pop();
-    s.notify.observe(root); // the removed listener rechecks surviving roots
+    s.notify.recheck(root); // the removed listener rechecks surviving roots
     expect(s.calls[0]).toContain('tree session finished: 1 succeeded, 0 failed');
   });
 
@@ -376,4 +376,45 @@ describe('createNotifier', () => {
     expect(s.calls).toHaveLength(3);
   });
 
+  it('observe skips a node event that changes nothing a tree summary reads; recheck always runs', () => {
+    const root = node('session', { state: 'working', activity: 'Bash ls' }, { id: 'r', sessionId: 's1' });
+    const s = setup(0, { nodes: [root] });
+    s.notify.observe(root);
+    const reads = s.reads();
+    expect(reads).toBeGreaterThan(0);
+    root.status = { ...root.status, activity: 'Edit a.ts', changedAt: 5 }; // PreToolUse/PostToolUse churn
+    s.notify.observe(root);
+    s.notify.observe({ ...root });
+    expect(s.reads()).toBe(reads);
+    s.notify.recheck(root);
+    expect(s.reads()).toBeGreaterThan(reads);
+    for (const change of [
+      () => { root.status = { ...root.status, state: 'done' }; },
+      () => { root.status = { ...root.status, exited: true }; },
+      () => { root.gate = 'running'; },
+      () => { root.pending = { after: [], afterSuccess: [], met: [] }; },
+      () => { root.outcome = { outcome: 'succeeded', at: 1 }; },
+      () => { root.sessionId = 's2'; },
+    ]) {
+      const before = s.reads();
+      change();
+      s.notify.observe(root);
+      expect(s.reads()).toBeGreaterThan(before);
+    }
+  });
+
+  it('forget drops a removed node\'s throttle and observation state', () => {
+    const s = setup();
+    s.notify(ev('needsYou'));
+    s.notify(ev('needsYou'));
+    expect(s.calls).toHaveLength(1); // throttled
+    const n = node('api', { state: 'blocked' });
+    s.notify.observe(n);
+    s.notify.forget('n1');
+    s.notify(ev('needsYou'));
+    expect(s.calls).toHaveLength(2);
+    const reads = s.reads();
+    s.notify.observe(n);
+    expect(s.reads()).toBeGreaterThan(reads);
+  });
 });

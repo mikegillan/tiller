@@ -82,14 +82,20 @@ export function notifyArgs(c: Content, id: string, d: Pick<NotifierDeps, 'termin
 }
 
 const failed = (v: NodeView) => !!v.status.errored || v.outcome?.outcome === 'failed';
+/** Everything of one node that summarize reads to decide new work or completion. */
+const summaryInputs = (v: NodeView) => [v.status.state, !!v.status.exited, v.gate, !!v.pending, v.outcome, v.sessionId];
 
 /**
  * Returns the 'notify' listener. Nothing is sent for a muted node, during do not disturb, or for a node a focused client
  * is looking at; then the notifications config picks banner, sound or silent; individual events are throttled to one per node and kind every 5 s.
  * With treeDoneSummary, agent done and exited are replaced by one notification per completed work cycle.
+ * observe skips a node event that changed none of summaryInputs; recheck always runs; forget drops a removed node's state.
  */
-export function createNotifier(d: NotifierDeps): ((n: NotifyEvent) => void) & { observe(node: NodeView): void } {
+export function createNotifier(d: NotifierDeps): ((n: NotifyEvent) => void) & {
+  observe(node: NodeView): void; recheck(node: NodeView): void; forget(id: string): void;
+} {
   const last = new Map<string, number>();
+  const seen = new Map<string, unknown[]>();
   /** Roots whose finish has been announced, until one of their agents starts new work. */
   const announced = new Set<string>();
   const active = new Set<string>();
@@ -166,8 +172,21 @@ export function createNotifier(d: NotifierDeps): ((n: NotifyEvent) => void) & { 
     }
     post(n.id, n.kind, n.kind, content(node, n.kind, root.title), now);
   };
+  const recheck = (node: NodeView) => summarize(node.id, (d.now ?? Date.now)());
   // Working, pending, restart and gate transitions do not emit notification events.
-  return Object.assign(notify, { observe: (node: NodeView) => summarize(node.id, (d.now ?? Date.now)()) });
+  const observe = (node: NodeView) => {
+    const inputs = summaryInputs(node), prev = seen.get(node.id);
+    seen.set(node.id, inputs);
+    if (!prev?.every((x, i) => x === inputs[i])) recheck(node);
+  };
+  const forget = (id: string) => {
+    for (const k of last.keys()) if (k.startsWith(`${id}:`)) last.delete(k);
+    seen.delete(id);
+    observed.delete(id);
+    announced.delete(id);
+    active.delete(id);
+  };
+  return Object.assign(notify, { observe, recheck, forget });
 }
 
 /** First executable named `name` on `path`, else undefined. */

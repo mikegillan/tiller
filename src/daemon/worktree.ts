@@ -5,7 +5,7 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { closeSync, existsSync, openSync, realpathSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { Diff, DiffFile, Worktree } from '../shared/protocol.js';
 import type { MergeStyle } from './config.js';
@@ -171,7 +171,16 @@ export async function unmergedCommits(repo: string, branch: string, base: string
   const target = await resolveBase(repo, base, baseSha);
   if (await isAncestor(repo, branch, target)) return [];
   if (!(await hasCommits(repo, branch, baseSha))) return [];
-  return (await git(repo, ['cherry', '-v', target, branch])).split('\n').filter((l) => l.startsWith('+ ')).map((l) => l.slice(2));
+  return cherry(repo, target, branch);
+}
+
+/** The branch's commits with no patch-equivalent commit in `target`, as "sha subject" lines. */
+export const cherry = async (repo: string, target: string, branch: string) =>
+  (await git(repo, ['cherry', '-v', target, branch])).split('\n').filter((l) => l.startsWith('+ ')).map((l) => l.slice(2));
+
+/** Local branches whose tip is an ancestor of `commit`. */
+export async function mergedBranches(repo: string, commit: string): Promise<string[]> {
+  return (await git(repo, ['for-each-ref', '--format=%(refname:short)', '--merged', commit, 'refs/heads/'])).split('\n').filter(Boolean);
 }
 
 const resolveBase = (repo: string, base: string, baseSha: string) =>
@@ -182,25 +191,41 @@ const isAncestor = (repo: string, a: string, b: string) => git(repo, ['merge-bas
 /** Patch text a diff carries before the remaining files are listed without one. */
 export const MAX_PATCH_BYTES = 2 << 20;
 
+/** A worktree's index file and object directory, by worktree path; neither moves while the worktree exists. */
+const gitPaths = new Map<string, { index: string; objects: string }>();
+
+async function worktreePaths(path: string): Promise<{ index: string; objects: string }> {
+  let p = gitPaths.get(path);
+  if (!p) {
+    const [index, objects] = (await git(path, ['rev-parse', '--path-format=absolute', '--git-path', 'index', '--git-path', 'objects'])).trim().split('\n');
+    gitPaths.set(path, (p = { index: index!, objects: objects! }));
+  }
+  return p;
+}
+
 /**
  * Run `git diff` once per entry of `runs` over everything a worktree node changed since it branched: its commits and its
  * uncommitted and untracked files, as one diff of the working tree against the merge base with baseSha. The working tree
- * is staged into a throwaway copy of the index, so the node's own index is never touched. A missing worktree diffs the
- * branch alone. prune: git output above 64 MB (git()'s maxBuffer) fails the request; stream it if diffs get that large.
+ * is staged into a throwaway copy of the index, writing its blobs to a throwaway object directory, so neither the node's
+ * own index nor the repo's objects change. `dirty` counts the files that differ from HEAD; a missing worktree diffs the
+ * branch alone and has none.
+ * prune: git output above 64 MB (git()'s maxBuffer) fails the request; stream it if diffs get that large.
  */
-async function nodeDiff(w: Worktree, runs: string[][]): Promise<string[]> {
+async function nodeDiff(w: Worktree, runs: string[][]): Promise<{ out: string[]; dirty: number }> {
   const common = ['diff', '--no-color', '--no-ext-diff', '-M'];
-  if (!existsSync(w.path)) return Promise.all(runs.map((args) => git(w.repo, [...common, ...args, `${w.baseSha}...${w.branch}`])));
+  if (!existsSync(w.path)) return { out: await Promise.all(runs.map((args) => git(w.repo, [...common, ...args, `${w.baseSha}...${w.branch}`]))), dirty: 0 };
   const dir = await mkdtemp(join(tmpdir(), 'tl-diff-'));
   try {
-    const env = { ...process.env, GIT_INDEX_FILE: join(dir, 'index') };
-    const [index, mergeBase] = await Promise.all([
-      git(w.path, ['rev-parse', '--git-path', 'index']).then((p) => resolve(w.path, p.trim())),
-      git(w.path, ['merge-base', w.baseSha, 'HEAD']).then((s) => s.trim()),
-    ]);
-    await cp(index, env.GIT_INDEX_FILE).catch(() => {}); // no index yet: add builds one
+    const [paths, mergeBase] = await Promise.all([worktreePaths(w.path), git(w.path, ['merge-base', w.baseSha, 'HEAD']).then((s) => s.trim())]);
+    const env = { GIT_INDEX_FILE: join(dir, 'index'), GIT_OBJECT_DIRECTORY: join(dir, 'objects'), GIT_ALTERNATE_OBJECT_DIRECTORIES: paths.objects };
+    await mkdir(env.GIT_OBJECT_DIRECTORY);
+    await cp(paths.index, env.GIT_INDEX_FILE).catch(() => {}); // no index yet: add builds one
     await git(w.path, ['add', '-A'], GIT_TIMEOUT_MS, env);
-    return await Promise.all(runs.map((args) => git(w.path, [...common, '--cached', ...args, mergeBase], GIT_TIMEOUT_MS, env)));
+    const [changed, ...out] = await Promise.all([
+      git(w.path, ['diff', '--cached', '--name-only', '-z', 'HEAD'], GIT_TIMEOUT_MS, env),
+      ...runs.map((args) => git(w.path, [...common, '--cached', ...args, mergeBase], GIT_TIMEOUT_MS, env)),
+    ]);
+    return { out, dirty: changed!.split('\0').filter(Boolean).length };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -217,15 +242,18 @@ function numstat(out: string): { path: string; additions: number; deletions: num
   return files;
 }
 
-/** Lines a worktree node added and removed: the totals of its Diff. */
-export async function diffStat(w: Worktree): Promise<{ additions: number; deletions: number }> {
-  const [out] = await nodeDiff(w, [['--numstat', '-z']]);
-  return numstat(out!).reduce((t, f) => ({ additions: t.additions + f.additions, deletions: t.deletions + f.deletions }), { additions: 0, deletions: 0 });
+/**
+ * Lines a worktree node added and removed (the totals of its Diff), and its dirty files: those that differ from HEAD,
+ * whether modified, staged, deleted or untracked, not ignored ones.
+ */
+export async function diffStat(w: Worktree): Promise<{ additions: number; deletions: number; dirty: number }> {
+  const { out: [out], dirty } = await nodeDiff(w, [['--numstat', '-z']]);
+  return numstat(out!).reduce((t, f) => ({ ...t, additions: t.additions + f.additions, deletions: t.deletions + f.deletions }), { additions: 0, deletions: 0, dirty });
 }
 
 /** A worktree node's diff, file by file; patches stop once they would pass MAX_PATCH_BYTES. */
 export async function diff(w: Worktree): Promise<Diff> {
-  const [stat, patch] = await nodeDiff(w, [['--numstat', '-z'], []]);
+  const { out: [stat, patch] } = await nodeDiff(w, [['--numstat', '-z'], []]);
   // Both come from the same diff, so they list files in the same order: the nth section is the nth numstat record.
   const sections = patch!.split(/^(?=diff --git )/m).filter(Boolean);
   let bytes = 0, truncated = false;

@@ -61,7 +61,7 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
   tl diff <id> [--stat]                               what a worktree node changed since it branched, committed or not
   tl send [--now] <id> "text"                         --now interrupts the target's turn if it is working (a steer)
   tl withdraw <messageId>                             take back a queued message that has not been delivered yet
-  tl read <id> [summary|transcript|terminal] [--lines N]   (summary and transcript also read a closed node)
+  tl read <id> [outcome|summary|transcript|terminal] [--lines N]   (all but terminal also read a closed node)
   tl history [--root ID] [QUERY]                      closed Claude nodes, newest first, of one tree or all; QUERY filters by
                                                       title, first prompt or last message
   tl transcript <id> [--session SID]                  a live or closed node's conversation; SID picks one of its earlier sessions

@@ -10,7 +10,7 @@ The base is the branch the worker forks from and is merged back into. Name it wi
 
 ## Row markers
 
-Each worktree node's row shows its branch, how many commits it is ahead of its base (↑), how many files are uncommitted, a "changes" marker once it is done or exited with work not yet in its base, and "merged" after tiller merged it. The daemon recomputes this when the node's turn ends, a few seconds after it edits a file or runs a command, when it exits, before a merge or close, and on start. `list_nodes` and `tl list` carry the same counts in each node's `worktree` field. `tl diff <id> [--stat]`, the MCP `diff` tool and the app's Diff tab show what the node changed since it branched, committed or not.
+Each worktree node's row shows its branch, how many commits it is ahead of its base (↑), how many files are uncommitted, a "changes" marker once it is done or exited with work not yet in its base, and "merged" after tiller merged it. The daemon recomputes this when the node's turn ends, a few seconds after it edits a file or runs a command, when it exits, before a merge or close, and on start. `list_nodes` and `tl list` show the same counts on each worktree node's line (`⎇ branch from base ↑ahead ↓behind dirty merged`); the CLI's `/api/list_nodes` data carries them in each node's `worktree` field. `tl diff <id> [--stat]`, the MCP `diff` tool and the app's Diff tab show what the node changed since it branched, committed or not.
 
 ## Merging
 

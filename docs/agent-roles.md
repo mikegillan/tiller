@@ -72,7 +72,7 @@ An agent's spawn is refused when the new node would sit more than `limits.maxDep
 
 ## report_outcome
 
-A worker ends its task by calling `report_outcome` with `succeeded` or `failed`, an optional `note`, and the structured fields `summary` (what it did), `changedFiles` (paths), `verified` (what it ran to check the work, and the result) and `openQuestions` (what is left for the parent to decide). The parent reads these from `list_nodes` instead of reading the transcript; the app shows them in the last-message panel and on the exited card. The daemon tells the parent of every recorded outcome (see [messaging.md](messaging.md)).
+A worker ends its task by calling `report_outcome` with `succeeded` or `failed`, an optional `note`, and the structured fields `summary` (what it did), `changedFiles` (paths), `verified` (what it ran to check the work, and the result) and `openQuestions` (what is left for the parent to decide). The parent reads these with the `read` tool's `outcome` view (`tl read <id> outcome`) instead of reading the transcript, for a live or a closed node; `list_nodes` shows only the verdict; the app shows them in the last-message panel and on the exited card. The daemon tells the parent of every recorded outcome (see [messaging.md](messaging.md)).
 
 ## The completion gate
 

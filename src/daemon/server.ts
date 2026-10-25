@@ -7,10 +7,11 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
-import { HARNESSES, type ClientMessage, type Dnd, type NativeNotification, type ServerMessage, type Usage } from '../shared/protocol.js';
+import { HARNESSES, type ClientMessage, type Dnd, type NativeNotification, type NodeView, type ServerMessage, type Usage } from '../shared/protocol.js';
 import { loadConfig } from './config.js';
 import { DEFAULT_PORT } from './home.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
+import type { PtySession } from './pty.js';
 import { history } from './archive.js';
 import { conversation, conversations } from './conversation.js';
 import { mountMcp } from './mcp.js';
@@ -29,6 +30,11 @@ const MAX_HOOK_BYTES = 8_000_000; // a PreToolUse payload for a large Write carr
 const AUTH_TIMEOUT_MS = 5000;
 const VERSION = (JSON.parse(readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')) as { version: string }).version;
 const CONFIRM_TIMEOUT_MS = 5 * 60_000;
+/** A client this far behind stops getting a node's output until its buffer drains; it then gets a fresh screen. */
+const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+/** Below this the client counts as drained; other nodes' output may keep it from ever reaching zero. */
+const DRAINED_BYTES = 1024 * 1024;
+const DRAIN_POLL_MS = 250;
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.map': 'application/json',
@@ -89,7 +95,18 @@ export interface DaemonServer {
   close(): Promise<void>;
 }
 
-interface Client { ws: WebSocket; authed: boolean; attached: Set<string>; kind?: 'app' | 'browser'; focused: boolean; selected?: string; nativeReady?: boolean }
+interface Client {
+  ws: WebSocket; authed: boolean; attached: Set<string>; kind?: 'app' | 'browser'; focused: boolean; selected?: string; nativeReady?: boolean;
+  /** Attached nodes whose output was cut off by backpressure, resynced once the buffer drains; with the final screen if the process exited meanwhile. */
+  stalled: Map<string, string | undefined>; drainTimer?: NodeJS.Timeout;
+}
+
+/** A node as the UI gets it: without the spawn prompts and session history, which it never reads. */
+export function forUi({ prompt: _prompt, sessionHistory: _history, ...node }: NodeView): NodeView {
+  if (!node.pending?.prompt) return node;
+  const { prompt: _pendingPrompt, ...pending } = node.pending;
+  return { ...node, pending };
+}
 
 export async function startServer(manager: NodeManager, opts: { port?: number } = {}): Promise<DaemonServer> {
   const clients = new Set<Client>();
@@ -101,8 +118,40 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
   const settings = settingsApi(manager, isAdmin);
   const mod = modApi(manager, authenticate, focus, () => [...new Set([...clients].filter((c) => c.authed && c.kind).map((c) => c.kind!))]);
 
-  const sendTo = (c: Client, m: ServerMessage) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(m)); };
-  const broadcast = (m: ServerMessage) => { for (const c of clients) if (c.authed) sendTo(c, m); };
+  const sendTo = (c: Client, m: ServerMessage | string) => { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(typeof m === 'string' ? m : JSON.stringify(m)); };
+  const broadcast = (m: ServerMessage) => {
+    const json = JSON.stringify(m);
+    for (const c of clients) if (c.authed) sendTo(c, json);
+  };
+  /** Sessions whose exit keeps the final screen for stalled clients: a PTY's screen is disposed when it exits. */
+  const exitWatched = new WeakSet<PtySession>();
+  const stall = (c: Client, id: string) => {
+    c.attached.delete(id);
+    c.stalled.set(id, undefined);
+    c.drainTimer ??= setInterval(() => { if (c.ws.bufferedAmount < DRAINED_BYTES) resync(c); }, DRAIN_POLL_MS);
+    const s = manager.session(id);
+    if (!s || exitWatched.has(s)) return;
+    exitWatched.add(s);
+    s.onExit(() => {
+      const screen = s.snapshot();
+      for (const other of clients) if (other.stalled.has(id)) other.stalled.set(id, screen);
+    });
+  };
+  /** Like attach without the resize: reset the client's screen to a snapshot, then forward live output again. */
+  const resync = (c: Client) => {
+    clearInterval(c.drainTimer);
+    c.drainTimer = undefined;
+    for (const id of c.stalled.keys()) {
+      const s = manager.session(id);
+      void (s ? s.flush() : Promise.resolve()).then(() => {
+        if (!c.stalled.has(id)) return; // detached or removed meanwhile
+        const exitScreen = c.stalled.get(id);
+        c.stalled.delete(id);
+        sendTo(c, { t: 'data', id, data: '\x1bc' + (s && !s.exited ? s.snapshot() : exitScreen ?? '') });
+        c.attached.add(id);
+      });
+    }
+  };
   const syncUpdateChecks = () => {
     if ([...clients].some((c) => c.authed && c.kind)) updates.start();
     else updates.stop();
@@ -123,13 +172,18 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     return dnd;
   };
 
-  manager.on('node', (node) => broadcast({ t: 'node', node }));
+  manager.on('node', (node: NodeView) => broadcast({ t: 'node', node: forUi(node) }));
   manager.on('removed', (rid: string) => {
-    for (const c of clients) c.attached.delete(rid);
+    for (const c of clients) { c.attached.delete(rid); c.stalled.delete(rid); }
     broadcast({ t: 'removed', id: rid });
   });
   manager.on('data', (rid: string, data: string) => {
-    for (const c of clients) if (c.authed && c.attached.has(rid)) sendTo(c, { t: 'data', id: rid, data });
+    let json: string | undefined;
+    for (const c of clients) {
+      if (!c.authed || !c.attached.has(rid)) continue;
+      if (c.ws.bufferedAmount > MAX_BUFFERED_BYTES) stall(c, rid);
+      else sendTo(c, json ??= JSON.stringify({ t: 'data', id: rid, data } satisfies ServerMessage));
+    }
   });
   manager.on('notify', (n: NotifyEvent) => broadcast({ t: 'notify', ...n }));
   manager.on('usageSources', (sources) => broadcast({ t: 'usageSources', sources }));
@@ -171,10 +225,11 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
         // and we add the client in the same tick, so no chunk can fall between the two.
         const text = await manager.attach(m.id, m.cols, m.rows);
         if (text) sendTo(c, { t: 'data', id: m.id, data: text });
+        c.stalled.delete(m.id);
         c.attached.add(m.id);
         return;
       }
-      case 'detach': c.attached.delete(m.id); return;
+      case 'detach': c.attached.delete(m.id); c.stalled.delete(m.id); return;
       case 'input': manager.input(m.id, m.data, m.binary); return;
       case 'resize': manager.resize(m.id, m.cols, m.rows); return;
       case 'visibility': {
@@ -245,11 +300,12 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
 
   const wss = new WebSocketServer({ noServer: true });
   wss.on('connection', (ws) => {
-    const c: Client = { ws, authed: false, attached: new Set(), focused: false };
+    const c: Client = { ws, authed: false, attached: new Set(), focused: false, stalled: new Map() };
     clients.add(c);
     const authTimer = setTimeout(() => { if (!c.authed) ws.close(4401, 'auth timeout'); }, AUTH_TIMEOUT_MS);
     ws.on('close', () => {
       clearTimeout(authTimer);
+      clearInterval(c.drainTimer);
       clients.delete(c);
       syncUpdateChecks();
       for (const pending of pendingNotifications.values()) if (pending.client === c) pending.finish(true, 'app disconnected after dispatch; delivery uncertain, not resent');
@@ -270,7 +326,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
           c.kind = msg.client;
           syncUpdateChecks();
           clearTimeout(authTimer);
-          sendTo(c, { t: 'snapshot', update: updates.status(), nodes: manager.list(), usage: manager.usage, usageSources: manager.usageRegistry.sources, dnd, drain: manager.drainView() });
+          sendTo(c, { t: 'snapshot', update: updates.status(), nodes: manager.list().map(forUi), usage: manager.usage, usageSources: manager.usageRegistry.sources, dnd, drain: manager.drainView() });
         } else {
           ws.close(4401, 'auth required');
         }

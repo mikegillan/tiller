@@ -4,9 +4,9 @@ import { join } from 'node:path';
 import { request } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
-import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
+import type { ClientMessage, NodeView, ServerMessage } from '../shared/protocol.js';
 import { NodeManager } from './manager.js';
-import { startServer, type DaemonServer } from './server.js';
+import { forUi, startServer, type DaemonServer } from './server.js';
 import { deliver, inbox, messageStatus } from './messaging.js';
 
 let home: string;
@@ -166,6 +166,37 @@ describe('websocket', () => {
     await until(() => seen.find((m) => m.t === 'removed' && m.id === id));
     expect(manager.list()).toEqual([]);
   });
+
+  it.each([false, true])('stops forwarding output to a client that stops reading, then resyncs its screen once it drains (process exits: %s)', async (exits) => {
+    await connect();
+    await until(() => seen.find((m) => m.t === 'snapshot'));
+    const { id } = await manager.spawn({ kind: 'terminal', title: 'flood', cwd: home });
+    const stalled = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const got: ServerMessage[] = [];
+    let bytes = 0;
+    stalled.on('message', (raw: Buffer) => { bytes += raw.length; got.push(JSON.parse(raw.toString())); });
+    await new Promise((ok) => stalled.once('open', ok));
+    stalled.send(JSON.stringify({ t: 'auth', token: adminToken() }));
+    stalled.send(JSON.stringify({ t: 'attach', id, cols: 80, rows: 24 }));
+    await until(() => got.find((m) => m.t === 'snapshot'));
+    await new Promise((r) => setTimeout(r, 200)); // let the attach land before the socket stops reading
+    const socket = (stalled as unknown as { _socket: { pause(): void; resume(): void } })._socket;
+    socket.pause();
+    let output = '';
+    const tail = (_: string, d: string) => { output = (output + d).slice(-100); };
+    manager.on('data', tail);
+    const flood = 32 * 1024 * 1024;
+    // The sleep lets the screen parse the flood before the exit disposes it.
+    manager.input(id, `head -c ${flood} /dev/zero | tr '\\0' x; echo; echo FLOOD_$((1+1))${exits ? '; sleep 1; exit' : ''}\r`);
+    await until(() => output.includes('FLOOD_2') || undefined, 60_000);
+    if (exits) await until(() => manager.view(id)?.status.exited || undefined, 15_000);
+    manager.off('data', tail);
+    socket.resume();
+    const resync = await until(() => got.find((m) => m.t === 'data' && m.data.startsWith('\x1bc') && m.data.includes('FLOOD_2')), 15_000);
+    expect(resync).toBeTruthy();
+    expect(bytes).toBeLessThan(flood / 2);
+    stalled.terminate();
+  }, 90_000);
 
   it('replies to history and transcript for a closed Claude node, and with an error for an unknown one', async () => {
     const transcriptPath = join(home, 't.jsonl');
@@ -418,6 +449,21 @@ describe('POST /hook', () => {
     expect((await api('dnd', {})).body.text).toMatch(/^do not disturb is on until /); // no `on`: only reports
     expect((await api('dnd', { on: false })).body.text).toBe('do not disturb is off');
     expect((await api('sessions_clean', {})).body.text).toBe('removed 0 expired session directories');
+  });
+});
+
+describe('forUi', () => {
+  it('drops the spawn prompts and session history and keeps everything else', () => {
+    const node = {
+      id: 'n', parentId: null, kind: 'claude', title: 't', cwd: '/', createdAt: 0, unread: false, status: { state: 'queued', changedAt: 0 },
+      prompt: 'big brief', sessionHistory: [{ sessionId: 's', harness: 'claude', transcriptPath: '/t' }], previousSessions: ['s'],
+      pending: { after: ['a'], afterSuccess: [], met: [], prompt: 'big brief', blocked: 'a failed' },
+    } satisfies NodeView;
+    expect(forUi(node)).toEqual({
+      id: 'n', parentId: null, kind: 'claude', title: 't', cwd: '/', createdAt: 0, unread: false, status: { state: 'queued', changedAt: 0 },
+      previousSessions: ['s'], pending: { after: ['a'], afterSuccess: [], met: [], blocked: 'a failed' },
+    });
+    expect(node.prompt).toBe('big brief'); // the daemon's own view is untouched
   });
 });
 

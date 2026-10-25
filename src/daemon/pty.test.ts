@@ -1,3 +1,4 @@
+import { readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import xterm from '@xterm/headless';
 import { PtySession, buildChildEnv, classify, composerTextOf, loginShellPath } from './pty.js';
@@ -125,6 +126,18 @@ describe('PtySession', () => {
     await until(() => { void s.flush(); return s.classifyScreen() === 'prompt'; });
     expect(s.composerText()).toBe('draft');
     s.kill();
+  });
+
+  it('releases its file descriptors after the process exits', async () => {
+    const fds = () => readdirSync('/dev/fd').length;
+    const before = fds();
+    for (let i = 0; i < 10; i++) {
+      const s = PtySession.spawn({ ...base, file: '/bin/sh', args: ['-c', 'cat'], env: env() });
+      expect(await s.terminate(2000)).toBe(true);
+    }
+    // node-pty 1.1.0 leaked the master, a kqueue and the slave per PTY (+30 here).
+    await until(() => fds() <= before + 2).catch(() => {});
+    expect(fds()).toBeLessThanOrEqual(before + 2);
   });
 });
 

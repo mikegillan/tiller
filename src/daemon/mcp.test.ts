@@ -12,6 +12,7 @@ import { systemPrompt } from './launch.js';
 import { NodeManager } from './manager.js';
 import { mountMcp } from './mcp.js';
 import { inbox } from './messaging.js';
+import type { Outcome } from '../shared/protocol.js';
 
 let home = '', manager: NodeManager, server: http.Server, base = '', admin = '';
 const confirms: string[] = [];
@@ -39,6 +40,11 @@ afterAll(async () => {
 const api = async (tool: string, args: object, id = 'human', token = admin) => {
   const res = await fetch(`${base}/api/${tool}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': id }, body: JSON.stringify(args) });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as { text?: string; data?: any; error?: string } };
+};
+const connect = async (who: string, token: string) => {
+  const c = new Client({ name: 't', version: '0' });
+  await c.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': who } } }));
+  return c;
 };
 const spawnT = (title: string, id = 'human', token = admin, extra = {}) => api('spawn', { kind: 'terminal', title, cwd: tmpdir(), ...extra }, id, token);
 
@@ -156,9 +162,9 @@ describe('mcp api', () => {
     const transcript = join(home, 'archived.jsonl');
     writeFileSync(transcript, `${JSON.stringify({ type: 'user', message: { content: 'hello there' } })}\n`);
     /** A Claude node that ran under `parentId`, closed; no claude process is launched. */
-    const archived = (parentId: string, title: string) => {
+    const archived = (parentId: string, title: string, outcome?: Outcome) => {
       const id = manager.registry.create({ parentId, kind: 'claude', title, cwd: tmpdir(), lastActiveAt: Date.now(), prompt: `${title} task`, sessionId: `s-${title}`, transcriptPath: transcript }).id;
-      manager.runtimes.set(id, {});
+      manager.runtimes.set(id, { outcome });
       manager.closed(id);
       return id;
     };
@@ -183,6 +189,9 @@ describe('mcp api', () => {
     expect(all).toContain(oldB);
     expect((await api('transcript', { nodeId: oldB })).body.text).toBe('sessions: s-old-b (current)\n\nuser: hello there');
     expect((await api('followup', { nodeId: oldA, prompt: 'x' }, kidA, tok(kidA))).body.error).toBe('followup is only for the human');
+    const doneA = archived(rootA, 'done-a', { outcome: 'failed', note: 'broke', gate: 'failed', at: Date.now() });
+    expect((await api('read', { nodeId: doneA, what: 'outcome' }, kidA, tok(kidA))).body.text).toBe(`${doneA} reported failed (gate failed) just now\nnote: broke`);
+    expect((await api('read', { nodeId: oldB, what: 'outcome' }, kidA, tok(kidA))).status).toBe(400);
     for (const id of [kidA, kidB, rootA, rootB]) await manager.close(id, true); // the shared manager's maxLiveNodes
   });
 
@@ -331,7 +340,17 @@ describe('mcp api', () => {
     expect((await api('report_outcome', report, w, manager.tokenFor(w))).body.data).toEqual({ ok: true });
     const list = (await api('list_nodes', {}, p, manager.tokenFor(p))).body;
     expect(list.data.find((n: any) => n.id === w).outcome).toMatchObject(report);
-    expect(list.text).toContain('reported succeeded: did it');
+    expect(list.text).toContain(`- ${w} "rw" [terminal] none (reported succeeded) `);
+    expect(list.text).not.toContain('did it'); // the verdict only: read "outcome" has the report
+    // An idle node that has not reported shows its last message, which may be a question for its parent.
+    manager.registry.update(p, { kind: 'claude' });
+    manager.applyHook(p, { hook_event_name: 'Stop', last_assistant_message: `Should I\n keep b?${' x'.repeat(200)}` });
+    const idle = (await api('list_nodes', {}, p, manager.tokenFor(p))).body.text!;
+    expect(idle).toMatch(new RegExp(`- ${p} "rp" \\[claude\\] done [^\\n]*\\n    last: Should I keep b\\? x x`));
+    expect(idle.split('\n').find((l) => l.includes('last:'))!.length).toBeLessThanOrEqual(4 + 6 + 200);
+    const read = async (id: string) => (await api('read', { nodeId: id, what: 'outcome' }, p, manager.tokenFor(p))).body.text;
+    expect(await read(w)).toBe(`${w} reported succeeded just now\nnote: n\nsummary: did it\nchanged files:\n  - a.ts\n  - b.ts\nverified: vitest: 3 passed\nopen questions:\n  - keep b?`);
+    expect(await read(p)).toBe(`${p} has not reported an outcome`);
   });
 
   it('tells the parent of each recorded outcome once, unless its pending notify_when covers that child', async () => {
@@ -408,6 +427,7 @@ describe('mcp api', () => {
       const { w } = await pair(slow());
       const run = api('report_outcome', { outcome: 'succeeded', summary: 's' }, w, tok(w));
       await expect.poll(() => manager.view(w)!.gate).toBe('running');
+      expect((await api('list_nodes', {}, w, tok(w))).body.text).toMatch(new RegExp(`- ${w} .*\\(.*gate running`));
       expect((await api('report_outcome', { outcome: 'failed' }, w, tok(w))).body.data).toEqual({ ok: false, gate: 'running' });
       writeFileSync(join(slow(), 'go'), '');
       expect((await run).body.data).toEqual({ ok: true, gate: 'passed' });
@@ -417,11 +437,6 @@ describe('mcp api', () => {
 
   it('serves the tools over MCP with schemas, without the human-only ones for agents', async () => {
     const id = (await spawnT('mcp-caller')).body.data.nodeId as string;
-    const connect = async (who: string, token: string) => {
-      const c = new Client({ name: 't', version: '0' });
-      await c.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}`, 'X-TL-Node': who } } }));
-      return c;
-    };
     const human = await connect('human', admin);
     const humanTools = (await human.listTools()).tools;
     expect(humanTools.map((t) => t.name).sort()).toEqual(['change_harness', 'close', 'diff', 'dnd', 'drain', 'followup', 'history', 'list_nodes', 'memory_add', 'memory_forget', 'memory_get', 'memory_pin', 'memory_search', 'memory_status', 'memory_switch', 'merge', 'message_status', 'mute', 'notify_when', 'prune', 'read', 'rename', 'report_outcome', 'restart', 'resume', 'select', 'send', 'sessions_clean', 'shutdown', 'spawn', 'transcript', 'update', 'withdraw', 'worktrees', 'write']);
@@ -440,7 +455,45 @@ describe('mcp api', () => {
     });
     const r = (await client.callTool({ name: 'report_outcome', arguments: { outcome: 'succeeded' } })) as { content: Array<{ text: string }> };
     expect(r.content[0].text).toBe('{"ok":true}');
+    // A tool with text sends only the text; the JSON stays on /api for the CLI.
+    const list = (await client.callTool({ name: 'list_nodes', arguments: {} })) as { content: Array<{ text: string }> };
+    expect(list.content).toHaveLength(1);
+    expect(list.content[0].text).toMatch(/^usage/);
+    expect(list.content[0].text).toContain(`- ${id} "mcp-caller" [terminal] none (reported succeeded) `);
     await client.close();
+  });
+
+  it('cuts diff text for agents over MCP but not over /api', async () => {
+    const repo = join(home, 'diff-repo'), path = join(repo, '.claude', 'worktrees', 'd');
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' }).trim();
+    mkdirSync(repo);
+    git(repo, 'init', '-q', '-b', 'main');
+    writeFileSync(join(repo, 'a.txt'), 'a\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-qm', 'a');
+    git(repo, 'worktree', 'add', '-q', '-b', 'tl/d', path);
+    const id = (await spawnT('diff', 'human', admin, { cwd: path })).body.data.nodeId as string;
+    manager.registry.update(id, { worktree: { repo, path, branch: 'tl/d', base: 'main', baseSha: git(repo, 'rev-parse', 'HEAD') } });
+    writeFileSync(join(path, 'big.txt'), `${'x'.repeat(99)}\n`.repeat(1500)); // 150k characters of patch
+    const full = (await api('diff', { nodeId: id }, id, manager.tokenFor(id))).body.text!;
+    expect(full.length).toBeGreaterThan(150_000);
+    const client = await connect(id, manager.tokenFor(id));
+    const call = async (args: object) => ((await client.callTool({ name: 'diff', arguments: { nodeId: id, ...args } })) as { content: Array<{ text: string }> }).content[0].text;
+    const cut = await call({});
+    const [body, note] = cut.split('\n(diff cut');
+    expect(full.startsWith(`${body}\n`)).toBe(true); // whole lines only
+    expect(body.length).toBeLessThanOrEqual(100_000);
+    expect(body.length).toBeGreaterThan(99_800);
+    expect(note).toMatch(/^ at 100k of 15\dk characters; call diff with stat true/);
+    expect(await call({ stat: true })).toBe(`tl/d against main: 1 file(s), +1500 −0\n+1500 −0\tbig.txt (added)`);
+    // A stat listing over the cap says how many files it left out instead of pointing back at stat.
+    for (let i = 0; i < 600; i++) writeFileSync(join(path, `${'f'.repeat(200)}${i}.txt`), 'y\n');
+    const stat = await call({ stat: true });
+    const listed = stat.split('\n').length - 2; // the summary line and the note
+    expect(stat).toMatch(new RegExp(`\\(diff cut at 100k of 1\\d\\dk characters; ${601 - listed} more file\\(s\\) not listed\\)$`));
+    expect(listed).toBeLessThan(601);
+    await client.close();
+    await manager.close(id, true, 'discard');
   });
 });
 
