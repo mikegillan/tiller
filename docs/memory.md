@@ -23,6 +23,8 @@ tl memory inherit --project ~/code/repo   # remove the setting
 
 `inherit` removes the setting at that scope. `--account` and `--project` together are refused. Only the human can change the switch: an agent calling `tl memory on` with its node token is refused.
 
+**Settings → Memory** does the same from the app. At global scope it has the `memory.enabled` switch (labelled *Memory (global)*; *Use inherited default* removes the setting), one select per configured account (labelled *Memory for <account>*: *No account setting*, *On*, or *Off (a ceiling: no repository setting turns it on)*) and `memory.maxMB` (16 or more). At repository scope it has *Memory for this repository*: Inherit, On or Off, which is written to the **home** file's `memory.projects` under the repository's exact path, as `claude.account` is, and not to the repository file. Each opt-in change is the same write as the matching `tl memory` command (`memory.maxMB` has no `tl` equivalent). A repository file's `memory.enabled: false` stays JSON-only: edit `<repo>/.tiller/config.json` yourself, and Settings names it in the status line when it decides. The status line is the `source` the daemon reports, so Settings never re-implements the rules below. At repository scope it reads "Memory is on for root nodes here (account work): <source>.", labelled per account because a node in another account can resolve differently; at global scope, "The global setting is on (<source>)."; when `claude.accounts` is invalid, the repository line reads "Memory is off for root nodes here: account unknown: <the list's error>.", because the repository's account cannot be told.
+
 ### Which setting wins
 
 For a node, the first rule that matches decides:
@@ -33,7 +35,7 @@ For a node, the first rule that matches decides:
 4. The account has `memory: true`: on.
 5. `memory.enabled` in the home file, else off.
 
-`tl memory status` shows the result for the current directory and which setting decided it. Nodes already running when you turn memory on start recording at their next event; a digest is only added to a launch after that. Turning memory off stops recording and digests at once, and does not delete anything.
+`tl memory status` shows the result for the current directory's project (the main checkout, for a worktree) and which setting decided it. With `--node ID` it shows that node's project instead, and with `--repo PATH` a directory's; `--account` picks the account. Nodes already running when you turn memory on start recording at their next event; a digest is only added to a launch after that. Turning memory off stops recording and digests at once, and does not delete anything.
 
 A tree's nodes share a project (the main checkout, for a worktree node) and an account, so they all resolve alike.
 
@@ -54,9 +56,12 @@ From these it derives **items**, each with a stable id like `m12`:
 | `ledger` | One line per closed node: title, verdict, gate state, branch fate and a brief. |
 | `open_question` | A question a node's outcome left open. |
 | `procedure` | A command from a successful outcome's `verified` field that passes the safe-command filter below. |
-| `pitfall` | A gate failure, with its fix when a later run passed. |
-| `note` | A lesson an agent added with `memory_add`. |
-| `pin` | An instruction the human pinned. |
+| `pitfall` | A gate failure, with a note on its fix when a later run passed (below). |
+| `note` | A lesson an agent added with `memory_add`, or the human's pinned text (see Pins). |
+
+**A pitfall's fix note.** When a node's gate failed and later passed, the pitfall's body ends with `Fixed by <node>: the gate passed on attempt N.` and, when the outcome reported changed files, `Files it reported changing: a, b, c`. The daemon knows the node and the attempt. The files are the agent's own report, so at most five are listed, each on one line and cut at 120 characters; this is acceptable because a pitfall already counts as agent text under the trust rules below. The outcome's summary describes the task rather than the fix, so it is not copied. The daemon cannot know what the fix was: an agent that does records it with `memory_add pitfall`.
+
+**Pins.** There is no `pin` kind: a pin is a flag on an item. Pinning by id (`tl memory pin mID`) pins an existing item and restores it if retracted; pinning agent or daemon text makes it an instruction every node in the repository follows, so the panel asks first. Pinning new text (`tl memory pin --text`) creates a human `note` under its own `PIN:` key, so it never collides with a plain note of the same words. Unpinning by id retracts a text pin, as unpinning by text does. The panel can edit a text pin you wrote (**Edit…**). Editing writes the new text as a pin that supersedes the old one and unpins the old one; if the new text is an earlier, unpinned pin's, that pin comes back, and text that is already pinned is refused ("already pinned as mN"). The old text stays out of every digest until you pin it again, which `pin --text <old text>` does, because that is yours to decide. An agent cannot pin, and re-deriving never touches pins. An agent's `memory_add note` of the old text makes a separate, unpinned note under the normal eligibility rule.
 
 The procedure filter is an allowlist: only plain test, build, check and read-only commands of common tools (`npm test`, `cargo test`, `git diff`, `tl status` and the like). Anything with a pipe, redirect, `;`, `&`, `$(`, a backtick or an inline-code flag such as `-e` or `-c`, and anything that fetches code (`npx` of an unlisted tool, `npm install`, `pip install`, `cargo install`) is dropped.
 
@@ -99,7 +104,7 @@ Every agent node with memory on gets these tools through the daemon's MCP server
 | `memory_add` | all | Record a `procedure`, `pitfall` or `note`; it is shown later only if the node reports success. |
 | `memory_forget` | all | Hide an item with a reason. Purging is human only. |
 | `memory_pin` | human | Pin a new instruction, or pin, unpin or restore an item. |
-| `memory_status` | human | File health, size against the limit, the on/off resolution and the digest comparison. |
+| `memory_status` | human | File health, size against the limit, the on/off resolution and the digest comparison. Takes `repo` (an absolute directory) or `nodeId` for a project; an agent calling the tool at all is refused. |
 | `memory_switch` | human | What `tl memory on|off|inherit` calls. |
 
 An agent's repository and account always come from its own node record; naming another is refused. While memory is off the tools answer "memory is off for this project", saying how to turn it on.
@@ -108,7 +113,7 @@ The human's side is `tl memory`:
 
 ```
 tl memory on|off|inherit [--account NAME | --project PATH]
-tl memory status [--days N] [--node ID] [--account NAME]
+tl memory status [--days N] [--node ID] [--repo PATH] [--account NAME]
 tl memory search QUERY [--kind K] [--all] [--repo PATH] [--account NAME]
 tl memory show mID
 tl memory add KIND TEXT [--body B] [--supersedes mID]
@@ -116,7 +121,64 @@ tl memory forget mID REASON [--purge]
 tl memory pin (mID | --text TEXT) [--unpin]
 ```
 
+`memory_status` resolves `repo` the way the other tools do, without the opt-in gate: the main checkout of that directory, and the account of its project unless `account` is given. It prints `memory is on|off for <main checkout> (<source>)`. The CLI passes its own directory, so `tl memory status` and the tool always agree. `nodeId` wins over `repo` when both are given. With neither, it prints `memory.enabled (global)`, `projects with their own setting` and `accounts`. It prints "no memory file yet" only when `~/.tiller/memory` holds no `*.db` file, and then says one is created at the first capture after memory is on for a project.
+
 `forget --purge` removes an item for good: its text and body, the other items from the same report, the report's stored data and any frozen digest that quoted it, then the freed bytes are overwritten and the file compacted. Use it for an item that holds something it should not.
+
+## The Memory panel
+
+The app shows what memory holds and lets you change it. Reading needs no live node and works while memory is off, because turning memory off deletes nothing. There are three ways in:
+
+- the **Memory** tab beside Terminal, Diff and Transcript on an agent node, for that node's repository and account;
+- the Memory icon in the sidebar footer (labelled Memory; it toggles the page): for the selected node's repository, or, with nothing selected, for any account file, starting on the account file's first repository, which you change with the pickers at the top of the page;
+- the **Memory** button on a closed node's pane, which adds that node's *Given to this node* section.
+
+A page reads one account's file: the header's account picker lists the files that exist, and the repository picker lists the repositories in it (each with the first path recorded for it, which is not necessarily where it lives now). **Use a directory…** names a checkout by its path. The panel asks the daemon on opening, after each of your changes, on reconnect and on Refresh, never live; a node that records something while you look shows up on the next refresh.
+
+### Which checkout decides
+
+Whether memory is on is a question about a directory, and two clones of one `origin` share items but can be opted in differently. So the page judges a **checkout**, takes it from the first candidate whose repository key matches, and says which one it used on the *Checkout* line:
+
+1. the directory you chose ("chosen"), which wins over the node's;
+2. the node's own checkout ("from this node"): a worktree node's main checkout, and for a closed node the main checkout of its recorded directory, or of the repository its deleted worktree was made from;
+3. a live node's checkout in that repository ("a live node");
+4. the first path recorded for the repository in this file ("the recorded path"), only if it still exists and still has that key.
+
+The page uses the node's own account as it is (a node with none reads the no-account file). If a closed node's checkout is gone, the page shows its repository only when this file recorded that same path, never another repository.
+
+With none, the page says "No checkout of this repository is known: choose its directory" and the state line reads "Memory on or off is unknown: no checkout of this repository is known; choose its directory." Changes are refused with "refused: no checkout of this repository is known; choose its directory" (or, when it is off, "refused: memory is off for <checkout> (<source>)"), and the page shows "Changes need memory on for this checkout: <source>." This fails safe: a moved or deleted checkout never inherits another clone's opt-in. The *state* line otherwise shows memory on or off for that checkout and the setting that decides it. When off, it says "Change it in Settings → Memory" in plain text. A broken file shows its state and any quarantined copies instead of an error. Changes apply to nodes launched from now on; running nodes keep the digest they were given.
+
+### Sections
+
+- **Items:** a search box (plain words; common words such as "the" or "src" are ignored, and the page says so when nothing matches), chips for All, Pinned, Ledger, Open questions, Procedures, Pitfalls and Notes with their counts, and *Show retracted*. Each row shows the kind, the text as plain text, who recorded it, its age and how often it was seen, and badges: *Pinned*, *Superseded by mN*, *Evicted*, *Purged*, "Retracted by the human (permanent)", "Hidden by an agent until recorded again", and *Search only* (written by a node that did not succeed, so no digest includes it). A badge for an item hidden in a way the panel has no label for reads "Hidden (<kind>) by <who>". Open a row for its body, the node that recorded it (a link, when live) and the last 20 nodes whose digest included it. Without a query the list is most recently updated first, 50 at a time with *Load more*; with one it is best match first.
+- **Given to this node** (when opened from a node): that node's latest 20 launches, newest first, each with the cause and the digest text. "recorded, not given (A/B off arm)" marks the off arm of an A/B (`memory.digest: ab`); a resume shows "Reused this session's first digest.".
+- **Claude Code memory:** see below.
+
+### Changes
+
+Each change is made as the human, refused unless memory is on for the deciding checkout, and takes effect at the next fresh launch:
+
+- **Pin** an item (restoring it if retracted; for an agent or daemon item the panel asks first), **Pin an instruction…** (new text, up to 500 characters), **Unpin**, and **Edit** a text pin you wrote.
+- **Forget**, with a reason, is permanent: agents' later work cannot bring the item back. It is never a purge.
+- **Restore** brings back an item that you or an agent hid, or another item replaced. It is not offered for tombstones (evicted or purged: the text is gone), for text pins (pin the text again instead) or for items hidden in a way the panel does not know. A restored item stays pinned if it was pinned, and the button reads "Restore (stays pinned)".
+
+**Purge is CLI-only.** It is irreversible and compacts the file, so the panel shows a command to copy instead of a button:
+
+```sh
+tl memory forget m12 '<reason>' --purge --repo '/path/to/checkout' --account work
+```
+
+The command carries `--repo` and `--account`, because item ids are per file and a purge in the wrong one deletes someone else's item. It is shown only when those flags open exactly the file on screen: `--account` is left out only for the `_default` file when that is also the project's default account. Otherwise the page explains why there is no command, and when memory is off it says purging needs memory on, because the CLI refuses then.
+
+## Claude Code's own memory
+
+Claude Code keeps its own auto-memory. The panel's *Claude Code memory* section shows it, **read-only**: Tiller does not import, copy, index or inject it, and none of it reaches a node through Tiller. It is a window onto files you already have, next to Tiller's own.
+
+Claude keys that memory by the repository's **main checkout**, not by a worktree. The files are `<Claude home>/projects/<slug>/memory/*.md`, where the slug is the checkout's real path with every character outside letters and digits replaced by `-` (the same slug transcripts use), and the Claude home is `~/.claude`, or the account's `configDir` for a named account. So a Tiller worktree node at `/r/.claude/worktrees/n-1` and a plain `git worktree add` checkout both show the memory of `/r`; the `-r--claude-worktrees-n-1` directory holds transcripts only. The section names the directory it checked, so a miss is visible. `MEMORY.md` is listed first, then the topic files by name, each in a collapsible block with any front matter apart from the text.
+
+Because the files are Claude's and Claude writes them, they are untrusted: they are rendered as Markdown with HTML skipped, only `http(s)` links and no images. They are read without following symlinks: a symlinked directory or file is skipped. At most 100 files, 64 KiB each and 1 MiB in all (counting each file's JSON-encoded size) are read; the section marks a truncated file and lists the names left out. A named account that is not configured is an error, never a fall back to `~/.claude`.
+
+Limits: an `autoMemoryDirectory`-style override of Claude's is not followed; if Claude shortens a very long slug, the panel shows the path it checked instead; and the location for a named account (`CLAUDE_CONFIG_DIR`) is inferred from where transcripts live, not confirmed.
 
 ## Accounts and files
 
@@ -160,6 +222,7 @@ Memory never blocks the daemon or a launch. If a file cannot be used, memory is 
 - **A poisoned node that succeeds can still push a note or an open question** into later prompts. Eligibility, the allowlist, one-line rendering and the caps narrow this; they do not remove it. Items show their node, so look at what an injected line says and forget it, permanently with `tl memory forget`, when it is wrong. Spawn titles, written by the spawning node and cut to 80 characters, appear in ledger lines as well.
 - **`gate.command` comes from the tracked `.tiller/config.json`.** What the gate prints is agent-influenced text (it comes from code and tests the node wrote), so it is treated as agent text under the rules above.
 - **Redaction knows only the formats listed.** An unknown secret format can reach the file. Purge it.
+- **The panel's writes are as strong as the admin token.** Its changes go over the app's authenticated WebSocket, which accepts only the admin token (a node's token cannot open it), and there is no memory tool for agents to pin or restore. But any process of yours that can read `~/.tiller/admin-token` can drive the panel, the Settings API and `tl` itself, as in the rest of Tiller.
 - **Memory is not a sandbox.** The file sits outside the session directory a node may write without asking, so Claude asks first, but a shell without restrictions can read or edit it, as it can `~/.tiller/config.json`.
 
 ## Retention

@@ -323,7 +323,7 @@ export class NodeManager extends EventEmitter {
     if (this.shutDown) return;
     try {
       const scope = this.memoryOnFor(id);
-      if (scope) this.memory.apply(scope, derive(redact(event), this.memory.nodeHistory(scope, id)));
+      if (scope) this.memory.apply(scope, derive(redact(event), this.memory.nodeHistory(scope, id), id));
     } catch (err) {
       logError(err);
     }

@@ -19,9 +19,7 @@ import { formatEvent, listSessions, parseSince, readEvents, readNewEvents, sessi
 import { fmtAge } from '../shared/format.js';
 import { fmtUsd } from '../shared/spend.js';
 import type { Harness, NodeKind } from '../shared/protocol.js';
-import { mainCheckout, mainCheckoutSync, runCommands, WORKTREES_DIR } from './worktree.js';
-import { accountForProject } from './claude-accounts.js';
-import { memoryOn } from './memory-config.js';
+import { mainCheckout, runCommands, WORKTREES_DIR } from './worktree.js';
 import { cancelDrain, drainDaemon, restartDaemon, findDaemon, humanEnv, pickOrchestrator, spawnReload, startDaemon, upDir, type OrchestratorCandidate } from './up.js';
 
 const usage = () => `tl: control tiller. With no arguments, start the daemon if needed and open the app; tl . opens it on this directory.
@@ -86,7 +84,7 @@ const usage = () => `tl: control tiller. With no arguments, start the daemon if 
   tl sessions path [id]                               print the session directory of a node's tree (default: this node's, or this directory's orchestrator's)
   tl log [id] [--since 2h] [--follow]                 print a tree's event log (for a non-root id, only that node's events)
   tl memory on|off|inherit [--account NAME | --project PATH]  opt memory in or out (human only; no flag: globally)
-  tl memory status [--days N] [--node ID] [--account NAME]   memory's health, whether it is on here, and a node's injections
+  tl memory status [--days N] [--node ID] [--repo PATH] [--account NAME]   memory's health, whether it is on here, and a node's injections
   tl memory search QUERY [--kind K] [--all] [--repo PATH] [--account NAME]   --all includes retracted items
   tl memory show mID | add KIND TEXT [--body B] [--supersedes mID] | forget mID REASON [--purge]
   tl memory pin (mID | --text TEXT) [--unpin]         the human's standing instructions; outside a node, memory is the repo
@@ -478,14 +476,7 @@ switch (cmd) {
         await call('memory_switch', { on: sub === 'inherit' ? null : sub === 'on', account: f.account, project: f.project && resolve(f.project) });
         break;
       case 'status': {
-        if (!inNode) {
-          // The daemon cannot know this directory: resolve its opt-in here, as the daemon would for a node in it.
-          const dir = realpathSync(process.cwd()), main = mainCheckoutSync(dir) ?? dir;
-          let r: { on: boolean; source: string };
-          try { r = memoryOn(home, main, f.account ?? accountForProject(home, main)); } catch (e) { r = { on: false, source: (e as Error).message }; }
-          console.log(`memory is ${r.on ? 'on' : 'off'} for ${main} (${r.source})`);
-        }
-        await call('memory_status', { days: f.days ? Number(f.days) : undefined, nodeId: f.node, account: f.account });
+        await call('memory_status', { days: f.days ? Number(f.days) : undefined, nodeId: f.node, ...scope });
         break;
       }
       case 'search':

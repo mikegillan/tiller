@@ -2,6 +2,7 @@
 // I/O and no clock, so tests and replays run the same code as captureMemory. Trust rules: plan D4 rules 3-5.
 import type { ArchivedNode, Outcome } from '../shared/protocol.js';
 import { briefOf } from './archive.js';
+import { oneLine } from './memory-digest.js';
 import {
   firstErrorLine, gateExit, LIMITS, normalizeDedupe, parseItemRef, structuralCode,
   type CaptureEvent, type Derived, type DerivedItem, type EpisodeData, type HistoryEntry, type ItemKind,
@@ -100,7 +101,7 @@ function exitLine(command: string, tail: string): string | undefined {
 const failures = (history: HistoryEntry[]) =>
   history.flatMap((h) => (h.kind === 'gate' && !h.data.ok ? [h.data] : []));
 
-function outcomeItems(o: EpisodeData['outcome'], history: HistoryEntry[]): DerivedItem[] {
+function outcomeItems(o: EpisodeData['outcome'], history: HistoryEntry[], nodeId?: string): DerivedItem[] {
   const items = (o.openQuestions ?? []).slice(0, LIMITS.outcome.openQuestions).map((q) => q.trim()).filter(Boolean)
     .map((q) => item('open_question', cut(q, LIMITS.outcome.openQuestion), 'agent'));
   const succeeded = o.outcome === 'succeeded' && o.gate !== 'failed';
@@ -111,11 +112,15 @@ function outcomeItems(o: EpisodeData['outcome'], history: HistoryEntry[]): Deriv
   }
   if (succeeded && o.gate === 'passed') {
     // Gate output is agent text (R2): author agent, eligible only because this node then passed.
-    const fixed = o.summary && cut(firstSentence(o.summary)!, LIMITS.item.text);
+    // The fix note is daemon facts (the node, the passing attempt) plus the files the agent reported; the summary describes
+    // the task, not the fix, so it stays out.
+    const attempt = history.flatMap((h) => (h.kind === 'gate' && h.data.ok ? [h.data.attempt] : [])).at(-1);
+    const files = (o.changedFiles ?? []).slice(0, 5).map((f) => cut(oneLine(f), 120));
+    const fixed = `\nFixed by ${nodeId ?? 'this node'}: the gate passed${attempt === undefined ? '' : ` on attempt ${attempt}`}.${files.length ? `\nFiles it reported changing: ${files.join(', ')}` : ''}`;
     for (const f of failures(history)) {
       const line = f.tail && firstErrorLine(f.tail);
       if (!line) continue;
-      const note = `\nFixed by this node${fixed ? `: ${fixed}` : ''}`;
+      const note = fixed;
       items.push(item('pitfall', cut(`gate \`${f.command}\` failed: ${line}`, LIMITS.item.text), 'agent', cutFront(f.tail ?? '', LIMITS.item.body - note.length) + note));
     }
   }
@@ -165,12 +170,12 @@ function ledger(a: ArchivedNode): DerivedItem {
 }
 
 /** What one captured event records. history: the node's episodes since its previous outcome, oldest first. */
-export function derive(event: CaptureEvent, history: HistoryEntry[]): Derived {
+export function derive(event: CaptureEvent, history: HistoryEntry[], nodeId?: string): Derived {
   const { ts } = event;
   switch (event.type) {
     case 'outcome': {
       const { type: _, ts: __, ...o } = event;
-      return { episode: { kind: 'outcome', ts, data: outcomeData(o) }, items: outcomeItems(o, history), cites: citesOf(o) };
+      return { episode: { kind: 'outcome', ts, data: outcomeData(o) }, items: outcomeItems(o, history, nodeId), cites: citesOf(o) };
     }
     case 'gate': {
       const { ok, command, attempt, tail } = event;

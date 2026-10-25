@@ -1,6 +1,6 @@
 import { fmtAge, shortEffort, shortModel, usageLine } from '../shared/format.js';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import type http from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -12,7 +12,7 @@ import { updateLine, type Updater } from './update.js';
 import { fmtUsd, subtreeSpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { accountForProject } from './claude-accounts.js';
-import { loadConfig, type Config } from './config.js';
+import { claudeAccountListError, configEntries, loadConfig, type Config } from './config.js';
 import { ADMIN_TOKEN_FILE } from './home.js';
 import { findArchived, history } from './archive.js';
 import type { NodeManager } from './manager.js';
@@ -693,32 +693,48 @@ isolation "worktree" (agent nodes; a repo with a commit; Claude also needs its o
 
   memory_status: tool(
     'Memory status',
-    `Memory's health: each account file's state, path, size against memory.maxMB, schema and counts; whether memory is on (for nodeId's project, else globally) and why; and the digest arms compared over \`days\` (default ${LIMITS.tools.statusDays.default}). With nodeId (live or closed), also that node's injections, oldest first, from its account's file unless \`account\`. Opens no file that does not exist. Only the human may call this.`,
+    `Memory's health: each account file's state, path, size against memory.maxMB, schema and counts; whether memory is on for the project of nodeId (live or closed) or of \`repo\` (a directory of it) and why, else the global setting with the projects and accounts that have their own; and the digest arms compared over \`days\` (default ${LIMITS.tools.statusDays.default}). With nodeId, also that node's injections, oldest first, from its account's file unless \`account\`. Opens no file that does not exist. Only the human may call this.`,
     MEMORY_TOOL_SHAPES.memory_status,
     async (c, a) => {
       const m = c.manager;
-      // A closed node's account and directory come from its archive line.
+      // A closed node's account and directory come from its archive line; a node wins over repo.
       const rec = a.nodeId ? m.registry.get(a.nodeId) ?? await findArchived(m.home, a.nodeId) : undefined;
       if (a.nodeId && !rec) throw new Error(`no such node: ${a.nodeId}`);
       const live = !!a.nodeId && !!m.registry.get(a.nodeId);
-      const account = a.account ?? rec?.account, days = a.days ?? LIMITS.tools.statusDays.default;
-      const memory = memoryOn(m.home, rec ? m.projectDir(rec) : null, account);
-      const maxMB = loadConfig(null, m.home).memory.maxMB, dbs = m.memory.status(a.account);
+      if (a.repo !== undefined && !rec && (!isAbsolute(a.repo) || !statSync(a.repo, { throwIfNoEntry: false })?.isDirectory())) throw new Error(`repo must be the absolute path of a directory: ${a.repo}`);
+      // Without the opt-in gate: the project is the main checkout, as memoryScopeOf resolves it.
+      const project = rec ? m.projectDir(rec) : a.repo !== undefined ? m.projectDir({ cwd: realpathSync(a.repo) }) : null;
+      const days = a.days ?? LIMITS.tools.statusDays.default;
+      // An invalid claude.accounts list fails closed (off) with its reason, as for the nodes themselves; the rest of the status still prints.
+      let account: string | undefined, memory: ReturnType<typeof memoryOn>;
+      try {
+        account = a.account ?? rec?.account ?? (project === null ? undefined : accountForProject(m.home, project));
+        memory = memoryOn(m.home, project, account);
+      } catch (err) {
+        memory = { on: false, source: (err as Error).message };
+      }
+      const config = loadConfig(null, m.home), maxMB = config.memory.maxMB, all = m.memory.status(), dbs = a.account === undefined ? all : m.memory.status(a.account);
       let arms: ReturnType<typeof m.memory.stats> | undefined, armsError: string | undefined;
       try { arms = m.memory.stats(account, days); } catch (err) { armsError = (err as Error).message; }
       const injections = a.nodeId ? m.memory.injections(account, a.nodeId) : undefined;
       const pct = (x: number | null) => (x === null ? '-' : `${Math.round(x * 100)}%`);
+      const onOff = (on: boolean) => (on ? 'on' : 'off');
+      const projects = config.memory.projects.map((p) => `${p.path} ${onOff(p.enabled)}`);
+      const accounts = config.claude.accounts.flatMap((x) => (x.memory === undefined ? [] : [`${x.name} ${onOff(x.memory)}${x.memory ? '' : ' (ceiling)'}`]));
       const lines = [
-        `memory is ${memory.on ? 'on' : 'off'}${rec ? ` for ${a.nodeId}${live ? '' : ' (closed)'}` : ''} (${memory.source})`,
+        project === null
+          ? `memory.enabled (global): ${onOff(config.memory.enabled)} (${configEntries(null, m.home)['memory.enabled'].source === join(m.home, 'config.json') ? `set in ${join(m.home, 'config.json')}` : 'default'})`
+          : `memory is ${onOff(memory.on)} for ${project}${rec ? `, node ${a.nodeId}${live ? '' : ' (closed)'}` : ''} (${memory.source})`,
+        ...(project === null ? [`projects with their own setting: ${projects.join(', ') || 'none'}`, `accounts: ${claudeAccountListError(m.home) ?? (accounts.join(', ') || 'none set')}`] : []),
         ...dbs.map((d) => [`${d.key}: ${d.state}`, d.path, d.usedBytes !== undefined && `${(d.usedBytes / 2 ** 20).toFixed(1)} of ${maxMB} MB${d.overLimit ? ' (over the limit)' : ''}`,
           d.schema !== undefined && `schema ${d.schema}`,
           d.counts && `${Object.values(d.counts.items).reduce((x, y) => x + y, 0)} items, ${d.counts.pinned} pinned, ${d.counts.retracted} retracted, ${d.counts.tombstones} tombstones, ${d.counts.episodes} episodes, ${d.counts.injections} injections`,
           d.quarantined.length && `quarantined: ${d.quarantined.join(', ')}`].filter(Boolean).join(' · ')),
-        ...(dbs.length ? [] : ['(no memory files yet)']),
+        ...(all.length ? [] : ['no memory file yet: one is created at the first capture after memory is on for a project']),
         arms ? `digest arms over ${days} days: ${Object.entries(arms).map(([arm, s]) => `${arm} ${s.nodes} nodes, first-pass gate ${pct(s.firstPassGate)}, failed outcomes ${pct(s.failedOutcomes)}`).join('; ')}` : `digest arms: ${armsError}`,
         ...(injections ? [`injections of ${a.nodeId}: ${injections.length}`, ...injections.map((j) => `  ${new Date(j.ts).toISOString()} ${j.arm} ${j.cause} ${j.itemIds.length} items, session ${j.sessionId}`)] : []),
       ];
-      return { text: lines.join('\n'), data: { memory, maxMB, days, dbs, ...(arms ? { arms } : { armsError }), ...(injections ? { injections } : {}) } };
+      return { text: lines.join('\n'), data: { memory, ...(project === null ? { projects: config.memory.projects, accounts: config.claude.accounts.flatMap((x) => (x.memory === undefined ? [] : [{ name: x.name, memory: x.memory }])) } : { project }), maxMB, days, dbs, ...(arms ? { arms } : { armsError }), ...(injections ? { injections } : {}) } };
     }, true),
 
   memory_switch: tool(
