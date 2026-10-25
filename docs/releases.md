@@ -43,6 +43,12 @@ every skipped PR's commits.
 - Releases contain source and notes. This workflow produces no signed binaries
   or updater asset manifest and does not bump package, Cargo or app manifests.
 
+An automatic check that finds the same published releases, `origin` and
+checkout HEAD as the last successful check reuses the tags that check resolved
+instead of contacting `origin` again; it still reads the checkout's state and
+`update.lock` afresh. Manual checks always resolve every tag again, and
+installation validates the release and tag again before it changes anything.
+
 Manual and automatic discovery share one in-flight check. The daemon broadcasts
 `checking: true` with installation eligibility disabled at the start, then
 `checking: false` with the fresh result or failure. Checks requested during

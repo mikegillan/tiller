@@ -176,6 +176,17 @@ describe('loop detection', () => {
     expect((await deliver(m.mgr, 'a', 'b', 'retry me')).outcome).toBe('queued');
     expect(m.sessions.get('p')!.pasted).toEqual([]); // no loop notice
   });
+
+  it('forgets a pair\'s rate, repeat and loop history once either node is removed', async () => {
+    m.set('b', { state: 'done', doneSource: 'stop' });
+    expect((await deliver(m.mgr, 'a', 'b', 'same')).outcome).toBe('delivered');
+    for (const id of ['b', 'a']) {
+      m.emit('removed', id);
+      m.add(id, 'p'); // the same id again, standing in for a fresh node
+      m.set('b', { state: 'done', doneSource: 'stop' });
+      expect((await deliver(m.mgr, 'a', 'b', 'same')).outcome).toBe('delivered'); // no rate wait, no repeat refusal
+    }
+  });
 });
 
 describe('envelope', () => {

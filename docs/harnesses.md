@@ -273,7 +273,7 @@ a directory that does not exist yet is shown logged out without running Claude.
 - Fork and follow-up stay in the source's account; a cross-account fork is refused (see
   [sessions.md](sessions.md#history-follow-up-and-fork)).
 
-The node's record keeps the account's name, shown as `account` in `list_nodes` and the
+The node's record keeps the account's name, shown as `account NAME` in `list_nodes` and the
 inspector. Only Claude launches get `CLAUDE_CONFIG_DIR`. Pi and Codex nodes keep the account so
 their Claude children inherit it, and terminal nodes do not get the variable.
 
