@@ -293,7 +293,7 @@ describe('item detail', () => {
   });
 
   it('pins the human\'s own item without asking', () => {
-    open(view(3, { author: 'human', kind: 'note', pinned: false, invalid: { at: 1, kind: 'human', by: 'human', reason: 'unpinned' } }));
+    open(view(3, { author: 'human', kind: 'note', textPin: true, pinned: false, invalid: { at: 1, kind: 'human', by: 'human', reason: 'unpinned' } }));
     click('Pin', detail);
     expect(last('memoryAction').action).toEqual({ kind: 'pin', itemId: 3 });
   });
@@ -313,7 +313,7 @@ describe('item detail', () => {
   });
 
   it('edits a human text pin', () => {
-    open(view(5, { author: 'human', kind: 'note', pinned: true }));
+    open(view(5, { author: 'human', kind: 'note', pinned: true, textPin: true }));
     expect(all().filter((e) => e.type === 'button').map((e) => text(e.props.children))).toEqual(expect.arrayContaining(['Unpin', 'Edit…', 'Forget…']));
     click('Edit…');
     find((e) => e.type === 'textarea').props.onChange({ target: { value: 'new text' } }); render();

@@ -213,7 +213,7 @@ const memFiles = {
   work: { state: 'ok', quarantined: [], items: [], seq: 0, repos: [{ key: 'git:github.com/dotcms/core', path: DOTCMS }, { key: 'git:github.com/swicken/tiller', path: TILLER }] },
   client: { state: 'broken: file is not a database', quarantined: ['client.db.broken-1729418400000'], items: [], seq: 0, repos: [] },
 };
-// pin marks a text pin (the daemon's PIN: dedupe); it and repo stay out of replies.
+// textPin marks a text pin (the daemon's PIN: dedupe), as the view does; repo stays out of replies.
 const memItem = (file, repo, kind, text, { ago, ...x } = {}) => {
   const f = memFiles[file], at = now - (ago ?? (40 - f.seq) * 17 * MIN);
   const agent = (x.author ?? 'agent') === 'agent' ? { nodeId: 'tl-d', rootId: 'tl', harness: 'claude', model: 'claude-opus-5-5' } : {};
@@ -223,7 +223,7 @@ const memItem = (file, repo, kind, text, { ago, ...x } = {}) => {
 };
 {
   const T = 'git:github.com/swicken/tiller', p = '_default';
-  memItem(p, T, 'note', 'Run npm run typecheck and the UI typecheck before reporting.', { author: 'human', pinned: true, pin: true, seen: 0 });
+  memItem(p, T, 'note', 'Run npm run typecheck and the UI typecheck before reporting.', { author: 'human', pinned: true, textPin: true, seen: 0 });
   memItem(p, T, 'ledger', 'daemon (tl-d) succeeded: the daemon serves ui/dist and reports /health', { author: 'daemon', nodeId: 'tl-d', body: 'Brief: Serve the built UI from the daemon.\nOutcome: succeeded. Changed src/daemon/server.ts, src/daemon/server.test.ts.' });
   memItem(p, T, 'procedure', 'npm test -- ui', { seen: 6, cites: 2, gets: 3, body: 'Verified by the gate on attempt 1 in tl-ui, tl-css and a-css.' });
   memItem(p, T, 'pitfall', 'Vitest runs at most two files at once; a test that spawns git can time out under load.', { nodeId: 'a-css', model: 'claude-haiku-4-5', body: 'Fixed by a-css: the gate passed on attempt 2.\nFiles it reported changing: vitest.config.ts' });
@@ -239,13 +239,14 @@ const memItem = (file, repo, kind, text, { ago, ...x } = {}) => {
   memItem(p, T, 'note', 'The DOM renderer is safest in WKWebView.', { nodeId: 'tl-spike', invalid: { at: now - 30 * MIN, kind: 'gardener', by: 'gardener', reason: 'duplicate of m6' } });
   memItem(p, T, 'note', 'Hostile: <img src=x onerror="alert(1)"> <script>alert(1)</script>', { nodeId: 'tl-test', body: '<img src=x onerror="alert(2)">\n<b>not bold</b> [x](javascript:alert(3))' });
   memItem(p, T, 'pitfall', 'Never commit node_modules symlinks.', { pinned: true, invalid: { at: now - 20 * MIN, kind: 'human', by: 'human', reason: 'wrong or stale' } });
-  memItem(p, T, 'note', 'Prefer small PRs.', { author: 'human', pin: true, invalid: { at: now - 90 * MIN, kind: 'human', by: 'human', reason: 'unpinned' } });
+  memItem(p, T, 'note', 'Prefer small PRs.', { author: 'human', textPin: true, invalid: { at: now - 90 * MIN, kind: 'human', by: 'human', reason: 'unpinned' } });
+  memItem(p, T, 'note', 'Release notes go in docs/releases.md.', { author: 'human', pinned: true, seen: 0 }); // tl memory add, then pinned: no text pin
   memItem(p, 'path:/tmp/scratch', 'ledger', 'scratch (sc) succeeded: wrote out.csv with 120 rows', { author: 'daemon', nodeId: 'sc' });
   memItem(p, 'path:/tmp/scratch', 'procedure', 'python3 make_csv.py > out.csv', { nodeId: 'sc', rootId: 'sc', model: 'claude-haiku-4-5' });
   memItem(p, 'git:github.com/scott/old-site', 'note', 'The site builds with hugo 0.92; newer versions break the theme.', { nodeId: 'n-0ld1', rootId: 'n-0ld1', model: 'claude-sonnet-5-5', ago: 40 * 86400_000 });
   memItem(p, 'git:github.com/scott/old-site', 'pitfall', 'Images over 2 MB fail the Netlify deploy.', { nodeId: 'n-0ld1', rootId: 'n-0ld1', ago: 41 * 86400_000 });
   const D = 'git:github.com/dotcms/core', w = 'work';
-  memItem(w, D, 'note', 'Never run the migration against production from a node.', { author: 'human', pinned: true, pin: true, seen: 0 });
+  memItem(w, D, 'note', 'Never run the migration against production from a node.', { author: 'human', pinned: true, textPin: true, seen: 0 });
   memItem(w, D, 'procedure', './mvnw -pl dotCMS test', { nodeId: 'dc', rootId: 'dc', seen: 4 });
   memItem(w, D, 'ledger', 'db migration dry run (a-mig) succeeded: dry run passed on the staging dump', { author: 'daemon', nodeId: 'a-mig' });
   memItem(w, D, 'pitfall', 'The overloaded API error ends the turn; resume rather than restart.', { nodeId: 'dc-mig', rootId: 'dc', eligible: false });
@@ -299,7 +300,7 @@ function memoryScope(t) {
     source: !checkout ? 'no checkout of this repository is known; choose its directory' : optIn ?? 'memory.enabled (global): off (default)',
     target: { account: account ?? null, ...(repo && { repo }), ...(t.nodeId && { nodeId: t.nodeId }), ...(t.dir && { dir: t.dir }) } };
 }
-const memView = ({ repo: _repo, pin: _pin, ...it }, full) => {
+const memView = ({ repo: _repo, ...it }, full) => {
   if (!full) { delete it.body; delete it.cites; delete it.gets; delete it.rootId; }
   return it;
 };
@@ -347,10 +348,10 @@ function memoryAction(m) {
   if (s.on !== true) return { error: `memory is not on for this checkout (${s.source})` };
   if (s.f?.state !== 'ok') return { error: `the account file is ${s.f?.state ?? 'missing'}` };
   const t = Date.now(), items = s.f.items.filter((i) => i.repo === s.repo);
-  const pinOf = (text) => items.find((i) => i.pin && i.text.toLowerCase() === text.trim().toLowerCase());
+  const pinOf = (text) => items.find((i) => i.textPin && i.text.toLowerCase() === text.trim().toLowerCase());
   const pinNew = (text) => {
     const r = pinOf(text);
-    return r ? Object.assign(r, { text: text.trim(), body: '', pinned: true, invalid: undefined, updatedAt: t }) : memItem(s.file, s.repo, 'note', text.trim(), { author: 'human', pinned: true, pin: true, seen: 0, createdAt: t, updatedAt: t });
+    return r ? Object.assign(r, { text: text.trim(), body: '', pinned: true, invalid: undefined, updatedAt: t }) : memItem(s.file, s.repo, 'note', text.trim(), { author: 'human', pinned: true, textPin: true, seen: 0, createdAt: t, updatedAt: t });
   };
   const pinnedAs = (text) => { const r = pinOf(text); return r?.pinned && !r.invalid ? { error: `already pinned as m${r.id}` } : undefined; };
   if (a.kind === 'pinText') return pinnedAs(a.text) ?? { item: memView(pinNew(a.text), true) };
@@ -364,7 +365,7 @@ function memoryAction(m) {
       break;
     case 'unpin':
       it.pinned = false;
-      if (it.pin) retract('human', 'unpinned');
+      if (it.textPin) retract('human', 'unpinned');
       break;
     case 'forget':
       if (it.invalid) return { error: `m${it.id} is already retracted` };
@@ -373,12 +374,12 @@ function memoryAction(m) {
     case 'restore':
       if (!it.invalid) return { error: `m${it.id} is not retracted` };
       if (it.tombstone) return { error: `m${it.id} is a tombstone: its text is gone` };
-      if (it.pin) return { error: `m${it.id} is a text pin: pin it again instead` };
+      if (it.textPin) return { error: `m${it.id} is a text pin: pin it again instead` };
       if (!['agent', 'human', 'superseded'].includes(it.invalid.kind)) return { error: `cannot restore a ${it.invalid.kind} item here` };
       Object.assign(it, { invalid: undefined, updatedAt: t });
       break;
     case 'editPin': {
-      if (!it.pin || !it.pinned || it.invalid) return { error: 'only your own text pins can be edited; pin new text instead' };
+      if (!it.textPin || !it.pinned || it.invalid) return { error: 'only your own text pins can be edited; pin new text instead' };
       if (it.text.toLowerCase() === a.text.trim().toLowerCase()) return { error: 'unchanged' };
       const refused = pinnedAs(a.text);
       if (refused) return refused;

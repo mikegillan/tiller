@@ -4,7 +4,7 @@ import { badges, checkoutLine, itemActions, purgeCommand, purgeNote, sectionsFor
 
 const item = (x: Partial<MemoryItemView> = {}): MemoryItemView =>
   ({ id: 7, kind: 'pitfall', text: 'a pitfall', author: 'agent', nodeId: 'n-ab12', harness: 'codex', model: 'gpt-5', seen: 2, pinned: false, createdAt: 0, updatedAt: 0, eligible: true, ...x });
-const textPin = (x: Partial<MemoryItemView> = {}) => item({ kind: 'note', author: 'human', pinned: true, nodeId: undefined, ...x });
+const textPin = (x: Partial<MemoryItemView> = {}) => item({ kind: 'note', author: 'human', pinned: true, textPin: true, nodeId: undefined, ...x });
 const hidden = (kind: string, x: Partial<MemoryItemView> = {}) => item({ invalid: { at: 1, kind: kind as never, by: 'gardener' }, ...x });
 
 describe('purgeCommand', () => {
@@ -32,6 +32,9 @@ describe('item state', () => {
     expect(itemActions(textPin())).toEqual(['unpin', 'edit', 'forget']);
     expect(itemActions(item({ pinned: true }))).toEqual(['unpin', 'forget']);
     expect(itemActions(item())).toEqual(['pin', 'forget']);
+    // A note the human added with tl memory add is not a text pin, even when pinned.
+    expect(itemActions(textPin({ textPin: undefined }))).toEqual(['unpin', 'forget']);
+    expect(itemActions(textPin({ textPin: undefined, pinned: false, invalid: { at: 1, kind: 'human', by: 'human' } }))).toEqual(['pin', 'restore']);
   });
   it('offers Restore for known retractions, not for tombstones, text pins or unknown kinds', () => {
     expect(itemActions(hidden('agent'))).toEqual(['pin', 'restore']);

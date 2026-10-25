@@ -26,12 +26,6 @@ const INVALID_LABEL: Record<string, string> = {
 };
 const RESTORABLE = new Set(['agent', 'human', 'superseded']);
 
-/**
- * The human's text pins are the only human notes the panel can make. The view carries no dedupe key, so a human note
- * stands for a text pin: Edit and Restore follow the daemon's rule for those, and it refuses anything else with a reason.
- */
-export const isTextPin = (item: MemoryItemView) => item.author === 'human' && item.kind === 'note';
-
 export function badges(item: MemoryItemView, supersededBy?: number): string[] {
   const out: string[] = [];
   if (item.pinned) out.push('Pinned');
@@ -49,10 +43,10 @@ export type ItemAction = 'pin' | 'unpin' | 'edit' | 'forget' | 'restore';
 /** What the human can do to an item in its state; the daemon still judges each. */
 export function itemActions(item: MemoryItemView): ItemAction[] {
   if (item.tombstone) return [];
-  if (!item.invalid) return [item.pinned ? 'unpin' : 'pin', ...(item.pinned && isTextPin(item) ? ['edit' as const] : []), 'forget'];
+  if (!item.invalid) return [item.pinned ? 'unpin' : 'pin', ...(item.pinned && item.textPin ? ['edit' as const] : []), 'forget'];
   // A retracted item may still be pinned (forget does not unpin). A retracted text pin comes back by pinning it again.
   const pin = item.pinned ? 'unpin' as const : 'pin' as const;
-  return [pin, ...(!isTextPin(item) && RESTORABLE.has(item.invalid.kind) ? ['restore' as const] : [])];
+  return [pin, ...(!item.textPin && RESTORABLE.has(item.invalid.kind) ? ['restore' as const] : [])];
 }
 
 /** Pinning an agent's or the daemon's text turns it into an instruction: ask first (D7). */
