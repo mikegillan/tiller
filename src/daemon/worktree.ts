@@ -5,7 +5,7 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { closeSync, existsSync, openSync, realpathSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { Diff, DiffFile, Worktree } from '../shared/protocol.js';
 import type { MergeStyle } from './config.js';
