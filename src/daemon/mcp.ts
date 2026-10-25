@@ -1,6 +1,6 @@
 import { fmtAge, shortEffort, shortModel, usageLine } from '../shared/format.js';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import type http from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -12,7 +12,7 @@ import { updateLine, type Updater } from './update.js';
 import { fmtUsd, subtreeSpend } from '../shared/spend.js';
 import { treeOrder } from '../shared/tree.js';
 import { accountForProject } from './claude-accounts.js';
-import { configEntries, loadConfig, type Config } from './config.js';
+import { claudeAccountListError, configEntries, loadConfig, type Config } from './config.js';
 import { ADMIN_TOKEN_FILE } from './home.js';
 import { findArchived, history } from './archive.js';
 import type { NodeManager } from './manager.js';
@@ -703,9 +703,16 @@ isolation "worktree" (agent nodes; a repo with a commit; Claude also needs its o
       const live = !!a.nodeId && !!m.registry.get(a.nodeId);
       if (a.repo !== undefined && !rec && (!isAbsolute(a.repo) || !statSync(a.repo, { throwIfNoEntry: false })?.isDirectory())) throw new Error(`repo must be the absolute path of a directory: ${a.repo}`);
       // Without the opt-in gate: the project is the main checkout, as memoryScopeOf resolves it.
-      const project = rec ? m.projectDir(rec) : a.repo !== undefined ? m.projectDir({ cwd: a.repo }) : null;
-      const account = a.account ?? rec?.account ?? (project === null ? undefined : accountForProject(m.home, project)), days = a.days ?? LIMITS.tools.statusDays.default;
-      const memory = memoryOn(m.home, project, account);
+      const project = rec ? m.projectDir(rec) : a.repo !== undefined ? m.projectDir({ cwd: realpathSync(a.repo) }) : null;
+      const days = a.days ?? LIMITS.tools.statusDays.default;
+      // An invalid claude.accounts list fails closed (off) with its reason, as for the nodes themselves; the rest of the status still prints.
+      let account: string | undefined, memory: ReturnType<typeof memoryOn>;
+      try {
+        account = a.account ?? rec?.account ?? (project === null ? undefined : accountForProject(m.home, project));
+        memory = memoryOn(m.home, project, account);
+      } catch (err) {
+        memory = { on: false, source: (err as Error).message };
+      }
       const config = loadConfig(null, m.home), maxMB = config.memory.maxMB, all = m.memory.status(), dbs = a.account === undefined ? all : m.memory.status(a.account);
       let arms: ReturnType<typeof m.memory.stats> | undefined, armsError: string | undefined;
       try { arms = m.memory.stats(account, days); } catch (err) { armsError = (err as Error).message; }
@@ -718,7 +725,7 @@ isolation "worktree" (agent nodes; a repo with a commit; Claude also needs its o
         project === null
           ? `memory.enabled (global): ${onOff(config.memory.enabled)} (${configEntries(null, m.home)['memory.enabled'].source === join(m.home, 'config.json') ? `set in ${join(m.home, 'config.json')}` : 'default'})`
           : `memory is ${onOff(memory.on)} for ${project}${rec ? `, node ${a.nodeId}${live ? '' : ' (closed)'}` : ''} (${memory.source})`,
-        ...(project === null ? [`projects with their own setting: ${projects.join(', ') || 'none'}`, `accounts: ${accounts.join(', ') || 'none set'}`] : []),
+        ...(project === null ? [`projects with their own setting: ${projects.join(', ') || 'none'}`, `accounts: ${claudeAccountListError(m.home) ?? (accounts.join(', ') || 'none set')}`] : []),
         ...dbs.map((d) => [`${d.key}: ${d.state}`, d.path, d.usedBytes !== undefined && `${(d.usedBytes / 2 ** 20).toFixed(1)} of ${maxMB} MB${d.overLimit ? ' (over the limit)' : ''}`,
           d.schema !== undefined && `schema ${d.schema}`,
           d.counts && `${Object.values(d.counts.items).reduce((x, y) => x + y, 0)} items, ${d.counts.pinned} pinned, ${d.counts.retracted} retracted, ${d.counts.tombstones} tombstones, ${d.counts.episodes} episodes, ${d.counts.injections} injections`,

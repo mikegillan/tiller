@@ -186,7 +186,7 @@ The **Memory** group (under Workflow) edits the memory opt-in with two pseudo-ke
 - `memory.project` (project scope) sets or, with `null`, removes the `memory.projects` entry for the repository's exact path. Like `claude.account`, it rewrites the home file, so the request must carry the snapshot's `homeRevision` (a stale one is a 409), and a save that changes both shares one home write.
 - `memory.enabled` and `memory.maxMB` are ordinary home-scope keys; `memory.maxMB` below 16 is a 400.
 
-At project scope every other `memory.*` key, and the account keys, are refused as home-only. A home snapshot carries `memory` `{ on, source, projects }`, and a project snapshot `{ on, source, account }`, where `source` is the setting that decides, for root nodes in that repository's account. Each of these writes the same bytes as the matching `tl memory` command. See [memory.md](memory.md#turning-memory-on).
+At project scope every other `memory.*` key, and the account keys, are refused as home-only. A home snapshot carries `memory` `{ on, source, projects }`, and a project snapshot `{ on, source, account }`, where `source` is the setting that decides, for root nodes in that repository's account. Each opt-in change writes the same bytes as the matching `tl memory` command (`memory.maxMB` has no `tl` equivalent). See [memory.md](memory.md#turning-memory-on).
 
 Save with `POST /api/settings` and a JSON body such as:
 

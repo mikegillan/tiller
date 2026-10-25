@@ -23,7 +23,7 @@ tl memory inherit --project ~/code/repo   # remove the setting
 
 `inherit` removes the setting at that scope. `--account` and `--project` together are refused. Only the human can change the switch: an agent calling `tl memory on` with its node token is refused.
 
-**Settings → Memory** does the same from the app. At global scope it has the `memory.enabled` switch (Reset to default means inherit), one select per configured account (no setting, On, or Off, which is a ceiling no repository setting lifts) and `memory.maxMB` (16 or more). At repository scope it has Inherit, On or Off for the repository, which is written to the **home** file's `memory.projects` under the repository's exact path, as `claude.account` is, and not to the repository file. Each save is the same write as the matching `tl memory` command. A repository file's `memory.enabled: false` stays JSON-only: edit `<repo>/.tiller/config.json` yourself, and Settings names it in the status line when it decides. The status line is the `source` the daemon reports, so Settings never re-implements the rules below. It is labelled per account ("for root nodes here (account work)"), because a node in another account can resolve differently.
+**Settings → Memory** does the same from the app. At global scope it has the `memory.enabled` switch (labelled *Memory (global)*; *Use inherited default* removes the setting), one select per configured account (*No account setting*, *On*, or *Off (a ceiling: no repository setting turns it on)*) and `memory.maxMB` (16 or more). At repository scope it has *Memory for this repository*: Inherit, On or Off, which is written to the **home** file's `memory.projects` under the repository's exact path, as `claude.account` is, and not to the repository file. Each opt-in change is the same write as the matching `tl memory` command (`memory.maxMB` has no `tl` equivalent). A repository file's `memory.enabled: false` stays JSON-only: edit `<repo>/.tiller/config.json` yourself, and Settings names it in the status line when it decides. The status line is the `source` the daemon reports, so Settings never re-implements the rules below. At repository scope it reads "Memory is on for root nodes here (account work): <source>.", labelled per account because a node in another account can resolve differently; at global scope, "The global setting is on (<source>).".
 
 ### Which setting wins
 
@@ -130,8 +130,8 @@ tl memory pin (mID | --text TEXT) [--unpin]
 The app shows what memory holds and lets you change it. Reading needs no live node and works while memory is off, because turning memory off deletes nothing. There are three ways in:
 
 - the **Memory** tab beside Terminal, Diff and Transcript on an agent node, for that node's repository and account;
-- the **Memory** button in the sidebar footer: for the selected node's repository, or, with nothing selected, for any account file and repository, which you choose from the pickers at the top of the page;
-- the **Memory** button on a closed node's pane, which also opens that node's *Given to this node* log.
+- the Memory icon in the sidebar footer (labelled Memory; it toggles the page): for the selected node's repository, or, with nothing selected, for any account file, starting on the account file's first repository, which you change with the pickers at the top of the page;
+- the **Memory** button on a closed node's pane, which adds that node's *Given to this node* section.
 
 A page reads one account's file: the header's account picker lists the files that exist, and the repository picker lists the repositories in it (each with the first path recorded for it, which is not necessarily where it lives now). **Use a directory…** names a checkout by its path. The panel asks the daemon on opening, after each of your changes, on reconnect and on Refresh, never live; a node that records something while you look shows up on the next refresh.
 
@@ -139,17 +139,19 @@ A page reads one account's file: the header's account picker lists the files tha
 
 Whether memory is on is a question about a directory, and two clones of one `origin` share items but can be opted in differently. So the page judges a **checkout**, takes it from the first candidate whose repository key matches, and says which one it used on the *Checkout* line:
 
-1. the node's own checkout ("from this node"; a worktree node's is its main checkout, and a closed node's is its recorded directory, falling back to the main checkout if the worktree is gone);
-2. the directory you chose ("chosen");
+1. the directory you chose ("chosen"), which wins over the node's;
+2. the node's own checkout ("from this node"): a worktree node's main checkout, and for a closed node the main checkout of its recorded directory, or of the repository its deleted worktree was made from;
 3. a live node's checkout in that repository ("a live node");
-4. the first path ever recorded for the repository ("the recorded path"), only if it still exists and still has that key.
+4. the first path recorded for the repository in this file ("the recorded path"), only if it still exists and still has that key.
 
-With none, the page says "No checkout of this repository is known: choose its directory", the state is unknown, and changes are refused until you choose one. This fails safe: a moved or deleted checkout never inherits another clone's opt-in. The *state* line then shows memory on or off for that checkout and the setting that decides it. When off, it says "Change it in Settings → Memory" in plain text. A broken file shows its state and any quarantined copies instead of an error. Changes apply to nodes launched from now on; running nodes keep the digest they were given.
+The page uses the node's own account as it is (a node with none reads the no-account file). If a closed node's checkout is gone, the page shows its repository only when this file recorded that same path, never another repository.
+
+With none, the page says "No checkout of this repository is known: choose its directory" and the state line reads "Memory on or off is unknown: no checkout of this repository is known; choose its directory." Changes are refused with "refused: no checkout of this repository is known; choose its directory" (or, when it is off, "refused: memory is off for <checkout> (<source>)"), and the page shows "Changes need memory on for this checkout: <source>." This fails safe: a moved or deleted checkout never inherits another clone's opt-in. The *state* line otherwise shows memory on or off for that checkout and the setting that decides it. When off, it says "Change it in Settings → Memory" in plain text. A broken file shows its state and any quarantined copies instead of an error. Changes apply to nodes launched from now on; running nodes keep the digest they were given.
 
 ### Sections
 
-- **Items:** a search box (plain words; common words such as "the" or "src" are ignored, and the page says so when nothing matches), chips for All, Pinned, Ledger, Open questions, Procedures, Pitfalls and Notes with their counts, and *Show retracted*. Each row shows the kind, the text as plain text, who recorded it, its age and how often it was seen, and a badge when it is pinned, hidden or search-only (written by a node that did not succeed, so no digest includes it). A badge for an item hidden in a way the panel has no label for reads "Hidden (<kind>) by <who>". Open a row for its body, the node that recorded it (a link, when live) and the nodes whose digest included it. Without a query the list is newest first, 50 at a time with *Load more*; with one it is best match first.
-- **Given to this node** (when opened from a node): that node's launches, newest first, each with the cause and the digest text. "Recorded, not given" marks the off arm of an A/B (`memory.digest: ab`); a resume shows "reused this session's first digest".
+- **Items:** a search box (plain words; common words such as "the" or "src" are ignored, and the page says so when nothing matches), chips for All, Pinned, Ledger, Open questions, Procedures, Pitfalls and Notes with their counts, and *Show retracted*. Each row shows the kind, the text as plain text, who recorded it, its age and how often it was seen, and badges: *Pinned*, *Superseded by mN*, *Evicted*, *Purged*, "Retracted by the human (permanent)", "Hidden by an agent until recorded again", and *Search only* (written by a node that did not succeed, so no digest includes it). A badge for an item hidden in a way the panel has no label for reads "Hidden (<kind>) by <who>". Open a row for its body, the node that recorded it (a link, when live) and the last 20 nodes whose digest included it. Without a query the list is most recently updated first, 50 at a time with *Load more*; with one it is best match first.
+- **Given to this node** (when opened from a node): that node's latest 20 launches, newest first, each with the cause and the digest text. "recorded, not given (A/B off arm)" marks the off arm of an A/B (`memory.digest: ab`); a resume shows "Reused this session's first digest.".
 - **Claude Code memory:** see below.
 
 ### Changes
@@ -158,7 +160,7 @@ Each change is made as the human, refused unless memory is on for the deciding c
 
 - **Pin** an item (restoring it if retracted; for an agent or daemon item the panel asks first), **Pin an instruction…** (new text, up to 500 characters), **Unpin**, and **Edit** a text pin you wrote.
 - **Forget**, with a reason, is permanent: agents' later work cannot bring the item back. It is never a purge.
-- **Restore** brings back an item that you or an agent hid, or another item replaced. It is not offered for tombstones (evicted or purged: the text is gone), for text pins (pin the text again instead) or for items hidden in a way the panel does not know. A restored item stays pinned if it was pinned, and the button says so.
+- **Restore** brings back an item that you or an agent hid, or another item replaced. It is not offered for tombstones (evicted or purged: the text is gone), for text pins (pin the text again instead) or for items hidden in a way the panel does not know. A restored item stays pinned if it was pinned, and the button reads "Restore (stays pinned)".
 
 **Purge is CLI-only.** It is irreversible and compacts the file, so the panel shows a command to copy instead of a button:
 
@@ -174,7 +176,7 @@ Claude Code keeps its own auto-memory. The panel's *Claude Code memory* section 
 
 Claude keys that memory by the repository's **main checkout**, not by a worktree. The files are `<Claude home>/projects/<slug>/memory/*.md`, where the slug is the checkout's real path with every character outside letters and digits replaced by `-` (the same slug transcripts use), and the Claude home is `~/.claude`, or the account's `configDir` for a named account. So a Tiller worktree node at `/r/.claude/worktrees/n-1` and a plain `git worktree add` checkout both show the memory of `/r`; the `-r--claude-worktrees-n-1` directory holds transcripts only. The section names the directory it checked, so a miss is visible. `MEMORY.md` is listed first, then the topic files by name, each in a collapsible block with any front matter apart from the text.
 
-Because the files are Claude's and Claude writes them, they are untrusted: they are rendered as Markdown with HTML skipped, only `http(s)` links and no images. They are read without following symlinks: a symlinked directory or file is skipped. At most 100 files, 64 KiB each and 1 MiB in all are read; the section marks a truncated file and lists the names left out. A named account that is not configured is an error, never a fall back to `~/.claude`.
+Because the files are Claude's and Claude writes them, they are untrusted: they are rendered as Markdown with HTML skipped, only `http(s)` links and no images. They are read without following symlinks: a symlinked directory or file is skipped. At most 100 files, 64 KiB each and 1 MiB in all (counting each file's JSON-encoded size) are read; the section marks a truncated file and lists the names left out. A named account that is not configured is an error, never a fall back to `~/.claude`.
 
 Limits: an `autoMemoryDirectory`-style override of Claude's is not followed; if Claude shortens a very long slug, the panel shows the path it checked instead; and the location for a named account (`CLAUDE_CONFIG_DIR`) is inferred from where transcripts live, not confirmed.
 

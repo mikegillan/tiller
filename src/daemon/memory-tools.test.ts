@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -263,6 +263,21 @@ describe('memory tools', () => {
     expect((await api('memory_status', { repo: repoB })).text!.split('\n')[0]).toBe(`memory is off for ${repoB} (default)`);
     expect((await api('memory_status', { repo: 'a' })).error).toMatch(/^repo must be the absolute path of a directory/);
     expect((await api('memory_status', { repo: join(repoA, 'nope') })).error).toMatch(/^repo must be the absolute path of a directory/);
+  });
+
+  it('memory_status reports an invalid claude.accounts list as off with its reason, and still prints the rest', async () => {
+    const link = join(dir, 'link');
+    symlinkSync(repoB, link); // a non-git directory reached through a symlink prints as its real path
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ memory: { enabled: true }, claude: { accounts: [{ name: 'bad', configDir: '~/.claude' }] } }));
+    for (const args of [{ repo: repoA }, { repo: link }]) {
+      const r = await api('memory_status', args);
+      expect(r.status, JSON.stringify(args)).toBe(200);
+      expect(r.data.memory.on).toBe(false);
+      expect(r.text).toMatch(new RegExp(`^memory is off for ${args.repo === link ? repoB : repoA} \\(.*claude\\.accounts`));
+      expect(r.text).toContain('digest arms');
+    }
+    const bare = await api('memory_status', {});
+    expect(bare.text!.split('\n')[2]).toMatch(/^accounts: .*claude\.accounts/);
   });
 
   it('memory_status says "no memory file yet" only while no *.db exists', async () => {
