@@ -81,10 +81,13 @@ function tree(nodes: ReturnType<typeof summarize>[]): string {
   return treeOrder(nodes).map(({ node: n, depth }) => {
     // The verdict only: the parent's notice already carried the excerpt, and read "outcome" gives the whole report.
     const reported = n.outcome && `reported ${n.outcome.outcome}${n.outcome.gate ? ` (gate ${n.outcome.gate})` : ''}`;
-    const extra = [...n.flags, n.activity, reported].filter(Boolean).join(', ');
+    const extra = [...n.flags, n.activity, n.gate === 'running' && 'gate running', reported].filter(Boolean).join(', ');
     const branch = n.worktree ? ` ${branchText(n.worktree)}` : '';
     const kind = n.kind === 'agent' && n.harness ? `agent ${n.harness}` : n.kind;
-    return `${'  '.repeat(depth)}- ${n.id} "${n.title}" [${kind}] ${n.state}${extra ? ` (${extra})` : ''} ${n.age}${modelInfo(n)}${branch}`;
+    const pad = '  '.repeat(depth);
+    // An idle or waiting node that has not reported may be asking something: show the start of its last message.
+    const last = !n.outcome && ['waiting', 'blocked', 'done'].includes(n.state) && n.lastAssistantMessage?.replace(/\s+/g, ' ').trim();
+    return `${pad}- ${n.id} "${n.title}" [${kind}] ${n.state}${extra ? ` (${extra})` : ''} ${n.age}${modelInfo(n)}${branch}${last ? `\n${pad}    last: ${last}` : ''}`;
   }).join('\n') || '(no nodes)';
 }
 
@@ -213,7 +216,7 @@ isolation "worktree" (agent nodes; a repo with a commit; Claude also needs its o
 \`preset\`: .tiller/agents/<name>.md in \`cwd\`'s main checkout, else ~/.tiller/agents/<name>.md (built-in "reviewer", "researcher"); it sets role text, model, effort, permissionMode, isolation and tool restrictions, and your arguments override it.
 \`requestId\`: a retry with the same one returns the original node (replayed: true); reusing it with different arguments is an error.
 \`after\`/\`afterSuccess\` (ids in your scope): the node starts armed, with no process, and launches once each \`after\` node finishes a turn begun after this spawn (or exits) and each \`afterSuccess\` node reports succeeded (gate passed, if configured). A failed report blocks it and you get a message; close it to drop it. With daemon.maxWorking agents working it is queued and launched in creation order. The reply then has state "armed" or "queued" and what it waits on.
-\`fork\` (Claude nodes only) starts from a copy of another node's conversation, then \`prompt\`: a node in your scope or a closed node of your tree (see history); \`cwd\` defaults to its. A child runs in your Claude account.`,
+\`fork\` (Claude nodes only) starts from a copy of another node's conversation, then \`prompt\`: a node in your scope or a closed node of your tree (see history); \`cwd\` defaults to its. A child runs in your Claude account; \`account\` is for the human only.`,
     { ...SPAWN_FIELDS, cwd: SPAWN_FIELDS.cwd.optional(), permissionMode: z.enum(PERMISSION_MODES).optional(), requestId: z.string().optional() },
     async (c, { requestId, cwd, ...req }) => {
       if (req.now && c.caller !== HUMAN) throw new Error('refused: only the human may bypass daemon.maxWorking with now');
@@ -436,7 +439,9 @@ isolation "worktree" (agent nodes; a repo with a commit; Claude also needs its o
       requireOwned(c, a.nodeId, true);
       const text = diffText(await c.manager.diff(a.nodeId), !!a.stat);
       if (!c.mcp || text.length <= MCP_DIFF_CHARS) return { text };
-      return { text: `${text.slice(0, MCP_DIFF_CHARS)}\n(diff cut at ${MCP_DIFF_CHARS / 1000}k of ${Math.ceil(text.length / 1000)}k characters; call diff with stat true for the file list, or read individual files)` };
+      // At the last line break within the cap, so no line (or surrogate pair) is split; the short summary line always fits.
+      const cut = text.lastIndexOf('\n', MCP_DIFF_CHARS);
+      return { text: `${text.slice(0, cut)}\n(diff cut at ${MCP_DIFF_CHARS / 1000}k of ${Math.ceil(text.length / 1000)}k characters; call diff with stat true for the file list, or read individual files)` };
     }),
 
   worktrees: tool(
@@ -532,7 +537,7 @@ isolation "worktree" (agent nodes; a repo with a commit; Claude also needs its o
 
   report_outcome: tool(
     'Report task outcome',
-    `Report how your own task ended, once, when your work is finished: "succeeded" or "failed", an optional note, and summary, changedFiles, verified and openQuestions, which your parent reads with read what "outcome". If the project configures a completion gate (config \`gate\`), "succeeded" is accepted only once the gate command passes in your directory; on failure the reply gives its output and the attempts left: fix it and report again. A gate still running after 30 seconds is replied to as pending, and a failure then arrives as a message. Any report while your gate runs is refused. With no attempts left the outcome is recorded as failed. Your parent is told of every recorded outcome.`,
+    `Report how your own task ended, once, when your work is finished: "succeeded" or "failed", an optional note, and summary (what you did), changedFiles (paths), verified (what you ran to check it, and the result) and openQuestions (what is left for your parent to decide), which your parent reads with read what "outcome". If the project configures a completion gate (config \`gate\`), "succeeded" is accepted only once the gate command passes in your directory; on failure the reply gives its output and the attempts left: fix it and report again. A gate still running after 30 seconds is replied to as pending, and a failure then arrives as a message. Any report while your gate runs is refused. With no attempts left the outcome is recorded as failed. Your parent is told of every recorded outcome.`,
     {
       outcome: z.enum(['succeeded', 'failed']), note: z.string().optional(), summary: z.string().optional(), changedFiles: z.array(z.string()).optional(),
       verified: z.string().optional(), openQuestions: z.array(z.string()).optional(),

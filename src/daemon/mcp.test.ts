@@ -342,6 +342,12 @@ describe('mcp api', () => {
     expect(list.data.find((n: any) => n.id === w).outcome).toMatchObject(report);
     expect(list.text).toContain(`- ${w} "rw" [terminal] none (reported succeeded) `);
     expect(list.text).not.toContain('did it'); // the verdict only: read "outcome" has the report
+    // An idle node that has not reported shows its last message, which may be a question for its parent.
+    manager.registry.update(p, { kind: 'claude' });
+    manager.applyHook(p, { hook_event_name: 'Stop', last_assistant_message: `Should I\n keep b?${' x'.repeat(200)}` });
+    const idle = (await api('list_nodes', {}, p, manager.tokenFor(p))).body.text!;
+    expect(idle).toMatch(new RegExp(`- ${p} "rp" \\[claude\\] done [^\\n]*\\n    last: Should I keep b\\? x x`));
+    expect(idle.split('\n').find((l) => l.includes('last:'))!.length).toBeLessThanOrEqual(4 + 6 + 200);
     const read = async (id: string) => (await api('read', { nodeId: id, what: 'outcome' }, p, manager.tokenFor(p))).body.text;
     expect(await read(w)).toBe(`${w} reported succeeded just now\nnote: n\nsummary: did it\nchanged files:\n  - a.ts\n  - b.ts\nverified: vitest: 3 passed\nopen questions:\n  - keep b?`);
     expect(await read(p)).toBe(`${p} has not reported an outcome`);
@@ -421,6 +427,7 @@ describe('mcp api', () => {
       const { w } = await pair(slow());
       const run = api('report_outcome', { outcome: 'succeeded', summary: 's' }, w, tok(w));
       await expect.poll(() => manager.view(w)!.gate).toBe('running');
+      expect((await api('list_nodes', {}, w, tok(w))).body.text).toMatch(new RegExp(`- ${w} .*\\(.*gate running`));
       expect((await api('report_outcome', { outcome: 'failed' }, w, tok(w))).body.data).toEqual({ ok: false, gate: 'running' });
       writeFileSync(join(slow(), 'go'), '');
       expect((await run).body.data).toEqual({ ok: true, gate: 'passed' });
@@ -473,8 +480,11 @@ describe('mcp api', () => {
     const client = await connect(id, manager.tokenFor(id));
     const call = async (args: object) => ((await client.callTool({ name: 'diff', arguments: { nodeId: id, ...args } })) as { content: Array<{ text: string }> }).content[0].text;
     const cut = await call({});
-    expect(cut.slice(0, 100_000)).toBe(full.slice(0, 100_000));
-    expect(cut.slice(100_000)).toMatch(/^\n\(diff cut at 100k of 15\dk characters; call diff with stat true/);
+    const [body, note] = cut.split('\n(diff cut');
+    expect(full.startsWith(`${body}\n`)).toBe(true); // whole lines only
+    expect(body.length).toBeLessThanOrEqual(100_000);
+    expect(body.length).toBeGreaterThan(99_800);
+    expect(note).toMatch(/^ at 100k of 15\dk characters; call diff with stat true/);
     expect(await call({ stat: true })).toBe(`tl/d against main: 1 file(s), +1500 −0\n+1500 −0\tbig.txt (added)`);
     await client.close();
     await manager.close(id, true, 'discard');
