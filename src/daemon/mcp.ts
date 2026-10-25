@@ -437,11 +437,14 @@ isolation "worktree" (agent nodes; a repo with a commit; Claude also needs its o
     { nodeId: z.string().min(1), stat: z.boolean().optional() },
     async (c, a) => {
       requireOwned(c, a.nodeId, true);
-      const text = diffText(await c.manager.diff(a.nodeId), !!a.stat);
+      const d = await c.manager.diff(a.nodeId);
+      const text = diffText(d, !!a.stat);
       if (!c.mcp || text.length <= MCP_DIFF_CHARS) return { text };
       // At the last line break within the cap, so no line (or surrogate pair) is split; the short summary line always fits.
-      const cut = text.lastIndexOf('\n', MCP_DIFF_CHARS);
-      return { text: `${text.slice(0, cut)}\n(diff cut at ${MCP_DIFF_CHARS / 1000}k of ${Math.ceil(text.length / 1000)}k characters; call diff with stat true for the file list, or read individual files)` };
+      const cut = text.lastIndexOf('\n', MCP_DIFF_CHARS), kept = text.slice(0, cut);
+      // A stat listing has one line per file after the summary line.
+      const note = a.stat ? `${d.files.length - (kept.split('\n').length - 1)} more file(s) not listed` : 'call diff with stat true for the file list, or read individual files';
+      return { text: `${kept}\n(diff cut at ${MCP_DIFF_CHARS / 1000}k of ${Math.ceil(text.length / 1000)}k characters; ${note})` };
     }),
 
   worktrees: tool(

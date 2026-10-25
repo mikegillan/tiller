@@ -486,6 +486,12 @@ describe('mcp api', () => {
     expect(body.length).toBeGreaterThan(99_800);
     expect(note).toMatch(/^ at 100k of 15\dk characters; call diff with stat true/);
     expect(await call({ stat: true })).toBe(`tl/d against main: 1 file(s), +1500 −0\n+1500 −0\tbig.txt (added)`);
+    // A stat listing over the cap says how many files it left out instead of pointing back at stat.
+    for (let i = 0; i < 600; i++) writeFileSync(join(path, `${'f'.repeat(200)}${i}.txt`), 'y\n');
+    const stat = await call({ stat: true });
+    const listed = stat.split('\n').length - 2; // the summary line and the note
+    expect(stat).toMatch(new RegExp(`\\(diff cut at 100k of 1\\d\\dk characters; ${601 - listed} more file\\(s\\) not listed\\)$`));
+    expect(listed).toBeLessThan(601);
     await client.close();
     await manager.close(id, true, 'discard');
   });
