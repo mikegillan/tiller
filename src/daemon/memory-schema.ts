@@ -1,7 +1,10 @@
 // The contract of daemon-native memory: its SQLite schema, row and IO types, limits, MCP tool shapes and the pure
 // helpers every memory module shares. The store, derive, digest and opt-in modules implement against it.
 import { z } from 'zod';
-import type { ArchivedNode, Harness, NodeKind, Outcome, Profile, Role, SendOutcome } from '../shared/protocol.js';
+import {
+  MEMORY_INVALID_KINDS, MEMORY_ITEM_KINDS, type ArchivedNode, type Harness, type MemoryInjectionView, type MemoryItemView, type NodeKind,
+  type Outcome, type Profile, type Role, type SendOutcome,
+} from '../shared/protocol.js';
 import type { ClaudeAccount } from './claude-accounts.js';
 import type { MergeStyle } from './config.js';
 
@@ -82,19 +85,16 @@ export const SCHEMA_VERSION = 1;
  * into an agent's note. Pinning by id (memory_pin { id }) sets pinned = 1 on that row, whoever wrote it: the human's
  * explicit choice. Pinned items of any kind render only as pins.
  */
-export const ITEM_KINDS = ['ledger', 'open_question', 'procedure', 'pitfall', 'note'] as const;
+export const ITEM_KINDS = MEMORY_ITEM_KINDS;
 export type ItemKind = (typeof ITEM_KINDS)[number];
 /** The kinds an agent or the human may record with memory_add. */
 export const ADD_KINDS = ['procedure', 'pitfall', 'note'] as const satisfies readonly ItemKind[];
-export const EPISODE_KINDS = ['spawn', 'outcome', 'gate', 'merge', 'close', 'human_send', 'add', 'forget', 'pin'] as const;
+export const EPISODE_KINDS = ['spawn', 'outcome', 'gate', 'merge', 'close', 'human_send', 'add', 'forget', 'pin', 'restore'] as const;
 /** daemon: text made solely of daemon facts. agent: anything an agent wrote, gate output included. human: the human's. */
 export const AUTHORS = ['daemon', 'agent', 'human'] as const;
 export type Author = (typeof AUTHORS)[number];
-/**
- * Why an item is hidden. agent: an agent's forget or supersede, undone when later work derives it again. human and
- * superseded (the human's supersede): sticky. evicted: tombstoned by the size limit.
- */
-export const INVALID_KINDS = ['agent', 'human', 'superseded', 'evicted'] as const;
+/** Why an item is hidden: an alias of MEMORY_INVALID_KINDS (protocol.ts), so v3 appends to one list. */
+export const INVALID_KINDS = MEMORY_INVALID_KINDS;
 export type InvalidKind = (typeof INVALID_KINDS)[number];
 /** The digest arm a launch applied, and why: memory.digest on/off, the ab split, or a resume reusing its frozen text. */
 export const ARMS = ['on', 'off'] as const;
@@ -151,6 +151,10 @@ export const LIMITS = {
     ftsTerms: 32,
   },
   store: { lockTimeoutMs: 100, retryBrokenMs: 60_000 },
+  /** The Memory panel: items per page (list and search), injections in a node's Given log, and an item's givenTo rows. */
+  panel: { page: 50, given: 20, givenTo: 20 },
+  /** Claude Code's auto-memory as the panel reads it: files per directory, bytes per file (more is truncated), bytes in all. */
+  claudeMemory: { files: 100, fileBytes: 65_536, totalBytes: 1_048_576 },
   size: {
     defaultMB: 200,
     minMB: 16,
@@ -181,6 +185,8 @@ export interface EpisodeData {
   add: { itemId: number; actor: string };
   forget: { itemId: number; actor: string; reason: string };
   pin: { itemId: number; unpin?: boolean };
+  /** The human's restore of a hidden item; actor is 'human'. */
+  restore: { itemId: number; actor: string };
 }
 export type EpisodeKind = keyof EpisodeData;
 // EPISODE_KINDS lists exactly the keys of EpisodeData.
@@ -267,28 +273,8 @@ export interface ItemRow {
   gets: number;
 }
 
-/** An item as tools and the digest see it. body is present from get only. */
-export interface ItemView {
-  id: number;
-  kind: ItemKind;
-  text: string;
-  body?: string;
-  author: Author;
-  nodeId?: string;
-  rootId?: string;
-  harness?: string;
-  model?: string;
-  seen: number;
-  pinned: boolean;
-  cites: number;
-  gets: number;
-  createdAt: number;
-  updatedAt: number;
-  supersedes?: number;
-  invalid?: { at: number; kind: InvalidKind; by?: string; reason?: string };
-  /** Set when text is '': evicted by the size limit, or purged by the human. */
-  tombstone?: 'evicted' | 'purged';
-}
+/** An item as tools, the digest and the panel see it (protocol.ts). body is present from get only. */
+export type ItemView = MemoryItemView;
 
 /** A row of injections as SELECT * returns it. item_ids is a JSON array of item ids. */
 export interface InjectionRow {
@@ -308,7 +294,7 @@ export interface InjectionRow {
   text: string;
 }
 /** One injection in memory_status { nodeId }'s data.injections, oldest first. */
-export interface InjectionView { sessionId: string; arm: Arm; cause: Cause; itemIds: number[]; text: string; ts: number }
+export type InjectionView = MemoryInjectionView;
 
 /** The digest's candidates, eligible and valid only, each list in its ranked order (matched: bm25 order; workers only). */
 export interface DigestCandidates {
@@ -359,6 +345,8 @@ export const MEMORY_TOOL_SHAPES = {
   memory_pin: { id: ref.optional(), text: z.string().min(1).max(LIMITS.tools.pinText).optional(), unpin: z.boolean().optional(), ...humanScope },
   memory_status: {
     days: z.number().int().min(1).max(LIMITS.tools.statusDays.max).optional(), nodeId: z.string().min(1).optional(), account: z.string().min(1).optional(),
+    /** A directory whose project to report on (human only, as the tool is). */
+    repo: z.string().min(1).optional(),
   },
   /** on: null means inherit (remove the setting). No account or project sets the global memory.enabled. */
   memory_switch: { on: z.boolean().nullable(), account: z.string().min(1).optional(), project: z.string().min(1).optional() },
