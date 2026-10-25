@@ -19,7 +19,15 @@ export interface SettingsSnapshot {
    * the global default or none). At project scope, values['claude.account'] is the account listing this repo's exact path.
    */
   claudeAccount?: { effective?: string; project?: string };
+  /**
+   * Memory opt-in (docs/memory.md). Home scope: `on` is the global memory.enabled with its `source`, and `projects` the home
+   * file's memory.projects entries. Project scope: memoryOn's verdict for root nodes in this repository, running in `account`
+   * (a given node may run in another), with the setting that decided it.
+   */
+  memory?: { on: boolean; source: string; account?: string; projects?: { path: string; enabled: boolean }[] };
 }
+/** The pseudo-key for one account's memory opt-in, `claude.accounts.<name>.memory`: home scope, true/false/null. */
+export const MEMORY_ACCOUNT_KEY = /^claude\.accounts\.([A-Za-z0-9][A-Za-z0-9_-]{0,31})\.memory$/;
 export interface SettingsUpdate { scope: SettingsScope; nodeId?: string; revision: string; changes: Record<string, unknown | null>; /** Required for a project-scope claude.account change. */ homeRevision?: string }
 export interface SettingsField {
   key: string; label: string; type: 'text' | 'number' | 'boolean' | 'select' | 'lines';
@@ -56,6 +64,9 @@ export const SETTINGS_FIELDS: SettingsField[] = [
   ...['branchPrefix', 'taskBranch'].map(k => field(`worktrees.${k}`, 'text')),
   ...['include', 'setup', 'teardown', 'protected'].map(k => field(`worktrees.${k}`, 'lines')),
   field('gate.command', 'text'), field('gate.retries', 'number', { min: 0, integer: true }), field('gate.timeoutMinutes', 'number', { min: 0 }),
+  // memory.enabled and memory.maxMB are home-only. memory.project is a pseudo-key: project scope only, written to the home file's
+  // memory.projects. Memory per account is the dynamic MEMORY_ACCOUNT_KEY.
+  field('memory.enabled', 'boolean'), field('memory.maxMB', 'number', { min: 16 }), field('memory.project', 'boolean'),
   field('daemon.resumeOnStart', 'boolean'),
   ...['resumeMaxAgeDays', 'sessionsKeepDays', 'digestAfterMinutes', 'maxLiveNodes', 'maxWorking'].map(k => field(`daemon.${k}`, 'number', { min: 0, integer: k.startsWith('max') })),
   ...['needsYou', 'done', 'errored', 'exited'].map(k => field(`notifications.kinds.${k}`, 'select', { options: ['banner', 'sound', 'silent'] })),

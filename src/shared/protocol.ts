@@ -377,6 +377,8 @@ export interface MemoryItemView {
   invalid?: { at: number; kind: MemoryInvalidKind; by?: string; reason?: string };
   /** Set when text is '': evicted by the size limit, or purged by the human. */
   tombstone?: 'evicted' | 'purged';
+  /** A human text pin: editable with editPin; set only when true. */
+  textPin?: true;
   /** May enter a digest: the human or the daemon wrote it, the tree's root did, or its node's latest outcome succeeded. */
   eligible?: boolean;
 }
