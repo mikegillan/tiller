@@ -11,6 +11,7 @@ import { HARNESSES, type ClientMessage, type Dnd, type NativeNotification, type 
 import { loadConfig } from './config.js';
 import { DEFAULT_PORT } from './home.js';
 import type { NodeManager, NotifyEvent } from './manager.js';
+import type { PtySession } from './pty.js';
 import { history } from './archive.js';
 import { conversation, conversations } from './conversation.js';
 import { mountMcp } from './mcp.js';
@@ -31,6 +32,8 @@ const VERSION = (JSON.parse(readFileSync(fileURLToPath(new URL('../../package.js
 const CONFIRM_TIMEOUT_MS = 5 * 60_000;
 /** A client this far behind stops getting a node's output until its buffer drains; it then gets a fresh screen. */
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+/** Below this the client counts as drained; other nodes' output may keep it from ever reaching zero. */
+const DRAINED_BYTES = 1024 * 1024;
 const DRAIN_POLL_MS = 250;
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
@@ -94,8 +97,8 @@ export interface DaemonServer {
 
 interface Client {
   ws: WebSocket; authed: boolean; attached: Set<string>; kind?: 'app' | 'browser'; focused: boolean; selected?: string; nativeReady?: boolean;
-  /** Attached nodes whose output was cut off by backpressure, resynced once the buffer drains. */
-  stalled: Set<string>; drainTimer?: NodeJS.Timeout;
+  /** Attached nodes whose output was cut off by backpressure, resynced once the buffer drains; with the final screen if the process exited meanwhile. */
+  stalled: Map<string, string | undefined>; drainTimer?: NodeJS.Timeout;
 }
 
 /** A node as the UI gets it: without the spawn prompts and session history, which it never reads. */
@@ -120,20 +123,31 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
     const json = JSON.stringify(m);
     for (const c of clients) if (c.authed) sendTo(c, json);
   };
+  /** Sessions whose exit keeps the final screen for stalled clients: a PTY's screen is disposed when it exits. */
+  const exitWatched = new WeakSet<PtySession>();
   const stall = (c: Client, id: string) => {
     c.attached.delete(id);
-    c.stalled.add(id);
-    c.drainTimer ??= setInterval(() => { if (c.ws.bufferedAmount === 0) resync(c); }, DRAIN_POLL_MS);
+    c.stalled.set(id, undefined);
+    c.drainTimer ??= setInterval(() => { if (c.ws.bufferedAmount < DRAINED_BYTES) resync(c); }, DRAIN_POLL_MS);
+    const s = manager.session(id);
+    if (!s || exitWatched.has(s)) return;
+    exitWatched.add(s);
+    s.onExit(() => {
+      const screen = s.snapshot();
+      for (const other of clients) if (other.stalled.has(id)) other.stalled.set(id, screen);
+    });
   };
   /** Like attach without the resize: reset the client's screen to a snapshot, then forward live output again. */
   const resync = (c: Client) => {
     clearInterval(c.drainTimer);
     c.drainTimer = undefined;
-    for (const id of c.stalled) {
+    for (const id of c.stalled.keys()) {
       const s = manager.session(id);
       void (s ? s.flush() : Promise.resolve()).then(() => {
-        if (!c.stalled.delete(id)) return; // detached or removed meanwhile
-        if (s) sendTo(c, { t: 'data', id, data: '\x1bc' + s.snapshot() });
+        if (!c.stalled.has(id)) return; // detached or removed meanwhile
+        const exitScreen = c.stalled.get(id);
+        c.stalled.delete(id);
+        sendTo(c, { t: 'data', id, data: '\x1bc' + (s && !s.exited ? s.snapshot() : exitScreen ?? '') });
         c.attached.add(id);
       });
     }
@@ -286,7 +300,7 @@ export async function startServer(manager: NodeManager, opts: { port?: number } 
 
   const wss = new WebSocketServer({ noServer: true });
   wss.on('connection', (ws) => {
-    const c: Client = { ws, authed: false, attached: new Set(), focused: false, stalled: new Set() };
+    const c: Client = { ws, authed: false, attached: new Set(), focused: false, stalled: new Map() };
     clients.add(c);
     const authTimer = setTimeout(() => { if (!c.authed) ws.close(4401, 'auth timeout'); }, AUTH_TIMEOUT_MS);
     ws.on('close', () => {

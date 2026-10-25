@@ -130,7 +130,7 @@ export interface Pending {
   afterSuccess: string[];
   /** Dependencies already met, so a restarted daemon does not wait for them again. */
   met: string[];
-  /** The first prompt and isolation to launch with. */
+  /** The first prompt and isolation to launch with. The prompt is not sent to the UI. */
   prompt?: string;
   isolation?: Isolation;
   /** The worktree's base branch, resolved at spawn; absent in records from before it was, which fork from the cwd's HEAD. */
@@ -175,7 +175,7 @@ export interface NodeRecord {
   transcriptPath?: string;
   /** Session ids from before each restart or harness change, oldest first (at most 10). */
   previousSessions?: string[];
-  /** Explicit locations/decoders for prior sessions, which may have used another harness. */
+  /** Explicit locations/decoders for prior sessions, which may have used another harness. Not sent to the UI. */
   sessionHistory?: SessionRecord[];
   /** Credential generation after a harness change; absent keeps legacy credentials compatible. */
   credentialGeneration?: string;
@@ -191,7 +191,7 @@ export interface NodeRecord {
   muted?: boolean;
   /** Set while the node is armed or queued; cleared when it launches. */
   pending?: Pending;
-  /** The first prompt it was spawned with, kept for the archive. */
+  /** The first prompt it was spawned with, kept for the archive. Not sent to the UI. */
   prompt?: string;
   /** The root of its tree, set at spawn so the node keeps its session directory after an ancestor closes; absent on a root. */
   rootId?: string;
@@ -355,6 +355,7 @@ export interface Drain {
 export type ServerMessage =
   | { t: 'update'; update: UpdateStatus }
   | { t: 'claudeAccounts'; accounts: ClaudeAccountView[] } // reply to the claudeAccounts request
+  // nodes, like 'node' messages, omit prompt, pending.prompt and sessionHistory
   | { t: 'snapshot'; nodes: NodeView[]; update?: UpdateStatus; usage?: Usage; usageSources?: UsageSource[]; dnd?: Dnd; drain?: Drain }
   | { t: 'drain'; drain?: Drain }            // a restart started, progressed or ended waiting for agents
   | ({ t: 'dnd' } & Dnd)                     // do not disturb changed

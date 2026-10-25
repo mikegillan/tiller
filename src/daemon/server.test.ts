@@ -167,7 +167,7 @@ describe('websocket', () => {
     expect(manager.list()).toEqual([]);
   });
 
-  it('stops forwarding output to a client that stops reading, then resyncs its screen once it drains', async () => {
+  it.each([false, true])('stops forwarding output to a client that stops reading, then resyncs its screen once it drains (process exits: %s)', async (exits) => {
     await connect();
     await until(() => seen.find((m) => m.t === 'snapshot'));
     const { id } = await manager.spawn({ kind: 'terminal', title: 'flood', cwd: home });
@@ -186,8 +186,10 @@ describe('websocket', () => {
     const tail = (_: string, d: string) => { output = (output + d).slice(-100); };
     manager.on('data', tail);
     const flood = 32 * 1024 * 1024;
-    manager.input(id, `head -c ${flood} /dev/zero | tr '\\0' x; echo; echo FLOOD_$((1+1))\r`);
+    // The sleep lets the screen parse the flood before the exit disposes it.
+    manager.input(id, `head -c ${flood} /dev/zero | tr '\\0' x; echo; echo FLOOD_$((1+1))${exits ? '; sleep 1; exit' : ''}\r`);
     await until(() => output.includes('FLOOD_2') || undefined, 60_000);
+    if (exits) await until(() => manager.view(id)?.status.exited || undefined, 15_000);
     manager.off('data', tail);
     socket.resume();
     const resync = await until(() => got.find((m) => m.t === 'data' && m.data.startsWith('\x1bc') && m.data.includes('FLOOD_2')), 15_000);
