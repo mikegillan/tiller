@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { memoryOn, switchMemory } from './memory-config.js';
+import { applyMemorySetting, memoryOn, switchMemory } from './memory-config.js';
 
 let dir: string, home: string, repo: string, homeFile: string, projectFile: string;
 beforeEach(() => {
@@ -120,6 +120,18 @@ describe('switchMemory', () => {
     expect(() => switchMemory(home, { account: 'gone' }, 'on')).toThrow(/"gone" is not configured/);
     expect(() => switchMemory(home, { account: 'work', project: repo }, 'on')).toThrow(/not both/);
     expect(homeData().claude.accounts).toEqual([work()]);
+  });
+
+  it('applyMemorySetting changes the given data in place and writes nothing', () => {
+    writeHome({ claude: { accounts: [work()] } });
+    const bytes = fs.readFileSync(homeFile, 'utf8'), data = homeData();
+    applyMemorySetting(data, home, { account: 'work' }, 'on');
+    applyMemorySetting(data, home, { project: repo }, 'off');
+    applyMemorySetting(data, home, {}, 'on');
+    expect(data).toEqual({ claude: { accounts: [work(true)] }, memory: { enabled: true, projects: [{ path: repo, enabled: false }] } });
+    expect(() => applyMemorySetting(data, home, { account: 'gone' }, 'on')).toThrow(expect.objectContaining({ status: 400 }));
+    expect(() => applyMemorySetting({ memory: 5 }, home, {}, 'on')).toThrow(expect.objectContaining({ status: 422 }));
+    expect(fs.readFileSync(homeFile, 'utf8')).toBe(bytes);
   });
 
   it('refuses to write over a concurrent edit', () => {
