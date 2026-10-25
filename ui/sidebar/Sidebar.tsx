@@ -98,8 +98,8 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
         <button className={`btn hist${history ? ' on' : ''}`} aria-pressed={history} onClick={toggleHistory} title="History: closed nodes to read, follow up or fork" aria-label="History">
           <Icon name="history" size={14} />History
         </button>
-        <button className={`btn${memory ? ' on' : ''}`} aria-pressed={memory} title="Memory: what Tiller remembers for the selected node's repository, or any account and repository"
-          onClick={() => viewMemory(memory ? null : selected ? { nodeId: selected } : {})}>Memory</button>
+        <button className={`btn mem${memory ? ' on' : ''}`} aria-pressed={memory} aria-label="Memory" title="Memory: what Tiller remembers for the selected node's repository, or any account and repository"
+          onClick={() => viewMemory(memory ? null : selected ? { nodeId: selected } : {})}><Icon name="memory" size={14} /></button>
       </footer>
       <SidebarResize panelOpen={panelOpen} />
     </aside>

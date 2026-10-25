@@ -178,7 +178,7 @@ it('keeps Settings, History, and Clear exited reachable without a redundant foot
 });
 
 it('opens Memory from the footer for the selected node, or with no node, and closes it again', () => {
-  const memory = () => elements(find(Sidebar({ onSettings: () => {} }), (el) => el.type === 'footer')).find((el) => el.type === 'button' && el.props.children === 'Memory')!;
+  const memory = () => elements(find(Sidebar({ onSettings: () => {} }), (el) => el.type === 'footer')).find((el) => el.type === 'button' && el.props['aria-label'] === 'Memory')!;
   memory().props.onClick();
   expect(getState().memoryView).toEqual({ nodeId: 'child' });
   expect(memory().props['aria-pressed']).toBe(true);
