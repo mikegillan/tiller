@@ -62,7 +62,24 @@ describe('readClaudeMemory', () => {
     const d = join(claudeHome, 'projects', claudeProjectSlug(repo), 'memory');
     mkdirSync(join(d, '..'), { recursive: true });
     symlinkSync(elsewhere, d);
-    expect(await readClaudeMemory(claudeHome, repo)).toEqual({ dir: d, files: [], omitted: [], note: `${d} is a symlink; not read` });
+    expect(await readClaudeMemory(claudeHome, repo)).toEqual({ dir: d, files: [], omitted: [], note: `${d} is reached through a symlink; not read` });
+    // A linked projects/<slug> is refused the same way; a linked Claude home is followed.
+    rmSync(join(claudeHome, 'projects'), { recursive: true });
+    mkdirSync(join(claudeHome, 'projects'));
+    mkdirSync(join(elsewhere, 'memory'));
+    symlinkSync(elsewhere, join(claudeHome, 'projects', claudeProjectSlug(repo)));
+    expect((await readClaudeMemory(claudeHome, repo)).note).toBe(`${d} is reached through a symlink; not read`);
+    const linkedHome = join(dir, 'linked-claude');
+    symlinkSync(claudeHome, linkedHome);
+    rmSync(join(claudeHome, 'projects', claudeProjectSlug(repo)));
+    memoryDir({ 'MEMORY.md': 'through a linked home' });
+    expect((await readClaudeMemory(linkedHome, repo)).files.map((f) => f.text)).toEqual(['through a linked home']);
+  });
+
+  it('skips a FIFO without waiting for a writer', async () => {
+    const d = memoryDir({ 'a.md': 'ay' });
+    execFileSync('mkfifo', [join(d, 'pipe.md')]);
+    expect((await readClaudeMemory(claudeHome, repo)).files.map((f) => f.name)).toEqual(['a.md']);
   });
 
   it('caps the count, each file and the total, naming the rest in omitted', async () => {

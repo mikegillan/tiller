@@ -94,6 +94,33 @@ describe('target resolution', () => {
     await expect(page({ dir: join(a, 'missing') })).rejects.toThrow('dir must be the absolute path of a directory');
     await expect(page({ dir: 'relative' })).rejects.toThrow('dir must be the absolute path of a directory');
   });
+
+  it('keeps a node with no account on the no-account file, even once its project is assigned an account', async () => {
+    const n = await node(a);
+    config({ claude: { accounts: [{ name: 'work', configDir: join(dir, 'work-claude'), projects: [a] }] }, memory: { projects: [{ path: a, enabled: true }] } });
+    expect(await page({ nodeId: n })).toMatchObject({ target: { account: null }, file: '_default', on: true });
+    await memoryAction(m, { nodeId: n }, { kind: 'pinText', text: 'Written to the default file' });
+    expect(readdirSync(join(home, 'memory')).filter((f) => f.endsWith('.db'))).toEqual(['_default.db']);
+    expect((await page({ nodeId: n })).items.map((v) => v.text)).toEqual(['Written to the default file']);
+    expect((await page({ dir: a })).file).toBe('work'); // with no node, the project's account
+  });
+
+  it('never gives a node whose checkout is gone another repository of the file', async () => {
+    m.memory.apply(scope({ repoKey: 'git:example.com/other', repoPath: join(dir, 'other') }), { episode: spawnEp(), items: [item('note', 'another repository')], cites: [] });
+    const c = clone('c'), d = clone('d');
+    g(c, 'remote', 'set-url', 'origin', 'https://example.com/acme/c.git');
+    m.memory.apply(scope({ repoKey: m.repoKeyOf(d), repoPath: d }), { episode: spawnEp(), items: [item('note', 'from d')], cites: [] });
+    const fromC = await node(c), fromD = await node(d);
+    await m.close(fromC, true);
+    await m.close(fromD, true);
+    rmSync(c, { recursive: true });
+    renameSync(d, join(dir, 'd-moved'));
+    const gone = await page({ nodeId: fromC });
+    expect(gone).toMatchObject({ on: null, items: [] });
+    expect(gone.target.repo).toBeUndefined();
+    // The file recorded the node's own checkout: its repository stays, with no checkout to judge the opt-in for.
+    expect(await page({ nodeId: fromD })).toMatchObject({ target: { repo: KEY }, on: null, items: [{ text: 'from d' }] });
+  });
 });
 
 describe('two clones of one origin (M8)', () => {
@@ -107,6 +134,8 @@ describe('two clones of one origin (M8)', () => {
     expect(fromB).toMatchObject({ target: { repo: KEY }, checkout: { path: b, from: 'node' }, on: false, source: 'default' });
     expect(fromB.items.map((v) => v.text)).toEqual(['Ask before pushing', 'from clone a']);
     await expect(memoryAction(m, { nodeId: nodeB }, { kind: 'pinText', text: 'From b' })).rejects.toThrow(`refused: memory is off for ${b} (default)`);
+    // A directory the human chose wins over the node the panel was opened from.
+    expect(await page({ nodeId: nodeA, dir: b })).toMatchObject({ checkout: { path: b, from: 'chosen' }, on: false });
     await m.close(nodeA, true);
     await m.close(nodeB, true);
     expect(await page({ dir: b })).toMatchObject({ checkout: { path: b, from: 'chosen' }, on: false });

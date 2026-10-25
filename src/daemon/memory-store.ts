@@ -134,6 +134,14 @@ const injectionView = (r: InjectionRow): InjectionView =>
   ({ sessionId: r.session_id, arm: r.arm, cause: r.cause, itemIds: JSON.parse(r.item_ids) as number[], text: r.text, ts: r.ts });
 
 const errcode = (err: unknown): number => ((err as { errcode?: number }).errcode ?? -1) & 0xff;
+/** SQLITE_BUSY or SQLITE_LOCKED: another process holds the file for now. */
+const locked = (err: unknown) => errcode(err) === 5 || errcode(err) === 6;
+
+/** A file state for a read a tool-facing method failed: locked (try again) or off, with the reason. */
+export function readFailure(err: unknown): string {
+  const cause = (err as Error).cause ?? err;
+  return `${locked(cause) ? 'locked' : 'off'}: ${(cause as Error).message ?? String(cause)}`;
+}
 const pragma = (db: DatabaseSync, name: string): number => Number(Object.values(db.prepare(`PRAGMA ${name}`).get() ?? {})[0] ?? 0);
 const used = (db: DatabaseSync): number => (pragma(db, 'page_count') - pragma(db, 'freelist_count')) * pragma(db, 'page_size');
 
@@ -402,7 +410,9 @@ export class MemoryStore implements DigestSource {
         : undefined;
       if (!db || !row) throw new MemoryError(`no such item ${itemRef(id)}`);
       // prune: no index on supersedes, so this scans the repository's items; index it in a later schema version if bench M1's item read grows.
-      const by = db.prepare('SELECT id FROM items WHERE supersedes = ? AND repo_id = ? ORDER BY id DESC LIMIT 1').get(id, row.repo_id) as { id: number } | undefined;
+      // Only a hidden item is superseded: a live one was brought back after its superseder was recorded.
+      const by = row.invalid_at === null ? undefined
+        : db.prepare('SELECT id FROM items WHERE supersedes = ? AND repo_id = ? ORDER BY id DESC LIMIT 1').get(id, row.repo_id) as { id: number } | undefined;
       const givenTo = db.prepare(`SELECT node_id, session_id, arm, ts FROM injections, json_each(item_ids)
         WHERE json_each.value = ? AND cause <> 'resume' ORDER BY ts DESC, injections.id DESC LIMIT ${LIMITS.panel.givenTo}`).all(id) as
         { node_id: string; session_id: string; arm: Arm; ts: number }[];
@@ -539,7 +549,8 @@ export class MemoryStore implements DigestSource {
         if (isTextPin(item)) throw new MemoryError(`${ref} is a text pin; pin it again instead`);
         // Other kinds (v3's) are undone by their own path, never cleared blindly here.
         if (!['agent', 'human', 'superseded'].includes(item.invalid_kind!)) throw new MemoryError(`cannot restore a ${item.invalid_kind} item here`);
-        db.prepare('UPDATE items SET invalid_at = NULL, invalid_kind = NULL, invalid_by = NULL, invalid_reason = NULL WHERE id = ?').run(item.id);
+        // updated_at: it comes back at the top of the panel's browse.
+        db.prepare('UPDATE items SET invalid_at = NULL, invalid_kind = NULL, invalid_by = NULL, invalid_reason = NULL, updated_at = ? WHERE id = ?').run(this.now(), item.id);
         this.episode(db, repo, { ...scope, ...this.episodeScope(actor) }, { kind: 'restore', ts: this.now(), data: { itemId: item.id, actor: 'human' } });
         return this.item(db, repo, item.id);
       });
@@ -580,7 +591,8 @@ export class MemoryStore implements DigestSource {
             VALUES (?, 'note', ?, 'human', ?, 1, ?, ?) RETURNING id`).get(repo, text, dedupe, now, now) as { id: number }).id);
         }
         db.prepare('UPDATE items SET supersedes = ? WHERE id = ?').run(old.id, id);
-        db.prepare('UPDATE items SET pinned = 0, updated_at = ? WHERE id = ?').run(now, old.id);
+        // Editing back to an earlier text: the old pin no longer supersedes the one it now gives way to (no cycle).
+        db.prepare('UPDATE items SET pinned = 0, updated_at = ?, supersedes = CASE WHEN supersedes = ? THEN NULL ELSE supersedes END WHERE id = ?').run(now, id, old.id);
         this.invalidate(db, old.id, 'superseded', 'human', `edited as ${itemRef(id)}`);
         this.episode(db, repo, { ...scope, nodeId: 'human', rootId: 'human' }, { kind: 'pin', ts: now, data: { itemId: id } });
         return this.item(db, repo, id);
@@ -589,9 +601,10 @@ export class MemoryStore implements DigestSource {
     });
   }
 
-  /** A node's injection rows, oldest first (memory_status { nodeId }). */
-  injections(account: string | undefined, nodeId: string): InjectionView[] {
-    return this.loud(() => (this.db(account, false)?.prepare('SELECT * FROM injections WHERE node_id = ? ORDER BY ts, id')
+  /** A node's injection rows, oldest first (memory_status { nodeId }); with newest, only that many, newest first (the panel). */
+  injections(account: string | undefined, nodeId: string, newest?: number): InjectionView[] {
+    const sql = newest === undefined ? 'ORDER BY ts, id' : `ORDER BY ts DESC, id DESC LIMIT ${Math.trunc(newest)}`;
+    return this.loud(() => (this.db(account, false)?.prepare(`SELECT * FROM injections WHERE node_id = ? ${sql}`)
       .all(nodeId) as InjectionRow[] | undefined ?? []).map(injectionView));
   }
 
@@ -682,7 +695,7 @@ export class MemoryStore implements DigestSource {
       return fn();
     } catch (err) {
       if (err instanceof MemoryError) throw err;
-      throw new Error(`memory is unavailable: ${(err as Error)?.message ?? String(err)}`);
+      throw new Error(`memory is unavailable: ${(err as Error)?.message ?? String(err)}`, { cause: err });
     }
   }
 
@@ -711,7 +724,7 @@ export class MemoryStore implements DigestSource {
         this.down.set(key, { state: 'off', reason: err.message, at: Date.now() });
         throw err;
       }
-      if (errcode(err) === 5 || errcode(err) === 6) throw err; // locked: skip this operation only
+      if (locked(err)) throw err; // skip this operation only
       if (errcode(err) !== 11 && errcode(err) !== 26) {
         this.down.set(key, { state: 'broken', reason: (err as Error).message, at: Date.now() });
         throw err;
@@ -906,12 +919,12 @@ export class MemoryStore implements DigestSource {
       db = this.handle(key, false);
     } catch (err) {
       const down = this.down.get(key);
-      return { ...base, state: `${down?.state ?? (this.off ? 'off' : 'broken')}: ${(err as Error).message}` };
+      return { ...base, state: `${down?.state ?? (this.off ? 'off' : locked(err) ? 'locked' : 'broken')}: ${(err as Error).message}` };
     }
     if (!db) return { ...base, state: 'missing' };
     if (brief) return { ...base, state: 'ok' }; // opening read user_version, which a corrupt header fails
     try {
-      const count =(sql: string) => Number((db.prepare(sql).get() as { n: number }).n);
+      const count = (sql: string) => Number((db.prepare(sql).get() as { n: number }).n);
       const items = Object.fromEntries(ITEM_KINDS.map((k) => [k, 0])) as Record<ItemKind, number>;
       for (const r of db.prepare('SELECT kind, count(*) AS n FROM items WHERE invalid_at IS NULL GROUP BY kind').all() as { kind: ItemKind; n: number }[]) items[r.kind] = Number(r.n);
       const size = (f: string) => { try { return statSync(f).size; } catch { return 0; } };

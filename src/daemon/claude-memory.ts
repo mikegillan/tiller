@@ -1,8 +1,8 @@
 // Claude Code's own auto-memory for a checkout, read for the Memory panel only: never stored, injected or given to a
-// node, so this module does not touch the memory store. Files are opened without following symlinks and checked on the
-// descriptor, so neither a link nor a swap between a check and the read redirects it.
+// node, so this module does not touch the memory store. The directory must be reached without symlinks below the Claude
+// home; each file is opened without following one and checked on its descriptor.
 import { constants, realpathSync } from 'node:fs';
-import { lstat, open, readdir } from 'node:fs/promises';
+import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ClaudeMemoryView } from '../shared/protocol.js';
 import { LIMITS } from './memory-schema.js';
@@ -42,25 +42,31 @@ async function readRegular(path: string, max: number): Promise<{ size: number; m
 export async function readClaudeMemory(claudeHome: string, checkout: string): Promise<ClaudeMemoryView> {
   const dir = join(claudeHome, 'projects', claudeProjectSlug(checkout), 'memory');
   const view: ClaudeMemoryView = { dir, files: [], omitted: [] };
-  let st;
+  let real: string;
   try {
-    st = await lstat(dir);
+    real = await realpath(dir);
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === 'ENOENT' ? view : { ...view, note: `cannot read ${dir}: ${(err as Error).message}` };
   }
-  if (!st.isDirectory()) return { ...view, note: `${dir} is ${st.isSymbolicLink() ? 'a symlink' : 'not a directory'}; not read` };
+  // The Claude home itself may be a link (dotfiles); below it, neither projects/<slug> nor memory may be.
+  // prune: checked once, then read by path: a swap between this check and the reads is not caught (Node has no openat).
+  const home = await realpath(claudeHome).catch(() => claudeHome);
+  if (real !== join(home, 'projects', claudeProjectSlug(checkout), 'memory')) return { ...view, note: `${dir} is reached through a symlink; not read` };
+  if (!(await lstat(real)).isDirectory()) return { ...view, note: `${dir} is not a directory; not read` };
   const order = (n: string) => (n === 'MEMORY.md' ? '' : n);
-  const names = (await readdir(dir)).filter((n) => n.endsWith('.md')).sort((a, b) => (order(a) < order(b) ? -1 : order(a) > order(b) ? 1 : 0));
+  const names = (await readdir(real)).filter((n) => n.endsWith('.md')).sort((a, b) => (order(a) < order(b) ? -1 : order(a) > order(b) ? 1 : 0));
   const cap = LIMITS.claudeMemory;
+  // The total counts each text as JSON encodes it, so the reply stays within the cap however the text escapes.
   let total = 0, full = false;
   for (const name of names) {
     if (!full) {
-      const f = await readRegular(join(dir, name), cap.fileBytes);
+      const f = await readRegular(join(real, name), cap.fileBytes);
       if (!f) continue;
-      full = view.files.length === cap.files || total + f.bytes.length > cap.totalBytes;
+      const text = f.bytes.toString('utf8'), size = Buffer.byteLength(JSON.stringify(text));
+      full = view.files.length === cap.files || total + size > cap.totalBytes;
       if (!full) {
-        total += f.bytes.length;
-        view.files.push({ name, bytes: f.size, mtime: f.mtime, text: f.bytes.toString('utf8'), ...(f.size > f.bytes.length ? { truncated: true as const } : {}) });
+        total += size;
+        view.files.push({ name, bytes: f.size, mtime: f.mtime, text, ...(f.size > f.bytes.length ? { truncated: true as const } : {}) });
         continue;
       }
     }

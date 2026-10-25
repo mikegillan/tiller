@@ -13,7 +13,7 @@ import { readClaudeMemory } from './claude-memory.js';
 import { usableCwd, type NodeManager } from './manager.js';
 import { memoryOn } from './memory-config.js';
 import { DEFAULT_ACCOUNT_KEY, LIMITS, type Actor, type MemoryScope } from './memory-schema.js';
-import { noCounts, type ListCursor } from './memory-store.js';
+import { noCounts, readFailure, type ListCursor } from './memory-store.js';
 
 /** What the panel needs of the manager. */
 export type PanelHost = Pick<NodeManager, 'home' | 'memory' | 'registry' | 'projectDir' | 'repoKeyOf'>;
@@ -38,8 +38,9 @@ const NO_CHECKOUT = 'no checkout of this repository is known; choose its directo
 
 /**
  * Resolve a target as the human's tool scope is (memoryScopeOf), the node optional: the node (live, else closed) gives
- * the defaults; dir is a checkout the human chose. The opt-in is judged for the first checkout whose repo key is the
- * repository's: the node's, the chosen one, a live node's, then the first path the file recorded. With none, on is null.
+ * the defaults, its own account included (none means the no-account file); dir is a checkout the human chose, which
+ * wins over the node's. The opt-in is judged for the first checkout whose repo key is the repository's: the chosen one,
+ * the node's, a live node's, then the first path the file recorded. With none, on is null.
  */
 export async function resolveTarget(m: PanelHost, t: MemoryTarget): Promise<ResolvedTarget> {
   const live = t.nodeId === undefined ? undefined : m.registry.get(t.nodeId);
@@ -53,22 +54,24 @@ export async function resolveTarget(m: PanelHost, t: MemoryTarget): Promise<Reso
   }
   const dirCheckout = t.dir === undefined ? undefined : m.projectDir({ cwd: t.dir });
   const project = dirCheckout ?? nodeCheckout;
-  const account = t.account === null ? undefined : t.account ?? node?.account ?? (project ? accountForProject(m.home, project) : undefined);
+  const account = t.account !== undefined ? t.account ?? undefined
+    : node ? node.account : project ? accountForProject(m.home, project) : undefined;
   const file = basename(m.memory.accountFile(account), '.db'); // throws for an account not configured
   let repos: MemoryPage['repos'] = [];
   try { repos = m.memory.repos(account); } catch { /* the page shows the file's state */ }
-  const repoKey = t.repo ?? (project ? m.repoKeyOf(project) : repos[0]?.key);
+  // A node whose checkout is gone keeps its repository only when the file recorded that path; never another's.
+  const repoKey = t.repo ?? (project ? m.repoKeyOf(project) : node ? repos.find((r) => r.path === nodeDir)?.key : repos[0]?.key);
   const checkout = repoKey === undefined ? undefined
-    : checkoutOf(m, repoKey, nodeCheckout, dirCheckout, repos.find((r) => r.key === repoKey)?.path);
+    : checkoutOf(m, repoKey, dirCheckout, nodeCheckout, repos.find((r) => r.key === repoKey)?.path);
   const verdict = checkout ? memoryOn(m.home, checkout.path, account) : { on: null, source: NO_CHECKOUT };
   return { account, file, ...(repoKey === undefined ? {} : { repoKey }), repos, ...(checkout ? { checkout } : {}), ...verdict };
 }
 
-/** The first existing checkout with the repo key: the node's, the chosen one, a live node's, then the recorded path. */
-function checkoutOf(m: PanelHost, repoKey: string, nodeCheckout?: string, dirCheckout?: string, recorded?: string): Checkout | undefined {
+/** The first existing checkout with the repo key: the chosen one, the node's, a live node's, then the recorded path. */
+function checkoutOf(m: PanelHost, repoKey: string, dirCheckout?: string, nodeCheckout?: string, recorded?: string): Checkout | undefined {
   const has = (path: string | undefined): path is string => !!path && existsSync(path) && m.repoKeyOf(path) === repoKey;
-  if (has(nodeCheckout)) return { path: nodeCheckout, from: 'node' };
   if (has(dirCheckout)) return { path: dirCheckout, from: 'chosen' };
+  if (has(nodeCheckout)) return { path: nodeCheckout, from: 'node' };
   for (const n of m.registry.list()) {
     const path = m.projectDir(n);
     if (has(path)) return { path, from: 'live node' };
@@ -121,7 +124,7 @@ export async function memoryPage(m: PanelHost, q: PageQuery): Promise<MemoryPage
     const { items, next } = m.memory.list(scope, { ...filter, retracted: q.retracted, before: q.before });
     return { ...page, counts, items, ...(next ? { next } : {}) };
   } catch (err) {
-    return { ...page, state: `off: ${(err as Error).message}` };
+    return { ...page, state: readFailure(err) };
   }
 }
 
@@ -144,7 +147,7 @@ export async function memoryItem(m: PanelHost, target: MemoryTarget, itemId: num
 export async function memoryGiven(m: PanelHost, nodeId: string): Promise<MemoryInjectionView[]> {
   const node = m.registry.get(nodeId) ?? await findArchived(m.home, nodeId);
   if (!node) throw new Error(`no such node: ${nodeId}`);
-  return m.memory.injections(node.account, nodeId).slice(-LIMITS.panel.given).reverse();
+  return m.memory.injections(node.account, nodeId, LIMITS.panel.given);
 }
 
 /** The human's change to an item, refused unless memory is on for the target's checkout. forget never purges. */

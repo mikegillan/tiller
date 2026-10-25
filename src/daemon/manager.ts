@@ -416,6 +416,8 @@ export class NodeManager extends EventEmitter {
 
   /** Memory's repo key for a directory (repoKeySync), cached for the daemon's life: one git call per directory. */
   repoKeyOf(dir: string): string {
+    // prune: never expires, so a directory whose origin changes (or is re-cloned as another repository) keeps its old key
+    // until restart, and the panel's checkout check can match it; key the cache on .git/config's mtime if that bites.
     let repoKey = this.repoKeys.get(dir);
     if (repoKey === undefined) this.repoKeys.set(dir, repoKey = wt.repoKeySync(dir));
     return repoKey;

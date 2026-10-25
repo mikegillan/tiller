@@ -7,7 +7,7 @@ import {
   normalizeDedupe, type Actor, type Derived, type DerivedItem, type EpisodeInput, type ItemKind, type MemoryScope,
 } from './memory-schema.js';
 import { DIGEST_SECTIONS, digestFor } from './memory-digest.js';
-import { ftsQuery, MemoryStore } from './memory-store.js';
+import { ftsQuery, MemoryStore, readFailure } from './memory-store.js';
 
 const DAY = 86_400_000;
 const T0 = Date.UTC(2026, 9, 1);
@@ -575,6 +575,7 @@ describe('injections and stats', () => {
       { sessionId: 's-a', arm: 'on', cause: 'ab', itemIds: [1], text: '# Memory', ts: clock },
       { sessionId: 's-a', arm: 'on', cause: 'resume', itemIds: [1], text: '', ts: clock },
     ]);
+    expect(s.injections(undefined, 'n-a', 1)).toEqual([{ sessionId: 's-a', arm: 'on', cause: 'resume', itemIds: [1], text: '', ts: clock }]);
     const stats = s.stats(undefined, 14);
     expect(stats.on).toMatchObject({ nodes: 1, firstPassGate: 1, failedOutcomes: 0, gateRunsPerSuccess: 1, citesPerInjected: 1, repeatedPitfalls: 0 });
     expect(stats.off).toMatchObject({ nodes: 1, firstPassGate: 0, failedOutcomes: 1, gateRunsPerSuccess: null, repeatedPitfalls: 1, repeatedInjectedPitfalls: 1 });
@@ -697,7 +698,9 @@ describe('the panel (v2)', () => {
     expect(() => s.restore(scope(), human, { id: 3 })).toThrow('cannot restore a gardener item here');
     expect(() => s.restore(scope(), agent(), { id: 1 })).toThrow('only the human can restore');
     expect(s.restore(scope(), human, { id: 2 })).toMatchObject({ id: 2, pinned: false });
-    expect(s.restore(scope(), human, { id: 1 })).toMatchObject({ id: 1, pinned: true });
+    clock += 1000;
+    expect(s.restore(scope(), human, { id: 1 })).toMatchObject({ id: 1, pinned: true, updatedAt: clock });
+    expect(s.list(scope(), {}).items[0]!.id).toBe(1); // back at the top of the browse
     expect(row(1)).toMatchObject({ invalid_at: null, pinned: 1 });
     expect(s.candidates(scope(), { role: 'orchestrator', terms: [], now: clock }).pins.map((v) => v.id)).toEqual([1]);
     const check = raw();
@@ -740,6 +743,37 @@ describe('the panel (v2)', () => {
       expect(() => s.editPin(scope(), human, { id, text: 'y' })).toThrow('only your own text pins can be edited; pin new text instead');
     }
     expect(() => s.editPin(scope(), agent(), { id: other.id, text: 'z' })).toThrow('only the human can pin');
+  });
+
+  it('edits back to an earlier text without a supersede cycle', () => {
+    const s = open();
+    const a = s.pin(scope(), human, { text: 'Text A' });
+    const b = s.editPin(scope(), human, { id: a.id, text: 'Text B' });
+    expect(s.peek(scope(), a.id).supersededBy).toBe(b.id);
+    const back = s.editPin(scope(), human, { id: b.id, text: 'Text A' });
+    expect(back).toMatchObject({ id: a.id, pinned: true, supersedes: b.id });
+    expect(row(b.id).supersedes).toBeNull();
+    expect(s.peek(scope(), a.id).supersededBy).toBeUndefined();
+    expect(s.peek(scope(), b.id).supersededBy).toBe(a.id);
+  });
+
+  it('reports a read that hit a lock as locked, anything else as off', () => {
+    const busy = Object.assign(new Error('database is locked'), { errcode: 5 });
+    expect(readFailure(new Error('memory is unavailable: database is locked', { cause: busy }))).toBe('locked: database is locked');
+    expect(readFailure(new Error('memory is unavailable: disk I/O error', { cause: Object.assign(new Error('disk I/O error'), { errcode: 10 }) })))
+      .toBe('off: disk I/O error');
+    const writer = open();
+    writer.apply(scope(), derived([item('note', 'x')]));
+    writer.close();
+    const db = raw(); // holds the file exclusively, as another process could
+    db.exec('PRAGMA locking_mode = EXCLUSIVE; BEGIN IMMEDIATE');
+    db.prepare(`UPDATE items SET seen = seen + 1`).run();
+    try {
+      expect(open().fileStatus(undefined, true).state).toMatch(/^locked: database is locked/);
+    } finally {
+      db.exec('ROLLBACK');
+      db.close();
+    }
   });
 
   it('logs expected conditions as one string and an unexpected failure as its own error', () => {

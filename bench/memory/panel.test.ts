@@ -127,7 +127,9 @@ describe('M3: Claude memory caps', () => {
   it('reads 150 files of 20 KiB into at most 1 MiB + 4 KiB, naming the rest', async () => {
     const claudeHome = join(dir, 'claude'), memory = join(claudeHome, 'projects', claudeProjectSlug(repoA), 'memory');
     mkdirSync(memory, { recursive: true });
-    for (let i = 0; i < 150; i++) writeFileSync(join(memory, `topic-${String(i).padStart(3, '0')}.md`), text(i, 20 * KiB));
+    // Markdown with newlines, quotes and backslashes, which JSON escapes: the cap must hold for the encoded reply.
+    const markdown = (n: number) => Array.from({ length: 20 * KiB }, (_, i) => `- "${WORDS[(n + i) % WORDS.length]}" in \`C:\\src\`\n`).join('').slice(0, 20 * KiB);
+    for (let i = 0; i < 150; i++) writeFileSync(join(memory, `topic-${String(i).padStart(3, '0')}.md`), markdown(i));
     const ms: number[] = [];
     let view;
     for (let i = 0; i < 5; i++) {
