@@ -1,5 +1,6 @@
 #!/bin/sh
 self="$0"; if [ -L "$0" ]; then self="$(readlink "$0")"; case "$self" in /*) ;; *) self="$(dirname "$0")/$self";; esac; fi
 root="$(cd "$(dirname "$self")/.." && pwd)"
-# Load tsx in-process (its package export) rather than through the tsx CLI, which stays resident with an esbuild child.
-exec node --import "$root/node_modules/tsx/dist/loader.mjs" "$root/src/daemon/index.ts" "$@"
+# Load tsx in-process rather than through the tsx CLI, whose wrapper process stays resident beside the daemon.
+loader="$(node -p 'require.resolve("tsx", { paths: [process.argv[1]] })' "$root")" || exit 1
+exec node --import "$loader" "$root/src/daemon/index.ts" "$@"
