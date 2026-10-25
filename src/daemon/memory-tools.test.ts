@@ -6,7 +6,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NodeManager } from './manager.js';
-import { switchMemory } from './memory-config.js';
+import { memoryOn, switchMemory } from './memory-config.js';
 import type { InjectionView } from './memory-schema.js';
 import { startServer, type DaemonServer } from './server.js';
 
@@ -76,7 +76,7 @@ describe('memory tools', () => {
   it('refuse agents memory_switch, memory_pin, memory_status, purge, repo and account, and pinned items', async () => {
     on();
     const a = await agent(repoA);
-    for (const [tool, args] of [['memory_switch', { on: true }], ['memory_pin', { text: 'always run lint' }], ['memory_status', {}]] as const) {
+    for (const [tool, args] of [['memory_switch', { on: true }], ['memory_pin', { text: 'always run lint' }], ['memory_status', {}], ['memory_status', { repo: repoA }]] as const) {
       expect((await api(tool, args, a)).error).toBe(`${tool} is only for the human`);
     }
     expect(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).memory).toEqual({ enabled: true });
@@ -225,8 +225,58 @@ describe('memory tools', () => {
     manager.memory.recordInjection(manager.memoryScope(a)!, { sessionId: 's-a', arm: 'off', cause: 'ab', itemIds: [], text: 'shadow' });
     await manager.close(a, true);
     const r = await api('memory_status', { nodeId: a });
-    expect(r.text).toContain(`for ${a} (closed)`);
+    expect(r.text).toContain(`for ${repoA}, node ${a} (closed)`);
     expect(r.data.injections).toMatchObject([{ sessionId: 's-a', arm: 'off', cause: 'ab', text: 'shadow' }]);
+  });
+
+  it('memory_status without a node or repo names the global setting and the projects and accounts that have their own', async () => {
+    for (const d of ['cw', 'cp', 'cx']) mkdirSync(join(dir, d), { recursive: true });
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      memory: { projects: [{ path: repoA, enabled: true }, { path: repoB, enabled: false }] },
+      claude: { accounts: [{ name: 'work', configDir: join(dir, 'cw'), memory: false }, { name: 'personal', configDir: join(dir, 'cp'), memory: true }, { name: 'plain', configDir: join(dir, 'cx') }] },
+    }));
+    const r = await api('memory_status', {});
+    expect(r.status).toBe(200);
+    expect(r.text!.split('\n').slice(0, 3)).toEqual([
+      'memory.enabled (global): off (default)',
+      `projects with their own setting: ${repoA} on, ${repoB} off`,
+      'accounts: work off (ceiling), personal on',
+    ]);
+    switchMemory(home, {}, 'on');
+    expect((await api('memory_status', {})).text!.split('\n')[0]).toBe(`memory.enabled (global): on (set in ${join(home, 'config.json')})`);
+  });
+
+  it('memory_status { repo } resolves the main checkout of a subdirectory or a linked worktree and matches memoryOn', async () => {
+    switchMemory(home, { project: repoA }, 'on');
+    const sub = join(repoA, 'src'), linked = join(dir, 'linked');
+    mkdirSync(sub);
+    execFileSync('git', ['-C', repoA, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    execFileSync('git', ['-C', repoA, 'worktree', 'add', '-q', linked]);
+    const want = memoryOn(home, repoA, undefined);
+    expect(want.on).toBe(true);
+    for (const repo of [repoA, sub, linked]) {
+      const r = await api('memory_status', { repo });
+      expect(r.text!.split('\n')[0], repo).toBe(`memory is on for ${repoA} (${want.source})`);
+      expect(r.data, repo).toMatchObject({ memory: want, project: repoA });
+    }
+    // repoB is another project with no setting.
+    expect((await api('memory_status', { repo: repoB })).text!.split('\n')[0]).toBe(`memory is off for ${repoB} (default)`);
+    expect((await api('memory_status', { repo: 'a' })).error).toMatch(/^repo must be the absolute path of a directory/);
+    expect((await api('memory_status', { repo: join(repoA, 'nope') })).error).toMatch(/^repo must be the absolute path of a directory/);
+  });
+
+  it('memory_status says "no memory file yet" only while no *.db exists', async () => {
+    const none = 'no memory file yet: one is created at the first capture after memory is on for a project';
+    expect((await api('memory_status', {})).text).toContain(none);
+    expect(existsSync(memoryDir())).toBe(false);
+    on();
+    await api('memory_add', { kind: 'note', text: 'first', repo: repoA });
+    expect((await api('memory_status', {})).text).not.toContain('no memory file yet');
+    // Another account's missing file is not "no memory file yet".
+    accounts();
+    const r = await api('memory_status', { account: 'other' });
+    expect(r.text).not.toContain('no memory file yet');
+    expect(r.data.dbs).toMatchObject([{ key: 'other', state: 'missing' }]);
   });
 
   it('over MCP, an agent sees no memory tools while memory is off, and then four without repo or account', async () => {

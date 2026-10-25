@@ -21,7 +21,7 @@
   "expectItems": [
     { "label": "pit-changelog", "kind": "pitfall", "author": "agent", "seen": 1,
       "text": "gate `npm run gate` failed: changelog check: ## Unreleased has no entry for src/format.js (scripts/check-changelog.mjs)",
-      "bodyIncludes": ["npm run gate: exited with 1", "Fixed by this node: Added formatCents with tests."] },
+      "bodyIncludes": ["npm run gate: exited with 1", "Fixed by this node: the gate passed.", "Files it reported changing: src/format.js, test/format.test.js, CHANGELOG.md"] },
     { "label": "proc-gate", "kind": "procedure", "author": "agent", "text": "npm run gate" },
     { "label": "proc-node-test", "kind": "procedure", "author": "agent", "text": "node --test test/" },
     { "label": "ledger-format", "kind": "ledger", "author": "agent",
