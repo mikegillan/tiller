@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Sidebar, readSidebarDetails, saveSidebarDetails } from './Sidebar';
@@ -188,6 +189,17 @@ it('opens Memory from the footer for the selected node, or with no node, and clo
   memory().props.onClick();
   expect(getState().memoryView).toEqual({});
   update(() => ({ memoryView: null }));
+});
+
+it('keeps the footer within the 240 px minimum sidebar: Memory is icon-only and the row wraps instead of overflowing', () => {
+  // Measured in Chrome: one row at 320 px, two at 240 px, nothing clipped. Here, the rules that make that so.
+  const memory = elements(find(Sidebar({ onSettings: () => {} }), (el) => el.type === 'footer')).find((el) => el.props['aria-label'] === 'Memory')!;
+  expect(memory.props.className).toContain('mem');
+  expect(memory.props.title).toMatch(/^Memory: /);
+  expect(elements(memory.props.children).map((el) => (el.type as { name?: string }).name)).toEqual(['Icon']);
+  const css = readFileSync(new URL('./sidebar.css', import.meta.url), 'utf8');
+  expect(css).toContain('.sidebar .sidefoot { flex-wrap: wrap; }');
+  expect(css).toContain('.sidefoot .btn.mem { flex: none; }');
 });
 
 it('preserves tree keyboard selection and collapse, while ignoring rename input keys', () => {

@@ -89,8 +89,8 @@ const view = (id: number, x: Partial<MemoryItemView> = {}): MemoryItemView =>
   ({ id, kind: 'procedure', text: `item ${id}`, author: 'agent', nodeId: 'n1', seen: 1, pinned: false, createdAt: 0, updatedAt: 1000 - id, eligible: true, ...x });
 const counts = { ledger: 1, open_question: 0, procedure: 50, pitfall: 2, note: 3, pinned: 1, retracted: 4 };
 const pageOf = (x: Partial<MemoryPage> = {}): MemoryPage => ({
-  target: { account: 'personal', repo: 'git:r', nodeId: 'n1' }, file: 'personal', state: 'ok', quarantined: [],
-  files: [{ account: 'personal', file: 'personal', state: 'ok' }, { account: 'work', file: 'work', state: 'ok' }],
+  target: { account: 'personal', repo: 'git:r', nodeId: 'n1' }, file: '_default', state: 'ok', quarantined: [],
+  files: [{ account: null, file: '_default', state: 'ok' }, { account: 'work', file: 'work', state: 'ok' }],
   repos: [{ key: 'git:r', path: '/r', items: 56 }, { key: 'git:s', path: '/s', items: 2 }],
   checkout: { path: '/r', from: 'node' }, on: true, source: 'memory.projects /r', cli: { repo: '/r', account: 'personal' },
   counts, items: Array.from({ length: 50 }, (_, i) => view(i + 1)), ...x,
@@ -171,16 +171,65 @@ describe('items', () => {
 
   it('the account and repository pickers and "Use a directory…" send a new target', () => {
     answer();
+    // personal has no Claude home of its own, so it shares the _default file: one entry, named for it.
+    expect(elements(byLabel('Account')).filter((e) => e.type === 'option').map((e) => [e.props.value, text(e.props.children)]))
+      .toEqual([['_default', 'personal (_default file)'], ['work', 'work']]);
+    expect(byLabel('Account').props.value).toBe('_default');
     change('Account', 'work');
     expect(last('memory').target).toEqual({ nodeId: 'n1', account: 'work', repo: undefined });
     answer(pageOf({ target: { account: 'work', repo: 'git:r', nodeId: 'n1' } }));
     change('Repository', 'git:s');
     expect(last('memory').target).toEqual({ nodeId: 'n1', account: 'work', repo: 'git:s' });
-    change('Account', '');
+    change('Account', '_default');
     expect(last('memory').target).toMatchObject({ account: null });
     change('Use a directory', ' /Users/me/clone ');
     submit(find((e) => e.type === 'form' && elements(e).includes(byLabel('Use a directory'))));
     expect(last('memory').target).toEqual({ nodeId: 'n1', account: null, dir: '/Users/me/clone', repo: undefined });
+    expect(byLabel('Use a directory').props.maxLength).toBe(4096);
+    expect(byLabel('Search memory').props.maxLength).toBe(500);
+  });
+
+  it('an error keeps the page and its pickers, so a bad directory can be corrected or cleared', () => {
+    answer();
+    change('Use a directory', 'relative/dir');
+    submit(find((e) => e.type === 'form' && elements(e).includes(byLabel('Use a directory'))));
+    applyServer({ t: 'memory', rid: last('memory').rid, error: 'dir must be the absolute path of a directory: relative/dir' });
+    render();
+    expect(lines()).toContain('dir must be the absolute path of a directory: relative/dir');
+    expect(rows()).toHaveLength(50);
+    change('Use a directory', '/Users/me/clone');
+    submit(find((e) => e.type === 'form' && elements(e).includes(byLabel('Use a directory'))));
+    expect(last('memory').target).toEqual({ nodeId: 'n1', dir: '/Users/me/clone', repo: undefined });
+    change('Use a directory', '');
+    expect(button('Clear').props.disabled).toBe(false);
+    submit(find((e) => e.type === 'form' && elements(e).includes(byLabel('Use a directory'))));
+    expect(last('memory').target).toEqual({ nodeId: 'n1', dir: undefined, repo: undefined });
+  });
+
+  it('keeps the typed pin when the daemon refuses it, and clears it once accepted', () => {
+    answer();
+    change('Pin an instruction', 'Run the gate first.');
+    const pinForm = () => find((e) => e.props.className === 'memory-pin');
+    submit(pinForm());
+    applyServer({ t: 'memoryAction', rid: last('memoryAction').rid, error: 'already pinned as m3' }); render();
+    expect(byLabel('Pin an instruction').props.value).toBe('Run the gate first.');
+    submit(pinForm());
+    applyServer({ t: 'memoryAction', rid: last('memoryAction').rid, item: view(60, { author: 'human', kind: 'note', pinned: true }) }); render();
+    expect(byLabel('Pin an instruction').props.value).toBe('');
+  });
+
+  it('keeps an item from a later page open when a refetch returns the first page', () => {
+    answer(pageOf({ next: { updatedAt: 950, id: 50 } }));
+    click('Load more');
+    answer(pageOf({ items: [view(51), view(52)] }));
+    rows()[51].props.onClick(); render();
+    answerItem(view(52));
+    applyServer({ t: 'memoryAction', rid: 998, item: view(1) }); render();
+    answer();
+    expect(rows()).toHaveLength(50);
+    expect(last('memoryItem').itemId).toBe(52);
+    answerItem(view(52));
+    expect(find((e) => e.type === 'aside').props['aria-label']).toBe('Item m52');
   });
 
   it('shows the checkout and state lines for on, off and unknown, and disables actions unless on', () => {
@@ -200,7 +249,7 @@ describe('items', () => {
 
   it('shows a broken file\'s state and its quarantined copies with empty lists', () => {
     answer(pageOf({ state: 'broken: file is not a database', quarantined: ['personal.db.broken-1'], repos: [], items: [], counts: { ...counts, procedure: 0 } }));
-    expect(lines()).toContain('File personal: broken: file is not a database');
+    expect(lines()).toContain('File _default: broken: file is not a database');
     expect(lines()).toContain('Quarantined copies: personal.db.broken-1');
     expect(rows()).toHaveLength(0);
   });
@@ -289,7 +338,18 @@ describe('sections', () => {
     applyServer({ t: 'memoryGiven', rid: last('memoryGiven').rid, injections: [{ sessionId: 's', arm: 'on', cause: 'config', itemIds: [3], text: '# Memory', ts: 0 }] });
     render();
     click('m3');
-    expect(last('memoryItem')).toMatchObject({ itemId: 3 });
+    expect(last('memoryItem')).toMatchObject({ itemId: 3, target: { nodeId: 'n1' } });
+  });
+
+  it('a digest item opens in the node\'s own file and repository, even after the pickers chose another', () => {
+    answer();
+    change('Account', 'work');
+    click('Given to this node');
+    applyServer({ t: 'memoryGiven', rid: last('memoryGiven').rid, injections: [{ sessionId: 's', arm: 'on', cause: 'config', itemIds: [3], text: '# Memory', ts: 0 }] });
+    render();
+    click('m3');
+    expect(last('memoryItem').target).toEqual({ nodeId: 'n1' });
+    expect(last('memory').target).toEqual({ nodeId: 'n1' });
   });
 
   it('Given works for a closed node, and is hidden without a node', () => {

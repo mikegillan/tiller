@@ -110,6 +110,9 @@ const archive = [
   { id: 'a-mig', rootId: 'dc', parentId: 'dc', title: 'db migration dry run', cwd: '/Users/scott/code/dotcms-core', ...OPUS, sessionId: 'deadbeef-0000-1111-2222-333344445555', branch: 'tl/a-mig', branchFate: 'merged', base: 'main',
     prompt: 'Dry-run the 24.10 schema migration against the staging dump.', brief: 'Dry run passed on the staging dump in 4 minutes; two slow indexes noted. Succeeded.',
     outcome: { outcome: 'succeeded', summary: 'Dry run passed.', at: now - 5 * 3600_000 }, spentUsd: 1.9, createdAt: now - 7 * 3600_000, closedAt: now - 5 * 3600_000 },
+  // Its checkout has since moved away: its Memory page has no checkout and no repository.
+  { id: 'a-old', rootId: 'sc', parentId: 'sc', title: 'old site fix', cwd: '/Users/scott/old-site', ...SONNET, sessionId: 'feedface-0000-1111-2222-333344445555',
+    prompt: 'Fix the Netlify image limit.', outcome: { outcome: 'succeeded', summary: 'Resized the images.', at: now - 40 * 86400_000 }, createdAt: now - 41 * 86400_000, closedAt: now - 40 * 86400_000 },
 ];
 
 const LONG = Array.from({ length: 14 }, (_, i) => `${i + 1}. ${['Read the handshake code', 'Wrote the failing test', 'Switched to timingSafeEqual', 'Ran the suite'][i % 4]}: details of step ${i + 1}, which go on long enough to wrap at the pane's width.`).join('\n');
@@ -190,10 +193,11 @@ function conversationsFor(id) {
   return { items: [row(id, undefined, 'parent', n.parentId && known(n.parentId) ? n.parentId : 'human'), ...children, ...peers] };
 }
 
-// ---- Memory panel. Two account files (personal, work) and a broken one (client). Their repositories hold items in every kind
-// and validity state; tiller and dotcms-core have checkouts with memory on, scratch one with it off, and old-site none known
-// (its recorded path moved away), so its page says on is unknown. Actions change the items in memory. TL_MOCK_MEMORY_ITEMS=N
-// adds N generated items to personal's tiller repository, for timing the panel (ui/README.md).
+// ---- Memory panel. Two account files and a broken one, keyed as the daemon's accountKey does: personal has no Claude home of
+// its own, so it shares _default with no account; work has its own file; client's is broken. Their repositories hold items in
+// every kind and validity state; tiller and dotcms-core have checkouts with memory on, scratch one with it off, and old-site
+// none known (its recorded path moved away), so its page says on is unknown. Actions change the items in memory.
+// TL_MOCK_MEMORY_ITEMS=N adds N generated items to _default's tiller repository, for timing the panel (ui/README.md).
 const TILLER = '/Users/scott/workspace/tiller', DOTCMS = '/Users/scott/code/dotcms-core', SCRATCH = '/tmp/scratch';
 const CHECKOUTS = [
   { path: TILLER, key: 'git:github.com/swicken/tiller', on: `memory.projects ${TILLER}` },
@@ -201,8 +205,10 @@ const CHECKOUTS = [
   { path: SCRATCH, key: 'path:/tmp/scratch' },
 ];
 const checkoutAt = (dir) => CHECKOUTS.find((c) => dir === c.path || dir.startsWith(`${c.path}/`)) ?? { path: dir, key: `path:${dir}` };
+const MISSING = new Set(['/Users/scott/old-site']); // directories that no longer exist
+const accountKey = (account) => (account !== undefined && accounts.find((a) => a.name === account)?.configDir ? account : '_default');
 const memFiles = {
-  personal: { state: 'ok', quarantined: [], items: [], seq: 0, repos: [
+  _default: { state: 'ok', quarantined: [], items: [], seq: 0, repos: [
     { key: 'git:github.com/swicken/tiller', path: TILLER }, { key: 'path:/tmp/scratch', path: SCRATCH }, { key: 'git:github.com/scott/old-site', path: '/Users/scott/old-site' }] },
   work: { state: 'ok', quarantined: [], items: [], seq: 0, repos: [{ key: 'git:github.com/dotcms/core', path: DOTCMS }, { key: 'git:github.com/swicken/tiller', path: TILLER }] },
   client: { state: 'broken: file is not a database', quarantined: ['client.db.broken-1729418400000'], items: [], seq: 0, repos: [] },
@@ -216,7 +222,7 @@ const memItem = (file, repo, kind, text, { ago, ...x } = {}) => {
   return it;
 };
 {
-  const T = 'git:github.com/swicken/tiller', p = 'personal';
+  const T = 'git:github.com/swicken/tiller', p = '_default';
   memItem(p, T, 'note', 'Run npm run typecheck and the UI typecheck before reporting.', { author: 'human', pinned: true, pin: true, seen: 0 });
   memItem(p, T, 'ledger', 'daemon (tl-d) succeeded: the daemon serves ui/dist and reports /health', { author: 'daemon', nodeId: 'tl-d', body: 'Brief: Serve the built UI from the daemon.\nOutcome: succeeded. Changed src/daemon/server.ts, src/daemon/server.test.ts.' });
   memItem(p, T, 'procedure', 'npm test -- ui', { seen: 6, cites: 2, gets: 3, body: 'Verified by the gate on attempt 1 in tl-ui, tl-css and a-css.' });
@@ -265,25 +271,33 @@ const injections = {
   dc: [{ sessionId: 'dc-session', arm: 'on', cause: 'config', itemIds: [1, 2], text: '# Memory\n## Pinned\n- m1 Never run the migration against production from a node.\n## Procedures\n- m2 ./mvnw -pl dotCMS test', ts: now - 3 * 3600_000 }],
 };
 
-/** The panel's target resolved as the daemon does: the node's account and checkout, a chosen dir, else the file's first repo. */
+/**
+ * The panel's target resolved as the daemon does. A chosen dir wins over the node; the node's own account is used as it is
+ * (none: the _default file); a node whose checkout is gone has no repository unless one is chosen, so on is null.
+ */
 function memoryScope(t) {
   const node = t.nodeId && (nodes.get(t.nodeId) ?? archive.find((a) => a.id === t.nodeId));
-  if (t.nodeId && !node) return { error: `no live or closed node ${t.nodeId}` };
-  if (t.dir && !t.dir.startsWith('/')) return { error: `not an absolute directory: ${t.dir}` };
-  const nodeAt = node && checkoutAt(node.worktree?.repo ?? node.cwd), dirAt = t.dir && checkoutAt(t.dir);
-  const account = t.account === null ? null : t.account ?? node?.account ?? accountFor((dirAt || nodeAt)?.path ?? '');
-  if (account && !accounts.some((a) => a.name === account)) return { error: `unknown account ${account}` };
-  const file = account ?? '_default', f = memFiles[file];
-  const repo = t.repo ?? (dirAt || nodeAt)?.key ?? f?.repos[0]?.key;
-  // The checkout that judges the opt-in: the node's, the chosen dir, a live node's, then the recorded path if it still exists.
+  if (t.nodeId && !node) return { error: `no such node: ${t.nodeId}` };
+  if (t.dir && (!t.dir.startsWith('/') || MISSING.has(t.dir))) return { error: `dir must be the absolute path of a directory: ${t.dir}` };
+  const nodeDir = node && (node.worktree?.repo ?? node.cwd);
+  const nodeAt = nodeDir && !MISSING.has(nodeDir) ? checkoutAt(nodeDir) : undefined, dirAt = t.dir && checkoutAt(t.dir);
+  const project = dirAt || nodeAt;
+  const account = t.account === null ? undefined : t.account ?? (node ? node.account : project && accountFor(project.path));
+  if (account && !accounts.some((a) => a.name === account)) return { error: `Claude account "${account}" is not configured (claude.accounts)` };
+  const file = accountKey(account), f = memFiles[file];
+  const repo = t.repo ?? (project ? project.key : node ? undefined : f?.repos[0]?.key);
+  // The checkout that judges the opt-in: the chosen dir, the node's, a live node's, then the recorded path if it still exists.
   const liveAt = [...nodes.values()].map((n) => checkoutAt(n.worktree?.repo ?? n.cwd)).find((c) => c.key === repo);
   const recorded = CHECKOUTS.find((c) => c.key === repo && f?.repos.some((r) => r.key === repo && r.path === c.path));
-  const checkout = !repo ? undefined : nodeAt?.key === repo ? { ...nodeAt, from: 'node' } : dirAt?.key === repo ? { ...dirAt, from: 'chosen' }
+  const checkout = !repo ? undefined : dirAt?.key === repo ? { ...dirAt, from: 'chosen' } : nodeAt?.key === repo ? { ...nodeAt, from: 'node' }
     : liveAt ? { ...liveAt, from: 'live node' } : recorded ? { ...recorded, from: 'recorded path' } : undefined;
   const optIn = checkout && CHECKOUTS.find((c) => c.path === checkout.path)?.on;
-  return { account, file, f, repo, checkout, on: checkout ? !!optIn : null,
-    source: !checkout ? 'no checkout of this repository is known' : optIn ?? 'memory.enabled (global): off (default)',
-    target: { account, ...(repo && { repo }), ...(t.nodeId && { nodeId: t.nodeId }), ...(t.dir && { dir: t.dir }) } };
+  // The purge command's scope: a named account opens its own file; with none, the CLI picks the checkout's account.
+  const cli = !checkout ? undefined : account !== undefined ? { repo: checkout.path, account }
+    : accountKey(accountFor(checkout.path)) === '_default' ? { repo: checkout.path } : undefined;
+  return { account, file, f, repo, checkout, cli, on: checkout ? !!optIn : null,
+    source: !checkout ? 'no checkout of this repository is known; choose its directory' : optIn ?? 'memory.enabled (global): off (default)',
+    target: { account: account ?? null, ...(repo && { repo }), ...(t.nodeId && { nodeId: t.nodeId }), ...(t.dir && { dir: t.dir }) } };
 }
 const memView = ({ repo: _repo, pin: _pin, ...it }, full) => {
   if (!full) { delete it.body; delete it.cites; delete it.gets; delete it.rootId; }
@@ -309,8 +323,7 @@ function memoryPage(m) {
     if (rows.length > 50) next = { updatedAt: rows[49].updatedAt, id: rows[49].id };
     rows = rows.slice(0, 50);
   }
-  // Every checkout here defaults to a named account, so only a named account's file has a purge scope.
-  const cli = s.checkout && s.account ? { repo: s.checkout.path, account: s.account } : undefined;
+  const { cli } = s;
   return {
     target: s.target, file: s.file, state: s.f?.state ?? 'missing', quarantined: s.f?.quarantined ?? [],
     files: Object.entries(memFiles).map(([file, f]) => ({ account: file === '_default' ? null : file, file, state: f.state })),

@@ -50,9 +50,9 @@ export type ItemAction = 'pin' | 'unpin' | 'edit' | 'forget' | 'restore';
 export function itemActions(item: MemoryItemView): ItemAction[] {
   if (item.tombstone) return [];
   if (!item.invalid) return [item.pinned ? 'unpin' : 'pin', ...(item.pinned && isTextPin(item) ? ['edit' as const] : []), 'forget'];
-  // A retracted text pin comes back by pinning it again; restore refuses it.
-  if (isTextPin(item)) return item.pinned ? [] : ['pin'];
-  return [...(item.pinned ? [] : ['pin' as const]), ...(RESTORABLE.has(item.invalid.kind) ? ['restore' as const] : [])];
+  // A retracted item may still be pinned (forget does not unpin). A retracted text pin comes back by pinning it again.
+  const pin = item.pinned ? 'unpin' as const : 'pin' as const;
+  return [pin, ...(!isTextPin(item) && RESTORABLE.has(item.invalid.kind) ? ['restore' as const] : [])];
 }
 
 /** Pinning an agent's or the daemon's text turns it into an instruction: ask first (D7). */

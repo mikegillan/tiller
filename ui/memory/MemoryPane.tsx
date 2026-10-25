@@ -10,8 +10,11 @@ import { getState, lastMemoryRid, memoryActionRequested, memoryRequested, select
 import { badges, CHIPS, checkoutLine, chipCount, itemActions, KIND_LABEL, pinNeedsConfirm, provenance, purgeCommand, purgeNote, sectionsFor, splitFrontmatter, stateLine, type SectionKey } from './memory-model';
 import './memory.css';
 
+// The daemon's limits (LIMITS.tools and the dir schema): longer input would be refused as malformed, with no reply.
 const PIN_TEXT_MAX = 500;
 const REASON_MAX = 300;
+const QUERY_MAX = 500;
+const DIR_MAX = 4096;
 const ago = (now: number, at: number) => <span title={new Date(at).toLocaleString()}>{fmtAge(now - at)} ago</span>;
 
 /** One row of the list. Item text is untrusted: it renders as plain text. */
@@ -161,6 +164,7 @@ export function MemoryPane({ target: initial, onClose }: { target: MemoryTarget;
   const detail = mine(useStore((s) => s.memoryItem));
   const given = mine(useStore((s) => s.memoryGiven));
   const claude = mine(useStore((s) => s.claudeMemory));
+  const acted = useStore((s) => s.memoryActed);
   const now = useNow();
   const [target, setTarget] = useState(initial);
   const [section, setSection] = useState<SectionKey>('items');
@@ -170,6 +174,7 @@ export function MemoryPane({ target: initial, onClose }: { target: MemoryTarget;
   const [retracted, setRetracted] = useState(false);
   const [itemId, setItemId] = useState<number>();
   const [pinText, setPinText] = useState('');
+  const [pinRid, setPinRid] = useState<number>();
   const [dir, setDir] = useState('');
   const [refresh, setRefresh] = useState(0);
   const page = reply?.data;
@@ -191,12 +196,28 @@ export function MemoryPane({ target: initial, onClose }: { target: MemoryTarget;
     if (connected && section === 'claude') send({ t: 'claudeMemory', rid: memoryRequested('claudeMemory', since), target });
   }, [connected, refresh, section, target]);
 
+  // The typed pin stays until the daemon accepts it, so a refusal does not lose it.
+  useEffect(() => {
+    if (acted?.ok && acted.rid === pinRid) setPinText('');
+  }, [acted, pinRid]);
+
   const retarget = (t: MemoryTarget) => { setTarget(t); setItemId(undefined); };
-  const act = (action: MemoryAction) => send({ t: 'memoryAction', rid: memoryActionRequested(action.kind), target: page?.target ?? target, action });
+  const act = (action: MemoryAction) => {
+    const rid = memoryActionRequested(action.kind);
+    send({ t: 'memoryAction', rid, target: page?.target ?? target, action });
+    return rid;
+  };
+  // A digest's item ids are in the node's own file and repository: show those, not another the pickers chose.
+  const openGiven = (id: number) => {
+    if (Object.keys(target).some((k) => k !== 'nodeId')) setTarget({ nodeId: target.nodeId });
+    setItemId(id);
+  };
   const more = () => page?.next && send({ t: 'memory', rid: memoryRequested('memory', since, true), target, ...(kind && { kind }), ...(retracted && { retracted }), before: page.next });
   const blocked = page && page.on !== true ? `Changes need memory on for this checkout: ${page.source}.` : undefined;
-  const account = page?.target.account ?? null;
-  const accounts = page ? [...page.files.map((f) => f.account), ...(page.files.some((f) => f.account === account) ? [] : [account])] : [];
+  // One entry per file: a configured account without its own Claude home shares the _default file, and is named on it.
+  const files = page ? [...page.files, ...(page.files.some((f) => f.file === page.file) ? [] : [{ account: page.target.account, file: page.file, state: page.state }])] : [];
+  const fileLabel = (f: MemoryPage['files'][number]) =>
+    `${f.file === page?.file && page.target.account && page.target.account !== f.account ? `${page.target.account} (${f.file} file)` : f.account ?? 'no account'}${f.state !== 'ok' ? ` (${f.state})` : ''}`;
   const repos = page ? [...page.repos, ...(page.target.repo && !page.repos.some((r) => r.key === page.target.repo) ? [{ key: page.target.repo, path: '', items: 0 }] : [])] : [];
   const shown = detail?.data && detail.data.item.id === itemId ? detail.data : undefined;
 
@@ -213,11 +234,8 @@ export function MemoryPane({ target: initial, onClose }: { target: MemoryTarget;
         {page && (
           <div className="memory-pickers">
             <label>Account
-              <Select aria-label="Account" value={account ?? ''} onChange={(e) => retarget({ ...target, account: e.target.value || null, repo: undefined })}>
-                {accounts.map((a) => {
-                  const f = page.files.find((x) => x.account === a);
-                  return <option key={a ?? ''} value={a ?? ''}>{a ?? 'no account'}{f && f.state !== 'ok' ? ` (${f.state})` : ''}{!f ? ' (no file)' : ''}</option>;
-                })}
+              <Select aria-label="Account" value={page.file} onChange={(e) => retarget({ ...target, account: files.find((f) => f.file === e.target.value)?.account ?? null, repo: undefined })}>
+                {files.map((f) => <option key={f.file} value={f.file}>{fileLabel(f)}</option>)}
               </Select>
             </label>
             <label>Repository
@@ -226,9 +244,10 @@ export function MemoryPane({ target: initial, onClose }: { target: MemoryTarget;
                 {repos.map((r) => <option key={r.key} value={r.key}>{r.key} · {r.items} items{r.path ? ` · first recorded at ${r.path}` : ''}</option>)}
               </Select>
             </label>
-            <form onSubmit={(e) => { e.preventDefault(); if (dir.trim()) retarget({ ...target, dir: dir.trim(), repo: undefined }); }}>
-              <input aria-label="Use a directory" placeholder="Use a directory…" value={dir} onChange={(e) => setDir(e.target.value)} />
-              <button className="btn" type="submit" disabled={!dir.trim()}>Use</button>
+            {/* Submitting it empty drops a chosen directory. */}
+            <form onSubmit={(e) => { e.preventDefault(); if (dir.trim() || target.dir) retarget({ ...target, dir: dir.trim() || undefined, repo: undefined }); }}>
+              <input aria-label="Use a directory" placeholder="Use a directory…" maxLength={DIR_MAX} value={dir} onChange={(e) => setDir(e.target.value)} />
+              <button className="btn" type="submit" disabled={!dir.trim() && !target.dir}>{dir.trim() || !target.dir ? 'Use' : 'Clear'}</button>
             </form>
           </div>
         )}
@@ -246,12 +265,12 @@ export function MemoryPane({ target: initial, onClose }: { target: MemoryTarget;
           {section === 'items' && (
             <>
               <div className="memory-filters">
-                <input type="search" aria-label="Search memory" placeholder="Search memory…" value={q} onChange={(e) => setQ(e.target.value)} />
+                <input type="search" aria-label="Search memory" placeholder="Search memory…" maxLength={QUERY_MAX} value={q} onChange={(e) => setQ(e.target.value)} />
                 <div className="memory-chips" role="group" aria-label="Kind">
                   {CHIPS.map((c) => <button key={c.label} className={`memory-chip${kind === c.kind ? ' on' : ''}`} aria-pressed={kind === c.kind} onClick={() => setKind(c.kind)}>{c.label}{page && ` ${chipCount(page.counts, c.kind)}`}</button>)}
                 </div>
                 <label className="check"><input type="checkbox" checked={retracted} onChange={(e) => setRetracted(e.target.checked)} />Show retracted{page && ` (${page.counts.retracted})`}</label>
-                <form className="memory-pin" onSubmit={(e) => { e.preventDefault(); if (pinText.trim()) { act({ kind: 'pinText', text: pinText.trim() }); setPinText(''); } }}>
+                <form className="memory-pin" onSubmit={(e) => { e.preventDefault(); if (pinText.trim()) setPinRid(act({ kind: 'pinText', text: pinText.trim() })); }}>
                   <input aria-label="Pin an instruction" placeholder="Pin an instruction…" maxLength={PIN_TEXT_MAX} value={pinText} disabled={!page || !!blocked} onChange={(e) => setPinText(e.target.value)} />
                   <button className="btn" type="submit" disabled={!page || !!blocked || !pinText.trim()}>Pin</button>
                 </form>
@@ -266,7 +285,7 @@ export function MemoryPane({ target: initial, onClose }: { target: MemoryTarget;
             </>
           )}
           {section === 'given' && (given?.error ? <p className="hint">{given.error}</p>
-            : given?.data ? <GivenList injections={given.data} now={now} onItem={setItemId} /> : <p className="hint">Loading…</p>)}
+            : given?.data ? <GivenList injections={given.data} now={now} onItem={openGiven} /> : <p className="hint">Loading…</p>)}
           {section === 'claude' && (claude?.error ? <p className="hint">{claude.error}</p>
             : claude?.data ? <ClaudeView view={claude.data} checkout={page?.checkout?.path} /> : <p className="hint">Loading…</p>)}
         </div>

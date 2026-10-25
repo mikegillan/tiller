@@ -162,7 +162,11 @@ it('keeps a memory reply only for the latest rid of its slot, and appends a Load
   expect(getState().memory?.data?.items.map((i) => i.id)).toEqual([2]); // shown while the next page is out
   applyServer({ t: 'memory', rid: more, ...memoryPage([3]) });
   expect(getState().memory?.data?.items.map((i) => i.id)).toEqual([2, 3]);
-  memoryRequested('memory', more); // a pane opened after that reply does not show it
+  const failed = memoryRequested('memory', 0);
+  applyServer({ t: 'memory', rid: failed, error: 'dir must be the absolute path of a directory: x' });
+  expect(getState().memory).toMatchObject({ rid: failed, error: 'dir must be the absolute path of a directory: x' });
+  expect(getState().memory?.data?.items.map((i) => i.id)).toEqual([2, 3]); // the page stays, to correct the target from
+  memoryRequested('memory', failed); // a pane opened after that reply does not show it
   expect(getState().memory?.data).toBeUndefined();
 
   const item = memoryRequested('memoryItem', 0);
@@ -183,6 +187,7 @@ it('a memory action reply toasts its result and bumps the revision the open pane
   applyServer({ t: 'memoryAction', rid: memoryActionRequested('restore'), item: memoryPage([4]).items[0] });
   applyServer({ t: 'memoryAction', rid: memoryActionRequested('pin'), error: 'memory is off for /r' });
   expect(getState().memoryRev).toBe(rev + 2);
+  expect(getState().memoryActed).toEqual({ rid: expect.any(Number), ok: false });
   expect(getState().toasts.slice(-2).map((t) => [t.text, t.tone])).toEqual([['Restored m4', 'ok'], ['Memory not changed: memory is off for /r', 'bad']]);
 });
 
@@ -198,6 +203,14 @@ it('showPane memory clears the other panes, and the memory view and a closed nod
   expect([getState().archived, getState().memoryView]).toEqual([null, { nodeId: 'c' }]);
   viewArchived(closed);
   expect([getState().archived, getState().memoryView]).toEqual([closed, null]);
+  viewMemory({ nodeId: 'c' }, closed);
+  viewMemory(null); // closing a view opened from a closed node's pane shows that pane again
+  expect([getState().archived, getState().memoryView]).toEqual([closed, null]);
+  viewMemory(null);
+  expect(getState().archived).toBe(closed);
+  viewMemory({});
+  viewMemory(null);
+  expect([getState().archived, getState().memoryView]).toEqual([null, null]);
   viewMemory({});
   update((s) => ({ nodes: { ...s.nodes, sel: mk('sel', null, 0) } }));
   selectNode('sel');

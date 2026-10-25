@@ -80,9 +80,10 @@ describe('closed node pane', () => {
     const a = { id: 'closed-1', rootId: 'r', parentId: null, title: 'auth refactor', cwd: '/w', createdAt: 0, closedAt: 1 };
     const flat = (n: ReactNode): ReactElement<Record<string, any>>[] => Array.isArray(n) ? n.flatMap(flat)
       : n && typeof n === 'object' && 'props' in n ? [n as ReactElement<Record<string, any>>, ...flat((n as ReactElement<{ children?: ReactNode }>).props.children)] : [];
-    const memory = flat(ArchivePane({ a })).find((e) => e.type === 'button' && e.props.children === 'Memory')!;
+    const memory = flat(ArchivePane({ a })).find((e) => e.type === 'button' && [e.props.children].flat().includes('Memory'))!;
     memory.props.onClick();
     expect(getState().memoryView).toEqual({ nodeId: 'closed-1' });
     expect(getState().archived).toBeNull();
+    expect(getState().memoryBack).toBe(a);
   });
 });

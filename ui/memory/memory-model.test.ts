@@ -35,7 +35,7 @@ describe('item state', () => {
   });
   it('offers Restore for known retractions, not for tombstones, text pins or unknown kinds', () => {
     expect(itemActions(hidden('agent'))).toEqual(['pin', 'restore']);
-    expect(itemActions(hidden('human', { pinned: true }))).toEqual(['restore']);
+    expect(itemActions(hidden('human', { pinned: true }))).toEqual(['unpin', 'restore']);
     expect(itemActions(hidden('superseded'))).toEqual(['pin', 'restore']);
     expect(itemActions(hidden('human', { tombstone: 'purged', text: '' }))).toEqual([]);
     expect(itemActions(hidden('evicted', { tombstone: 'evicted', text: '' }))).toEqual([]);

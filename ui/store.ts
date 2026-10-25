@@ -92,6 +92,8 @@ export interface State {
   memoryOpen: boolean;
   /** The Memory pane opened from the sidebar footer or a closed node, shown in the main pane over the selected node. */
   memoryView: MemoryTarget | null;
+  /** The closed node whose pane opened the memory view; closing the view shows it again. */
+  memoryBack: ArchivedNode | null;
   /** Memory panel replies, each kept only when its rid is the latest asked for. more: a Load more, appended to the page. */
   memory: (MemoryReply<MemoryPage> & { more?: boolean }) | null;
   memoryItem: MemoryReply<MemoryItemDetail> | null;
@@ -99,6 +101,8 @@ export interface State {
   claudeMemory: MemoryReply<ClaudeMemoryView> | null;
   /** Counts the human's memory action replies, so the open pane asks again. */
   memoryRev: number;
+  /** The latest action reply: its rid and whether it succeeded. */
+  memoryActed: { rid: number; ok: boolean } | null;
 }
 
 const stored = (() => { try { return localStorage.getItem('tl.panel') === '1'; } catch { return false; } })();
@@ -108,7 +112,7 @@ let state: State = {
   nodes: {}, order: [], selected: null, session: null, opened: [], collapsed: [], toasts: [], confirms: [], activity: [], activityOpen: false,
   connected: false, retry: 0, panel: stored, dialog: null, renaming: null, awaitSpawn: false, diffOpen: false, diff: null, comments: [],
   transcriptOpen: false, transcript: null, showTools: storedTools, conversations: null, conversation: null, historyOpen: false, history: [], archived: null, removals: 0,
-  memoryOpen: false, memoryView: null, memory: null, memoryItem: null, memoryGiven: null, claudeMemory: null, memoryRev: 0,
+  memoryOpen: false, memoryView: null, memoryBack: null, memory: null, memoryItem: null, memoryGiven: null, claudeMemory: null, memoryRev: 0, memoryActed: null,
 };
 const subs = new Set<() => void>();
 let toastSeq = 0;
@@ -172,7 +176,10 @@ export const conversationRequested = (id: string, peer?: string) =>
   update((s) => ({ conversation: s.conversation?.id === id && s.conversation.with === peer ? s.conversation : { id, with: peer } }));
 export const toggleHistory = () => update((s) => ({ historyOpen: !s.historyOpen }));
 export const viewArchived = (archived: ArchivedNode | null) => update(() => ({ archived, memoryView: null }));
-export const viewMemory = (memoryView: MemoryTarget | null) => update(() => ({ memoryView, archived: null }));
+/** Open the memory view (from `back`, a closed node's pane, if given), or close it and show `back` again. */
+export const viewMemory = (memoryView: MemoryTarget | null, back: ArchivedNode | null = null) => update((s) => (memoryView
+  ? { memoryView, archived: null, memoryBack: back }
+  : s.memoryView ? { memoryView: null, archived: s.memoryBack, memoryBack: null } : {}));
 
 let memoryRid = 0;
 /** The last memory rid handed out: a pane opened now shows only replies to later requests, not another pane's. */
@@ -301,7 +308,8 @@ export function applyServer(m: ServerMessage) {
       return update((s) => {
         const want = s.memory;
         if (want?.rid !== rid) return {};
-        if ('error' in data) return { memory: { rid, error: data.error } };
+        // An error keeps the page shown, so its pickers stay to correct a bad target.
+        if ('error' in data) return { memory: { rid, error: data.error, data: want.data } };
         return { memory: { rid, data: want.more && want.data ? { ...data, items: [...want.data.items, ...data.items] } : data } };
       });
     }
@@ -320,7 +328,7 @@ export function applyServer(m: ServerMessage) {
       actionKinds.delete(m.rid);
       if ('error' in m) toast(`Memory not changed: ${m.error}`, undefined, 'bad');
       else toast(`${kind ? ACTION_DONE[kind] : 'Changed'} m${m.item.id}`, undefined, 'ok');
-      return update((s) => ({ memoryRev: s.memoryRev + 1 }));
+      return update((s) => ({ memoryRev: s.memoryRev + 1, memoryActed: { rid: m.rid, ok: !('error' in m) } }));
     }
     case 'sent': {
       const title = state.nodes[m.id]?.title ?? m.id;
