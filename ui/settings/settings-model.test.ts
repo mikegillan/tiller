@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ClaudeAccountView } from '../../src/shared/protocol';
-import { accountsError, accountStatus, buildChanges, cliStatus, fieldPreview, groups, isMemoryChoice, memoryChoices, memoryFields, memoryStatus, profileFields, type SettingsSnapshot } from './settings-model';
+import { accountsError, accountStatus, buildChanges, cliStatus, fieldPreview, groups, isMemoryChoice, memoryChoices, memoryFields, memoryStatus, profileFields, staleDrafts, type SettingsSnapshot } from './settings-model';
 const snapshot: SettingsSnapshot = { scope: 'project', path: '/tmp/project/.tiller/config.json', projectPath: '/tmp/project', revision: 'a', values: { 'limits.maxDepth': 3, 'worktrees.include': ['local'], 'approvals.merge': true }, entries: {}, inherited: {} };
 const fields = [...groups.flatMap((g) => g.fields), ...profileFields('codex')];
 describe('settings drafts', () => {
@@ -169,6 +169,13 @@ describe('memory settings', () => {
     expect(buildChanges(snapshot, { 'claude.accounts.work.memory': 'false', 'memory.project': 'true' }, f)).toEqual({ 'claude.accounts.work.memory': false, 'memory.project': true });
     expect(buildChanges(saved, { 'claude.accounts.work.memory': null, 'memory.project': null }, f)).toEqual({ 'claude.accounts.work.memory': null, 'memory.project': null });
     expect(buildChanges(saved, { 'claude.accounts.work.memory': 'false', 'memory.project': 'true' }, f)).toEqual({});
+  });
+  it('skips a draft whose account field is gone instead of failing the whole save', () => {
+    const f = memoryFields(base, 'home', accounts.slice(0, 1));
+    const drafts = { 'claude.accounts.work.memory': 'true', 'memory.maxMB': '64' };
+    expect(staleDrafts(drafts, f)).toEqual(['claude.accounts.work.memory']);
+    expect(buildChanges(snapshot, drafts, f)).toEqual({ 'memory.maxMB': 64 });
+    expect(() => buildChanges(snapshot, { 'nope.field': 'x' }, f)).toThrow('Unknown field'); // only memory accounts are forgiven
   });
   it('checks memory.maxMB against the size floor locally as a number', () => {
     expect(buildChanges(snapshot, { 'memory.maxMB': '64' }, memoryFields(base, 'home'))).toEqual({ 'memory.maxMB': 64 });

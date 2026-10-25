@@ -74,10 +74,15 @@ export function formatValue(value: unknown): string { return value === undefined
 export function inputValue(value: unknown, field: Field): string {
   return value === undefined ? '' : field.type === 'lines' && Array.isArray(value) ? value.join('\n') : String(value);
 }
+/** Drafts for an account's memory whose field is gone (the account was removed, or the list turned invalid): not saved. */
+export const staleDrafts = (drafts: Record<string, string | null>, fields: Field[]) => Object.keys(drafts).filter((key) => MEMORY_ACCOUNT_KEY.test(key) && !fields.some((f) => f.key === key));
+
 // null removes only the explicit target-layer value; untouched inherited fields never enter changes.
 export function buildChanges(snapshot: SettingsSnapshot, drafts: Record<string, string | null>, fields: Field[]): Record<string, unknown | null> {
   const changes: Record<string, unknown | null> = {};
+  const stale = staleDrafts(drafts, fields);
   for (const [key, raw] of Object.entries(drafts)) {
+    if (stale.includes(key)) continue;
     const f = fields.find((f) => f.key === key);
     if (!f) throw new Error(`Unknown field: ${key}`);
     let value: unknown = raw;

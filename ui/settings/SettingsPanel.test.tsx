@@ -520,7 +520,18 @@ it('shows the Memory group at home scope: global switch, an account select, the 
   expect(elements(tree).some((e) => e.props.id === 'setting-memory.project')).toBe(false);
   expect(text(tree)).toContain('The global setting is off (default).');
   expect(elements(tree).filter((e) => e.type === 'li').map(text)).toEqual(['/repo On', '/other Off']);
-  expect(text(tree)).toContain('use the Memory button in the sidebar');
+  expect(text(tree)).toContain('use the Memory icon in the sidebar footer.');
+});
+
+it('skips a draft for an account that disappeared, says so, and still saves the rest', async () => {
+  await memoryHome();
+  input('claude.accounts.work.memory').props.onChange({ target: { value: 'true' } }); render();
+  input('memory.maxMB').props.onChange({ target: { value: '64' } }); render();
+  hooks.store = { ...hooks.store, claudeAccounts: [memoryAccounts[0]] } as typeof hooks.store; // work was removed meanwhile
+  render();
+  expect(text(tree)).toContain('Not saved: work is no longer a usable Claude account. Other changes still save.');
+  await submit();
+  expect(sent().changes).toEqual({ 'memory.maxMB': 64 });
 });
 
 it('saves each home memory control as its own key, with removal as null', async () => {

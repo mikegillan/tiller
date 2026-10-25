@@ -118,7 +118,9 @@ export function settingsSnapshot(manager: NodeManager, scope: SettingsScope, nod
   } else {
     const exact = config.memory.projects.find((p) => canonicalProject(p.path) === projectPath);
     if (exact) values['memory.project'] = exact.enabled;
-    memory = { ...memoryOn(home, projectPath!, claudeAccount.effective), account: claudeAccount.effective };
+    // With an invalid account list the repo's account is unknown, so fail closed as memoryOn does for a named account.
+    const listError = claudeAccountListError(home);
+    memory = listError ? { on: false, source: `account unknown: ${listError}` } : { ...memoryOn(home, projectPath!, claudeAccount.effective), account: claudeAccount.effective };
   }
   return { scope, path, projectPath, revision: revision(layer.raw), values, entries, inherited, homeRevision: revision(homeLayer.raw), claudeAccount, memory };
 }
@@ -173,6 +175,10 @@ export function updateSettings(manager: NodeManager, update: SettingsUpdate): Se
     if (scope !== 'project') throw new SettingsError(400, 'memory.project is a project setting');
     applyMemorySetting(homeLayer(), homeDir, { project: projectPath! }, memorySetting('memory.project', changes['memory.project']));
     delete changes['memory.project'];
+  }
+  if (scope === 'home' && Object.hasOwn(changes, 'memory.enabled')) { // the same write as `tl memory on|off|inherit`
+    applyMemorySetting(before.data, homeDir, {}, memorySetting('memory.enabled', changes['memory.enabled']));
+    delete changes['memory.enabled'];
   }
   const accountMemory = Object.entries(changes).flatMap(([key, value]) => { const name = MEMORY_ACCOUNT_KEY.exec(key)?.[1]; return name ? [{ key, name, value }] : []; });
   for (const { key, name, value } of accountMemory) {

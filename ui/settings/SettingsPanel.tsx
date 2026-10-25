@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import { MEMORY_ACCOUNT_KEY } from '../../src/shared/settings';
 import { token } from '../url';
 import { refreshUsage, send } from '../conn';
 import { useStore } from '../store';
-import { accountOptionLabel, accountStatus, accountsError, buildChanges, cliStatus, efforts, fieldPreview, groups, inputValue, isMemoryChoice, memoryChoices, memoryFields, memoryStatus, optionLabel, profileFields, profiles, type Field, type Scope, type SettingsSnapshot } from './settings-model';
+import { accountOptionLabel, accountStatus, accountsError, buildChanges, cliStatus, efforts, fieldPreview, groups, inputValue, isMemoryChoice, memoryChoices, memoryFields, memoryStatus, optionLabel, profileFields, profiles, staleDrafts, type Field, type Scope, type SettingsSnapshot } from './settings-model';
 import { Modal } from '../controls/Modal';
 import { Select } from '../controls/Select';
 import './settings.css';
@@ -51,6 +52,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   const active = sections.find((section) => section.title === category) ?? sections[0];
   const visibleFields = active.fields.filter((field) => matches(field, active.title));
   const fields = sections.flatMap((group) => group.fields);
+  const stale = staleDrafts(drafts, fields);
   useEffect(() => { send({ t: 'claudeAccounts' }); }, []);
   useEffect(() => {
     const roots = [document.documentElement, document.body].filter(Boolean);
@@ -208,6 +210,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     <div className="settings-content" ref={content} aria-busy={busy}>
       {discard && <div className="settings-notice" role="alert"><p>Discard unsaved changes?</p><button className="btn" onClick={() => setDiscard(null)}>Keep editing</button>{' '}<button className="btn danger" onClick={() => { const target = discard; setDiscard(null); setDrafts({}); if (target === 'close') onClose(); else setScope(target); }}>Discard changes</button></div>}
       {(error || conflict) && <div className="settings-notice settings-error" role="alert"><p>{error || 'Settings changed on disk. Reload the latest settings before saving.'}</p>{conflict ? <><p>The file changed since it was loaded. Reload discards your draft and loads the latest values.</p><button className="btn" disabled={busy} onClick={() => setReload((n) => n + 1)}>Reload latest settings</button></> : !snapshot && <button className="btn" disabled={busy} onClick={() => setReload((n) => n + 1)}>Retry</button>}</div>}
+      {stale.length > 0 && <p className="settings-notice" role="status">Not saved: {stale.map((key) => MEMORY_ACCOUNT_KEY.exec(key)![1]).join(', ')} {stale.length === 1 ? 'is' : 'are'} no longer a usable Claude account. Other changes still save.</p>}
       {success && <p className="settings-success" role="status">{success}</p>}
       {!snapshot && busy && <p role="status">Loading settings…</p>}
       {category === 'CLI diagnostics' && <div className="settings-page-heading"><h1>CLI diagnostics</h1><p>Check which supported tools are available to the daemon.</p></div>}
@@ -239,7 +242,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
             {scope === 'home' && <section className="settings-subsection">
               <h2>Repository settings</h2>
               {snapshot.memory?.projects?.length ? <ul className="settings-memory-projects">{snapshot.memory.projects.map((p) => <li key={p.path}><code className="mono">{p.path}</code> <span>{p.enabled ? 'On' : 'Off'}</span></li>)}</ul> : <p>No repository has its own memory setting.</p>}
-              <p>Each repository sets its own under Settings with a node selected, or with tl memory. To browse what is stored, use the Memory button in the sidebar.</p>
+              <p>Each repository sets its own under Settings with a node selected, or with tl memory. To browse what is stored, use the Memory icon in the sidebar footer.</p>
             </section>}
           </> : visibleFields.map(renderField)}
           {search.trim() && !visibleFields.length && <p role="status">No matching settings. Try another search.</p>}

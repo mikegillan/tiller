@@ -344,6 +344,21 @@ describe('Memory settings', () => {
     expect(p.memory).toEqual({ on: false, source: `memory.enabled in ${file()}` });
   });
 
+  it('fails closed when the account list is invalid, rather than reading memory.enabled', () => {
+    fs.writeFileSync(homeFile(), JSON.stringify({ memory: { enabled: true }, claude: { accounts: [{ name: 'a' }, { name: 'a', configDir: '/x' }] } }));
+    expect(snapshot().memory).toEqual({ on: false, source: expect.stringMatching(/^account unknown: claude\.accounts in .* is invalid/) });
+    expect(snapshot('home').memory?.on).toBe(true);
+  });
+
+  it('refuses the global switch like tl memory does when memory.projects is invalid', () => {
+    fs.writeFileSync(homeFile(), JSON.stringify({ memory: { projects: 'x' } }));
+    const bytes = homeText();
+    expect(() => saveHome({ 'memory.enabled': true })).toThrow(expect.objectContaining({ status: 422 }));
+    expect(() => switchMemory(home, {}, 'on')).toThrow(expect.objectContaining({ status: 422 }));
+    expect(homeText()).toBe(bytes);
+    expect(() => saveHome({ 'memory.enabled': 'yes' }, snapshot('home'))).toThrow(expect.objectContaining({ status: 400 }));
+  });
+
   it('judges the verdict for the account root nodes here run in', () => {
     const [personal, work] = accounts();
     fs.writeFileSync(homeFile(), JSON.stringify({ memory: { enabled: true }, claude: { accounts: [{ ...personal, memory: false }, work], account: 'personal' } }));
