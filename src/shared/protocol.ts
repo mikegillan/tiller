@@ -360,7 +360,7 @@ export type ServerMessage =
   | ({ t: 'dnd' } & Dnd)                     // do not disturb changed
   | { t: 'usageSources'; sources: UsageSource[] }
   | { t: 'usage'; usage: Usage }             // a node reported new account-level rate limits
-  | { t: 'node'; node: NodeView }            // created or updated (full record)
+  | { t: 'node'; node: NodeView }            // created or updated (full record minus spawn prompts and sessionHistory)
   | { t: 'removed'; id: string }
   | { t: 'data'; id: string; data: string }  // raw PTY output
   | { t: 'nativeNotify'; requestId: string; notification: NativeNotification }
