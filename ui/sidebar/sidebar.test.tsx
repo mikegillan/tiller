@@ -177,6 +177,19 @@ it('keeps Settings, History, and Clear exited reachable without a redundant foot
   expect(JSON.stringify(footer)).not.toContain('New child');
 });
 
+it('opens Memory from the footer for the selected node, or with no node, and closes it again', () => {
+  const memory = () => elements(find(Sidebar({ onSettings: () => {} }), (el) => el.type === 'footer')).find((el) => el.type === 'button' && el.props.children === 'Memory')!;
+  memory().props.onClick();
+  expect(getState().memoryView).toEqual({ nodeId: 'child' });
+  expect(memory().props['aria-pressed']).toBe(true);
+  memory().props.onClick();
+  expect(getState().memoryView).toBeNull();
+  update(() => ({ selected: null }));
+  memory().props.onClick();
+  expect(getState().memoryView).toEqual({});
+  update(() => ({ memoryView: null }));
+});
+
 it('preserves tree keyboard selection and collapse, while ignoring rename input keys', () => {
   update(() => ({ selected: 'a' }));
   const tree = () => find(Sidebar({ onSettings: () => {} }), (el) => el.props.role === 'tree');
