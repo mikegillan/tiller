@@ -600,6 +600,20 @@ describe('the panel (v2)', () => {
     expect(s.list(scope(), { before: { updatedAt: T0, id: 1 } })).toEqual({ items: [] });
   });
 
+  it('marks text pins, and only them, as textPin', () => {
+    const s = open();
+    s.apply(scope(), derived([item('note', 'pinned agent note')]));
+    s.pin(scope(), human, { id: 1 });
+    const pin = s.pin(scope(), human, { text: 'Pinned text' });
+    expect(pin.textPin).toBe(true);
+    expect(s.peek(scope(), pin.id).item.textPin).toBe(true);
+    expect(s.search(scope(), { query: 'pinned', eligible: true }).map((v) => [v.id, v.textPin])).toEqual(expect.arrayContaining([[1, undefined], [pin.id, true]]));
+    const rows = s.list(scope(), { pinned: true }).items;
+    expect(rows.map((v) => [v.id, v.textPin])).toEqual([[pin.id, true], [1, undefined]]);
+    expect(rows[1]).not.toHaveProperty('textPin');
+    expect(s.pin(scope(), human, { id: pin.id, unpin: true }).textPin).toBe(true); // still the human's text pin, now retracted
+  });
+
   it('filters by kind, pinned and retracted, and omits body, cites, gets and rootId', () => {
     const s = open();
     s.apply(scope(), derived([item('procedure', 'npm test', 'agent', 'the body'), item('pitfall', 'gate failed: boom'), item('note', 'a note')]));

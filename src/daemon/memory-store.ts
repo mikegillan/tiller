@@ -108,6 +108,9 @@ function skeleton(kind: string, data: Record<string, unknown>): Record<string, u
   return Object.fromEntries(fields.filter((f) => data[f] !== undefined).map((f) => [f, data[f]]));
 }
 
+/** A human text pin (memory_pin { text }): its dedupe key is in the PIN: namespace. */
+const isTextPin = (r: Pick<ItemRow, 'dedupe'>) => r.dedupe.startsWith('PIN:');
+
 function view(r: ItemRow, withBody = false): ItemView {
   return {
     id: r.id, kind: r.kind, text: r.text, ...(withBody ? { body: r.body } : {}), author: r.author,
@@ -119,6 +122,7 @@ function view(r: ItemRow, withBody = false): ItemView {
       at: r.invalid_at, kind: r.invalid_kind, ...(r.invalid_by ? { by: r.invalid_by } : {}), ...(r.invalid_reason ? { reason: r.invalid_reason } : {}),
     } } : {}),
     ...(r.text === '' ? { tombstone: r.dedupe.startsWith('purged:') ? 'purged' as const : 'evicted' as const } : {}),
+    ...(isTextPin(r) ? { textPin: true as const } : {}),
   };
 }
 
@@ -127,8 +131,6 @@ function rowView(r: ItemRow & { eligible: number }): ItemView {
   const { cites: _cites, gets: _gets, rootId: _rootId, ...v } = view(r);
   return { ...v, eligible: r.eligible === 1 };
 }
-
-const isTextPin = (r: Pick<ItemRow, 'dedupe'>) => r.dedupe.startsWith('PIN:');
 
 const injectionView = (r: InjectionRow): InjectionView =>
   ({ sessionId: r.session_id, arm: r.arm, cause: r.cause, itemIds: JSON.parse(r.item_ids) as number[], text: r.text, ts: r.ts });
