@@ -17,8 +17,8 @@ import * as wt from './worktree.js';
 const REPOS_FILE = 'worktree-repos.json';
 /** How long close waits for a killed worktree node to exit, so Claude's lock on the worktree belongs to a dead pid. */
 const EXIT_WAIT_MS = 3000;
-/** After an edit, wait this long for more before recomputing a worktree's git state. */
-const GIT_DEBOUNCE_MS = 3000;
+/** After an edit, wait this long for more before recomputing a worktree's git state; a turn's end refreshes it at once. */
+const GIT_DEBOUNCE_MS = 15_000;
 /** Limit for each worktree setup or teardown command. */
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 
@@ -141,7 +141,7 @@ export async function mergeWorktree(m: NodeManager, id: string): Promise<{ base:
   if (rt.busy) throw new Error(`${id} is already ${rt.busy}`);
   rt.busy = 'merging';
   try {
-    await refreshGit(m, id).catch(logError);
+    await gitSettled(rt);
     const dirty = existsSync(w.path) ? await wt.dirtyFiles(w.path) : [];
     if (dirty.length) throw new Error(`merge refused, nothing changed: ${count(dirty.length, 'uncommitted file')} in the worktree; commit them first`);
     const style = config.mergeStyle;
@@ -162,7 +162,7 @@ export async function closeWorktreeNode(m: NodeManager, id: string, title: strin
   const rt = m.runtimes.get(id)!;
   rt.busy = 'closing';
   try {
-    await refreshGit(m, id).catch(logError);
+    await gitSettled(rt);
     const refusal = closeRefusal((await worktreeCheck(m, id))!, mode);
     if (refusal) throw new Error(refusal);
     const setup = rt.setup;
@@ -269,11 +269,14 @@ async function reconcileRepo(m: NodeManager, repo: string, clean: 'startup' | 's
   }
   const prefix = loadConfig(repo, m.home).worktrees.branchPrefix;
   const used = new Set([...entries.flatMap((e) => (e.branch ? [e.branch] : [])), ...m.registry.list().flatMap((n) => (n.worktree ? [n.worktree.branch] : []))]);
-  const head = await wt.headInfo(repo);
-  for (const branch of await wt.branches(repo, prefix)) {
-    if (used.has(branch) || !/^n-[0-9a-f]{8}$/.test(branch.slice(prefix.length))) continue;
-    // The node and its recorded base are gone, so judge against the main checkout's HEAD.
-    const unmerged = await wt.unmergedCommits(repo, branch, 'HEAD', head.baseSha);
+  const leftover = (await wt.branches(repo, prefix)).filter((b) => !used.has(b) && /^n-[0-9a-f]{8}$/.test(b.slice(prefix.length)));
+  if (!leftover.length) return;
+  // The nodes and their recorded bases are gone, so judge against the main checkout's HEAD: as unmergedCommits does,
+  // but with one listing of the branches already in it, so only the rest need git cherry.
+  const { baseSha: head } = await wt.headInfo(repo);
+  const merged = new Set(await wt.mergedBranches(repo, head));
+  for (const branch of leftover) {
+    const unmerged = merged.has(branch) ? [] : await wt.cherry(repo, head, branch);
     if (clean === 'force' || (clean === 'safe' && !unmerged.length)) {
       await wt.deleteBranch(repo, branch);
       r.removed.push({ what: `branch ${branch} in ${repo}`, commits: unmerged, files: [] });
@@ -298,11 +301,14 @@ const gitRuns = new WeakMap<object, GitRun>();
 /**
  * Recompute a worktree node's git state and re-emit the node when it changed. Calls coalesce per node: one made while a
  * refresh runs queues a single rerun, shared by every later call, so each call settles after a refresh that started
- * after it. A node closed or a daemon stopped meanwhile skips the rerun; none starts after shutdown.
+ * after it, and replaces a debounced refreshGitSoon still waiting. A node closed or a daemon stopped meanwhile skips the
+ * rerun; none starts after shutdown.
  */
 export function refreshGit(m: NodeManager, id: string): Promise<void> {
   const rt = m.runtimes.get(id);
   if (!rt || m.stopped) return Promise.resolve();
+  clearTimeout(rt.gitTimer); // this refresh starts after the edits that timer waits on
+  rt.gitTimer = undefined;
   const run = gitRuns.get(rt);
   if (!run) return startGit(m, id, rt);
   const next = () => {
@@ -320,25 +326,45 @@ export function gitSettled(rt: object): Promise<void> {
 
 function startGit(m: NodeManager, id: string, rt: object): Promise<void> {
   // A queued rerun keeps the entry until it replaces it, so no call slips in between and runs alongside.
-  const run: GitRun = { done: readGit(m, id).finally(() => { if (!run.again) gitRuns.delete(rt); }) };
+  const run: GitRun = { done: gitSlot(() => readGit(m, id)).finally(() => { if (!run.again) gitRuns.delete(rt); }) };
   gitRuns.set(rt, run);
   return run.done;
 }
 
+/** At most this many git refreshes run at once, so a burst (every worktree node at startup) cannot flood the daemon with git processes. */
+const GIT_CONCURRENCY = 4;
+let gitActive = 0;
+const gitWaiting: (() => void)[] = [];
+
+async function gitSlot<T>(f: () => Promise<T>): Promise<T> {
+  if (gitActive < GIT_CONCURRENCY) gitActive++;
+  else await new Promise<void>((r) => gitWaiting.push(r)); // the finishing run hands its slot over
+  try {
+    return await f();
+  } finally {
+    const next = gitWaiting.shift();
+    if (next) next();
+    else gitActive--;
+  }
+}
+
 async function readGit(m: NodeManager, id: string): Promise<void> {
   const w = m.registry.get(id)?.worktree;
-  if (!w) return;
+  if (!w || m.stopped) return;
   const missing = !existsSync(w.path);
-  const none = { ahead: 0, behind: 0, additions: 0, deletions: 0 };
-  const [counts, dirty, merged] = await Promise.all([
-    wt.branchExists(w.repo, w.branch).then(async (b) => (b ? { ...(await wt.aheadBehind(w.repo, w.branch, w.base, w.baseSha)), ...(await wt.diffStat(w)) } : none)),
-    missing ? [] : wt.dirtyFiles(w.path),
+  const [counts, stat, merged] = await Promise.all([
+    wt.aheadBehind(w.repo, w.branch, w.base, w.baseSha).catch(() => undefined), // fails when the branch is gone
+    wt.diffStat(w).catch((err: Error) => err),
     mergedAt(w),
   ]);
+  // A missing worktree with no branch has nothing to diff.
+  if (stat instanceof Error && (counts || !missing)) throw stat;
+  const { additions, deletions, dirty } = stat instanceof Error ? { additions: 0, deletions: 0, dirty: 0 } : stat;
   const rt = m.runtimes.get(id);
   if (!rt || m.stopped) return; // closed or shut down meanwhile
   if (missing) setMissing(m, id, true); // only resume and the worktree sweep clear it: they also check `git worktree list`
-  const next: GitState = { branch: w.branch, base: w.base, ...counts, dirty: dirty.length, ...(merged ? { mergedAt: merged } : {}) };
+  const lines = counts ? { ...counts, additions, deletions } : { ahead: 0, behind: 0, additions: 0, deletions: 0 };
+  const next: GitState = { branch: w.branch, base: w.base, ...lines, dirty, ...(merged ? { mergedAt: merged } : {}) };
   if (JSON.stringify(next) === JSON.stringify(rt.git)) return;
   rt.git = next;
   m.emitNode(id);
