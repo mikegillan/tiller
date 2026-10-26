@@ -236,8 +236,10 @@ When no accounts are configured yet, Settings → **Claude** → **Claude accoun
    Without the checkbox, the directory must already exist. Remove a row with its remove button.
 3. Click **Set up accounts**. Tiller writes the accounts to `~/.tiller/config.json`.
 
-The save is refused if accounts are already configured, if a config directory is `~/.claude`,
-if two accounts share a name, or if more than one account has no config directory.
+The save is refused if accounts are already configured, if the default account has no name, if
+a config directory is `~/.claude` or a symlink to it, if a config directory is inside the Tiller
+home (`~/.tiller`), if two accounts share a name, or if more than one account has no config
+directory.
 
 Afterwards, the field lists the login command for each logged-out account and the command to run
 once in each project to accept workspace trust. Both are described in
