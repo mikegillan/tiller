@@ -227,14 +227,24 @@ logged in once, and a rule for which projects use which account.
 
 When no accounts are configured yet, Settings → **Claude** → **Claude account** shows a setup form.
 
-1. Enter a name for the default account. This is your existing `~/.claude` login, and it becomes
-   `claude.account`, the account nodes use unless a project says otherwise.
-2. Add one or more alternate accounts. For each, enter a name and either pick an existing config
-   directory or choose **create**, which suggests `~/.claude-<name>`.
-3. Save. Tiller writes the accounts to `~/.tiller/config.json`.
+1. In **Default account name**, enter a name for your existing `~/.claude` login. It becomes
+   `claude.account`, the account nodes use unless a project says otherwise. **Set up accounts**
+   stays disabled until this has a name.
+2. Click **Add another account** for each alternate account. Each row has a **Name**, a
+   **Config directory** and a **Create this directory** checkbox. Ticking the checkbox fills in
+   `~/.claude-<name>` when the directory is empty, and keeps it in step as you edit the name.
+   Without the checkbox, the directory must already exist. Remove a row with its remove button.
+3. Click **Set up accounts**. Tiller writes the accounts to `~/.tiller/config.json`.
 
-The form only seeds an empty list. Once any account is configured, add or change accounts by
-editing the JSON as below.
+The save is refused if accounts are already configured, if a config directory is `~/.claude`,
+if two accounts share a name, or if more than one account has no config directory.
+
+Afterwards, the field lists the login command for each logged-out account and the command to run
+once in each project to accept workspace trust. Both are described in
+[Log in each alternate account](#log-in-each-alternate-account) below.
+
+Once any account is configured, the form no longer appears: add or change accounts by editing
+the JSON as below.
 
 ### Set up accounts by hand
 
