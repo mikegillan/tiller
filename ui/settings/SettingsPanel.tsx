@@ -37,6 +37,9 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   const [discard, setDiscard] = useState<Scope | 'close' | null>(null);
   const content = useRef<HTMLDivElement>(null);
   const [reload, setReload] = useState(0);
+  // First-time Claude account setup: the default account (Claude's default home), then one per other config directory.
+  const [setup, setSetup] = useState<{ name: string; alternates: { name: string; configDir: string; create: boolean }[] }>({ name: '', alternates: [] });
+  const [seeded, setSeeded] = useState(false);
   const dirty = Object.keys(drafts).length > 0;
   const sections = [
     // A harness's own group (such as Claude's MCP setting) follows its profile fields in the one section of that title.
@@ -85,6 +88,41 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     } catch (err) { setError((err as Error).message); setConflict(!!(err as { conflict?: boolean }).conflict); }
     finally { setBusy(false); }
   }
+  async function seedAccounts() {
+    if (!snapshot || busy) return;
+    setBusy(true); setError(''); setSuccess('');
+    try {
+      const accounts = [{ name: setup.name.trim() }, ...setup.alternates.map((a) => ({ name: a.name.trim(), ...(a.configDir.trim() ? { configDir: a.configDir.trim() } : {}), create: a.create }))];
+      const home = await request('home', undefined, { scope: 'home', revision: snapshot.homeRevision ?? snapshot.revision, claudeAccounts: { account: accounts[0].name, accounts } });
+      setSnapshot(scope === 'home' ? home : await request(scope, nodeId));
+      setSeeded(true); setSuccess('Claude accounts saved. Log in each new account below.'); setConflict(false);
+      send({ t: 'claudeAccounts' });
+    } catch (err) { setError((err as Error).message); setConflict(!!(err as { conflict?: boolean }).conflict); }
+    finally { setBusy(false); }
+  }
+  const suggestDir = (name: string) => `~/.claude-${name}`;
+  function renderSetup(id: string) {
+    const row = (i: number, patch: Partial<typeof setup.alternates[number]>) => setSetup((s) => ({ ...s, alternates: s.alternates.map((a, j) => (j === i ? { ...a, ...patch } : a)) }));
+    return <div className="settings-account-setup">
+      <p className="settings-account-note">No Claude accounts are set up. Name the account in Claude’s default home (~/.claude); it becomes the default. Add another account for each other login, each in its own config directory.</p>
+      <label htmlFor={`${id}-default`}>Default account name</label>
+      <input id={`${id}-default`} value={setup.name} disabled={busy} placeholder="personal" onChange={(e) => setSetup((s) => ({ ...s, name: e.target.value }))} />
+      {setup.alternates.map((a, i) => <fieldset className="settings-account-row" key={i}>
+        <legend>Account {i + 2}</legend>
+        <label htmlFor={`${id}-${i}-name`}>Name</label>
+        {/* While the directory is still the suggestion for the old name, it follows the name. */}
+        <input id={`${id}-${i}-name`} value={a.name} disabled={busy} placeholder="work" onChange={(e) => row(i, { name: e.target.value, ...(a.create && a.configDir === suggestDir(a.name) ? { configDir: suggestDir(e.target.value) } : {}) })} />
+        <label htmlFor={`${id}-${i}-dir`}>Config directory</label>
+        <input id={`${id}-${i}-dir`} value={a.configDir} disabled={busy} placeholder={suggestDir(a.name || 'work')} onChange={(e) => row(i, { configDir: e.target.value })} />
+        <label><input id={`${id}-${i}-create`} type="checkbox" checked={a.create} disabled={busy} onChange={(e) => row(i, { create: e.target.checked, ...(e.target.checked && !a.configDir ? { configDir: suggestDir(a.name) } : {}) })} /> Create this directory</label>
+        <button type="button" className="settings-reset" disabled={busy} onClick={() => setSetup((s) => ({ ...s, alternates: s.alternates.filter((_, j) => j !== i) }))}>Remove</button>
+      </fieldset>)}
+      <div className="settings-detail">
+        <button type="button" className="btn" disabled={busy} onClick={() => setSetup((s) => ({ ...s, alternates: [...s.alternates, { name: '', configDir: '', create: false }] }))}>Add another account</button>
+        <button type="button" className="btn primary" disabled={busy || !setup.name.trim()} onClick={() => void seedAccounts()}>Set up accounts</button>
+      </div>
+    </div>;
+  }
   // The account options come from the configured accounts, so this field has its own control.
   function renderAccount(field: Field) {
     if (!snapshot) return null;
@@ -98,8 +136,9 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     // A parent folder in some account's projects decides when this repository lists none itself.
     const none = scope === 'home' ? 'None' : project && project !== snapshot.projectPath ? `No repository-specific account (${effective} via ${project})`
       : `Use global default (${typeof globalDefault === 'string' ? globalDefault : 'none'})`;
-    const loggedOut = shown?.loggedIn === false, probeError = shown?.error;
-    const described = [`${id}-help`, `${id}-status`, ...(loggedOut ? [`${id}-login`] : []), ...(probeError ? [`${id}-error`] : [])].join(' ');
+    // Just after setup, every logged-out account's login is listed instead of only the shown one's.
+    const loggedOut = shown?.loggedIn === false && !seeded, probeError = shown?.error, logins = seeded ? claudeAccounts?.filter((a) => a.loggedIn === false) ?? [] : [];
+    const described = [`${id}-help`, `${id}-status`, ...(loggedOut ? [`${id}-login`] : []), ...(logins.length ? [`${id}-logins`] : []), ...(probeError ? [`${id}-error`] : [])].join(' ');
     // Only an unknown claude.account (say, an account since deleted) can be fixed from here: by removing it.
     const resettable = scope === 'home' && !!error?.startsWith('claude.account in ') && Object.hasOwn(snapshot.values, key);
     return <div className="settings-field" key={key}>
@@ -112,8 +151,8 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
             {drafted && <span className="settings-pending">Unsaved</span>}
           </div>}
         </>
-        : !claudeAccounts ? <p className="settings-account-note">Loading Claude accounts…</p>
-        : !claudeAccounts.length ? <p className="settings-account-note">No Claude accounts are defined. Add them as claude.accounts in ~/.tiller/config.json; see Claude accounts in docs/harnesses.md.</p>
+        : !claudeAccounts || (seeded && !claudeAccounts.length) ? <p className="settings-account-note">Loading Claude accounts…</p>
+        : !claudeAccounts.length ? renderSetup(id)
         : <>
           <Select id={id} disabled={busy} value={value} aria-describedby={described} onChange={(e) => edit(key, e.target.value || null)}>
             <option value="">{none}</option>
@@ -122,6 +161,10 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
           </Select>
           <p className="settings-account-note" id={`${id}-status`}>{accountStatus(snapshot)}</p>
           {loggedOut && <p className="settings-account-note" id={`${id}-login`}>{shown.name} is not logged in. Log in with <code className="mono">{shown.loginCommand}</code>, or /login in a node’s terminal.</p>}
+          {logins.length > 0 && <div className="settings-account-note" id={`${id}-logins`}>
+            <p>Log in each account once from a terminal, then run Claude once in each project under it to accept its workspace trust:</p>
+            <ul>{logins.map((a) => <li key={a.name}>{a.name}: <code className="mono">{a.loginCommand}</code>, then <code className="mono">{a.loginCommand.replace(/ auth login$/, '')}</code> in each project</li>)}</ul>
+          </div>}
           {probeError && <p className="settings-account-note" id={`${id}-error`}>{probeError}</p>}
           {(custom || drafted) && <div className="settings-detail">
             {custom && <><span>Custom setting</span><span aria-hidden="true">·</span><button type="button" className="settings-reset" disabled={busy} aria-label={`Reset to default: ${label}`} onClick={() => edit(key, null)}>Reset to default</button></>}
