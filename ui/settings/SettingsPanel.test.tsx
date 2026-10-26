@@ -32,6 +32,12 @@ const fetchMock = vi.fn(async (_url: unknown, options?: RequestInit) => {
   const scope = String(_url).includes('scope=home') ? 'home' : 'project';
   return { ok: true, json: async () => ({ ...snapshot, scope, ...(options?.method === 'POST' ? { revision: 'r2' } : {}) }) };
 });
+// Config directory checks: by path, so they never take a settings request's one-off mock.
+const dirFetch = vi.fn(async (_path: string): Promise<unknown> => ({ exists: false, directory: false }));
+const fetchStub = (url: unknown, options?: RequestInit) => {
+  const dir = new URL(String(url), 'http://x').searchParams.get('claudeConfigDir');
+  return dir === null ? fetchMock(url, options) : dirFetch(dir).then((check) => ({ ok: true, json: async () => check }));
+};
 function render() { hooks.cursor = 0; tree = SettingsPanel({ nodeId: 'n1', onClose: close }); hooks.effects.splice(0).forEach((effect) => effect()); }
 async function settle() { await vi.waitFor(() => { render(); expect(elements(tree).some((e) => e.type === 'form')).toBe(true); expect(button('Close').props.disabled).toBe(false); }); }
 type Element = ReactElement<Record<string, any>>;
@@ -49,7 +55,7 @@ function changeScope(scope: 'home' | 'project') { elements(tree).find((e) => e.p
 function search(value: string) { elements(tree).find((e) => e.props['aria-label'] === 'Search settings')!.props.onChange({ target: { value } }); render(); }
 function input(id: string) { return elements(tree).find((e) => e.props.id === `setting-${id}`)!; }
 async function submit() { await elements(tree).find((e) => e.type === 'form')!.props.onSubmit({ preventDefault() {} }); await settle(); }
-beforeEach(async () => { hooks.store = { connected: false, usageSources: undefined, usageScanning: false }; vi.mocked(refreshUsage).mockClear(); hooks.slots = []; hooks.deps = []; hooks.effects = []; close.mockClear(); fetchMock.mockClear(); vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('document', { activeElement: null }); render(); await settle(); });
+beforeEach(async () => { hooks.store = { connected: false, usageSources: undefined, usageScanning: false }; vi.mocked(refreshUsage).mockClear(); hooks.slots = []; hooks.deps = []; hooks.effects = []; close.mockClear(); fetchMock.mockClear(); dirFetch.mockClear(); vi.stubGlobal('fetch', fetchStub); vi.stubGlobal('document', { activeElement: null }); render(); await settle(); });
 
 it('marks only inherited selected dropdown values as defaults and preserves same-value customizations', async () => {
   const key = 'approvals.close';
@@ -251,15 +257,21 @@ it('sets up Claude accounts when none exist, then shows the select and every new
   expect(elements(tree).some((e) => e.props.id === 'setting-claude.account')).toBe(false);
   expect(button('Set up accounts').props.disabled).toBe(true); // the default account needs a name
   input('claude.account-default').props.onChange({ target: { value: 'personal' } }); render();
+  dirFetch.mockImplementation(async (path) => ({ exists: path === '/c/side', directory: path === '/c/side' }));
   for (let i = 0; i < 3; i++) click('Add another account');
   input('claude.account-0-name').props.onChange({ target: { value: 'wo' } }); render();
-  input('claude.account-0-create').props.onChange({ target: { checked: true } }); render();
-  expect(input('claude.account-0-dir').props.value).toBe('~/.claude-wo'); // creating suggests a directory
+  expect(input('claude.account-0-dir').props.value).toBe('~/.claude-wo'); // a real default value, not a placeholder
   input('claude.account-0-name').props.onChange({ target: { value: 'work' } }); render();
   expect(input('claude.account-0-dir').props.value).toBe('~/.claude-work'); // and it follows the name
   input('claude.account-1-name').props.onChange({ target: { value: 'gone' } }); render();
-  input('claude.account-2-name').props.onChange({ target: { value: 'side' } }); render();
   input('claude.account-2-dir').props.onChange({ target: { value: '/c/side' } }); render();
+  input('claude.account-2-name').props.onChange({ target: { value: 'side' } }); render();
+  expect(input('claude.account-2-dir').props.value).toBe('/c/side'); // an edited directory stops following
+  // An existing directory needs no creating: the checkbox gives way to a note.
+  await vi.waitFor(() => { render(); expect(text(tree)).toContain('Directory exists'); });
+  expect(input('claude.account-2-create')).toBeUndefined();
+  expect(input('claude.account-0-create').props.checked).toBe(true); // missing: create, ticked by default
+  expect(dirFetch).toHaveBeenCalledWith('~/.claude-work');
   elements(tree).filter((e) => e.type === 'button' && text(e.props.children) === 'Remove')[1].props.onClick(); render();
   fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', revision: 'h2' }) }));
   vi.mocked(send).mockClear();
@@ -283,6 +295,58 @@ it('sets up Claude accounts when none exist, then shows the select and every new
     expect(elements(tree).some((e) => e.type === 'code' && text(e) === `CLAUDE_CONFIG_DIR=${dir} claude`)).toBe(true);
   }
   expect(text(tree)).toContain('workspace trust');
+});
+
+it('explains form mistakes under each field and blocks setup until they are fixed', async () => {
+  hooks.store = { ...hooks.store, claudeAccounts: [] } as typeof hooks.store;
+  render();
+  const setUp = () => button('Set up accounts').props.disabled;
+  const errorOf = (field: string) => { const describedBy = input(`claude.account-${field}`).props['aria-describedby']; return describedBy && text(elements(tree).find((e) => e.props.id === describedBy)); };
+  expect(setUp()).toBe(true);
+  expect(errorOf('default')).toBe('Enter a name.');
+  expect(input('claude.account-default').props['aria-invalid']).toBe(true);
+  input('claude.account-default').props.onChange({ target: { value: 'Team A' } }); render();
+  expect(errorOf('default')).toBe('Use 1-32 letters, digits, _ or -, starting with a letter or digit.');
+  expect(setUp()).toBe(true);
+  input('claude.account-default').props.onChange({ target: { value: 'personal' } }); render();
+  expect(setUp()).toBe(false);
+  click('Add another account');
+  input('claude.account-0-name').props.onChange({ target: { value: '-work' } }); render();
+  expect(errorOf('0-name')).toMatch(/^Use 1-32 letters/);
+  input('claude.account-0-name').props.onChange({ target: { value: '' } }); render();
+  expect(errorOf('0-name')).toBe('Enter a name.');
+  input('claude.account-0-name').props.onChange({ target: { value: 'personal' } }); render();
+  expect(errorOf('0-name')).toBe('Another account has this name.');
+  input('claude.account-0-name').props.onChange({ target: { value: 'work' } }); render();
+  input('claude.account-0-dir').props.onChange({ target: { value: ' ' } }); render();
+  expect(errorOf('0-dir')).toBe('Enter a config directory.');
+  expect(setUp()).toBe(true);
+  dirFetch.mockImplementation(async (path) => ({ exists: path === '/file', directory: false }));
+  input('claude.account-0-dir').props.onChange({ target: { value: '/file' } }); render();
+  await vi.waitFor(() => { render(); expect(errorOf('0-dir')).toBe('This path exists but is not a directory.'); });
+  input('claude.account-0-dir').props.onChange({ target: { value: '/new' } }); render();
+  await vi.waitFor(() => { render(); expect(dirFetch).toHaveBeenCalledWith('/new'); });
+  expect(errorOf('0-dir')).toBeUndefined();
+  expect(setUp()).toBe(false);
+  input('claude.account-0-create').props.onChange({ target: { checked: false } }); render();
+  expect(errorOf('0-dir')).toMatch(/does not exist. Tick Create this directory/);
+  expect(setUp()).toBe(true);
+});
+
+it('ignores a late existence reply for an older directory value', async () => {
+  hooks.store = { ...hooks.store, claudeAccounts: [] } as typeof hooks.store;
+  render();
+  const replies: Record<string, (check: unknown) => void> = {};
+  dirFetch.mockImplementation((path) => new Promise((resolve) => { replies[path] = resolve; }));
+  click('Add another account');
+  input('claude.account-0-dir').props.onChange({ target: { value: '/a' } }); render();
+  await vi.waitFor(() => expect(replies['/a']).toBeDefined());
+  input('claude.account-0-dir').props.onChange({ target: { value: '/b' } }); render();
+  await vi.waitFor(() => expect(replies['/b']).toBeDefined());
+  replies['/b']({ exists: true, directory: true });
+  replies['/a']({ exists: true, directory: false }); // older value, answered last
+  await vi.waitFor(() => { render(); expect(text(tree)).toContain('Directory exists'); });
+  expect(text(tree)).not.toContain('not a directory');
 });
 
 it('shows a refused setup as an error and keeps the form', async () => {

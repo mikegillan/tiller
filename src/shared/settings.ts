@@ -26,6 +26,11 @@ export interface SettingsUpdate { scope: SettingsScope; nodeId?: string; revisio
  * account. create: the daemon makes configDir (mode 0700) first; otherwise it must already be a directory.
  */
 export interface ClaudeAccountsSeed { scope: 'home'; revision: string; claudeAccounts: { account: string; accounts: { name: string; configDir?: string; create?: boolean }[] } }
+/** A Claude account name (claude.accounts[].name, claude.account), checked by the daemon and the setup form alike. */
+export const CLAUDE_ACCOUNT_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
+export const CLAUDE_ACCOUNT_NAME_RULE = 'a name is 1-32 letters, digits, _ or -, starting with a letter or digit';
+/** GET /api/settings?claudeConfigDir=PATH: what is there (~/ expanded), and why it can never be a configDir (error). */
+export interface ClaudeConfigDirCheck { exists: boolean; directory: boolean; error?: string }
 export interface SettingsField {
   key: string; label: string; type: 'text' | 'number' | 'boolean' | 'select' | 'lines';
   options?: readonly string[]; min?: number; integer?: boolean; description?: string;

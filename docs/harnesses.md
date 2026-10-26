@@ -231,10 +231,13 @@ When no accounts are configured yet, Settings → **Claude** → **Claude accoun
    `claude.account`, the account nodes use unless a project says otherwise. **Set up accounts**
    stays disabled until this has a name.
 2. Click **Add another account** for each alternate account. Each row has a **Name**, a
-   **Config directory** and a **Create this directory** checkbox. Ticking the checkbox fills in
-   `~/.claude-<name>` when the directory is empty, and keeps it in step as you edit the name.
-   Without the checkbox, the directory must already exist. Remove a row with its remove button.
-3. Click **Set up accounts**. Tiller writes the accounts to `~/.tiller/config.json`.
+   **Config directory**. The directory starts as `~/.claude-<name>` and follows the name until
+   you edit it. If the directory exists, the row says **Directory exists**; otherwise a ticked
+   **Create this directory** checkbox has Tiller create it, and unticking it is an error. Remove a
+   row with its remove button.
+3. Click **Set up accounts**. Tiller writes the accounts to `~/.tiller/config.json`. The button
+   stays disabled while a field shows a problem, such as an empty or duplicate name, an empty
+   directory, or a path that is not a directory.
 
 The save is refused if accounts are already configured, if the default account has no name, if
 a config directory is `~/.claude` or a symlink to it, if a config directory is inside the Tiller
