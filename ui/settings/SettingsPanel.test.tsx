@@ -305,9 +305,15 @@ it('explains form mistakes under each field and blocks setup until they are fixe
   expect(setUp()).toBe(true);
   expect(errorOf('default')).toBe('Enter a name.');
   expect(input('claude.account-default').props['aria-invalid']).toBe(true);
+  input('claude.account-default').props.onChange({ target: { value: 'Team A' } }); render();
+  expect(errorOf('default')).toBe('Use 1-32 letters, digits, _ or -, starting with a letter or digit.');
+  expect(setUp()).toBe(true);
   input('claude.account-default').props.onChange({ target: { value: 'personal' } }); render();
   expect(setUp()).toBe(false);
   click('Add another account');
+  input('claude.account-0-name').props.onChange({ target: { value: '-work' } }); render();
+  expect(errorOf('0-name')).toMatch(/^Use 1-32 letters/);
+  input('claude.account-0-name').props.onChange({ target: { value: '' } }); render();
   expect(errorOf('0-name')).toBe('Enter a name.');
   input('claude.account-0-name').props.onChange({ target: { value: 'personal' } }); render();
   expect(errorOf('0-name')).toBe('Another account has this name.');

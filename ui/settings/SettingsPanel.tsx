@@ -5,7 +5,7 @@ import { useStore } from '../store';
 import { accountOptionLabel, accountStatus, accountsError, buildChanges, cliStatus, efforts, fieldPreview, groups, inputValue, optionLabel, profileFields, profiles, type Field, type Scope, type SettingsSnapshot } from './settings-model';
 import { Modal } from '../controls/Modal';
 import { Select } from '../controls/Select';
-import type { ClaudeConfigDirCheck } from '../../src/shared/settings';
+import { CLAUDE_ACCOUNT_NAME, CLAUDE_ACCOUNT_NAME_RULE, type ClaudeConfigDirCheck } from '../../src/shared/settings';
 import './settings.css';
 
 /** What is at a prospective config directory; a failure leaves the daemon's save to report it. */
@@ -121,10 +121,13 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   /** Mistakes the form can see before saving, by field: 'default', `${i}-name` or `${i}-dir`. */
   function setupErrors(): Record<string, string> {
     const errors: Record<string, string> = {}, names = [setup.name.trim()], dirs: string[] = [];
+    const nameRule = `Use ${CLAUDE_ACCOUNT_NAME_RULE.replace(/^a name is /, '')}.`;
     if (!names[0]) errors.default = 'Enter a name.';
+    else if (!CLAUDE_ACCOUNT_NAME.test(names[0])) errors.default = nameRule;
     setup.alternates.forEach((a, i) => {
       const name = a.name.trim(), dir = a.configDir.trim(), check = dirChecks[dir];
       if (!name) errors[`${i}-name`] = 'Enter a name.';
+      else if (!CLAUDE_ACCOUNT_NAME.test(name)) errors[`${i}-name`] = nameRule;
       else if (names.includes(name)) errors[`${i}-name`] = 'Another account has this name.';
       names.push(name);
       if (!dir) errors[`${i}-dir`] = 'Enter a config directory.';
