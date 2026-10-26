@@ -1,12 +1,12 @@
 import fs from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configEntries, loadConfig, profileDefaults } from './config.js';
 import { NodeManager } from './manager.js';
 import { startServer, type DaemonServer } from './server.js';
 import { claudeAccounts } from './claude-accounts.js';
-import { seedClaudeAccounts, settingsSnapshot, updateSettings } from './settings.js';
+import { saveClaudeAccounts, settingsSnapshot, updateSettings } from './settings.js';
 
 let root: string, home: string, project: string, manager: NodeManager, server: DaemonServer, nodeId: string;
 beforeEach(async () => {
@@ -309,11 +309,13 @@ describe('Claude account setting', () => {
   });
 });
 
-describe('Claude accounts seed', () => {
+describe('Claude accounts form', () => {
   const homeFile = () => join(home, 'config.json');
   const homeJson = () => JSON.parse(fs.readFileSync(homeFile(), 'utf8'));
   const seed = (accounts: { name: string; configDir?: string; create?: boolean }[], account = accounts[0].name, revision = snapshot('home').revision) =>
-    seedClaudeAccounts(manager, { scope: 'home', revision, claudeAccounts: { accounts, account } });
+    saveClaudeAccounts(manager, { scope: 'home', revision, claudeAccounts: { accounts, account } });
+  // After the first save the form never sends claude.account: it has its own setting.
+  const configure = (accounts: Parameters<typeof seed>[0], revision = snapshot('home').revision) => saveClaudeAccounts(manager, { scope: 'home', revision, claudeAccounts: { accounts } });
 
   it('writes the accounts and default, keeps other settings, and creates a requested directory owner-only', () => {
     fs.writeFileSync(homeFile(), JSON.stringify({ limits: { maxDepth: 3 }, claude: { inheritMcpServers: false } }));
@@ -345,12 +347,32 @@ describe('Claude accounts seed', () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
-  it('never replaces an existing list, and checks the home revision', () => {
+  it('reconfigures by name: kept accounts keep their projects, new ones get none and their directory, the default stays', () => {
     const before = snapshot('home').revision;
-    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: [{ name: 'mine' }] } }));
-    expect(() => seed([{ name: 'other' }], undefined, before)).toThrow(/Settings changed/);
-    expect(() => seed([{ name: 'other' }])).toThrow(expect.objectContaining({ status: 409, message: expect.stringMatching(/already set/) }));
-    expect(homeJson().claude.accounts).toEqual([{ name: 'mine' }]);
+    const work = join(root, 'cw'), moved = join(root, 'moved'), added = join(root, 'added');
+    fs.writeFileSync(homeFile(), JSON.stringify({ limits: { maxDepth: 3 }, claude: { account: 'personal', accounts: [
+      { name: 'personal', projects: ['~/p'] }, { name: 'work', configDir: work, projects: [project] }, { name: 'side', configDir: '~/never-created', projects: ['/s'] },
+    ] } }));
+    expect(() => configure([{ name: 'personal' }], before)).toThrow(/Settings changed/);
+    // side keeps a directory that does not exist yet (it is only checked when new or changed); old is gone.
+    configure([{ name: 'personal' }, { name: 'work', configDir: moved, create: true }, { name: 'side', configDir: join(homedir(), 'never-created') }, { name: 'new', configDir: added, create: true }]);
+    expect(homeJson()).toEqual({ limits: { maxDepth: 3 }, claude: { account: 'personal', accounts: [
+      { name: 'personal', projects: ['~/p'] }, { name: 'work', configDir: moved, projects: [project] }, { name: 'side', configDir: '~/never-created', projects: ['/s'] }, { name: 'new', configDir: added },
+    ] } });
+    expect([moved, added].map((d) => fs.statSync(d).mode & 0o777)).toEqual([0o700, 0o700]);
+    // There is no rename: a different name is a new account, so work's repositories do not follow it.
+    configure([{ name: 'personal' }, { name: 'job', configDir: moved }]);
+    expect(homeJson().claude.accounts).toEqual([{ name: 'personal', projects: ['~/p'] }, { name: 'job', configDir: moved }]);
+  });
+
+  it('refuses to remove the default account, to set claude.account after setup, or to edit an invalid list', () => {
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { account: 'work', accounts: [{ name: 'personal' }, { name: 'work', configDir: join(root, 'cw') }] } }));
+    expect(() => configure([{ name: 'personal' }])).toThrow(/work is the default account \(claude.account\); choose another default/);
+    expect(() => seed([{ name: 'personal' }, { name: 'work', configDir: join(root, 'cw') }], 'personal')).toThrow(/change the default account with its own setting/);
+    expect(() => configure([{ name: 'personal' }, { name: 'work', configDir: join(root, 'cw') }, { name: 'personal', configDir: join(root, 'x'), create: true }])).toThrow(/duplicate account name personal/);
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: [{ name: 'a' }, { name: 'a', configDir: '/x' }] } }));
+    expect(() => configure([{ name: 'a' }])).toThrow(expect.objectContaining({ status: 422 }));
+    expect(fs.existsSync(join(root, 'x'))).toBe(false);
   });
 
   it('refuses invalid lists before creating anything: ~/.claude, duplicates, two default homes, bad names, missing dirs, unknown default', () => {
@@ -376,7 +398,7 @@ describe('Claude accounts seed', () => {
     for (const bad of [{ ...body, changes: { 'daemon.maxWorking': 2 } }, { ...body, extra: 1 }, { ...body, claudeAccounts: { accounts: body.claudeAccounts.accounts } }]) expect((await request('POST', '', bad)).status).toBe(400);
     expect(fs.existsSync(homeFile())).toBe(false);
     expect((await request('POST', '', body)).status).toBe(200);
-    expect((await request('POST', '', { ...body, revision: snapshot('home').revision })).status).toBe(409);
+    expect((await request('POST', '', body)).status).toBe(409); // stale revision
     write({ claude: { accounts: [{ name: 'repo' }], account: 'repo' } });
     expect(loadConfig(project, home).claude).toMatchObject({ accounts: [{ name: 'a' }], account: 'a' });
   });

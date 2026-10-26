@@ -225,31 +225,43 @@ logged in once, and a rule for which projects use which account.
 
 ### Set up accounts in Settings
 
-When no accounts are configured yet, Settings → **Claude** → **Claude account** shows a setup form.
+When no accounts are configured, Settings → **Claude** → **Claude account** explains that Tiller
+uses your default Claude login (`~/.claude`) and offers **Set up multiple accounts**. Nothing
+changes until you click it. The form opens with the default account and one more account:
 
 1. In **Default account name**, enter a name for your existing `~/.claude` login. It becomes
-   `claude.account`, the account nodes use unless a project says otherwise. **Set up accounts**
-   stays disabled until this has a name.
-2. Click **Add another account** for each alternate account. Each row has a **Name**, a
-   **Config directory**. The directory starts as `~/.claude-<name>` and follows the name until
-   you edit it. If the directory exists, the row says **Directory exists**; otherwise a ticked
-   **Create this directory** checkbox has Tiller create it, and unticking it is an error. Remove a
-   row with its remove button.
-3. Click **Set up accounts**. Tiller writes the accounts to `~/.tiller/config.json`. The button
-   stays disabled while a field shows a problem, such as an empty or duplicate name, an empty
-   directory, or a path that is not a directory.
+   `claude.account`, the account nodes use unless a project says otherwise.
+2. Fill in the second account, and click **Add another account** for each further one. Each row
+   has a **Name** and a **Config directory**. The directory starts as `~/.claude-<name>` and
+   follows the name until you edit it. If the directory exists, the row says **Directory
+   exists**; otherwise a ticked **Create this directory** checkbox has Tiller create it, and
+   unticking it is an error. Remove a row with its remove button.
+3. Click **Save configuration**. Tiller writes the accounts to `~/.tiller/config.json`. **Cancel**
+   closes the form and discards it.
 
-The save is refused if accounts are already configured, if the default account has no name, if
-a config directory is `~/.claude` or a symlink to it, if a config directory is inside the Tiller
-home (`~/.tiller`), if two accounts share a name, or if more than one account has no config
-directory.
+A field shows its problem once you have changed it and moved on, such as an empty, badly formed
+or duplicate name, an empty directory, or a path that is not a directory. **Save configuration**
+stays disabled while any field has a problem.
+
+Once accounts exist, the field has a **Configure** button that opens the same form with the
+current accounts. You can add accounts, remove them, and change an account's config directory.
+Names cannot change, because nodes and repository mappings refer to accounts by name; to rename,
+remove the account and add a new one, which starts with no `projects`. A kept account keeps its
+`projects`. A new directory is a separate login, so log in to that account again. The default
+account (`claude.account`) cannot be removed: choose another default in the field first. If open
+nodes (running or not yet closed) use an account you remove, the form names them and asks you to
+tick **Remove anyway**; those nodes keep running, but restarting or resuming them fails until the
+account is configured again.
+
+The save is refused if the file changed since Settings loaded it, if the account list in the file
+is invalid, if it would remove the default account, if a new or changed config directory is
+`~/.claude` or a symlink to it, is inside the Tiller home (`~/.tiller`), or does not exist and
+was not to be created, if two accounts share a name or a directory, or if more than one account
+has no config directory.
 
 Afterwards, the field lists the login command for each logged-out account and the command to run
 once in each project to accept workspace trust. Both are described in
 [Log in each alternate account](#log-in-each-alternate-account) below.
-
-Once any account is configured, the form no longer appears: add or change accounts by editing
-the JSON as below.
 
 ### Set up accounts by hand
 
