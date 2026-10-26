@@ -84,7 +84,6 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   const active = sections.find((section) => section.title === category) ?? sections[0];
   const visibleFields = active.fields.filter((field) => matches(field, active.title));
   const fields = sections.flatMap((group) => group.fields);
-  useEffect(() => { send({ t: 'claudeAccounts' }); }, []);
   useEffect(() => {
     const roots = [document.documentElement, document.body].filter(Boolean);
     const overflow = roots.map((root) => root.style.overflow);
@@ -94,6 +93,8 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   useEffect(() => {
     const controller = new AbortController();
     setSnapshot(undefined); setBusy(true); setError(''); setSuccess(''); setConflict(false); setDrafts({});
+    // A reload means the file may have changed: an open accounts form would save over it, so it closes, and the list refreshes.
+    setSetup(undefined); setDirChecks({}); send({ t: 'claudeAccounts' });
     request(scope, scope === 'project' ? nodeId : undefined, undefined, controller.signal).then(setSnapshot).catch((err) => { if (!controller.signal.aborted) setError(err.message); }).finally(() => { if (!controller.signal.aborted) setBusy(false); });
     return () => controller.abort();
   }, [scope, nodeId, reload]);
@@ -132,10 +133,15 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
       setSnapshot(scope === 'home' ? home : await request(scope, nodeId));
       setSetup(undefined); setSeeded(true); setSuccess('Claude accounts saved. Log in each new account below.'); setConflict(false);
       send({ t: 'claudeAccounts' });
-    } catch (err) { setError((err as Error).message); setConflict(!!(err as { conflict?: boolean }).conflict); }
+    } catch (err) {
+      const conflict = !!(err as { conflict?: boolean }).conflict;
+      setError((err as Error).message); setConflict(conflict);
+      if (conflict) setSetup(undefined); // built on an older file: reload, then open it again
+    }
     finally { setBusy(false); }
   }
   function openSetup() {
+    setDirChecks({});
     const configured = claudeAccounts ?? [], home = configured.find((a) => !a.configDir);
     setSetup({
       configure: configured.length > 0, name: home?.name ?? '', home: !!home, original: configured.map((a) => a.name), touched: {}, confirm: false,
@@ -155,6 +161,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
       if (a.was !== undefined) { /* configured: its name is fixed */ }
       else if (!name) errors[`${i}-name`] = 'Enter a name.';
       else if (!CLAUDE_ACCOUNT_NAME.test(name)) errors[`${i}-name`] = nameRule;
+      else if (setup.original.includes(name)) errors[`${i}-name`] = 'Removed accounts can’t be re-added in the same save.';
       else if (names.includes(name)) errors[`${i}-name`] = 'Another account has this name.';
       names.push(name);
       if (!dir) errors[`${i}-dir`] = 'Enter a config directory.';
@@ -202,18 +209,18 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
           {a.was !== undefined && changedDir(a) && <p className="settings-account-note" id={`${id}-${i}-relogin`}>A new directory is a separate login: log in to {a.name} again after saving.</p>}
           {!changedDir(a) ? null : dirChecks[a.configDir.trim()]?.directory ? <p className="settings-account-note" id={`${id}-${i}-exists`}><em>Directory exists</em></p>
             : <label><input id={`${id}-${i}-create`} type="checkbox" checked={a.create} disabled={busy} onChange={(e) => row(i, { create: e.target.checked })} /> Create this directory</label>}
-          <button type="button" className="settings-reset" disabled={busy || a.isDefault} aria-describedby={a.isDefault ? `${id}-${i}-default` : undefined} onClick={() => update((s) => ({ alternates: s.alternates.filter((_, j) => j !== i) }))}>Remove</button>
+          <button type="button" className="settings-reset" disabled={busy || a.isDefault} aria-label={`Remove ${a.name.trim() || `account ${i + 2}`}`} aria-describedby={a.isDefault ? `${id}-${i}-default` : undefined} onClick={() => update((s) => ({ alternates: s.alternates.filter((_, j) => j !== i) }))}>Remove</button>
           {a.isDefault && <p className="settings-account-note" id={`${id}-${i}-default`}>This is the default account, so it cannot be removed. Choose another default first.</p>}
         </fieldset>;
       })}
-      {inUse.length > 0 && <div className="settings-account-note settings-error" id={`${id}-in-use`}>
+      {inUse.length > 0 && <div className="settings-account-note settings-error" id={`${id}-in-use`} role="status">
         <ul>{inUse.map((u) => <li key={u.name}>{u.name} is used by {u.titles.join(', ')}.</li>)}</ul>
         <p>Those nodes keep running, but restarting or resuming them will fail until the account is configured again.</p>
         <label><input id={`${id}-confirm`} type="checkbox" checked={setup.confirm} disabled={busy} onChange={(e) => update(() => ({ confirm: e.target.checked }))} /> Remove anyway</label>
       </div>}
       <div className="settings-detail">
         <button type="button" className="btn" disabled={busy} onClick={() => update((s) => ({ alternates: [...s.alternates, newRow()] }))}>Add another account</button>
-        <button type="button" className="btn" disabled={busy} onClick={() => setSetup(undefined)}>Cancel</button>
+        <button type="button" className="btn" disabled={busy} onClick={() => { setSetup(undefined); setDirChecks({}); }}>Cancel</button>
         <button type="button" className="btn primary" disabled={busy || Object.keys(errors).length > 0 || (inUse.length > 0 && !setup.confirm)} onClick={() => void saveAccounts()}>Save configuration</button>
       </div>
     </div>;

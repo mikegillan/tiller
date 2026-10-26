@@ -381,10 +381,37 @@ it('shows a refused save as an error and keeps the form', async () => {
   click('Set up multiple accounts');
   type('default', 'personal');
   click('Remove');
+  fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 400, json: async () => ({ error: '/x is inside the Tiller home; choose another directory' }) }) as never);
+  button('Save configuration').props.onClick();
+  await vi.waitFor(() => { render(); expect(text(tree)).toContain('inside the Tiller home'); });
+  expect(input('claude.account-default').props.value).toBe('personal');
+});
+
+it('closes the accounts form on a conflict and on every reload, so a stale form never saves over a newer file', async () => {
+  hooks.store = { ...hooks.store, claudeAccounts: [] } as typeof hooks.store;
+  render();
+  click('Set up multiple accounts');
+  type('default', 'personal');
+  click('Remove');
   fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 409, json: async () => ({ error: 'Settings changed; reload before saving' }) }) as never);
   button('Save configuration').props.onClick();
   await vi.waitFor(() => { render(); expect(text(tree)).toContain('Settings changed; reload before saving'); });
-  expect(input('claude.account-default').props.value).toBe('personal');
+  expect(input('claude.account-default')).toBeUndefined();
+  vi.mocked(send).mockClear();
+  click('Reload latest settings'); await settle();
+  expect(send).toHaveBeenCalledWith({ t: 'claudeAccounts' }); // the list is read again with the file
+  expect(input('claude.account-default')).toBeUndefined();
+  // A scope change reloads too, and closes a form opened meanwhile.
+  click('Set up multiple accounts');
+  changeScope('home'); await settle();
+  expect(input('claude.account-default')).toBeUndefined();
+});
+
+it('offers no Configure while the account list is invalid', async () => {
+  hooks.store = { ...hooks.store, claudeAccounts: [{ name: 'claude.accounts', projects: [], isDefault: false, loggedIn: null, loginCommand: '', error: 'claude.accounts in /h is invalid: x' }] } as typeof hooks.store;
+  render();
+  expect(() => button('Configure')).toThrow();
+  expect(() => button('Set up multiple accounts')).toThrow();
 });
 
 it('configures existing accounts: names fixed, the default kept, a moved directory flagged, and an in-use removal confirmed', async () => {
@@ -407,8 +434,16 @@ it('configures existing accounts: names fixed, the default kept, a moved directo
   expect(text(tree)).toContain('A new directory is a separate login: log in to work again');
   await vi.waitFor(() => { render(); expect(dirFetch).toHaveBeenCalledWith('/c/w2'); });
   expect(input('claude.account-0-create').props.checked).toBe(true);
+  expect(removes().map((b) => b.props['aria-label'])).toEqual(['Remove work', 'Remove side']);
   removes()[1].props.onClick(); render(); // side, which "deploy fix" still records
   expect(text(tree)).toContain('side is used by deploy fix.');
+  expect(elements(tree).find((e) => e.props.id === 'setting-claude.account-in-use')!.props.role).toBe('status');
+  // Re-adding side now would bring its old projects back, so it waits for another save.
+  click('Add another account');
+  type('1-name', 'side'); leave('1-name');
+  expect(errorOf('1-name')).toBe('Removed accounts can’t be re-added in the same save.');
+  elements(tree).find((e) => e.props['aria-label'] === 'Remove side')!.props.onClick(); render();
+  expect(removes()).toHaveLength(1);
   expect(button('Save configuration').props.disabled).toBe(true);
   input('claude.account-confirm').props.onChange({ target: { checked: true } }); render();
   expect(button('Save configuration').props.disabled).toBe(false);

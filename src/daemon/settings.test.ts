@@ -370,6 +370,11 @@ describe('Claude accounts form', () => {
     expect(() => configure([{ name: 'personal' }])).toThrow(/work is the default account \(claude.account\); choose another default/);
     expect(() => seed([{ name: 'personal' }, { name: 'work', configDir: join(root, 'cw') }], 'personal')).toThrow(/change the default account with its own setting/);
     expect(() => configure([{ name: 'personal' }, { name: 'work', configDir: join(root, 'cw') }, { name: 'personal', configDir: join(root, 'x'), create: true }])).toThrow(/duplicate account name personal/);
+    // Dropping a configDir would quietly move work onto ~/.claude's login (the file would also have two default homes).
+    expect(() => configure([{ name: 'work' }])).toThrow(expect.objectContaining({ status: 400, message: expect.stringMatching(/work: keep a config directory/) }));
+    // Once accounts exist, a claude.account naming none of them blocks saving until the file is fixed.
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { account: 'gone', accounts: [{ name: 'personal' }] } }));
+    expect(() => configure([{ name: 'personal' }])).toThrow(expect.objectContaining({ status: 422, message: expect.stringMatching(/names "gone"/) }));
     fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: [{ name: 'a' }, { name: 'a', configDir: '/x' }] } }));
     expect(() => configure([{ name: 'a' }])).toThrow(expect.objectContaining({ status: 422 }));
     expect(fs.existsSync(join(root, 'x'))).toBe(false);

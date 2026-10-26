@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { SETTINGS_FIELDS, type ClaudeAccountsSave, type ClaudeConfigDirCheck, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
 import { canonicalProject, projectAccount } from './claude-accounts.js';
-import { ConfigFile, DEFAULTS, claudeAccountListError, configEntries, effectiveProfileEntries, loadConfig } from './config.js';
+import { ConfigFile, DEFAULTS, claudeAccountListError, claudeAccountsError, configEntries, effectiveProfileEntries, loadConfig } from './config.js';
 import type { NodeManager } from './manager.js';
 import { expandHome, inside, readBody } from './util.js';
 
@@ -176,12 +176,16 @@ export function saveClaudeAccounts(manager: NodeManager, save: ClaudeAccountsSav
   if (listError) throw new SettingsError(422, `${listError}; fix it in the file`);
   const claude = before.data.claude as Record<string, unknown> | undefined;
   const existing = (claude?.accounts ?? []) as { name: string; configDir?: string; projects?: string[] }[];
+  // Once accounts exist, a claude.account naming none of them is refused too (with none, the first save replaces it).
+  const accountError = existing.length ? claudeAccountsError(dirname(homePath)) : undefined;
+  if (accountError) throw new SettingsError(422, `${accountError}; fix it in the file`);
   const { account } = save.claudeAccounts, current = existing.length ? claude?.account : account;
   if (!existing.length && account === undefined) throw new SettingsError(400, 'claude.account: name the default account');
   if (existing.length && account !== undefined) throw new SettingsError(400, 'claude.account: change the default account with its own setting');
   if (existing.some((a) => a.name === current) && !save.claudeAccounts.accounts.some((a) => a.name === current)) throw new SettingsError(400, `${current} is the default account (claude.account); choose another default before removing it`);
   const accounts = save.claudeAccounts.accounts.map(({ name, configDir }) => {
     const old = existing.find((a) => a.name === name);
+    if (old?.configDir && !configDir) throw new SettingsError(400, `${name}: keep a config directory; without one it would use Claude's default home (~/.claude) and its login`);
     // An unchanged directory keeps its spelling in the file (the form shows it expanded).
     const dir = configDir && old?.configDir && expandHome(configDir) === expandHome(old.configDir) ? old.configDir : configDir;
     return { name, ...(dir ? { configDir: dir } : {}), ...(old?.projects ? { projects: old.projects } : {}) };
