@@ -21,6 +21,11 @@ export interface SettingsSnapshot {
   claudeAccount?: { effective?: string; project?: string };
 }
 export interface SettingsUpdate { scope: SettingsScope; nodeId?: string; revision: string; changes: Record<string, unknown | null>; /** Required for a project-scope claude.account change. */ homeRevision?: string }
+/**
+ * POST /api/settings body that seeds claude.accounts and claude.account in the home file, refused (409) once it lists any
+ * account. create: the daemon makes configDir (mode 0700) first; otherwise it must already be a directory.
+ */
+export interface ClaudeAccountsSeed { scope: 'home'; revision: string; claudeAccounts: { account?: string; accounts: { name: string; configDir?: string; create?: boolean }[] } }
 export interface SettingsField {
   key: string; label: string; type: 'text' | 'number' | 'boolean' | 'select' | 'lines';
   options?: readonly string[]; min?: number; integer?: boolean; description?: string;

@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configEntries, loadConfig, profileDefaults } from './config.js';
 import { NodeManager } from './manager.js';
 import { startServer, type DaemonServer } from './server.js';
-import { settingsSnapshot, updateSettings } from './settings.js';
+import { claudeAccounts } from './claude-accounts.js';
+import { seedClaudeAccounts, settingsSnapshot, updateSettings } from './settings.js';
 
 let root: string, home: string, project: string, manager: NodeManager, server: DaemonServer, nodeId: string;
 beforeEach(async () => {
@@ -305,5 +306,56 @@ describe('Claude account setting', () => {
   it('refuses any account change while the accounts config is invalid', () => {
     fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: [{ name: 'a' }, { name: 'a', configDir: '/x' }] } }));
     expect(() => saveAccount('project', 'a')).toThrow(/claude.accounts in .* is invalid/);
+  });
+});
+
+describe('Claude accounts seed', () => {
+  const homeFile = () => join(home, 'config.json');
+  const homeJson = () => JSON.parse(fs.readFileSync(homeFile(), 'utf8'));
+  const seed = (accounts: { name: string; configDir?: string; create?: boolean }[], account?: string, revision = snapshot('home').revision) =>
+    seedClaudeAccounts(manager, { scope: 'home', revision, claudeAccounts: { accounts, ...(account ? { account } : {}) } });
+
+  it('writes the accounts and default, keeps other settings, and creates a requested directory owner-only', () => {
+    fs.writeFileSync(homeFile(), JSON.stringify({ limits: { maxDepth: 3 }, claude: { inheritMcpServers: false } }));
+    const existing = join(root, 'cx'); fs.mkdirSync(existing);
+    const s = seed([{ name: 'personal' }, { name: 'work', configDir: join(root, 'new', 'cw'), create: true }, { name: 'side', configDir: existing }], 'personal');
+    expect(homeJson()).toEqual({ limits: { maxDepth: 3 }, claude: { inheritMcpServers: false, accounts: [{ name: 'personal' }, { name: 'work', configDir: join(root, 'new', 'cw') }, { name: 'side', configDir: existing }], account: 'personal' } });
+    expect(fs.statSync(join(root, 'new', 'cw')).mode & 0o777).toBe(0o700);
+    expect(s.values['claude.account']).toBe('personal');
+    expect(claudeAccounts(home).map((a) => a.name)).toEqual(['personal', 'work', 'side']); // the runtime accepts what was written
+  });
+
+  it('never replaces an existing list, and checks the home revision', () => {
+    const before = snapshot('home').revision;
+    fs.writeFileSync(homeFile(), JSON.stringify({ claude: { accounts: [{ name: 'mine' }] } }));
+    expect(() => seed([{ name: 'other' }], undefined, before)).toThrow(/Settings changed/);
+    expect(() => seed([{ name: 'other' }])).toThrow(expect.objectContaining({ status: 409, message: expect.stringMatching(/already set/) }));
+    expect(homeJson().claude.accounts).toEqual([{ name: 'mine' }]);
+  });
+
+  it('refuses invalid lists before creating anything: ~/.claude, duplicates, two default homes, bad names, missing dirs, unknown default', () => {
+    const dir = join(root, 'never');
+    const cases: [Parameters<typeof seed>[0], string | undefined, RegExp][] = [
+      [[{ name: 'a' }, { name: 'b', configDir: '~/.claude', create: true }, { name: 'c', configDir: dir, create: true }], 'a', /omit configDir for Claude's default home/],
+      [[{ name: 'a', configDir: dir, create: true }, { name: 'a', configDir: join(root, 'x'), create: true }], undefined, /duplicate account name a/],
+      [[{ name: 'a' }, { name: 'b' }, { name: 'c', configDir: dir, create: true }], undefined, /at most one account may omit configDir/],
+      [[{ name: '' }, { name: 'c', configDir: dir, create: true }], undefined, /a name is 1-32/],
+      [[{ name: 'a', configDir: join(root, 'missing') }], undefined, /does not exist; choose to create it/],
+      [[{ name: 'a' }, { name: 'c', configDir: dir, create: true }], 'b', /"b" is not one of the accounts/],
+    ];
+    for (const [accounts, account, error] of cases) expect(() => seed(accounts, account)).toThrow(error);
+    expect(fs.existsSync(dir)).toBe(false);
+    expect(fs.existsSync(homeFile())).toBe(false);
+  });
+
+  it('is admin-only over HTTP, home-only, and a project file still cannot set accounts', async () => {
+    const body = { scope: 'home', revision: snapshot('home').revision, claudeAccounts: { accounts: [{ name: 'a' }], account: 'a' } };
+    expect((await request('POST', '', body, manager.tokenFor(nodeId))).status).toBe(401);
+    expect((await request('POST', '', { ...body, scope: 'project', nodeId })).status).toBe(400);
+    expect(fs.existsSync(homeFile())).toBe(false);
+    expect((await request('POST', '', body)).status).toBe(200);
+    expect((await request('POST', '', { ...body, revision: snapshot('home').revision })).status).toBe(409);
+    write({ claude: { accounts: [{ name: 'repo' }], account: 'repo' } });
+    expect(loadConfig(project, home).claude).toMatchObject({ accounts: [{ name: 'a' }], account: 'a' });
   });
 });
