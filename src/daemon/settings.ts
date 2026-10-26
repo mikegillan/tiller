@@ -4,9 +4,9 @@ import type http from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
-import { SETTINGS_FIELDS, type ClaudeAccountsSeed, type ClaudeConfigDirCheck, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
+import { SETTINGS_FIELDS, type ClaudeAccountsSave, type ClaudeConfigDirCheck, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
 import { canonicalProject, projectAccount } from './claude-accounts.js';
-import { ConfigFile, DEFAULTS, claudeAccountListError, configEntries, effectiveProfileEntries, loadConfig } from './config.js';
+import { ConfigFile, DEFAULTS, claudeAccountListError, claudeAccountsError, configEntries, effectiveProfileEntries, loadConfig } from './config.js';
 import type { NodeManager } from './manager.js';
 import { expandHome, inside, readBody } from './util.js';
 
@@ -164,21 +164,37 @@ export function updateSettings(manager: NodeManager, update: SettingsUpdate): Se
 }
 
 /**
- * Write the first claude.accounts (and claude.account) to the home file, creating the configDirs asked for. Never replaces
- * an existing list: that is edited in the JSON.
+ * Replace claude.accounts in the home file from the Settings form, creating the configDirs asked for. With none configured
+ * this seeds the list and claude.account. Otherwise accounts are kept, added or removed by name: there is no rename, a kept
+ * account keeps its projects (only its configDir may change), a new one has none, and claude.account's account stays.
  */
-export function seedClaudeAccounts(manager: NodeManager, seed: ClaudeAccountsSeed): SettingsSnapshot {
+export function saveClaudeAccounts(manager: NodeManager, save: ClaudeAccountsSave): SettingsSnapshot {
   const { homePath } = target(manager, 'home');
   const before = read(homePath);
-  if (revision(before.raw) !== seed.revision) throw new SettingsError(409, 'Settings changed; reload before saving');
+  if (revision(before.raw) !== save.revision) throw new SettingsError(409, 'Settings changed; reload before saving');
+  const listError = claudeAccountListError(dirname(homePath));
+  if (listError) throw new SettingsError(422, `${listError}; fix it in the file`);
   const claude = before.data.claude as Record<string, unknown> | undefined;
-  if (claude?.accounts !== undefined && !(Array.isArray(claude.accounts) && !claude.accounts.length)) throw new SettingsError(409, `claude.accounts is already set in ${homePath}; edit it there`);
-  const accounts = seed.claudeAccounts.accounts.map(({ name, configDir }) => ({ name, ...(configDir ? { configDir } : {}) }));
-  const { account } = seed.claudeAccounts;
-  const result = ConfigFile.safeParse({ claude: { accounts, account } });
+  const existing = (claude?.accounts ?? []) as { name: string; configDir?: string; projects?: string[] }[];
+  // Once accounts exist, a claude.account naming none of them is refused too (with none, the first save replaces it).
+  const accountError = existing.length ? claudeAccountsError(dirname(homePath)) : undefined;
+  if (accountError) throw new SettingsError(422, `${accountError}; fix it in the file`);
+  const { account } = save.claudeAccounts, current = existing.length ? claude?.account : account;
+  if (!existing.length && account === undefined) throw new SettingsError(400, 'claude.account: name the default account');
+  if (existing.length && account !== undefined) throw new SettingsError(400, 'claude.account: change the default account with its own setting');
+  if (existing.some((a) => a.name === current) && !save.claudeAccounts.accounts.some((a) => a.name === current)) throw new SettingsError(400, `${current} is the default account (claude.account); choose another default before removing it`);
+  const accounts = save.claudeAccounts.accounts.map(({ name, configDir }) => {
+    const old = existing.find((a) => a.name === name);
+    if (old?.configDir && !configDir) throw new SettingsError(400, `${name}: keep a config directory; without one it would use Claude's default home (~/.claude) and its login`);
+    // An unchanged directory keeps its spelling in the file (the form shows it expanded).
+    const dir = configDir && old?.configDir && expandHome(configDir) === expandHome(old.configDir) ? old.configDir : configDir;
+    return { name, ...(dir ? { configDir: dir } : {}), ...(old?.projects ? { projects: old.projects } : {}) };
+  });
+  const result = ConfigFile.safeParse({ claude: { accounts, account: current } });
   if (!result.success) throw new SettingsError(400, result.error.issues.map((i) => `${i.path.map(String).join('.')}: ${i.message}`).join('; '));
-  if (!accounts.some((a) => a.name === account)) throw new SettingsError(400, `claude.account: ${JSON.stringify(account)} is not one of the accounts`);
-  const dirs = seed.claudeAccounts.accounts.flatMap((a) => (a.configDir ? [{ dir: expandHome(a.configDir), create: a.create }] : []));
+  if (account !== undefined && !accounts.some((a) => a.name === account)) throw new SettingsError(400, `claude.account: ${JSON.stringify(account)} is not one of the accounts`);
+  // Only a new or changed directory is checked; a kept one may not exist yet (logged out).
+  const dirs = save.claudeAccounts.accounts.flatMap((a, i) => (accounts[i].configDir && accounts[i].configDir !== existing.find((e) => e.name === a.name)?.configDir ? [{ dir: expandHome(accounts[i].configDir!), create: a.create }] : []));
   for (const { dir, create } of dirs) {
     const reserved = reservedConfigDir(manager, dir);
     if (reserved) throw new SettingsError(400, reserved);
@@ -187,8 +203,8 @@ export function seedClaudeAccounts(manager: NodeManager, seed: ClaudeAccountsSee
   }
   // ponytail: no rollback, so a 409/500 from writeConfig leaves the new (empty, 0700) directories behind; harmless on retry.
   for (const { dir, create } of dirs) if (create) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  before.data.claude = { ...claude, accounts, account };
-  writeConfig(homePath, before.data, seed.revision);
+  before.data.claude = { ...claude, accounts, ...(account === undefined ? {} : { account }) };
+  writeConfig(homePath, before.data, save.revision);
   return settingsSnapshot(manager, 'home');
 }
 
@@ -201,12 +217,12 @@ function reservedConfigDir(manager: NodeManager, dir: string): string | undefine
   return undefined;
 }
 
-/** What is at a prospective configDir, for the setup form. Only stats. */
+/** What is at a prospective configDir, for the accounts form. Only stats. */
 export function claudeConfigDirCheck(manager: NodeManager, path: string): ClaudeConfigDirCheck {
   if (!isAbsolute(path) && !path.startsWith('~/')) return { exists: false, directory: false, error: 'Use an absolute path or one starting with ~/' };
   const dir = expandHome(path), error = reservedConfigDir(manager, dir);
   let stat: fs.Stats | undefined;
-  try { stat = fs.statSync(dir, { throwIfNoEntry: false }); } catch { /* unreadable: reported as missing; the seed stats again */ }
+  try { stat = fs.statSync(dir, { throwIfNoEntry: false }); } catch { /* unreadable: reported as missing; the save stats again */ }
   return { exists: !!stat, directory: !!stat?.isDirectory(), ...(error ? { error } : {}) };
 }
 
@@ -234,9 +250,9 @@ const selection = { scope: z.enum(['project', 'home']), nodeId: z.string().min(1
 const querySchema = z.object(selection).strict();
 const dirQuerySchema = z.object({ claudeConfigDir: z.string().min(1) }).strict();
 const updateSchema = z.object({ ...selection, revision: z.string().min(1), homeRevision: z.string().min(1).optional(), changes: z.record(z.string(), z.unknown()) }).strict();
-const seedSchema = z.object({
+const accountsSchema = z.object({
   scope: z.literal('home'), revision: z.string().min(1),
-  claudeAccounts: z.object({ account: z.string(), accounts: z.array(z.object({ name: z.string(), configDir: z.string().optional(), create: z.boolean().optional() }).strict()).min(1) }).strict(),
+  claudeAccounts: z.object({ account: z.string().optional(), accounts: z.array(z.object({ name: z.string(), configDir: z.string().optional(), create: z.boolean().optional() }).strict()).min(1) }).strict(),
 }).strict();
 /** This route deliberately uses the admin bearer token alone, never node authentication or MCP. */
 export function settingsApi(manager: NodeManager, isAdmin: (token: string) => boolean) {
@@ -255,7 +271,7 @@ export function settingsApi(manager: NodeManager, isAdmin: (token: string) => bo
         if (body === undefined) return;
         let data: unknown;
         try { data = JSON.parse(body); } catch { throw new SettingsError(400, 'Expected JSON request body'); }
-        if (object(data) && Object.hasOwn(data, 'claudeAccounts')) return reply(200, seedClaudeAccounts(manager, seedSchema.parse(data)));
+        if (object(data) && Object.hasOwn(data, 'claudeAccounts')) return reply(200, saveClaudeAccounts(manager, accountsSchema.parse(data)));
         return reply(200, updateSettings(manager, updateSchema.parse(data)));
       }
       res.setHeader('Allow', 'GET, POST');

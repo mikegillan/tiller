@@ -8,6 +8,19 @@ import { Select } from '../controls/Select';
 import { CLAUDE_ACCOUNT_NAME, CLAUDE_ACCOUNT_NAME_RULE, type ClaudeConfigDirCheck } from '../../src/shared/settings';
 import './settings.css';
 
+/** A row of the accounts form. was: the configDir of an account already configured (its name is then read-only). */
+type SetupRow = { key: number; name: string; configDir: string; create: boolean; was?: string; isDefault?: boolean };
+/**
+ * The accounts form, open. configure: accounts exist (claude.account is then left alone). home: the account in Claude's
+ * default home exists, so `name` is read-only. original: the configured names. touched: by field key, 'shown' once it was
+ * changed and left, which is when its error appears.
+ */
+type Setup = { configure: boolean; name: string; home?: boolean; alternates: SetupRow[]; original: string[]; touched: Record<string, 'dirty' | 'shown'>; confirm: boolean };
+let rowKeys = 0;
+const suggestDir = (name: string) => `~/.claude-${name}`;
+const newRow = (): SetupRow => ({ key: ++rowKeys, name: '', configDir: suggestDir(''), create: true });
+const changedDir = (a: SetupRow) => a.was === undefined || a.configDir.trim() !== a.was;
+
 /** What is at a prospective config directory; a failure leaves the daemon's save to report it. */
 async function checkDir(path: string): Promise<ClaudeConfigDirCheck> {
   const response = await fetch(`/api/settings?${new URLSearchParams({ claudeConfigDir: path })}`, { headers: { Authorization: `Bearer ${token()}` } });
@@ -33,6 +46,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   const usageScanning = useStore((s) => s.usageScanning);
   const connected = useStore((s) => s.connected);
   const claudeAccounts = useStore((s) => s.claudeAccounts);
+  const nodes = useStore((s) => s.nodes);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('Claude');
   const [scope, setScope] = useState<Scope>(nodeId ? 'project' : 'home');
@@ -45,12 +59,12 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   const [discard, setDiscard] = useState<Scope | 'close' | null>(null);
   const content = useRef<HTMLDivElement>(null);
   const [reload, setReload] = useState(0);
-  // First-time Claude account setup: the default account (Claude's default home), then one per other config directory.
-  const [setup, setSetup] = useState<{ name: string; alternates: { name: string; configDir: string; create: boolean }[] }>({ name: '', alternates: [] });
+  // The Claude accounts form (undefined: closed): the account in Claude's default home, then one per other config directory.
+  const [setup, setSetup] = useState<Setup>();
   const [seeded, setSeeded] = useState(false);
   // What is at each typed config directory, keyed by that path, so a late reply for an older value never shows for a newer one.
   const [dirChecks, setDirChecks] = useState<Record<string, ClaudeConfigDirCheck>>({});
-  const setupDirs = setup.alternates.map((a) => a.configDir.trim()).filter(Boolean).join('\n');
+  const setupDirs = (setup?.alternates ?? []).filter(changedDir).map((a) => a.configDir.trim()).filter(Boolean).join('\n');
   useEffect(() => {
     const pending = setupDirs.split('\n').filter((dir) => dir && !dirChecks[dir]);
     if (!pending.length) return;
@@ -70,7 +84,6 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   const active = sections.find((section) => section.title === category) ?? sections[0];
   const visibleFields = active.fields.filter((field) => matches(field, active.title));
   const fields = sections.flatMap((group) => group.fields);
-  useEffect(() => { send({ t: 'claudeAccounts' }); }, []);
   useEffect(() => {
     const roots = [document.documentElement, document.body].filter(Boolean);
     const overflow = roots.map((root) => root.style.overflow);
@@ -80,6 +93,8 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   useEffect(() => {
     const controller = new AbortController();
     setSnapshot(undefined); setBusy(true); setError(''); setSuccess(''); setConflict(false); setDrafts({});
+    // A reload means the file may have changed: an open accounts form would save over it, so it closes, and the list refreshes.
+    setSetup(undefined); setDirChecks({}); send({ t: 'claudeAccounts' });
     request(scope, scope === 'project' ? nodeId : undefined, undefined, controller.signal).then(setSnapshot).catch((err) => { if (!controller.signal.aborted) setError(err.message); }).finally(() => { if (!controller.signal.aborted) setBusy(false); });
     return () => controller.abort();
   }, [scope, nodeId, reload]);
@@ -105,29 +120,48 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     } catch (err) { setError((err as Error).message); setConflict(!!(err as { conflict?: boolean }).conflict); }
     finally { setBusy(false); }
   }
-  async function seedAccounts() {
-    if (!snapshot || busy) return;
+  async function saveAccounts() {
+    if (!snapshot || !setup || busy) return;
     setBusy(true); setError(''); setSuccess('');
     try {
-      const accounts = [{ name: setup.name.trim() }, ...setup.alternates.map((a) => ({ name: a.name.trim(), ...(a.configDir.trim() ? { configDir: a.configDir.trim() } : {}), create: a.create && !dirChecks[a.configDir.trim()]?.directory }))];
-      const home = await request('home', undefined, { scope: 'home', revision: snapshot.homeRevision ?? snapshot.revision, claudeAccounts: { account: accounts[0].name, accounts } });
+      const accounts = [...(setup.name.trim() ? [{ name: setup.name.trim() }] : []), ...setup.alternates.map((a) => {
+        const dir = a.configDir.trim();
+        return { name: a.name.trim(), ...(dir ? { configDir: dir } : {}), create: a.create && changedDir(a) && !dirChecks[dir]?.directory };
+      })];
+      // claude.account has its own setting once accounts exist; the first save makes the default-home account the default.
+      const home = await request('home', undefined, { scope: 'home', revision: snapshot.homeRevision ?? snapshot.revision, claudeAccounts: { ...(setup.configure ? {} : { account: accounts[0].name }), accounts } });
       setSnapshot(scope === 'home' ? home : await request(scope, nodeId));
-      setSeeded(true); setSuccess('Claude accounts saved. Log in each new account below.'); setConflict(false);
+      setSetup(undefined); setSeeded(true); setSuccess('Claude accounts saved. Log in each new account below.'); setConflict(false);
       send({ t: 'claudeAccounts' });
-    } catch (err) { setError((err as Error).message); setConflict(!!(err as { conflict?: boolean }).conflict); }
+    } catch (err) {
+      const conflict = !!(err as { conflict?: boolean }).conflict;
+      setError((err as Error).message); setConflict(conflict);
+      if (conflict) setSetup(undefined); // built on an older file: reload, then open it again
+    }
     finally { setBusy(false); }
   }
-  const suggestDir = (name: string) => `~/.claude-${name}`;
+  function openSetup() {
+    setDirChecks({});
+    const configured = claudeAccounts ?? [], home = configured.find((a) => !a.configDir);
+    setSetup({
+      configure: configured.length > 0, name: home?.name ?? '', home: !!home, original: configured.map((a) => a.name), touched: {}, confirm: false,
+      alternates: configured.length ? configured.filter((a) => a.configDir).map((a) => ({ key: ++rowKeys, name: a.name, configDir: a.configDir!, create: true, was: a.configDir, isDefault: a.isDefault })) : [newRow()],
+    });
+  }
   /** Mistakes the form can see before saving, by field: 'default', `${i}-name` or `${i}-dir`. */
-  function setupErrors(): Record<string, string> {
-    const errors: Record<string, string> = {}, names = [setup.name.trim()], dirs: string[] = [];
+  function setupErrors(setup: Setup): Record<string, string> {
+    const errors: Record<string, string> = {}, names = setup.name.trim() ? [setup.name.trim()] : [], dirs: string[] = [];
     const nameRule = `Use ${CLAUDE_ACCOUNT_NAME_RULE.replace(/^a name is /, '')}.`;
-    if (!names[0]) errors.default = 'Enter a name.';
-    else if (!CLAUDE_ACCOUNT_NAME.test(names[0])) errors.default = nameRule;
+    if (!setup.home) {
+      if (!names[0]) { if (!setup.configure) errors.default = 'Enter a name.'; } // once accounts exist, a default-home account is optional
+      else if (!CLAUDE_ACCOUNT_NAME.test(names[0])) errors.default = nameRule;
+    }
     setup.alternates.forEach((a, i) => {
-      const name = a.name.trim(), dir = a.configDir.trim(), check = dirChecks[dir];
-      if (!name) errors[`${i}-name`] = 'Enter a name.';
+      const name = a.name.trim(), dir = a.configDir.trim(), check = changedDir(a) ? dirChecks[dir] : undefined;
+      if (a.was !== undefined) { /* configured: its name is fixed */ }
+      else if (!name) errors[`${i}-name`] = 'Enter a name.';
       else if (!CLAUDE_ACCOUNT_NAME.test(name)) errors[`${i}-name`] = nameRule;
+      else if (setup.original.includes(name)) errors[`${i}-name`] = 'Removed accounts can’t be re-added in the same save.';
       else if (names.includes(name)) errors[`${i}-name`] = 'Another account has this name.';
       names.push(name);
       if (!dir) errors[`${i}-dir`] = 'Enter a config directory.';
@@ -139,32 +173,55 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     });
     return errors;
   }
-  function renderSetup(id: string) {
-    const row = (i: number, patch: Partial<typeof setup.alternates[number]>) => setSetup((s) => ({ ...s, alternates: s.alternates.map((a, j) => (j === i ? { ...a, ...patch } : a)) }));
-    const errors = setupErrors();
-    const invalid = (key: string) => (errors[key] ? { 'aria-invalid': true, 'aria-describedby': `${id}-${key}-error` } : {});
-    const fieldError = (key: string) => errors[key] && <p className="settings-account-note settings-error" id={`${id}-${key}-error`}>{errors[key]}</p>;
+  function renderSetup(id: string, setup: Setup) {
+    const update = (patch: (s: Setup) => Partial<Setup>) => setSetup((s) => s && { ...s, ...patch(s) });
+    const row = (i: number, patch: Partial<SetupRow>) => update((s) => ({ alternates: s.alternates.map((a, j) => (j === i ? { ...a, ...patch } : a)) }));
+    // A field's error shows once it was changed and left; a directory's also once its row's name was.
+    const touch = (key: string) => update((s) => ({ touched: { ...s.touched, [key]: s.touched[key] ?? 'dirty' } }));
+    const leave = (key: string) => update((s) => (s.touched[key] === 'dirty' ? { touched: { ...s.touched, [key]: 'shown' } } : {}));
+    const errors = setupErrors(setup);
+    const field = (key: string, touchKeys: string[]) => {
+      const message = touchKeys.some((k) => setup.touched[k] === 'shown') ? errors[key] : undefined;
+      return { inputProps: { ...(message ? { 'aria-invalid': true, 'aria-describedby': `${id}-${key}-error` } : {}), onBlur: () => leave(touchKeys[0]) },
+        error: message && <p className="settings-account-note settings-error" id={`${id}-${key}-error`}>{message}</p> };
+    };
+    // Accounts that nodes still record: removing one is allowed, but only on purpose.
+    const removed = setup.original.filter((n) => n !== setup.name.trim() && !setup.alternates.some((a) => a.name.trim() === n));
+    const inUse = removed.flatMap((name) => { const titles = Object.values(nodes ?? {}).filter((n) => n.account === name).map((n) => n.title); return titles.length ? [{ name, titles }] : []; });
+    const home = field('default', ['default']);
     return <div className="settings-account-setup">
-      <p className="settings-account-note">No Claude accounts are set up. Name the account in Claude’s default home (~/.claude); it becomes the default. Add another account for each other login, each in its own config directory.</p>
-      <label htmlFor={`${id}-default`}>Default account name</label>
-      <input id={`${id}-default`} value={setup.name} disabled={busy} placeholder="personal" {...invalid('default')} onChange={(e) => setSetup((s) => ({ ...s, name: e.target.value }))} />
-      {fieldError('default')}
-      {setup.alternates.map((a, i) => <fieldset className="settings-account-row" key={i}>
-        <legend>Account {i + 2}</legend>
-        <label htmlFor={`${id}-${i}-name`}>Name</label>
-        {/* While the directory is still the suggestion for the old name, it follows the name. */}
-        <input id={`${id}-${i}-name`} value={a.name} disabled={busy} placeholder="work" {...invalid(`${i}-name`)} onChange={(e) => row(i, { name: e.target.value, ...(a.configDir === suggestDir(a.name) ? { configDir: suggestDir(e.target.value) } : {}) })} />
-        {fieldError(`${i}-name`)}
-        <label htmlFor={`${id}-${i}-dir`}>Config directory</label>
-        <input id={`${id}-${i}-dir`} value={a.configDir} disabled={busy} {...invalid(`${i}-dir`)} onChange={(e) => row(i, { configDir: e.target.value })} />
-        {fieldError(`${i}-dir`)}
-        {dirChecks[a.configDir.trim()]?.directory ? <p className="settings-account-note" id={`${id}-${i}-exists`}><em>Directory exists</em></p>
-          : <label><input id={`${id}-${i}-create`} type="checkbox" checked={a.create} disabled={busy} onChange={(e) => row(i, { create: e.target.checked })} /> Create this directory</label>}
-        <button type="button" className="settings-reset" disabled={busy} onClick={() => setSetup((s) => ({ ...s, alternates: s.alternates.filter((_, j) => j !== i) }))}>Remove</button>
-      </fieldset>)}
+      <p className="settings-account-note">{setup.configure ? 'Add or remove accounts, or change a config directory. Names cannot change: nodes and repositories refer to accounts by name.'
+        : 'Name your existing login in Claude’s default home (~/.claude); it becomes the default account. Add an account for each other login, each in its own config directory.'}</p>
+      <label htmlFor={`${id}-default`}>{setup.configure ? 'Account in Claude’s default home (~/.claude)' : 'Default account name'}</label>
+      <input id={`${id}-default`} value={setup.name} disabled={busy} readOnly={setup.home} placeholder="personal" {...home.inputProps} onChange={(e) => { touch('default'); update(() => ({ name: e.target.value })); }} />
+      {home.error}
+      {setup.alternates.map((a, i) => {
+        const name = field(`${i}-name`, [`${a.key}-name`]), dir = field(`${i}-dir`, [`${a.key}-dir`, `${a.key}-name`]);
+        return <fieldset className="settings-account-row" key={a.key}>
+          <legend>{a.was === undefined ? `Account ${i + 2}` : a.name}</legend>
+          <label htmlFor={`${id}-${i}-name`}>Name</label>
+          {/* While the directory is still the suggestion for the old name, it follows the name. */}
+          <input id={`${id}-${i}-name`} value={a.name} disabled={busy} readOnly={a.was !== undefined} placeholder="work" {...name.inputProps} onChange={(e) => { touch(`${a.key}-name`); row(i, { name: e.target.value, ...(a.configDir === suggestDir(a.name) ? { configDir: suggestDir(e.target.value) } : {}) }); }} />
+          {name.error}
+          <label htmlFor={`${id}-${i}-dir`}>Config directory</label>
+          <input id={`${id}-${i}-dir`} value={a.configDir} disabled={busy} {...dir.inputProps} onChange={(e) => { touch(`${a.key}-dir`); row(i, { configDir: e.target.value }); }} />
+          {dir.error}
+          {a.was !== undefined && changedDir(a) && <p className="settings-account-note" id={`${id}-${i}-relogin`}>A new directory is a separate login: log in to {a.name} again after saving.</p>}
+          {!changedDir(a) ? null : dirChecks[a.configDir.trim()]?.directory ? <p className="settings-account-note" id={`${id}-${i}-exists`}><em>Directory exists</em></p>
+            : <label><input id={`${id}-${i}-create`} type="checkbox" checked={a.create} disabled={busy} onChange={(e) => row(i, { create: e.target.checked })} /> Create this directory</label>}
+          <button type="button" className="settings-reset" disabled={busy || a.isDefault} aria-label={`Remove ${a.name.trim() || `account ${i + 2}`}`} aria-describedby={a.isDefault ? `${id}-${i}-default` : undefined} onClick={() => update((s) => ({ alternates: s.alternates.filter((_, j) => j !== i) }))}>Remove</button>
+          {a.isDefault && <p className="settings-account-note" id={`${id}-${i}-default`}>This is the default account, so it cannot be removed. Choose another default first.</p>}
+        </fieldset>;
+      })}
+      {inUse.length > 0 && <div className="settings-account-note settings-error" id={`${id}-in-use`} role="status">
+        <ul>{inUse.map((u) => <li key={u.name}>{u.name} is used by {u.titles.join(', ')}.</li>)}</ul>
+        <p>Those nodes keep running, but restarting or resuming them will fail until the account is configured again.</p>
+        <label><input id={`${id}-confirm`} type="checkbox" checked={setup.confirm} disabled={busy} onChange={(e) => update(() => ({ confirm: e.target.checked }))} /> Remove anyway</label>
+      </div>}
       <div className="settings-detail">
-        <button type="button" className="btn" disabled={busy} onClick={() => setSetup((s) => ({ ...s, alternates: [...s.alternates, { name: '', configDir: suggestDir(''), create: true }] }))}>Add another account</button>
-        <button type="button" className="btn primary" disabled={busy || Object.keys(errors).length > 0} onClick={() => void seedAccounts()}>Set up accounts</button>
+        <button type="button" className="btn" disabled={busy} onClick={() => update((s) => ({ alternates: [...s.alternates, newRow()] }))}>Add another account</button>
+        <button type="button" className="btn" disabled={busy} onClick={() => { setSetup(undefined); setDirChecks({}); }}>Cancel</button>
+        <button type="button" className="btn primary" disabled={busy || Object.keys(errors).length > 0 || (inUse.length > 0 && !setup.confirm)} onClick={() => void saveAccounts()}>Save configuration</button>
       </div>
     </div>;
   }
@@ -197,7 +254,11 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
           </div>}
         </>
         : !claudeAccounts || (seeded && !claudeAccounts.length) ? <p className="settings-account-note">Loading Claude accounts…</p>
-        : !claudeAccounts.length ? renderSetup(id)
+        : setup ? renderSetup(id, setup)
+        : !claudeAccounts.length ? <>
+          <p className="settings-account-note">Tiller runs Claude nodes with your default Claude login (~/.claude). If you use more than one Claude account, for example in two Teams, add them here and choose which account each repository uses.</p>
+          <div className="settings-detail"><button type="button" className="btn" disabled={busy} onClick={openSetup}>Set up multiple accounts</button></div>
+        </>
         : <>
           <Select id={id} disabled={busy} value={value} aria-describedby={described} onChange={(e) => edit(key, e.target.value || null)}>
             <option value="">{none}</option>
@@ -211,6 +272,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
             <ul>{logins.map((a) => <li key={a.name}>{a.name}: <code className="mono">{a.loginCommand}</code>, then <code className="mono">{a.loginCommand.replace(/ auth login$/, '')}</code> in each project</li>)}</ul>
           </div>}
           {probeError && <p className="settings-account-note" id={`${id}-error`}>{probeError}</p>}
+          <div className="settings-detail"><button type="button" className="btn" disabled={busy} onClick={openSetup}>Configure</button></div>
           {(custom || drafted) && <div className="settings-detail">
             {custom && <><span>Custom setting</span><span aria-hidden="true">·</span><button type="button" className="settings-reset" disabled={busy} aria-label={`Reset to default: ${label}`} onClick={() => edit(key, null)}>Reset to default</button></>}
             {drafted && <span className="settings-pending">Unsaved</span>}

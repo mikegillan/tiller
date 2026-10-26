@@ -248,6 +248,29 @@ it('offers no reset when the account list itself is invalid', async () => {
   expect(() => button('Reset to default')).toThrow();
 });
 
+// The accounts form: change a field and leave it, as a person would.
+function type(field: string, value: string) { input(`claude.account-${field}`).props.onChange({ target: { value } }); render(); }
+function leave(field: string) { input(`claude.account-${field}`).props.onBlur(); render(); }
+const errorOf = (field: string) => { const describedBy = input(`claude.account-${field}`).props['aria-describedby']; return describedBy && text(elements(tree).find((e) => e.props.id === describedBy)); };
+
+it('keeps multiple accounts opt-in: a statement and one button until asked, and Cancel discards the form', async () => {
+  hooks.store = { ...hooks.store, claudeAccounts: [] } as typeof hooks.store;
+  render();
+  expect(text(tree)).toContain('If you use more than one Claude account');
+  expect(input('claude.account-default')).toBeUndefined();
+  expect(() => button('Save configuration')).toThrow();
+  click('Set up multiple accounts');
+  // The default account and one more are open at once.
+  expect(input('claude.account-default').props.value).toBe('');
+  expect(input('claude.account-0-name')).toBeDefined();
+  expect(input('claude.account-1-name')).toBeUndefined();
+  type('default', 'personal');
+  click('Cancel');
+  expect(input('claude.account-default')).toBeUndefined();
+  click('Set up multiple accounts');
+  expect(input('claude.account-default').props.value).toBe('');
+});
+
 it('sets up Claude accounts when none exist, then shows the select and every new login', async () => {
   hooks.store = { ...hooks.store, claudeAccounts: [] } as typeof hooks.store;
   // At repository scope the seed still goes to the home file, against its revision.
@@ -255,17 +278,18 @@ it('sets up Claude accounts when none exist, then shows the select and every new
   fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, homeRevision: 'h1' }) }));
   changeScope('project'); await settle();
   expect(elements(tree).some((e) => e.props.id === 'setting-claude.account')).toBe(false);
-  expect(button('Set up accounts').props.disabled).toBe(true); // the default account needs a name
-  input('claude.account-default').props.onChange({ target: { value: 'personal' } }); render();
+  click('Set up multiple accounts');
+  expect(button('Save configuration').props.disabled).toBe(true); // the default account needs a name
+  type('default', 'personal');
   dirFetch.mockImplementation(async (path) => ({ exists: path === '/c/side', directory: path === '/c/side' }));
-  for (let i = 0; i < 3; i++) click('Add another account');
-  input('claude.account-0-name').props.onChange({ target: { value: 'wo' } }); render();
+  for (let i = 0; i < 2; i++) click('Add another account');
+  type('0-name', 'wo');
   expect(input('claude.account-0-dir').props.value).toBe('~/.claude-wo'); // a real default value, not a placeholder
-  input('claude.account-0-name').props.onChange({ target: { value: 'work' } }); render();
+  type('0-name', 'work');
   expect(input('claude.account-0-dir').props.value).toBe('~/.claude-work'); // and it follows the name
-  input('claude.account-1-name').props.onChange({ target: { value: 'gone' } }); render();
-  input('claude.account-2-dir').props.onChange({ target: { value: '/c/side' } }); render();
-  input('claude.account-2-name').props.onChange({ target: { value: 'side' } }); render();
+  type('1-name', 'gone');
+  type('2-dir', '/c/side');
+  type('2-name', 'side');
   expect(input('claude.account-2-dir').props.value).toBe('/c/side'); // an edited directory stops following
   // An existing directory needs no creating: the checkbox gives way to a note.
   await vi.waitFor(() => { render(); expect(text(tree)).toContain('Directory exists'); });
@@ -275,7 +299,7 @@ it('sets up Claude accounts when none exist, then shows the select and every new
   elements(tree).filter((e) => e.type === 'button' && text(e.props.children) === 'Remove')[1].props.onClick(); render();
   fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', revision: 'h2' }) }));
   vi.mocked(send).mockClear();
-  button('Set up accounts').props.onClick(); render();
+  button('Save configuration').props.onClick(); render();
   await vi.waitFor(() => { render(); expect(send).toHaveBeenCalledWith({ t: 'claudeAccounts' }); });
   const post = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
   expect(String(post[0])).toContain('scope=home');
@@ -297,40 +321,42 @@ it('sets up Claude accounts when none exist, then shows the select and every new
   expect(text(tree)).toContain('workspace trust');
 });
 
-it('explains form mistakes under each field and blocks setup until they are fixed', async () => {
+it('explains form mistakes under a field once it was changed and left, and blocks saving until they are fixed', async () => {
   hooks.store = { ...hooks.store, claudeAccounts: [] } as typeof hooks.store;
   render();
-  const setUp = () => button('Set up accounts').props.disabled;
-  const errorOf = (field: string) => { const describedBy = input(`claude.account-${field}`).props['aria-describedby']; return describedBy && text(elements(tree).find((e) => e.props.id === describedBy)); };
-  expect(setUp()).toBe(true);
-  expect(errorOf('default')).toBe('Enter a name.');
-  expect(input('claude.account-default').props['aria-invalid']).toBe(true);
-  input('claude.account-default').props.onChange({ target: { value: 'Team A' } }); render();
+  click('Set up multiple accounts');
+  const saveDisabled = () => button('Save configuration').props.disabled;
+  expect(saveDisabled()).toBe(true);
+  expect(errorOf('default')).toBeUndefined(); // nothing is shown for an untouched form
+  type('default', 'Team A');
+  expect(errorOf('default')).toBeUndefined(); // still typing
+  leave('default');
   expect(errorOf('default')).toBe('Use 1-32 letters, digits, _ or -, starting with a letter or digit.');
-  expect(setUp()).toBe(true);
-  input('claude.account-default').props.onChange({ target: { value: 'personal' } }); render();
-  expect(setUp()).toBe(false);
-  click('Add another account');
-  input('claude.account-0-name').props.onChange({ target: { value: '-work' } }); render();
+  expect(input('claude.account-default').props['aria-invalid']).toBe(true);
+  type('default', '');
+  expect(errorOf('default')).toBe('Enter a name.');
+  type('default', 'personal');
+  expect(saveDisabled()).toBe(true); // the open row has no name yet
+  type('0-name', '-work'); leave('0-name');
   expect(errorOf('0-name')).toMatch(/^Use 1-32 letters/);
-  input('claude.account-0-name').props.onChange({ target: { value: '' } }); render();
+  type('0-name', '');
   expect(errorOf('0-name')).toBe('Enter a name.');
-  input('claude.account-0-name').props.onChange({ target: { value: 'personal' } }); render();
+  type('0-name', 'personal');
   expect(errorOf('0-name')).toBe('Another account has this name.');
-  input('claude.account-0-name').props.onChange({ target: { value: 'work' } }); render();
-  input('claude.account-0-dir').props.onChange({ target: { value: ' ' } }); render();
-  expect(errorOf('0-dir')).toBe('Enter a config directory.');
-  expect(setUp()).toBe(true);
-  dirFetch.mockImplementation(async (path) => ({ exists: path === '/file', directory: false }));
-  input('claude.account-0-dir').props.onChange({ target: { value: '/file' } }); render();
+  // The prefilled directory's check shows once its row's name was touched.
+  dirFetch.mockImplementation(async (path) => ({ exists: path === '~/.claude-work', directory: false }));
+  type('0-name', 'work');
   await vi.waitFor(() => { render(); expect(errorOf('0-dir')).toBe('This path exists but is not a directory.'); });
-  input('claude.account-0-dir').props.onChange({ target: { value: '/new' } }); render();
+  expect(saveDisabled()).toBe(true);
+  type('0-dir', ' '); leave('0-dir');
+  expect(errorOf('0-dir')).toBe('Enter a config directory.');
+  type('0-dir', '/new');
   await vi.waitFor(() => { render(); expect(dirFetch).toHaveBeenCalledWith('/new'); });
   expect(errorOf('0-dir')).toBeUndefined();
-  expect(setUp()).toBe(false);
+  expect(saveDisabled()).toBe(false);
   input('claude.account-0-create').props.onChange({ target: { checked: false } }); render();
   expect(errorOf('0-dir')).toMatch(/does not exist. Tick Create this directory/);
-  expect(setUp()).toBe(true);
+  expect(saveDisabled()).toBe(true);
 });
 
 it('ignores a late existence reply for an older directory value', async () => {
@@ -338,10 +364,10 @@ it('ignores a late existence reply for an older directory value', async () => {
   render();
   const replies: Record<string, (check: unknown) => void> = {};
   dirFetch.mockImplementation((path) => new Promise((resolve) => { replies[path] = resolve; }));
-  click('Add another account');
-  input('claude.account-0-dir').props.onChange({ target: { value: '/a' } }); render();
+  click('Set up multiple accounts');
+  type('0-dir', '/a');
   await vi.waitFor(() => expect(replies['/a']).toBeDefined());
-  input('claude.account-0-dir').props.onChange({ target: { value: '/b' } }); render();
+  type('0-dir', '/b');
   await vi.waitFor(() => expect(replies['/b']).toBeDefined());
   replies['/b']({ exists: true, directory: true });
   replies['/a']({ exists: true, directory: false }); // older value, answered last
@@ -349,14 +375,85 @@ it('ignores a late existence reply for an older directory value', async () => {
   expect(text(tree)).not.toContain('not a directory');
 });
 
-it('shows a refused setup as an error and keeps the form', async () => {
+it('shows a refused save as an error and keeps the form', async () => {
   hooks.store = { ...hooks.store, claudeAccounts: [] } as typeof hooks.store;
   render();
-  input('claude.account-default').props.onChange({ target: { value: 'personal' } }); render();
-  fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 409, json: async () => ({ error: 'claude.accounts is already set in /home/config.json; edit it there' }) }) as never);
-  button('Set up accounts').props.onClick();
-  await vi.waitFor(() => { render(); expect(text(tree)).toContain('claude.accounts is already set'); });
+  click('Set up multiple accounts');
+  type('default', 'personal');
+  click('Remove');
+  fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 400, json: async () => ({ error: '/x is inside the Tiller home; choose another directory' }) }) as never);
+  button('Save configuration').props.onClick();
+  await vi.waitFor(() => { render(); expect(text(tree)).toContain('inside the Tiller home'); });
   expect(input('claude.account-default').props.value).toBe('personal');
+});
+
+it('closes the accounts form on a conflict and on every reload, so a stale form never saves over a newer file', async () => {
+  hooks.store = { ...hooks.store, claudeAccounts: [] } as typeof hooks.store;
+  render();
+  click('Set up multiple accounts');
+  type('default', 'personal');
+  click('Remove');
+  fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 409, json: async () => ({ error: 'Settings changed; reload before saving' }) }) as never);
+  button('Save configuration').props.onClick();
+  await vi.waitFor(() => { render(); expect(text(tree)).toContain('Settings changed; reload before saving'); });
+  expect(input('claude.account-default')).toBeUndefined();
+  vi.mocked(send).mockClear();
+  click('Reload latest settings'); await settle();
+  expect(send).toHaveBeenCalledWith({ t: 'claudeAccounts' }); // the list is read again with the file
+  expect(input('claude.account-default')).toBeUndefined();
+  // A scope change reloads too, and closes a form opened meanwhile.
+  click('Set up multiple accounts');
+  changeScope('home'); await settle();
+  expect(input('claude.account-default')).toBeUndefined();
+});
+
+it('offers no Configure while the account list is invalid', async () => {
+  hooks.store = { ...hooks.store, claudeAccounts: [{ name: 'claude.accounts', projects: [], isDefault: false, loggedIn: null, loginCommand: '', error: 'claude.accounts in /h is invalid: x' }] } as typeof hooks.store;
+  render();
+  expect(() => button('Configure')).toThrow();
+  expect(() => button('Set up multiple accounts')).toThrow();
+});
+
+it('configures existing accounts: names fixed, the default kept, a moved directory flagged, and an in-use removal confirmed', async () => {
+  hooks.store = { ...hooks.store, claudeAccounts: [
+    { name: 'personal', projects: [], isDefault: false, loggedIn: true, loginCommand: 'claude auth login' },
+    { name: 'work', configDir: '/c/w', projects: ['/repo'], isDefault: true, loggedIn: true, loginCommand: 'CLAUDE_CONFIG_DIR=/c/w claude auth login' },
+    { name: 'side', configDir: '/c/s', projects: [], isDefault: false, loggedIn: true, loginCommand: 'CLAUDE_CONFIG_DIR=/c/s claude auth login' },
+  ], nodes: { a: { id: 'a', title: 'deploy fix', account: 'side' }, b: { id: 'b', title: 'docs', account: 'work' } } } as unknown as typeof hooks.store;
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', revision: 'h1' }) }));
+  changeScope('home'); await settle();
+  click('Configure');
+  expect(input('claude.account-default')).toMatchObject({ props: { value: 'personal', readOnly: true } });
+  expect(input('claude.account-0-name')).toMatchObject({ props: { value: 'work', readOnly: true } });
+  expect(input('claude.account-0-dir').props.value).toBe('/c/w');
+  expect(input('claude.account-0-create')).toBeUndefined(); // an unchanged directory is left alone
+  const removes = () => elements(tree).filter((e) => e.type === 'button' && text(e.props.children) === 'Remove');
+  expect(removes()[0].props.disabled).toBe(true); // work is claude.account
+  expect(text(tree)).toContain('This is the default account, so it cannot be removed');
+  type('0-dir', '/c/w2');
+  expect(text(tree)).toContain('A new directory is a separate login: log in to work again');
+  await vi.waitFor(() => { render(); expect(dirFetch).toHaveBeenCalledWith('/c/w2'); });
+  expect(input('claude.account-0-create').props.checked).toBe(true);
+  expect(removes().map((b) => b.props['aria-label'])).toEqual(['Remove work', 'Remove side']);
+  removes()[1].props.onClick(); render(); // side, which "deploy fix" still records
+  expect(text(tree)).toContain('side is used by deploy fix.');
+  expect(elements(tree).find((e) => e.props.id === 'setting-claude.account-in-use')!.props.role).toBe('status');
+  // Re-adding side now would bring its old projects back, so it waits for another save.
+  click('Add another account');
+  type('1-name', 'side'); leave('1-name');
+  expect(errorOf('1-name')).toBe('Removed accounts can’t be re-added in the same save.');
+  elements(tree).find((e) => e.props['aria-label'] === 'Remove side')!.props.onClick(); render();
+  expect(removes()).toHaveLength(1);
+  expect(button('Save configuration').props.disabled).toBe(true);
+  input('claude.account-confirm').props.onChange({ target: { checked: true } }); render();
+  expect(button('Save configuration').props.disabled).toBe(false);
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', revision: 'h2' }) }));
+  button('Save configuration').props.onClick();
+  await vi.waitFor(() => { render(); expect(fetchMock.mock.calls.some((call) => call[1]?.method === 'POST')).toBe(true); });
+  // No claude.account: it has its own setting once accounts exist.
+  expect(JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')![1]?.body))).toEqual({ scope: 'home', revision: 'h1', claudeAccounts: { accounts: [
+    { name: 'personal' }, { name: 'work', configDir: '/c/w2', create: true },
+  ] } });
 });
 
 it('retains drafts and disables saving on a revision conflict until reload', async () => {

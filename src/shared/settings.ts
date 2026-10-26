@@ -22,10 +22,11 @@ export interface SettingsSnapshot {
 }
 export interface SettingsUpdate { scope: SettingsScope; nodeId?: string; revision: string; changes: Record<string, unknown | null>; /** Required for a project-scope claude.account change. */ homeRevision?: string }
 /**
- * POST /api/settings body that seeds claude.accounts and claude.account in the home file, refused (409) once it lists any
- * account. create: the daemon makes configDir (mode 0700) first; otherwise it must already be a directory.
+ * POST /api/settings body that replaces claude.accounts in the home file, matched by name: a kept account keeps its projects.
+ * account (claude.account) is required when none are configured yet, and refused after: it has its own setting. create: the
+ * daemon makes a new or changed configDir (mode 0700) first; otherwise it must already be a directory.
  */
-export interface ClaudeAccountsSeed { scope: 'home'; revision: string; claudeAccounts: { account: string; accounts: { name: string; configDir?: string; create?: boolean }[] } }
+export interface ClaudeAccountsSave { scope: 'home'; revision: string; claudeAccounts: { account?: string; accounts: { name: string; configDir?: string; create?: boolean }[] } }
 /** A Claude account name (claude.accounts[].name, claude.account), checked by the daemon and the setup form alike. */
 export const CLAUDE_ACCOUNT_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 export const CLAUDE_ACCOUNT_NAME_RULE = 'a name is 1-32 letters, digits, _ or -, starting with a letter or digit';
