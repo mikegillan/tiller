@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import type http from 'node:http';
-import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { SETTINGS_FIELDS, type ClaudeAccountsSeed, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
 import { canonicalProject, projectAccount } from './claude-accounts.js';
 import { ConfigFile, DEFAULTS, claudeAccountListError, configEntries, effectiveProfileEntries, loadConfig } from './config.js';
 import type { NodeManager } from './manager.js';
-import { expandHome, readBody } from './util.js';
+import { expandHome, inside, readBody } from './util.js';
 
 export class SettingsError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -174,16 +175,21 @@ export function seedClaudeAccounts(manager: NodeManager, seed: ClaudeAccountsSee
   if (claude?.accounts !== undefined && !(Array.isArray(claude.accounts) && !claude.accounts.length)) throw new SettingsError(409, `claude.accounts is already set in ${homePath}; edit it there`);
   const accounts = seed.claudeAccounts.accounts.map(({ name, configDir }) => ({ name, ...(configDir ? { configDir } : {}) }));
   const { account } = seed.claudeAccounts;
-  const result = ConfigFile.safeParse({ claude: { accounts, ...(account === undefined ? {} : { account }) } });
+  const result = ConfigFile.safeParse({ claude: { accounts, account } });
   if (!result.success) throw new SettingsError(400, result.error.issues.map((i) => `${i.path.map(String).join('.')}: ${i.message}`).join('; '));
-  if (account !== undefined && !accounts.some((a) => a.name === account)) throw new SettingsError(400, `claude.account: ${JSON.stringify(account)} is not one of the accounts`);
+  if (!accounts.some((a) => a.name === account)) throw new SettingsError(400, `claude.account: ${JSON.stringify(account)} is not one of the accounts`);
   const dirs = seed.claudeAccounts.accounts.flatMap((a) => (a.configDir ? [{ dir: expandHome(a.configDir), create: a.create }] : []));
+  // The schema compares strings; a symlink to ~/.claude is the same keychain mistake, and the Tiller home is not Claude's.
+  const real = (p: string) => { try { return fs.realpathSync(p); } catch { return p; } }, claudeHome = real(join(homedir(), '.claude'));
   for (const { dir, create } of dirs) {
+    if (real(dir) === claudeHome) throw new SettingsError(400, `${dir} is Claude's default home (~/.claude); give that account no config directory`);
+    if ([dir, real(dir)].some((d) => inside(d, dirname(homePath)) || inside(d, resolve(manager.home)))) throw new SettingsError(400, `${dir} is inside the Tiller home; choose another directory`);
     const stat = fs.statSync(dir, { throwIfNoEntry: false });
     if (stat ? !stat.isDirectory() : !create) throw new SettingsError(400, stat ? `${dir} is not a directory` : `${dir} does not exist; choose to create it`);
   }
+  // ponytail: no rollback, so a 409/500 from writeConfig leaves the new (empty, 0700) directories behind; harmless on retry.
   for (const { dir, create } of dirs) if (create) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  before.data.claude = { ...claude, accounts, ...(account === undefined ? {} : { account }) };
+  before.data.claude = { ...claude, accounts, account };
   writeConfig(homePath, before.data, seed.revision);
   return settingsSnapshot(manager, 'home');
 }
@@ -213,7 +219,7 @@ const querySchema = z.object(selection).strict();
 const updateSchema = z.object({ ...selection, revision: z.string().min(1), homeRevision: z.string().min(1).optional(), changes: z.record(z.string(), z.unknown()) }).strict();
 const seedSchema = z.object({
   scope: z.literal('home'), revision: z.string().min(1),
-  claudeAccounts: z.object({ account: z.string().optional(), accounts: z.array(z.object({ name: z.string(), configDir: z.string().optional(), create: z.boolean().optional() }).strict()).min(1) }).strict(),
+  claudeAccounts: z.object({ account: z.string(), accounts: z.array(z.object({ name: z.string(), configDir: z.string().optional(), create: z.boolean().optional() }).strict()).min(1) }).strict(),
 }).strict();
 /** This route deliberately uses the admin bearer token alone, never node authentication or MCP. */
 export function settingsApi(manager: NodeManager, isAdmin: (token: string) => boolean) {
