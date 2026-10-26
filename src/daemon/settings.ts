@@ -2,9 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import type http from 'node:http';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
-import { SETTINGS_FIELDS, type ClaudeAccountsSeed, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
+import { SETTINGS_FIELDS, type ClaudeAccountsSeed, type ClaudeConfigDirCheck, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
 import { canonicalProject, projectAccount } from './claude-accounts.js';
 import { ConfigFile, DEFAULTS, claudeAccountListError, configEntries, effectiveProfileEntries, loadConfig } from './config.js';
 import type { NodeManager } from './manager.js';
@@ -179,11 +179,9 @@ export function seedClaudeAccounts(manager: NodeManager, seed: ClaudeAccountsSee
   if (!result.success) throw new SettingsError(400, result.error.issues.map((i) => `${i.path.map(String).join('.')}: ${i.message}`).join('; '));
   if (!accounts.some((a) => a.name === account)) throw new SettingsError(400, `claude.account: ${JSON.stringify(account)} is not one of the accounts`);
   const dirs = seed.claudeAccounts.accounts.flatMap((a) => (a.configDir ? [{ dir: expandHome(a.configDir), create: a.create }] : []));
-  // The schema compares strings; a symlink to ~/.claude is the same keychain mistake, and the Tiller home is not Claude's.
-  const real = (p: string) => { try { return fs.realpathSync(p); } catch { return p; } }, claudeHome = real(join(homedir(), '.claude'));
   for (const { dir, create } of dirs) {
-    if (real(dir) === claudeHome) throw new SettingsError(400, `${dir} is Claude's default home (~/.claude); give that account no config directory`);
-    if ([dir, real(dir)].some((d) => inside(d, dirname(homePath)) || inside(d, resolve(manager.home)))) throw new SettingsError(400, `${dir} is inside the Tiller home; choose another directory`);
+    const reserved = reservedConfigDir(manager, dir);
+    if (reserved) throw new SettingsError(400, reserved);
     const stat = fs.statSync(dir, { throwIfNoEntry: false });
     if (stat ? !stat.isDirectory() : !create) throw new SettingsError(400, stat ? `${dir} is not a directory` : `${dir} does not exist; choose to create it`);
   }
@@ -192,6 +190,24 @@ export function seedClaudeAccounts(manager: NodeManager, seed: ClaudeAccountsSee
   before.data.claude = { ...claude, accounts, account };
   writeConfig(homePath, before.data, seed.revision);
   return settingsSnapshot(manager, 'home');
+}
+
+/** Why `dir` (expanded) can never be an account's configDir, or undefined. */
+function reservedConfigDir(manager: NodeManager, dir: string): string | undefined {
+  // The schema compares strings; a symlink to ~/.claude is the same keychain mistake, and the Tiller home is not Claude's.
+  const real = (p: string) => { try { return fs.realpathSync(p); } catch { return p; } };
+  if (real(dir) === real(join(homedir(), '.claude'))) return `${dir} is Claude's default home (~/.claude); give that account no config directory`;
+  if ([dir, real(dir)].some((d) => inside(d, real(manager.home)) || inside(d, resolve(manager.home)))) return `${dir} is inside the Tiller home; choose another directory`;
+  return undefined;
+}
+
+/** What is at a prospective configDir, for the setup form. Only stats. */
+export function claudeConfigDirCheck(manager: NodeManager, path: string): ClaudeConfigDirCheck {
+  if (!isAbsolute(path) && !path.startsWith('~/')) return { exists: false, directory: false, error: 'Use an absolute path or one starting with ~/' };
+  const dir = expandHome(path), error = reservedConfigDir(manager, dir);
+  let stat: fs.Stats | undefined;
+  try { stat = fs.statSync(dir, { throwIfNoEntry: false }); } catch { /* unreadable: reported as missing; the seed stats again */ }
+  return { exists: !!stat, directory: !!stat?.isDirectory(), ...(error ? { error } : {}) };
 }
 
 /** Atomically replace `path` with `data`, unless the file no longer has `expected` revision. */
@@ -216,6 +232,7 @@ function writeConfig(path: string, data: Record<string, unknown>, expected: stri
 }
 const selection = { scope: z.enum(['project', 'home']), nodeId: z.string().min(1).optional() };
 const querySchema = z.object(selection).strict();
+const dirQuerySchema = z.object({ claudeConfigDir: z.string().min(1) }).strict();
 const updateSchema = z.object({ ...selection, revision: z.string().min(1), homeRevision: z.string().min(1).optional(), changes: z.record(z.string(), z.unknown()) }).strict();
 const seedSchema = z.object({
   scope: z.literal('home'), revision: z.string().min(1),
@@ -228,7 +245,9 @@ export function settingsApi(manager: NodeManager, isAdmin: (token: string) => bo
     if (!isAdmin(/^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1] ?? '')) return reply(401, { error: 'Admin bearer token required' });
     try {
       if (req.method === 'GET') {
-        const args = querySchema.parse(Object.fromEntries(url.searchParams));
+        const query = Object.fromEntries(url.searchParams);
+        if (Object.hasOwn(query, 'claudeConfigDir')) return reply(200, claudeConfigDirCheck(manager, dirQuerySchema.parse(query).claudeConfigDir));
+        const args = querySchema.parse(query);
         return reply(200, settingsSnapshot(manager, args.scope, args.nodeId));
       }
       if (req.method === 'POST') {

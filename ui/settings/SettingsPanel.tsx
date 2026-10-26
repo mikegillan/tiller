@@ -5,7 +5,15 @@ import { useStore } from '../store';
 import { accountOptionLabel, accountStatus, accountsError, buildChanges, cliStatus, efforts, fieldPreview, groups, inputValue, optionLabel, profileFields, profiles, type Field, type Scope, type SettingsSnapshot } from './settings-model';
 import { Modal } from '../controls/Modal';
 import { Select } from '../controls/Select';
+import type { ClaudeConfigDirCheck } from '../../src/shared/settings';
 import './settings.css';
+
+/** What is at a prospective config directory; a failure leaves the daemon's save to report it. */
+async function checkDir(path: string): Promise<ClaudeConfigDirCheck> {
+  const response = await fetch(`/api/settings?${new URLSearchParams({ claudeConfigDir: path })}`, { headers: { Authorization: `Bearer ${token()}` } });
+  if (!response.ok) throw new Error(`Directory check failed (${response.status}).`);
+  return response.json();
+}
 
 async function request(scope: Scope, nodeId: string | undefined, body?: unknown, signal?: AbortSignal): Promise<SettingsSnapshot> {
   const query = new URLSearchParams({ scope, ...(nodeId ? { nodeId } : {}) });
@@ -40,6 +48,15 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
   // First-time Claude account setup: the default account (Claude's default home), then one per other config directory.
   const [setup, setSetup] = useState<{ name: string; alternates: { name: string; configDir: string; create: boolean }[] }>({ name: '', alternates: [] });
   const [seeded, setSeeded] = useState(false);
+  // What is at each typed config directory, keyed by that path, so a late reply for an older value never shows for a newer one.
+  const [dirChecks, setDirChecks] = useState<Record<string, ClaudeConfigDirCheck>>({});
+  const setupDirs = setup.alternates.map((a) => a.configDir.trim()).filter(Boolean).join('\n');
+  useEffect(() => {
+    const pending = setupDirs.split('\n').filter((dir) => dir && !dirChecks[dir]);
+    if (!pending.length) return;
+    const timer = setTimeout(() => { for (const dir of pending) checkDir(dir).then((check) => setDirChecks((m) => ({ ...m, [dir]: check })), () => {}); }, 350);
+    return () => clearTimeout(timer);
+  }, [setupDirs]);
   const dirty = Object.keys(drafts).length > 0;
   const sections = [
     // A harness's own group (such as Claude's MCP setting) follows its profile fields in the one section of that title.
@@ -92,7 +109,7 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     if (!snapshot || busy) return;
     setBusy(true); setError(''); setSuccess('');
     try {
-      const accounts = [{ name: setup.name.trim() }, ...setup.alternates.map((a) => ({ name: a.name.trim(), ...(a.configDir.trim() ? { configDir: a.configDir.trim() } : {}), create: a.create }))];
+      const accounts = [{ name: setup.name.trim() }, ...setup.alternates.map((a) => ({ name: a.name.trim(), ...(a.configDir.trim() ? { configDir: a.configDir.trim() } : {}), create: a.create && !dirChecks[a.configDir.trim()]?.directory }))];
       const home = await request('home', undefined, { scope: 'home', revision: snapshot.homeRevision ?? snapshot.revision, claudeAccounts: { account: accounts[0].name, accounts } });
       setSnapshot(scope === 'home' ? home : await request(scope, nodeId));
       setSeeded(true); setSuccess('Claude accounts saved. Log in each new account below.'); setConflict(false);
@@ -101,25 +118,50 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
     finally { setBusy(false); }
   }
   const suggestDir = (name: string) => `~/.claude-${name}`;
+  /** Mistakes the form can see before saving, by field: 'default', `${i}-name` or `${i}-dir`. */
+  function setupErrors(): Record<string, string> {
+    const errors: Record<string, string> = {}, names = [setup.name.trim()], dirs: string[] = [];
+    if (!names[0]) errors.default = 'Enter a name.';
+    setup.alternates.forEach((a, i) => {
+      const name = a.name.trim(), dir = a.configDir.trim(), check = dirChecks[dir];
+      if (!name) errors[`${i}-name`] = 'Enter a name.';
+      else if (names.includes(name)) errors[`${i}-name`] = 'Another account has this name.';
+      names.push(name);
+      if (!dir) errors[`${i}-dir`] = 'Enter a config directory.';
+      else if (dirs.includes(dir)) errors[`${i}-dir`] = 'Another account uses this directory.';
+      else if (check?.error) errors[`${i}-dir`] = check.error;
+      else if (check?.exists && !check.directory) errors[`${i}-dir`] = 'This path exists but is not a directory.';
+      else if (check && !check.exists && !a.create) errors[`${i}-dir`] = 'This directory does not exist. Tick Create this directory, or enter an existing one.';
+      dirs.push(dir);
+    });
+    return errors;
+  }
   function renderSetup(id: string) {
     const row = (i: number, patch: Partial<typeof setup.alternates[number]>) => setSetup((s) => ({ ...s, alternates: s.alternates.map((a, j) => (j === i ? { ...a, ...patch } : a)) }));
+    const errors = setupErrors();
+    const invalid = (key: string) => (errors[key] ? { 'aria-invalid': true, 'aria-describedby': `${id}-${key}-error` } : {});
+    const fieldError = (key: string) => errors[key] && <p className="settings-account-note settings-error" id={`${id}-${key}-error`}>{errors[key]}</p>;
     return <div className="settings-account-setup">
       <p className="settings-account-note">No Claude accounts are set up. Name the account in Claude’s default home (~/.claude); it becomes the default. Add another account for each other login, each in its own config directory.</p>
       <label htmlFor={`${id}-default`}>Default account name</label>
-      <input id={`${id}-default`} value={setup.name} disabled={busy} placeholder="personal" onChange={(e) => setSetup((s) => ({ ...s, name: e.target.value }))} />
+      <input id={`${id}-default`} value={setup.name} disabled={busy} placeholder="personal" {...invalid('default')} onChange={(e) => setSetup((s) => ({ ...s, name: e.target.value }))} />
+      {fieldError('default')}
       {setup.alternates.map((a, i) => <fieldset className="settings-account-row" key={i}>
         <legend>Account {i + 2}</legend>
         <label htmlFor={`${id}-${i}-name`}>Name</label>
         {/* While the directory is still the suggestion for the old name, it follows the name. */}
-        <input id={`${id}-${i}-name`} value={a.name} disabled={busy} placeholder="work" onChange={(e) => row(i, { name: e.target.value, ...(a.create && a.configDir === suggestDir(a.name) ? { configDir: suggestDir(e.target.value) } : {}) })} />
+        <input id={`${id}-${i}-name`} value={a.name} disabled={busy} placeholder="work" {...invalid(`${i}-name`)} onChange={(e) => row(i, { name: e.target.value, ...(a.configDir === suggestDir(a.name) ? { configDir: suggestDir(e.target.value) } : {}) })} />
+        {fieldError(`${i}-name`)}
         <label htmlFor={`${id}-${i}-dir`}>Config directory</label>
-        <input id={`${id}-${i}-dir`} value={a.configDir} disabled={busy} placeholder={suggestDir(a.name || 'work')} onChange={(e) => row(i, { configDir: e.target.value })} />
-        <label><input id={`${id}-${i}-create`} type="checkbox" checked={a.create} disabled={busy} onChange={(e) => row(i, { create: e.target.checked, ...(e.target.checked && !a.configDir ? { configDir: suggestDir(a.name) } : {}) })} /> Create this directory</label>
+        <input id={`${id}-${i}-dir`} value={a.configDir} disabled={busy} {...invalid(`${i}-dir`)} onChange={(e) => row(i, { configDir: e.target.value })} />
+        {fieldError(`${i}-dir`)}
+        {dirChecks[a.configDir.trim()]?.directory ? <p className="settings-account-note" id={`${id}-${i}-exists`}><em>Directory exists</em></p>
+          : <label><input id={`${id}-${i}-create`} type="checkbox" checked={a.create} disabled={busy} onChange={(e) => row(i, { create: e.target.checked })} /> Create this directory</label>}
         <button type="button" className="settings-reset" disabled={busy} onClick={() => setSetup((s) => ({ ...s, alternates: s.alternates.filter((_, j) => j !== i) }))}>Remove</button>
       </fieldset>)}
       <div className="settings-detail">
-        <button type="button" className="btn" disabled={busy} onClick={() => setSetup((s) => ({ ...s, alternates: [...s.alternates, { name: '', configDir: '', create: false }] }))}>Add another account</button>
-        <button type="button" className="btn primary" disabled={busy || !setup.name.trim()} onClick={() => void seedAccounts()}>Set up accounts</button>
+        <button type="button" className="btn" disabled={busy} onClick={() => setSetup((s) => ({ ...s, alternates: [...s.alternates, { name: '', configDir: suggestDir(''), create: true }] }))}>Add another account</button>
+        <button type="button" className="btn primary" disabled={busy || Object.keys(errors).length > 0} onClick={() => void seedAccounts()}>Set up accounts</button>
       </div>
     </div>;
   }

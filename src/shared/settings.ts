@@ -26,6 +26,8 @@ export interface SettingsUpdate { scope: SettingsScope; nodeId?: string; revisio
  * account. create: the daemon makes configDir (mode 0700) first; otherwise it must already be a directory.
  */
 export interface ClaudeAccountsSeed { scope: 'home'; revision: string; claudeAccounts: { account: string; accounts: { name: string; configDir?: string; create?: boolean }[] } }
+/** GET /api/settings?claudeConfigDir=PATH: what is there (~/ expanded), and why it can never be a configDir (error). */
+export interface ClaudeConfigDirCheck { exists: boolean; directory: boolean; error?: string }
 export interface SettingsField {
   key: string; label: string; type: 'text' | 'number' | 'boolean' | 'select' | 'lines';
   options?: readonly string[]; min?: number; integer?: boolean; description?: string;

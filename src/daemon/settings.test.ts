@@ -380,4 +380,24 @@ describe('Claude accounts seed', () => {
     write({ claude: { accounts: [{ name: 'repo' }], account: 'repo' } });
     expect(loadConfig(project, home).claude).toMatchObject({ accounts: [{ name: 'a' }], account: 'a' });
   });
+
+  it('checks a prospective config directory for the form: admin-only, ~/ expanded, never creating anything', async () => {
+    vi.stubEnv('HOME', root);
+    try {
+      fs.mkdirSync(join(root, 'existing')); fs.writeFileSync(join(root, 'file'), ''); fs.mkdirSync(join(root, '.claude'));
+      const check = async (path: string, token?: string) => {
+        const res = await request('GET', `?${new URLSearchParams({ claudeConfigDir: path })}`, undefined, token);
+        return res.status === 200 ? res.json() : res.status;
+      };
+      expect(await check('~/existing', manager.tokenFor(nodeId))).toBe(401);
+      expect(await check('~/existing')).toEqual({ exists: true, directory: true });
+      expect(await check('~/file')).toEqual({ exists: true, directory: false });
+      expect(await check('~/missing/deeper')).toEqual({ exists: false, directory: false });
+      expect(fs.existsSync(join(root, 'missing'))).toBe(false);
+      expect((await check('~/.claude')).error).toMatch(/Claude's default home/);
+      expect((await check(join(home, 'x'))).error).toMatch(/inside the Tiller home/);
+      expect((await check('relative')).error).toMatch(/absolute path or one starting with ~\//);
+      expect((await request('GET', '?claudeConfigDir=%2Fx&scope=home')).status).toBe(400); // strict: one query or the other
+    } finally { vi.unstubAllEnvs(); }
+  });
 });
