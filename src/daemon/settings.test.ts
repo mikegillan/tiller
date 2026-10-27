@@ -358,6 +358,18 @@ describe('Claude accounts form', () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it('refuses a new directory under a symlink to the Tiller home or to the homedir, which would land there', () => {
+    vi.stubEnv('HOME', root);
+    try {
+      fs.symlinkSync(home, join(root, 'tl-link')); fs.symlinkSync(root, join(root, 'up'));
+      expect(() => seed([{ name: 'a', configDir: join(root, 'tl-link', 'acct'), create: true }])).toThrow(/inside the Tiller home/);
+      expect(() => seed([{ name: 'a', configDir: join(root, 'up', '.claude'), create: true }])).toThrow(/is Claude's default home/); // ~/.claude does not exist yet
+      expect(fs.existsSync(join(home, 'acct'))).toBe(false);
+      expect(fs.existsSync(join(root, '.claude'))).toBe(false);
+      expect(fs.existsSync(homeFile())).toBe(false);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('reconfigures by name: kept accounts keep their projects, new ones get none and their directory, the default stays', () => {
     const before = snapshot('home').revision;
     const work = join(root, 'cw'), moved = join(root, 'moved'), added = join(root, 'added');

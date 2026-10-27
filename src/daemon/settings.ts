@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import type http from 'node:http';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { SETTINGS_FIELDS, type ClaudeAccountsSave, type ClaudeConfigDirCheck, type SettingsScope, type SettingsSnapshot, type SettingsUpdate } from '../shared/settings.js';
 import { canonicalProject, projectAccount } from './claude-accounts.js';
@@ -211,7 +211,14 @@ export function saveClaudeAccounts(manager: NodeManager, save: ClaudeAccountsSav
 /** Why `dir` (expanded) can never be an account's configDir, or undefined. */
 function reservedConfigDir(manager: NodeManager, dir: string): string | undefined {
   // The schema compares strings; a symlink to ~/.claude is the same keychain mistake, and the Tiller home is not Claude's.
-  const real = (p: string) => { try { return fs.realpathSync.native(p); } catch { return p; } };
+  // realpath.native gives each existing part its on-disk spelling (~/.CLAUDE is ~/.claude on macOS); a missing tail is
+  // joined back onto the nearest existing ancestor, so a symlinked parent still resolves for a directory not yet created.
+  const real = (p: string): string => {
+    let tail: string[] = [], cur = resolve(p);
+    for (;;) {
+      try { return join(fs.realpathSync.native(cur), ...tail); } catch { if (dirname(cur) === cur) return resolve(p); tail = [basename(cur), ...tail]; cur = dirname(cur); }
+    }
+  };
   if (real(dir) === real(join(homedir(), '.claude'))) return `${dir} is Claude's default home (~/.claude); give that account no config directory`;
   if ([dir, real(dir)].some((d) => inside(d, real(manager.home)) || inside(d, resolve(manager.home)))) return `${dir} is inside the Tiller home; choose another directory`;
   return undefined;
