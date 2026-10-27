@@ -211,7 +211,7 @@ export function saveClaudeAccounts(manager: NodeManager, save: ClaudeAccountsSav
 /** Why `dir` (expanded) can never be an account's configDir, or undefined. */
 function reservedConfigDir(manager: NodeManager, dir: string): string | undefined {
   // The schema compares strings; a symlink to ~/.claude is the same keychain mistake, and the Tiller home is not Claude's.
-  const real = (p: string) => { try { return fs.realpathSync(p); } catch { return p; } };
+  const real = (p: string) => { try { return fs.realpathSync.native(p); } catch { return p; } };
   if (real(dir) === real(join(homedir(), '.claude'))) return `${dir} is Claude's default home (~/.claude); give that account no config directory`;
   if ([dir, real(dir)].some((d) => inside(d, real(manager.home)) || inside(d, resolve(manager.home)))) return `${dir} is inside the Tiller home; choose another directory`;
   return undefined;

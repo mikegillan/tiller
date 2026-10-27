@@ -347,6 +347,17 @@ describe('Claude accounts form', () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it('refuses ~/.claude and the Tiller home spelled in another case, where the disk is case-insensitive', ({ skip }) => {
+    vi.stubEnv('HOME', root);
+    try {
+      fs.mkdirSync(join(root, '.claude')); fs.mkdirSync(join(home, 'acct'));
+      if (!fs.existsSync(join(root, '.CLAUDE'))) return skip(); // case-sensitive volume: the spelling is a different folder
+      expect(() => seed([{ name: 'a', configDir: join(root, '.CLAUDE') }])).toThrow(/is Claude's default home/);
+      expect(() => seed([{ name: 'a', configDir: join(root, 'HOME', 'acct') }])).toThrow(/inside the Tiller home/);
+      expect(fs.existsSync(homeFile())).toBe(false);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('reconfigures by name: kept accounts keep their projects, new ones get none and their directory, the default stays', () => {
     const before = snapshot('home').revision;
     const work = join(root, 'cw'), moved = join(root, 'moved'), added = join(root, 'added');
