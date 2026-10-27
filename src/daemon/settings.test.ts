@@ -312,10 +312,13 @@ describe('Claude account setting', () => {
 describe('Claude accounts form', () => {
   const homeFile = () => join(home, 'config.json');
   const homeJson = () => JSON.parse(fs.readFileSync(homeFile(), 'utf8'));
-  const seed = (accounts: { name: string; configDir?: string; create?: boolean }[], account = accounts[0].name, revision = snapshot('home').revision) =>
-    saveClaudeAccounts(manager, { scope: 'home', revision, claudeAccounts: { accounts, account } });
+  // The names the form was opened with: by default the file's current ones, as a form opened just now would have.
+  const openedNames = () => (fs.existsSync(homeFile()) ? homeJson().claude?.accounts ?? [] : []).map((a: { name: string }) => a.name);
+  const seed = (accounts: { name: string; configDir?: string; create?: boolean }[], account = accounts[0].name, revision = snapshot('home').revision, openedWith = openedNames()) =>
+    saveClaudeAccounts(manager, { scope: 'home', revision, openedWith, claudeAccounts: { accounts, account } });
   // After the first save the form never sends claude.account: it has its own setting.
-  const configure = (accounts: Parameters<typeof seed>[0], revision = snapshot('home').revision) => saveClaudeAccounts(manager, { scope: 'home', revision, claudeAccounts: { accounts } });
+  const configure = (accounts: Parameters<typeof seed>[0], revision = snapshot('home').revision, openedWith = openedNames()) =>
+    saveClaudeAccounts(manager, { scope: 'home', revision, openedWith, claudeAccounts: { accounts } });
 
   it('writes the accounts and default, keeps other settings, and creates a requested directory owner-only', () => {
     fs.writeFileSync(homeFile(), JSON.stringify({ limits: { maxDepth: 3 }, claude: { inheritMcpServers: false } }));
@@ -403,6 +406,19 @@ describe('Claude accounts form', () => {
     expect(fs.existsSync(join(root, 'x'))).toBe(false);
   });
 
+  it('refuses a form opened before an account was added by hand, even with a current revision, and keeps that account', () => {
+    seed([{ name: 'a' }, { name: 'b', configDir: join(root, 'cb'), create: true }], 'a');
+    const json = homeJson(); json.claude.accounts.push({ name: 'c', configDir: join(root, 'cc') }); fs.writeFileSync(homeFile(), JSON.stringify(json));
+    // The form still lists a and b (it loads over WebSocket); the revision is read fresh, so only the names can refuse it.
+    const revision = snapshot('home').revision;
+    expect(() => saveClaudeAccounts(manager, { scope: 'home', revision, openedWith: ['a', 'b'], claudeAccounts: { accounts: [{ name: 'a' }, { name: 'b', configDir: join(root, 'cb') }] } }))
+      .toThrow(expect.objectContaining({ status: 409, message: 'Settings changed; reload before saving' }));
+    expect(homeJson().claude.accounts.map((a: { name: string }) => a.name)).toEqual(['a', 'b', 'c']);
+    // Reloaded, the form lists c and the same save goes through.
+    expect(() => configure([{ name: 'a' }, { name: 'b', configDir: join(root, 'cb') }, { name: 'c', configDir: join(root, 'cc') }], revision, ['a', 'b', 'c'])).not.toThrow();
+    expect(homeJson().claude.accounts.map((a: { name: string }) => a.name)).toEqual(['a', 'b', 'c']);
+  });
+
   it('refuses invalid lists before creating anything: ~/.claude, duplicates, two default homes, bad names, missing dirs, unknown default', () => {
     const dir = join(root, 'never');
     const cases: [Parameters<typeof seed>[0], string | undefined, RegExp][] = [
@@ -419,7 +435,7 @@ describe('Claude accounts form', () => {
   });
 
   it('is admin-only over HTTP, home-only, and a project file still cannot set accounts', async () => {
-    const body = { scope: 'home', revision: snapshot('home').revision, claudeAccounts: { accounts: [{ name: 'a' }], account: 'a' } };
+    const body = { scope: 'home', revision: snapshot('home').revision, openedWith: [], claudeAccounts: { accounts: [{ name: 'a' }], account: 'a' } };
     expect((await request('POST', '', body, manager.tokenFor(nodeId))).status).toBe(401);
     expect((await request('POST', '', { ...body, scope: 'project', nodeId })).status).toBe(400);
     // One body is either a seed or a settings change, never both; the default account is required.

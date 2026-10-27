@@ -176,6 +176,9 @@ export function saveClaudeAccounts(manager: NodeManager, save: ClaudeAccountsSav
   if (listError) throw new SettingsError(422, `${listError}; fix it in the file`);
   const claude = before.data.claude as Record<string, unknown> | undefined;
   const existing = (claude?.accounts ?? []) as { name: string; configDir?: string; projects?: string[] }[];
+  // The form lists accounts from a WebSocket store, which can lag the HTTP revision: a list from before an added account is stale.
+  const names = (list: string[]) => JSON.stringify([...list].sort());
+  if (names(existing.map((a) => a.name)) !== names(save.openedWith)) throw new SettingsError(409, 'Settings changed; reload before saving');
   // Once accounts exist, a claude.account naming none of them is refused too (with none, the first save replaces it).
   const accountError = existing.length ? claudeAccountsError(dirname(homePath)) : undefined;
   if (accountError) throw new SettingsError(422, `${accountError}; fix it in the file`);
@@ -258,7 +261,7 @@ const querySchema = z.object(selection).strict();
 const dirQuerySchema = z.object({ claudeConfigDir: z.string().min(1) }).strict();
 const updateSchema = z.object({ ...selection, revision: z.string().min(1), homeRevision: z.string().min(1).optional(), changes: z.record(z.string(), z.unknown()) }).strict();
 const accountsSchema = z.object({
-  scope: z.literal('home'), revision: z.string().min(1),
+  scope: z.literal('home'), revision: z.string().min(1), openedWith: z.array(z.string()),
   claudeAccounts: z.object({ account: z.string().optional(), accounts: z.array(z.object({ name: z.string(), configDir: z.string().optional(), create: z.boolean().optional() }).strict()).min(1) }).strict(),
 }).strict();
 /** This route deliberately uses the admin bearer token alone, never node authentication or MCP. */

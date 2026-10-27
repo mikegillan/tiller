@@ -303,7 +303,7 @@ it('sets up Claude accounts when none exist, then shows the select and every new
   await vi.waitFor(() => { render(); expect(send).toHaveBeenCalledWith({ t: 'claudeAccounts' }); });
   const post = fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')!;
   expect(String(post[0])).toContain('scope=home');
-  expect(JSON.parse(String(post[1]?.body))).toEqual({ scope: 'home', revision: 'h1', claudeAccounts: { account: 'personal', accounts: [
+  expect(JSON.parse(String(post[1]?.body))).toEqual({ scope: 'home', revision: 'h1', openedWith: [], claudeAccounts: { account: 'personal', accounts: [
     { name: 'personal' }, { name: 'work', configDir: '~/.claude-work', create: true }, { name: 'side', configDir: '/c/side', create: false },
   ] } });
   expect(text(tree)).toContain('Loading Claude accounts'); // not the form again while the list refreshes
@@ -451,10 +451,11 @@ it('configures existing accounts: names fixed, the default kept, a moved directo
   button('Save configuration').props.onClick();
   await vi.waitFor(() => { render(); expect(fetchMock.mock.calls.some((call) => call[1]?.method === 'POST')).toBe(true); });
   // No claude.account: it has its own setting once accounts exist.
-  expect(JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')![1]?.body))).toEqual({ scope: 'home', revision: 'h1', claudeAccounts: { accounts: [
+  expect(JSON.parse(String(fetchMock.mock.calls.find((call) => call[1]?.method === 'POST')![1]?.body))).toEqual({ scope: 'home', revision: 'h1', openedWith: ['personal', 'work', 'side'], claudeAccounts: { accounts: [
     { name: 'personal' }, { name: 'work', configDir: '/c/w2', create: true },
   ] } });
 });
+
 
 it('retains drafts and disables saving on a revision conflict until reload', async () => {
   input('profiles.claude.implementation.model').props.onChange({ target: { value: 'sonnet' } }); render();

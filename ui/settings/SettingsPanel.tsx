@@ -129,7 +129,8 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
         return { name: a.name.trim(), ...(dir ? { configDir: dir } : {}), create: a.create && changedDir(a) && !dirChecks[dir]?.directory };
       })];
       // claude.account has its own setting once accounts exist; the first save makes the default-home account the default.
-      const home = await request('home', undefined, { scope: 'home', revision: snapshot.homeRevision ?? snapshot.revision, claudeAccounts: { ...(setup.configure ? {} : { account: accounts[0].name }), accounts } });
+      // openedWith: the daemon refuses a list that changed since the form opened, which its WebSocket copy may not show.
+      const home = await request('home', undefined, { scope: 'home', revision: snapshot.homeRevision ?? snapshot.revision, openedWith: setup.original, claudeAccounts: { ...(setup.configure ? {} : { account: accounts[0].name }), accounts } });
       setSnapshot(scope === 'home' ? home : await request(scope, nodeId));
       setSetup(undefined); setSeeded(true); setSuccess('Claude accounts saved. Log in each new account below.'); setConflict(false);
       send({ t: 'claudeAccounts' });
