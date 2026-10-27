@@ -456,6 +456,22 @@ it('configures existing accounts: names fixed, the default kept, a moved directo
   ] } });
 });
 
+it('asks before moving the directory of an account that open nodes use, as it asks before removing one', async () => {
+  hooks.store = { ...hooks.store, claudeAccounts: [
+    { name: 'personal', projects: [], isDefault: false, loggedIn: true, loginCommand: 'claude auth login' },
+    { name: 'work', configDir: '/c/w', projects: [], isDefault: true, loggedIn: true, loginCommand: 'CLAUDE_CONFIG_DIR=/c/w claude auth login' },
+  ], nodes: { b: { id: 'b', title: 'docs', account: 'work' } } } as unknown as typeof hooks.store;
+  fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ...snapshot, scope: 'home', revision: 'h1' }) }));
+  changeScope('home'); await settle();
+  click('Configure');
+  type('0-dir', '/c/w2'); leave('0-dir');
+  expect(text(tree)).toContain('work is used by docs.');
+  expect(text(tree)).toContain('run them in the new directory');
+  expect(button('Save configuration').props.disabled).toBe(true);
+  input('claude.account-confirm').props.onChange({ target: { checked: true } }); render();
+  expect(text(tree)).toContain('Change anyway');
+  expect(button('Save configuration').props.disabled).toBe(false);
+});
 
 it('retains drafts and disables saving on a revision conflict until reload', async () => {
   input('profiles.claude.implementation.model').props.onChange({ target: { value: 'sonnet' } }); render();

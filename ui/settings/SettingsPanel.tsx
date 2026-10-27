@@ -186,9 +186,12 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
       return { inputProps: { ...(message ? { 'aria-invalid': true, 'aria-describedby': `${id}-${key}-error` } : {}), onBlur: () => leave(touchKeys[0]) },
         error: message && <p className="settings-account-note settings-error" id={`${id}-${key}-error`}>{message}</p> };
     };
-    // Accounts that nodes still record: removing one is allowed, but only on purpose.
+    // Accounts that nodes still record: removing one, or moving its directory, is allowed but only on purpose. A node looks up
+    // its account's directory at each launch, so after a restart a moved account's nodes would lose their transcripts.
     const removed = setup.original.filter((n) => n !== setup.name.trim() && !setup.alternates.some((a) => a.name.trim() === n));
-    const inUse = removed.flatMap((name) => { const titles = Object.values(nodes ?? {}).filter((n) => n.account === name).map((n) => n.title); return titles.length ? [{ name, titles }] : []; });
+    const moved = setup.alternates.filter((a) => a.was !== undefined && changedDir(a)).map((a) => a.name);
+    const inUse = [...removed, ...moved].flatMap((name) => { const titles = Object.values(nodes ?? {}).filter((n) => n.account === name).map((n) => n.title); return titles.length ? [{ name, titles, moved: moved.includes(name) }] : []; });
+    const removing = inUse.some((u) => !u.moved);
     const home = field('default', ['default']);
     return <div className="settings-account-setup">
       <p className="settings-account-note">{setup.configure ? 'Add or remove accounts, or change a config directory. Names cannot change: nodes and repositories refer to accounts by name.'
@@ -216,8 +219,9 @@ export function SettingsPanel({ nodeId, onClose }: { nodeId?: string; onClose: (
       })}
       {inUse.length > 0 && <div className="settings-account-note settings-error" id={`${id}-in-use`} role="status">
         <ul>{inUse.map((u) => <li key={u.name}>{u.name} is used by {u.titles.join(', ')}.</li>)}</ul>
-        <p>Those nodes keep running, but restarting or resuming them will fail until the account is configured again.</p>
-        <label><input id={`${id}-confirm`} type="checkbox" checked={setup.confirm} disabled={busy} onChange={(e) => update(() => ({ confirm: e.target.checked }))} /> Remove anyway</label>
+        {removing && <p>Those nodes keep running, but restarting or resuming them will fail until the account is configured again.</p>}
+        {inUse.some((u) => u.moved) && <p>Restarting or resuming them will run them in the new directory, which has none of their transcripts.</p>}
+        <label><input id={`${id}-confirm`} type="checkbox" checked={setup.confirm} disabled={busy} onChange={(e) => update(() => ({ confirm: e.target.checked }))} /> {removing ? 'Remove anyway' : 'Change anyway'}</label>
       </div>}
       <div className="settings-detail">
         <button type="button" className="btn" disabled={busy} onClick={() => update((s) => ({ alternates: [...s.alternates, newRow()] }))}>Add another account</button>
